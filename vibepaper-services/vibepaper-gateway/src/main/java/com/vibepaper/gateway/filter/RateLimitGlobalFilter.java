@@ -44,22 +44,25 @@ public class RateLimitGlobalFilter implements GlobalFilter, Ordered {
         String path = exchange.getRequest().getURI().getPath();
         String method = exchange.getRequest().getMethod().name();
         String userId = exchange.getRequest().getHeaders().getFirst("X-User-Id");
-        String bucket = Instant.now().getEpochSecond() / 60 + "";
+        Instant now = Instant.now();
+        String minuteBucket = now.getEpochSecond() / 60 + "";
         String key;
         long limit;
         Duration ttl;
         if (path.equals("/api/v1/auth/login") || path.equals("/api/v1/auth/register")) {
-            key = "rate:login:" + ip + ":" + bucket;
+            key = "rate:login:" + ip + ":" + minuteBucket;
             limit = 5;
             ttl = Duration.ofMinutes(2);
         } else if (method.equals("POST") && path.equals("/api/v1/tasks")) {
-            key = "rate:task:" + (userId == null ? ip : userId) + ":" + bucket;
+            key = "rate:task:" + (userId == null ? ip : userId) + ":" + minuteBucket;
             limit = 10;
             ttl = Duration.ofMinutes(2);
         } else {
-            key = "rate:global:" + ip + ":" + Instant.now().getEpochSecond() / 10;
+            // This bucket must be one second wide. The old ten-second bucket
+            // silently made the documented 100 req/s limit behave as 10 req/s.
+            key = "rate:global:" + ip + ":" + now.getEpochSecond();
             limit = 100;
-            ttl = Duration.ofSeconds(20);
+            ttl = Duration.ofSeconds(2);
         }
 
         return redis.opsForValue().increment(key)

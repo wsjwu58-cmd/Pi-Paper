@@ -72,10 +72,10 @@ export interface AgentChatMsg {
 
   /** 与官网 Vivi 工具行文案对齐；P0 控制平面按能力归类 */
   export const TOOL_LABELS: Record<string, string> = {
-    get_canvas_summary: '读取资源',
-    get_selected_nodes: '读取资源',
-    get_node_detail: '读取资源',
-    get_all_nodes: '读取资源',
+    get_canvas_summary: '读取画布概览',
+    get_selected_nodes: '读取选中节点',
+    get_node_detail: '读取节点详情',
+    get_all_nodes: '统计画布节点',
     list_models: '查询模型',
     search_assets: '查询资源',
     create_nodes: '编辑画布',

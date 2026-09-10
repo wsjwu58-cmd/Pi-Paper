@@ -129,6 +129,10 @@ export function AgentPanel() {
   const canvasId = canvas?.canvas.id
   const previousCanvasIdRef = useRef<string | number | undefined>(undefined)
   const lastEventSeqRef = useRef(0)
+  // Every asynchronous session operation carries this epoch. A response from
+  // an older epoch is stale by definition and must never update the chat UI.
+  const sessionEpochRef = useRef(0)
+  const activeSessionIdRef = useRef<string | number | null>(null)
   const agentEventStateRef = useRef<AgentEventState>({
     messages: [],
     seenEventIds: new Set(),
@@ -148,21 +152,44 @@ export function AgentPanel() {
     }
   }
 
+  const clearSessionRuntime = () => {
+    sseAbortRef.current?.abort()
+    sendAbortRef.current?.abort()
+    sseAbortRef.current = null
+    sendAbortRef.current = null
+    activeSessionIdRef.current = null
+    lastEventSeqRef.current = 0
+    turnIdRef.current = null
+    seenTaskIdsRef.current.clear()
+    seenWakeupRef.current.clear()
+    agentEventStateRef.current = { messages: [], seenEventIds: new Set(), runStatus: 'running' }
+    setSessionTitle('新对话')
+    setMessages([])
+    setSuggestions([])
+    setComposerRefs([])
+    setTypingTurnId(null)
+  }
+
+  const beginSessionTransition = () => {
+    sessionEpochRef.current += 1
+    clearSessionRuntime()
+    return sessionEpochRef.current
+  }
+
+  const activateEmptySession = (id: string | number, title?: string) => {
+    activeSessionIdRef.current = id
+    setSessionId(id)
+    setSessionTitle(title || '新对话')
+    setMessages([])
+    setSuggestions([])
+    setComposerRefs([])
+  }
+
   useEffect(() => {
     const previousCanvasId = previousCanvasIdRef.current
     if (previousCanvasId !== undefined && String(previousCanvasId) !== String(canvasId)) {
-      sseAbortRef.current?.abort()
-      sendAbortRef.current?.abort()
-      sseAbortRef.current = null
-      sendAbortRef.current = null
+      beginSessionTransition()
       setSessionId(null)
-      setSessionTitle('新对话')
-      setMessages([])
-      setSuggestions([])
-      setComposerRefs([])
-      setTypingTurnId(null)
-      agentEventStateRef.current = { messages: [], seenEventIds: new Set(), runStatus: 'running' }
-      lastEventSeqRef.current = 0
     }
     previousCanvasIdRef.current = canvasId
   }, [canvasId])
@@ -261,8 +288,10 @@ export function AgentPanel() {
     setMessages((m) => applyAgentEvent(m, ev, turnIdRef.current))
   }
 
-  const loadSessionQuiet = async (id: string | number, title?: string) => {
+  const loadSessionQuiet = async (id: string | number, title?: string, epoch = sessionEpochRef.current) => {
     const res = await api<{ items: AgentChatMsg[] }>(`/agent/sessions/${id}/messages`)
+    if (epoch !== sessionEpochRef.current) return false
+    activeSessionIdRef.current = id
     setSessionId(id)
     setSessionTitle(title || `对话 #${id}`)
     const loadedMessages = res.items
@@ -273,6 +302,7 @@ export function AgentPanel() {
     setMessages(loadedMessages)
     setSuggestions([])
     setComposerRefs([])
+    return true
   }
 
   const ensureSession = async (forceNew = false) => {
@@ -280,6 +310,10 @@ export function AgentPanel() {
       throw new Error('画布尚未加载，请稍后再试')
     }
     if (!forceNew && sessionId) return sessionId
+
+    // Stop old transport immediately. Relying on the later React effect
+    // cleanup left a window where old-session SSE events reached new chat UI.
+    const epoch = forceNew ? beginSessionTransition() : sessionEpochRef.current
 
     // 打开画布时恢复该画布最近一次对话，而不是总是新建
     if (!forceNew) {
@@ -289,7 +323,8 @@ export function AgentPanel() {
         }>(`/agent/sessions?canvasId=${encodeURIComponent(String(canvas.canvas.id))}`)
         const latest = list.items?.[0]
         if (latest?.sessionId != null) {
-          await loadSessionQuiet(latest.sessionId, latest.title)
+          const loaded = await loadSessionQuiet(latest.sessionId, latest.title, epoch)
+          if (!loaded) throw new DOMException('会话已切换', 'AbortError')
           return latest.sessionId
         }
       } catch {
@@ -304,11 +339,8 @@ export function AgentPanel() {
         title: '新对话',
       }),
     })
-    setSessionId(s.sessionId)
-    setSessionTitle(s.title || '新对话')
-    setMessages([])
-    setSuggestions([])
-    setComposerRefs([])
+    if (epoch !== sessionEpochRef.current) throw new DOMException('会话已切换', 'AbortError')
+    activateEmptySession(s.sessionId, s.title)
     return s.sessionId
   }
 
@@ -321,12 +353,14 @@ export function AgentPanel() {
 
   useEffect(() => {
     if (!open || !sessionId) return
+    const boundSessionId = sessionId
     const ac = new AbortController()
     sseAbortRef.current = ac
     let active = true
     void (async () => {
       let retryMs = 250
       while (active && !ac.signal.aborted) {
+        if (String(activeSessionIdRef.current) !== String(boundSessionId)) break
         let terminal = false
         try {
           const cursor = lastEventSeqRef.current
@@ -343,6 +377,10 @@ export function AgentPanel() {
             const parts = buf.split('\n\n')
             buf = parts.pop() ?? ''
             for (const part of parts) {
+              if (String(activeSessionIdRef.current) !== String(boundSessionId)) {
+                active = false
+                break
+              }
               const dataLine = part.split('\n').find((l) => l.startsWith('data: '))
               if (!dataLine) continue
               const ev = parseJsonPreserveIds(dataLine.slice(6)) as Record<string, unknown>
@@ -412,7 +450,9 @@ export function AgentPanel() {
 
   const loadSession = async (id: string | number, title?: string) => {
     try {
-      await loadSessionQuiet(id, title)
+      const epoch = beginSessionTransition()
+      const loaded = await loadSessionQuiet(id, title, epoch)
+      if (!loaded) return
       setTab('chat')
       toastSuccess('已切换会话')
     } catch (e) {
@@ -591,6 +631,7 @@ export function AgentPanel() {
       setBusy(false)
       return
     }
+    const sendSessionEpoch = sessionEpochRef.current
     let requestCanvasVersion = canvas?.canvas.version
     if (canvas?.canvas.id != null) {
       try {
@@ -647,9 +688,11 @@ export function AgentPanel() {
     let confirmationRehydrate: Promise<void> | null = null
     const rehydrateAfterConfirmation = () => {
       if (!confirmationRehydrate) {
-        confirmationRehydrate = loadSessionQuiet(sid).catch((error) => {
-          toastError((error as Error).message || '确认状态刷新失败')
-        })
+        confirmationRehydrate = loadSessionQuiet(sid, undefined, sendSessionEpoch)
+          .then(() => undefined)
+          .catch((error) => {
+            toastError((error as Error).message || '确认状态刷新失败')
+          })
       }
     }
     try {
@@ -685,6 +728,9 @@ export function AgentPanel() {
         const parts = buf.split('\n\n')
         buf = parts.pop() ?? ''
         for (const part of parts) {
+          if (ac.signal.aborted || sendSessionEpoch !== sessionEpochRef.current || String(activeSessionIdRef.current) !== String(sid)) {
+            break
+          }
           const dataLine = part.split('\n').find((l) => l.startsWith('data: '))
           if (!dataLine) continue
           // A reconnecting proxy can leave one partial/invalid SSE frame in
@@ -704,12 +750,12 @@ export function AgentPanel() {
           await new Promise<void>((r) => setTimeout(r, 0))
         }
       }
-      if (ac.signal.aborted) return
+      if (ac.signal.aborted || sendSessionEpoch !== sessionEpochRef.current || String(activeSessionIdRef.current) !== String(sid)) return
       // The terminal SSE envelope can be coalesced or omitted by a proxy. Rehydrate
       // the authoritative session after every normal stream completion so pending
       // confirmations and terminal messages cannot be lost in local reducer state.
       if (confirmationRehydrate) await confirmationRehydrate
-      else await loadSessionQuiet(sid)
+      else await loadSessionQuiet(sid, undefined, sendSessionEpoch)
       window.dispatchEvent(new Event('vp-agent-executed'))
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') return
@@ -774,7 +820,11 @@ export function AgentPanel() {
           {tab === 'chat' ? (
             <button
               type="button"
-              onClick={() => void ensureSession(true).then(() => toastSuccess('已创建新对话'))}
+              onClick={() => void ensureSession(true)
+                .then(() => toastSuccess('已创建新对话'))
+                .catch((e) => {
+                  if ((e as Error).name !== 'AbortError') toastError((e as Error).message)
+                })}
               title="新对话"
               className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04]"
             >

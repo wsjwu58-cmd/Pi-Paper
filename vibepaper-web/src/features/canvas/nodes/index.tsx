@@ -21,19 +21,26 @@ function useNodeData(nodeId: string) {
 
 function useNodeTasks(nodeId: string) {
   const qc = useQueryClient()
+  const canvasId = useCanvasStore((s) => s.canvas?.canvas.id)
+  const canvasKey = canvasId == null ? '' : sid(canvasId)
   const { data = [] } = useQuery({
-    queryKey: ['node-tasks', nodeId],
+    // All cards on a canvas share one task feed. Previously every visible node
+    // opened its own two-second poll, which multiplied traffic as a workflow
+    // grew and could trip the gateway's global limiter.
+    queryKey: ['canvas-tasks', canvasKey],
     queryFn: () =>
       api<PageResult<GenerationTask>>(
-        `/tasks?node_id=${encodeURIComponent(nodeId)}&nodeId=${encodeURIComponent(nodeId)}&page=1&pageSize=20`,
-      ).then((r) => (r.items ?? []).filter((t) => sid(t.nodeId) === sid(nodeId))),
-    enabled: Boolean(nodeId),
+        `/tasks?canvas_id=${encodeURIComponent(canvasKey)}&canvasId=${encodeURIComponent(canvasKey)}&page=1&pageSize=100`,
+      ).then((r) => r.items ?? []),
+    enabled: Boolean(nodeId && canvasKey),
     refetchInterval: (query) => {
       const items = query.state.data
       if (items?.some((t) => ['queued', 'running'].includes(t.status))) return 2000
-      const node = useCanvasStore.getState().nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node
-      if (node?.status && ['queued', 'running'].includes(node.status)) return 2000
-      if (node?.execStatus && ['queued', 'running'].includes(node.execStatus)) return 2000
+      const hasActiveNode = useCanvasStore.getState().nodes.some((n) => {
+        const state = String(n.data.node.execStatus || n.data.node.status || '')
+        return ['queued', 'running'].includes(state)
+      })
+      if (hasActiveNode) return 2000
       return false
     },
   })
@@ -66,7 +73,9 @@ function useNodeTasks(nodeId: string) {
       }
       if (Object.keys(patch).length) {
         useCanvasStore.getState().updateNodePayload(nodeId, patch as never)
-        void persistNodeExec(nodeId, patch as never)
+        // generation-service already writes terminal task state to canvas-service
+        // with an optimistic version retry. Do not duplicate that write once per
+        // rendered card; the local full save remains a fallback for UI-only data.
       }
     }
   }, [data, nodeId])
@@ -74,12 +83,12 @@ function useNodeTasks(nodeId: string) {
   useEffect(() => {
     const handler = (ev: Event) => {
       const detail = (ev as CustomEvent<{ nodeId?: string }>).detail
-      if (detail?.nodeId && sid(detail.nodeId) !== sid(nodeId)) return
-      void qc.invalidateQueries({ queryKey: ['node-tasks', nodeId] })
+      if (!detail?.nodeId || sid(detail.nodeId) !== sid(nodeId)) return
+      void qc.invalidateQueries({ queryKey: ['canvas-tasks', canvasKey] })
     }
     window.addEventListener('vp-task-updated', handler)
     return () => window.removeEventListener('vp-task-updated', handler)
-  }, [nodeId, qc])
+  }, [canvasKey, nodeId, qc])
 
   const currentId = useCanvasStore(
     (s) => s.nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node.currentOutputId,

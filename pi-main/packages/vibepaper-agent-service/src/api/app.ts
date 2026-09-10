@@ -19,6 +19,12 @@ import {
 	InMemoryApprovalRepository,
 } from "../application/approval-service.ts";
 import { AuthorizationError, assertSessionCanvasAccess } from "../application/authorization-service.ts";
+import {
+	isNodeCountQuestion,
+	missingAssistantReply,
+	nodeCountFromCanvasSummary,
+	nodeCountReply,
+} from "../application/canvas-fact-reply.ts";
 import { confirmationRecoveryMessage } from "../application/confirmation-recovery.ts";
 import { persistConfirmationStatus } from "../application/confirmation-status.ts";
 import { GenerationActionExecutor } from "../application/generation-action-executor.ts";
@@ -402,7 +408,35 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			optionalId(request.headers["x-enterprise-id"]),
 		);
 		const runId = run.runId;
-		const live: { assistantText: string; count: number; errorCode?: string } = { assistantText: "", count: 0 };
+		const directReply = await resolveCanvasFactReply(taskGateway, userId, session.canvas_id, content, request.id);
+		if (directReply) {
+			await addMessage(database, sessionId, "assistant", directReply, {});
+			await runRepository.updateStatus(runId, "running");
+			reply.hijack();
+			reply.raw.writeHead(200, {
+				"Content-Type": "text/event-stream; charset=utf-8",
+				"X-Request-Id": request.id,
+				"Cache-Control": "no-cache, no-transform",
+				Connection: "keep-alive",
+				"X-Accel-Buffering": "no",
+			});
+			reply.raw.write(": connected\n\n");
+			const responseEvent = await runService.appendEvent(runId, "assistant_delta", { text: directReply });
+			reply.raw.write(`id: ${responseEvent.eventSeq}\nevent: ${responseEvent.type}\ndata: ${JSON.stringify(toEnvelope(responseEvent))}\n\n`);
+			await runService.setStatus(runId, "completed", { text: directReply });
+			const completedEvent = (await runService.listEvents(runId)).at(-1);
+			if (completedEvent)
+				reply.raw.write(`id: ${completedEvent.eventSeq}\nevent: ${completedEvent.type}\ndata: ${JSON.stringify(toEnvelope(completedEvent))}\n\n`);
+			reply.raw.end();
+			return reply;
+		}
+		const live: {
+			assistantText: string;
+			count: number;
+			repeatedReadLimitReached: boolean;
+			toolCalls: Map<string, number>;
+			errorCode?: string;
+		} = { assistantText: "", count: 0, repeatedReadLimitReached: false, toolCalls: new Map() };
 		const profile = selectProfile({
 			entrypoint: optionalString(body.entrypoint) as "canvas" | "assets" | "audit" | undefined,
 			canvasDomain: optionalString(body.canvasDomain) as "general" | "short-drama" | "assets" | undefined,
@@ -508,9 +542,17 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 					shouldStopAfterTurn: async () =>
 						cancelledSessions.has(sessionId) ||
 						Boolean(live.errorCode) ||
+						live.repeatedReadLimitReached ||
 						(await runRepository.findById(runId))?.status === "aborted",
 					onEvent: async (event) => {
 						live.count += 1;
+						if (event.type === "tool_started" && event.toolName === "get_canvas_summary") {
+							const calls = (live.toolCalls.get(event.toolName) ?? 0) + 1;
+							live.toolCalls.set(event.toolName, calls);
+							// One authoritative summary is enough per turn.  A second call is
+							// allowed for the model to recover from a transient read, then stop.
+							if (calls >= 2) live.repeatedReadLimitReached = true;
+						}
 						if (event.type === "error") live.errorCode = event.errorCode ?? "MODEL_UNAVAILABLE";
 						if (event.type === "tool" && event.ok === false && event.errorCode) live.errorCode = event.errorCode;
 						live.assistantText = await persistTurnEvent(
@@ -536,14 +578,15 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 				return reply;
 			}
 			if (live.count === 0) await persistTurnEvents(runService, eventStream, runId, sessionId, outcome.events);
-			if (outcome.assistantText) await addMessage(database, sessionId, "assistant", outcome.assistantText, {});
+			const assistantText = outcome.assistantText || live.assistantText || missingAssistantReply(content);
+			if (assistantText) await addMessage(database, sessionId, "assistant", assistantText, {});
 			await database.query(
 				`UPDATE agent_sessions SET token_used_total = token_used_total + $1,
 					model_usage = jsonb_set(model_usage, '{assistant}', to_jsonb(COALESCE((model_usage->>'assistant')::integer, 0) + $1)), updated_at = now()
 				 WHERE id = $2`,
 				[outcome.totalTokens, sessionId],
 			);
-			await runService.setStatus(runId, "completed", { text: outcome.assistantText });
+			await runService.setStatus(runId, "completed", { text: assistantText });
 			await publishLatestRunEvent(runService, eventStream, runId);
 			return reply;
 		} catch (error) {
@@ -2195,6 +2238,24 @@ function parseSkillSnapshots(value: unknown): SkillSnapshot[] {
 		const contentHash = optionalString(record.contentHash);
 		return id && version && contentHash ? [{ id, version, contentHash }] : [];
 	});
+}
+
+async function resolveCanvasFactReply(
+	gateway: ToolGateway,
+	userId: string,
+	canvasId: string,
+	content: string,
+	requestId: string,
+): Promise<string | undefined> {
+	if (!isNodeCountQuestion(content)) return undefined;
+	try {
+		const count = nodeCountFromCanvasSummary(await gateway.getCanvasSummary(userId, canvasId, requestId));
+		return count === undefined ? undefined : nodeCountReply(count);
+	} catch {
+		// Leave transient downstream failures to the normal Agent turn, which can
+		// present its standard recovery guidance and error state.
+		return undefined;
+	}
 }
 
 function sendRunEventSse(reply: FastifyReply, events: readonly AgentRunEvent[]): FastifyReply {

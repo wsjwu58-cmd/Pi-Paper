@@ -12,6 +12,7 @@ import {
   type Connection,
   type EdgeChange,
   type NodeChange,
+  type OnNodeDrag,
   useReactFlow,
 } from '@xyflow/react'
 import { Copy, Files, Trash2, Upload } from 'lucide-react'
@@ -81,6 +82,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   } | null>(null)
   const { fitView, screenToFlowPosition } = useReactFlow()
   const saveTimer = useRef<number | null>(null)
+  const positionSaveQueue = useRef<Promise<void>>(Promise.resolve())
   const externalSyncPending = useRef(false)
   const externalSyncTimer = useRef<number | null>(null)
   const hydratingRef = useRef(true)
@@ -123,7 +125,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         void refetch().finally(() => {
           externalSyncPending.current = false
         })
-      }, 80)
+      }, 250)
     }
     window.addEventListener('vp-agent-executed', onAgentExecuted)
     return () => {
@@ -183,7 +185,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       setDirty(false)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'VERSION_CONFLICT') {
-        toastError('画布已在其他会话更新，已刷新最新版本')
+        // Agent/terminal callbacks can legitimately advance the canvas between
+        // a local debounce and its full save. Refresh silently: this is an
+        // internal synchronization race, not an actionable creator error.
         void refetch()
       } else {
         setDirty(true)
@@ -240,6 +244,62 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       // otherwise an Agent confirmation can become stale from view updates.
     },
     [nodes, setNodes, selectNode, setDirty],
+  )
+
+  const persistNodePosition = useCallback(
+    (node: FlowNode) => {
+      positionSaveQueue.current = positionSaveQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          const position = { x: node.position.x, y: node.position.y }
+          let lastError: unknown
+          // A position is an independent, low-risk edit. Retrying it against
+          // the newest canvas version prevents an Agent status update from
+          // reverting a completed drag during a full-graph refresh.
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const current = useCanvasStore.getState().canvas
+            if (!current) return
+            try {
+              await api(`/canvases/${sid(current.canvas.id)}/nodes/${sid(node.id)}`, {
+                method: 'PUT',
+                body: JSON.stringify({ ...position, expectedVersion: current.canvas.version }),
+              })
+              const latest = useCanvasStore.getState().canvas
+              if (latest && sid(latest.canvas.id) === sid(current.canvas.id)) {
+                const version = current.canvas.version + 1
+                setCanvas({ ...latest, canvas: { ...latest.canvas, version } })
+                setSavedVersion(version)
+              }
+              return
+            } catch (error) {
+              lastError = error
+              if (!(error instanceof ApiError) || error.code !== 'VERSION_CONFLICT') break
+              const fresh = await api<CanvasDetail>(`/canvases/${sid(current.canvas.id)}`)
+              setCanvas(fresh)
+              setSavedVersion(fresh.canvas.version)
+            }
+          }
+          // Keep the graph dirty as a final fallback. The normal debounced save
+          // will retry later, but avoid a red toast for a transient background
+          // version race.
+          if (lastError) setDirty(true)
+        })
+    },
+    [setCanvas, setDirty],
+  )
+
+  const onNodeDragStop: OnNodeDrag<FlowNode> = useCallback(
+    (_event, node) => {
+      // When another graph edit is already pending, its existing full save
+      // includes this position. Otherwise persist just this node, so a remote
+      // Agent mutation cannot overwrite a drag with an older whole-canvas view.
+      if (useCanvasStore.getState().dirty) {
+        setDirty(true)
+        return
+      }
+      persistNodePosition(node)
+    },
+    [persistNodePosition, setDirty],
   )
 
   const onEdgesChange = useCallback(
@@ -788,7 +848,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         }))}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onNodeDragStop={() => setDirty(true)}
+        onNodeDragStop={onNodeDragStop}
         onConnect={onConnect}
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
