@@ -14,6 +14,12 @@ export interface PlanStep {
 	effect?: PlanStepEffect;
 	/** Steps sharing a key are never eligible for the same execution partition. */
 	concurrencyKey?: string;
+	/** Stable across retries; an executor must forward this to side-effecting services. */
+	idempotencyKey?: string;
+	leaseUntil?: string;
+	attemptCount?: number;
+	outputRef?: string;
+	lastError?: string;
 }
 
 export interface AgentPlan {
