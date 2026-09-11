@@ -1,8 +1,14 @@
 import type { AgentPlan, PlanStep } from "../domain/agent-plan.ts";
 import { type AgentProfile, getToolsForProfile } from "../domain/tool-manifest.ts";
+import { effectForTool, partitionReadySteps, type ReadyExecutionPartition } from "./ready-set-scheduler.ts";
 
 export type PlanCompileOptions = { expectedVersion: number; profile: AgentProfile };
-export type CompiledPlan = { plan: AgentPlan; readySet: readonly string[]; totalEstimatedCost: number };
+export type CompiledPlan = {
+	plan: AgentPlan;
+	readySet: readonly string[];
+	executionPartitions: readonly ReadyExecutionPartition[];
+	totalEstimatedCost: number;
+};
 
 export class PlanCompileError extends Error {
 	readonly code: "VERSION_CONFLICT" | "TOOL_NOT_ALLOWED" | "BATCH_LIMIT_EXCEEDED" | "INVALID_DEPENDENCY";
@@ -28,23 +34,30 @@ export class PlanCompiler {
 			if ((step.batchSize ?? 1) > tool.maxBatch) throw new PlanCompileError("BATCH_LIMIT_EXCEEDED");
 			if (step.estimatedCost < 0 || !Number.isInteger(step.estimatedCost))
 				throw new PlanCompileError("INVALID_DEPENDENCY");
+			if (step.effect !== undefined && step.effect !== effectForTool(tool))
+				throw new PlanCompileError("INVALID_DEPENDENCY");
+			if (step.concurrencyKey !== undefined && !step.concurrencyKey.trim())
+				throw new PlanCompileError("INVALID_DEPENDENCY");
 		}
 		for (const step of plan.steps) {
 			if (step.dependsOn.some((dependency) => !ids.has(dependency) || dependency === step.id))
 				throw new PlanCompileError("INVALID_DEPENDENCY");
 		}
+		if (hasCycle(plan.steps)) throw new PlanCompileError("INVALID_DEPENDENCY");
+		const readySet = plan.steps
+			.filter(
+				(step) =>
+					step.status === "pending" &&
+					step.dependsOn.every(
+						(dependency) =>
+							plan.steps.find((candidate) => candidate.id === dependency)?.status === "completed",
+					),
+			)
+			.map((step) => step.id);
 		return {
 			plan,
-			readySet: plan.steps
-				.filter(
-					(step) =>
-						step.status === "pending" &&
-						step.dependsOn.every(
-							(dependency) =>
-								plan.steps.find((candidate) => candidate.id === dependency)?.status === "completed",
-						),
-				)
-				.map((step) => step.id),
+			readySet,
+			executionPartitions: partitionReadySteps(plan, readySet, options.profile),
 			totalEstimatedCost: plan.steps.reduce((total, step) => total + step.estimatedCost, 0),
 		};
 	}
@@ -61,4 +74,20 @@ export class PlanCompiler {
 
 export function clonePlanStep(step: PlanStep, overrides: Partial<PlanStep> = {}): PlanStep {
 	return { ...step, ...overrides, dependsOn: [...(overrides.dependsOn ?? step.dependsOn)] };
+}
+
+function hasCycle(steps: readonly PlanStep[]): boolean {
+	const byId = new Map(steps.map((step) => [step.id, step]));
+	const visiting = new Set<string>();
+	const visited = new Set<string>();
+	const visit = (id: string): boolean => {
+		if (visiting.has(id)) return true;
+		if (visited.has(id)) return false;
+		visiting.add(id);
+		const cycle = byId.get(id)?.dependsOn.some(visit) ?? false;
+		visiting.delete(id);
+		visited.add(id);
+		return cycle;
+	};
+	return steps.some((step) => visit(step.id));
 }

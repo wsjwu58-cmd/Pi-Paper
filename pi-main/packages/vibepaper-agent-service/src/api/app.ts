@@ -1936,6 +1936,12 @@ function parseAgentPlan(value: unknown, sessionId: string): AgentPlan {
 				: { input: objectOrEmpty(step.input ?? step.params) }),
 			estimatedCost: requiredInteger(step.estimatedCost ?? 0, "step.estimatedCost"),
 			...(step.batchSize === undefined ? {} : { batchSize: requiredInteger(step.batchSize, "step.batchSize") }),
+			...(step.effect === undefined
+				? {}
+				: { effect: requiredPlanStepEffect(step.effect, "step.effect") }),
+			...(step.concurrencyKey === undefined
+				? {}
+				: { concurrencyKey: requiredString(step.concurrencyKey, "step.concurrencyKey") }),
 		};
 	});
 	return {
@@ -1945,6 +1951,11 @@ function parseAgentPlan(value: unknown, sessionId: string): AgentPlan {
 		canvasVersion: requiredInteger(body.canvasVersion, "plan.canvasVersion"),
 		steps,
 	};
+}
+
+function requiredPlanStepEffect(value: unknown, field: string): "read" | "write_canvas" | "create_task" {
+	if (value === "read" || value === "write_canvas" || value === "create_task") return value;
+	throw new ApiError(400, "INVALID_INPUT", `${field} 无效`);
 }
 
 function timelineSegments(value: unknown): TimelineSegment[] {
