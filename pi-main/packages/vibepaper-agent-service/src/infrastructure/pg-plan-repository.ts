@@ -10,6 +10,7 @@ import {
 } from "../application/plan-step-state.ts";
 import type { AgentPlan, PlanStep } from "../domain/agent-plan.ts";
 import type { AgentProfile } from "../domain/tool-manifest.ts";
+import type { TerminalStatus } from "../application/task-terminal-service.ts";
 import { nextId } from "./ids.ts";
 import type { MigrationDatabase } from "./migrations.ts";
 
@@ -145,6 +146,74 @@ export class PgPlanRepository {
 		);
 	}
 
+	/** Links a confirmed generation task to its already leased create_task step. */
+	async attachTask(input: {
+		planId: string;
+		ownerId: string;
+		stepId: string;
+		idempotencyKey: string;
+		taskId: string;
+	}): Promise<AgentPlan> {
+		return await this.mutate(input.planId, input.ownerId, (plan) => {
+			const step = plan.steps.find((candidate) => candidate.id === input.stepId);
+			if (
+				!step ||
+				step.status !== "running" ||
+				step.effect !== "create_task" ||
+				step.idempotencyKey !== input.idempotencyKey ||
+				step.taskId
+			)
+				throw new PlanRepositoryError("VERSION_CONFLICT");
+			return {
+				...plan,
+				version: plan.version + 1,
+				steps: plan.steps.map((candidate) =>
+					candidate.id === input.stepId ? { ...candidate, taskId: input.taskId } : candidate,
+				),
+			};
+		});
+	}
+
+	/** Internal task callbacks advance only the plan step that owns the task. */
+	async completeTaskStep(input: {
+		taskId: string;
+		status: TerminalStatus;
+		errorCode?: string;
+		outputRef?: string;
+	}): Promise<AgentPlan | undefined> {
+		return await this.database.transaction(async (client) => {
+			const result = await client.query<PlanRow>(
+				`SELECT plan.id, plan.session_id, plan.version, plan.canvas_version, plan.status, plan.plan_json
+				 FROM agent_plans plan JOIN agent_plan_steps step ON step.plan_id = plan.id
+				 WHERE step.task_id = $1 FOR UPDATE OF plan`,
+				[input.taskId],
+			);
+			const row = result.rows[0];
+			if (!row) return undefined;
+			const current = toPlan(row.plan_json, row);
+			const step = current.steps.find((candidate) => candidate.taskId === input.taskId);
+			if (!step?.idempotencyKey || step.status !== "running") return current;
+			const next =
+				input.status === "succeeded"
+					? completePlanStep(current, step.id, {
+						idempotencyKey: step.idempotencyKey,
+						outputRef: input.outputRef ?? `task-result://${input.taskId}`,
+					})
+					: failPlanStep(current, step.id, {
+						idempotencyKey: step.idempotencyKey,
+						errorCode: input.errorCode ?? input.status.toUpperCase(),
+					});
+			const updated = await client.query<{ id: string }>(
+				`UPDATE agent_plans SET version = $1, status = $2, plan_json = $3::jsonb, updated_at = now()
+				 WHERE id = $4 AND version = $5 RETURNING id`,
+				[next.version, planStatus(next), JSON.stringify(next), next.id, current.version],
+			);
+			if (updated.rows.length !== 1) throw new PlanRepositoryError("VERSION_CONFLICT");
+			for (const candidate of next.steps) await this.updateStepProjection(client, next.id, candidate);
+			return next;
+		});
+	}
+
 	private async mutate(
 		planId: string,
 		ownerId: string,
@@ -188,8 +257,8 @@ export class PgPlanRepository {
 	): Promise<void> {
 		await client.query(
 			`INSERT INTO agent_plan_steps
-			 (id, plan_id, step_key, tool_name, depends_on, status, input_hash, estimated_cost, effect, concurrency_key, idempotency_key, lease_until, attempt_count, output_ref, last_error)
-			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+			 (id, plan_id, step_key, tool_name, depends_on, status, input_hash, estimated_cost, effect, concurrency_key, idempotency_key, task_id, lease_until, attempt_count, output_ref, last_error)
+			 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 			[
 				nextId(),
 				planId,
@@ -202,6 +271,7 @@ export class PgPlanRepository {
 				step.effect ?? null,
 				step.concurrencyKey ?? null,
 				step.idempotencyKey ?? null,
+				step.taskId ?? null,
 				step.leaseUntil ?? null,
 				step.attemptCount ?? 0,
 				step.outputRef ?? null,
@@ -216,14 +286,15 @@ export class PgPlanRepository {
 		step: PlanStep,
 	): Promise<void> {
 		await client.query(
-			`UPDATE agent_plan_steps SET status = $1, effect = $2, concurrency_key = $3, idempotency_key = $4,
-			 lease_until = $5, attempt_count = $6, output_ref = $7, last_error = $8
-			 WHERE plan_id = $9 AND step_key = $10`,
+			`UPDATE agent_plan_steps SET status = $1, effect = $2, concurrency_key = $3, idempotency_key = $4, task_id = $5,
+			 lease_until = $6, attempt_count = $7, output_ref = $8, last_error = $9
+			 WHERE plan_id = $10 AND step_key = $11`,
 			[
 				step.status,
 				step.effect ?? null,
 				step.concurrencyKey ?? null,
 				step.idempotencyKey ?? null,
+				step.taskId ?? null,
 				step.leaseUntil ?? null,
 				step.attemptCount ?? 0,
 				step.outputRef ?? null,

@@ -890,6 +890,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		eventStream,
 		terminalService,
 		renderBatchRepository,
+		planRepository,
 	);
 	return app;
 }
@@ -1726,6 +1727,7 @@ function registerInternalRoutes(
 	eventStream: AgentEventStream,
 	terminalService?: TaskTerminalService,
 	renderBatchRepository?: PgRenderBatchRepository,
+	planRepository?: PgPlanRepository,
 ): void {
 	app.post("/internal/agent/resume", async (request) => {
 		if (!terminalService) throw new ApiError(503, "INTERNAL_AUTH_NOT_CONFIGURED", "内部回调鉴权未配置");
@@ -1762,6 +1764,18 @@ function registerInternalRoutes(
 				throw new ApiError(404, "NOT_FOUND", "任务关联不存在");
 			throw error;
 		}
+		// A plan-step association is optional because legacy/direct task submission
+		// is still supported. When present, the same authenticated callback is the
+		// sole transition that unlocks the plan's dependent steps.
+		const planStep =
+			!result.duplicate && !result.conflict
+				? await planRepository?.completeTaskStep({
+					taskId: notice.taskId,
+					status: notice.status,
+					errorCode: notice.errorCode,
+					outputRef: notice.status === "succeeded" ? `task-result://${notice.taskId}` : undefined,
+				})
+				: undefined;
 		if (!result.duplicate && !result.conflict) {
 			const run = await runRepository.findById(result.association.runId);
 			if (run && isCallbackActiveRun(run.status)) {
@@ -1841,7 +1855,13 @@ function registerInternalRoutes(
 				await publishLatestRunEvent(runService, eventStream, result.association.runId);
 			}
 		}
-		return { ok: true, accepted: true, duplicate: result.duplicate ?? false, conflict: result.conflict ?? false };
+		return {
+			ok: true,
+			accepted: true,
+			duplicate: result.duplicate ?? false,
+			conflict: result.conflict ?? false,
+			planStepUpdated: planStep !== undefined,
+		};
 	});
 }
 

@@ -16,6 +16,8 @@ export interface PlanStep {
 	concurrencyKey?: string;
 	/** Stable across retries; an executor must forward this to side-effecting services. */
 	idempotencyKey?: string;
+	/** Generation task identity once a confirmation-aware task submission succeeds. */
+	taskId?: string;
 	leaseUntil?: string;
 	attemptCount?: number;
 	outputRef?: string;

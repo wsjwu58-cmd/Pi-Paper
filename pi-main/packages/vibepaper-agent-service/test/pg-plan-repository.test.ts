@@ -33,6 +33,20 @@ class PlanDatabase implements MigrationDatabase {
 	}
 
 	async query<T extends Record<string, unknown>>(text: string, values: unknown[] = []): Promise<{ rows: T[] }> {
+		if (text.includes("JOIN agent_plan_steps step") && text.includes("step.task_id")) {
+			return {
+				rows: [
+					{
+						id: this.planJson.id,
+						session_id: this.planJson.sessionId,
+						version: this.version,
+						canvas_version: this.planJson.canvasVersion,
+						status: this.status,
+						plan_json: this.planJson,
+					},
+				] as T[],
+			};
+		}
 		if (text.includes("FROM agent_plans plan JOIN agent_sessions") && text.includes("FOR UPDATE")) {
 			return {
 				rows: [
@@ -86,5 +100,33 @@ describe("PgPlanRepository execution persistence", () => {
 		expect(database.version).toBe(3);
 		expect(database.status).toBe("completed");
 		expect(database.stepUpdates).toHaveLength(2);
+	});
+
+	it("advances an attached task step only when its internal callback arrives", async () => {
+		const database = new PlanDatabase();
+		const repository = new PgPlanRepository(database);
+		const running = await repository.claimStep({
+			planId: "plan-1",
+			ownerId: "user-1",
+			stepId: "read",
+			now: new Date("2026-09-11T08:00:00.000Z"),
+		});
+		// A generation step is the only kind permitted to attach a task. Set this
+		// in the persisted plan to model a scheduler-created task lease.
+		database.planJson = {
+			...running,
+			steps: [{ ...running.steps[0]!, tool: "submit_generation", effect: "create_task" }],
+		};
+		const attached = await repository.attachTask({
+			planId: "plan-1",
+			ownerId: "user-1",
+			stepId: "read",
+			idempotencyKey: "plan-1:read:read-hash",
+			taskId: "task-1",
+		});
+		expect(attached.steps[0]).toMatchObject({ taskId: "task-1", status: "running" });
+
+		const completed = await repository.completeTaskStep({ taskId: "task-1", status: "succeeded" });
+		expect(completed?.steps[0]).toMatchObject({ status: "completed", outputRef: "task-result://task-1" });
 	});
 });
