@@ -8,6 +8,7 @@ import type { AgentProfile } from "../domain/tool-manifest.ts";
 import { createDramaAgent } from "../pi/drama-agent.ts";
 import { createLoadSkillTool, type LoadedSkillResource } from "../tools/skill-tools.ts";
 import { compactContext } from "./context-compaction-service.ts";
+import { resolveInstructionPrecedence } from "./instruction-precedence.ts";
 import { composeUserContent, type NodeReferenceSnapshot, nodeReferencesFromMeta } from "./node-reference-context.ts";
 
 // A drama-planning turn can legitimately make several read/write tool calls
@@ -42,13 +43,26 @@ export interface AgentRuntimeHooks {
 	shouldStopAfterTurn?: NonNullable<AgentOptions["shouldStopAfterTurn"]>;
 	modelId?: string;
 	memoryContext?: string;
+	intentContext?: string;
 }
 
 export interface AgentSkillContext {
 	indexLines: readonly string[];
 	skills: readonly LoadedSkillResource[];
 	loadedSkillIds: readonly string[];
+	loadedSkills: readonly LoadedSkillResource[];
 	onLoad(skill: LoadedSkillResource): Promise<void>;
+}
+
+const MAX_REHYDRATED_SKILLS = 4;
+const MAX_REHYDRATED_SKILL_CHARACTERS = 1_200;
+
+export function rehydratedSkillInstructions(skills: readonly LoadedSkillResource[]): string | undefined {
+	const visible = skills.slice(0, MAX_REHYDRATED_SKILLS).map((skill) => {
+		const instructions = skill.instructions.trim().slice(0, MAX_REHYDRATED_SKILL_CHARACTERS);
+		return `【已加载 Skill：${skill.name}】\n${instructions}`;
+	});
+	return visible.length > 0 ? `以下 Skill 已在此前轮次加载，必须遵循其方法论：\n${visible.join("\n\n")}` : undefined;
 }
 
 export function agnesModel(config: ServiceConfig, modelId = config.llmModel): Model<"openai-completions"> {
@@ -122,6 +136,21 @@ export async function runDramaTurn(
 			initialMessages.push(assistant);
 		}
 	}
+	const protectedFacts =
+		compacted.protectedFacts.length > 0
+			? `受保护业务事实（不可被模型删除）：\n${compacted.protectedFacts.join("\n")}`
+			: undefined;
+	const orderedInstructions = resolveInstructionPrecedence([
+		{ source: "confirmed-fact", text: protectedFacts ?? "" },
+		{ source: "skill", text: rehydratedSkillInstructions(skillContext.loadedSkills) ?? "" },
+		{
+			source: "profile-default",
+			text:
+				skillContext.indexLines.length > 0
+					? `可用 Skill 索引（正文未预载）：\n${skillContext.indexLines.join("\n")}`
+					: "",
+		},
+	]);
 	const agent = createDramaAgent(store, {
 		initialState: { model: agnesModel(config, hooks.modelId), messages: initialMessages },
 		streamFn: streamSimple,
@@ -130,12 +159,8 @@ export async function runDramaTurn(
 		systemPromptSuffix:
 			[
 				compacted.summary ? `会话压缩摘要：${compacted.summary}` : undefined,
-				compacted.protectedFacts.length > 0
-					? `受保护业务事实（不可被模型删除）：\n${compacted.protectedFacts.join("\n")}`
-					: undefined,
-				skillContext.indexLines.length > 0
-					? `可用 Skill 索引（正文未预载）：\n${skillContext.indexLines.join("\n")}`
-					: undefined,
+				...orderedInstructions,
+				hooks.intentContext,
 				hooks.memoryContext,
 			]
 				.filter(Boolean)

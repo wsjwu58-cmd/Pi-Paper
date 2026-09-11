@@ -28,6 +28,7 @@ import {
 import { confirmationRecoveryMessage } from "../application/confirmation-recovery.ts";
 import { persistConfirmationStatus } from "../application/confirmation-status.ts";
 import { GenerationActionExecutor } from "../application/generation-action-executor.ts";
+import { formatIntentContext, routeAgentIntent } from "../application/intent-router.ts";
 import { MemoryService } from "../application/memory-service.ts";
 import {
 	MAX_NODE_REFERENCES,
@@ -387,6 +388,11 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			selectedNodeIds,
 			request.id,
 		);
+		const profile = selectProfile({
+			entrypoint: optionalString(body.entrypoint) as "canvas" | "assets" | "audit" | undefined,
+			canvasDomain: optionalString(body.canvasDomain) as "general" | "short-drama" | "assets" | undefined,
+		});
+		const intent = routeAgentIntent({ content, profile, selectedNodeCount: selectedNodeIds.length });
 		const idempotencyKey = requiredIdempotencyKey(request);
 		const existingRun = await runRepository.findByIdempotency(sessionId, idempotencyKey);
 		if (existingRun) {
@@ -437,10 +443,6 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			toolCalls: Map<string, number>;
 			errorCode?: string;
 		} = { assistantText: "", count: 0, repeatedReadLimitReached: false, toolCalls: new Map() };
-		const profile = selectProfile({
-			entrypoint: optionalString(body.entrypoint) as "canvas" | "assets" | "audit" | undefined,
-			canvasDomain: optionalString(body.canvasDomain) as "general" | "short-drama" | "assets" | undefined,
-		});
 		const modelId = await resolveRequestedTextModel(
 			taskGateway,
 			userId,
@@ -539,6 +541,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 					profile,
 					modelId,
 					memoryContext,
+					intentContext: formatIntentContext(intent),
 					shouldStopAfterTurn: async () =>
 						cancelledSessions.has(sessionId) ||
 						Boolean(live.errorCode) ||
@@ -2170,6 +2173,7 @@ async function resolveSkillContext(
 		indexLines: resources.map((skill) => skillIndexLine(skill)),
 		skills: resources,
 		loadedSkillIds,
+		loadedSkills: resources.filter((skill) => loadedSkillIds.includes(skill.id)),
 		onLoad: async (skill) => {
 			if (loadedSkillIds.includes(skill.id)) return;
 			await database.query(
