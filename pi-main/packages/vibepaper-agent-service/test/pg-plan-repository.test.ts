@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentPlan, PlanStep } from "../src/domain/agent-plan.ts";
-import { PgPlanRepository } from "../src/infrastructure/pg-plan-repository.ts";
+import type { AgentPlan } from "../src/domain/agent-plan.ts";
 import type { MigrationDatabase } from "../src/infrastructure/migrations.ts";
+import { PgPlanRepository } from "../src/infrastructure/pg-plan-repository.ts";
 
 const plan: AgentPlan = {
 	id: "plan-1",

@@ -94,6 +94,7 @@ function containsUnsafeExecutionField(value: unknown): boolean {
 	if (Array.isArray(value)) return value.some(containsUnsafeExecutionField);
 	if (!isPlainRecord(value)) return false;
 	return Object.entries(value).some(
-		([key, child]) => /^(tool|toolCall|confirmationToken|canvasMutation)$/i.test(key) || containsUnsafeExecutionField(child),
+		([key, child]) =>
+			/^(tool|toolCall|confirmationToken|canvasMutation)$/i.test(key) || containsUnsafeExecutionField(child),
 	);
 }

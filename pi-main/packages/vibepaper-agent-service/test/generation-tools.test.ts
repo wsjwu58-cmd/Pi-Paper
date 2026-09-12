@@ -51,6 +51,7 @@ describe("proposed generation tool", () => {
 			sessionId: "s1",
 			canvasId: "301",
 			canvasVersion: 4,
+			continueAfterTask: true,
 			generations: [
 				{
 					nodeId: "node-1",
@@ -71,6 +72,7 @@ describe("proposed generation tool", () => {
 		expect(proposal.toolName).toBe("submit_generation_batch");
 		expect(proposal.estimatedCost).toBe(16);
 		expect(proposal.approvalToken).toBeDefined();
+		expect(proposal.params.continueAfterTask).toBe(true);
 	});
 
 	it("keeps the workflow continuation intent in the approval payload", async () => {
