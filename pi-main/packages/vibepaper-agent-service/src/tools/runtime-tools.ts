@@ -13,10 +13,7 @@ import { ReadTools } from "./read-tools.ts";
 
 const EmptySchema = Type.Object({}, { additionalProperties: false });
 const NodeIdArraySchema = Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 });
-const NodeIdsSchema = Type.Object(
-	{ nodeIds: NodeIdArraySchema },
-	{ additionalProperties: false },
-);
+const NodeIdsSchema = Type.Object({ nodeIds: NodeIdArraySchema }, { additionalProperties: false });
 const NodeDetailSchema = Type.Object({ nodeId: Type.String({ minLength: 1 }) }, { additionalProperties: false });
 const SearchSchema = Type.Object(
 	{ query: Type.String({ minLength: 1, maxLength: 200 }) },
@@ -146,6 +143,7 @@ export type RuntimeToolContext = {
 	requestId?: string;
 	confirmationPending?: boolean;
 	generationExecutionPolicy?: "manual" | "auto";
+	continueAfterTask?: boolean;
 	gateway: ToolGateway;
 	approvals: ApprovalService;
 	onApprovalRequired?: (action: PlannedAction) => void | Promise<void>;
@@ -350,6 +348,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 					estimatedCost: estimate.estimatedCost,
 					overwrite: params.overwrite,
 					requiresApproval: context.generationExecutionPolicy !== "auto",
+					continueAfterTask: context.continueAfterTask,
 				});
 				if (context.generationExecutionPolicy === "auto") {
 					const submitted = await context.onGenerationSubmitted?.(action);
@@ -417,6 +416,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 					canvasVersion: context.canvasVersion,
 					generations: prepared,
 					requiresApproval: context.generationExecutionPolicy !== "auto",
+					continueAfterTask: context.continueAfterTask,
 				});
 				if (context.generationExecutionPolicy === "auto") {
 					const submitted = await context.onGenerationSubmitted?.(action);
@@ -500,8 +500,7 @@ function isReferenceTarget(type: string | undefined): boolean {
 
 function parseNodeArray(nodes: unknown): Array<{ type: string; sourceNodeIds?: readonly string[] }> {
 	if (Array.isArray(nodes)) return nodes as Array<{ type: string; sourceNodeIds?: readonly string[] }>;
-	if (typeof nodes !== "string")
-		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数必须是节点数组。", {});
+	if (typeof nodes !== "string") throw new ToolGatewayError("INVALID_INPUT", "创建节点参数必须是节点数组。", {});
 
 	let parsed: unknown;
 	try {
@@ -516,8 +515,7 @@ function parseNodeArray(nodes: unknown): Array<{ type: string; sourceNodeIds?: r
 
 function parseNodeIdArray(nodeIds: unknown): string[] {
 	if (Array.isArray(nodeIds)) return nodeIds as string[];
-	if (typeof nodeIds !== "string")
-		throw new ToolGatewayError("INVALID_INPUT", "删除节点参数必须是节点 ID 数组。", {});
+	if (typeof nodeIds !== "string") throw new ToolGatewayError("INVALID_INPUT", "删除节点参数必须是节点 ID 数组。", {});
 
 	let parsed: unknown;
 	try {

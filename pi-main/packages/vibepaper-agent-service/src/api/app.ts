@@ -6,11 +6,11 @@ import type { QueryResultRow } from "pg";
 
 import {
 	AgentRuntimeError,
-	safeToolReasoningSummary,
 	type AgentSkillContext,
 	type AgentTurnEvent,
 	runDramaTurn,
 	type StoredAgentMessage,
+	safeToolReasoningSummary,
 	sanitizeAgentReply,
 } from "../application/agent-runtime.ts";
 import {
@@ -29,7 +29,7 @@ import {
 import { confirmationRecoveryMessage } from "../application/confirmation-recovery.ts";
 import { persistConfirmationStatus } from "../application/confirmation-status.ts";
 import { GenerationActionExecutor } from "../application/generation-action-executor.ts";
-import { formatIntentContext, routeAgentIntent } from "../application/intent-router.ts";
+import { formatIntentContext, requestsPostGenerationFollowUp, routeAgentIntent } from "../application/intent-router.ts";
 import { MemoryService } from "../application/memory-service.ts";
 import {
 	MAX_NODE_REFERENCES,
@@ -442,11 +442,15 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			});
 			reply.raw.write(": connected\n\n");
 			const responseEvent = await runService.appendEvent(runId, "assistant_delta", { text: directReply });
-			reply.raw.write(`id: ${responseEvent.eventSeq}\nevent: ${responseEvent.type}\ndata: ${JSON.stringify(toEnvelope(responseEvent))}\n\n`);
+			reply.raw.write(
+				`id: ${responseEvent.eventSeq}\nevent: ${responseEvent.type}\ndata: ${JSON.stringify(toEnvelope(responseEvent))}\n\n`,
+			);
 			await runService.setStatus(runId, "completed", { text: directReply });
 			const completedEvent = (await runService.listEvents(runId)).at(-1);
 			if (completedEvent)
-				reply.raw.write(`id: ${completedEvent.eventSeq}\nevent: ${completedEvent.type}\ndata: ${JSON.stringify(toEnvelope(completedEvent))}\n\n`);
+				reply.raw.write(
+					`id: ${completedEvent.eventSeq}\nevent: ${completedEvent.type}\ndata: ${JSON.stringify(toEnvelope(completedEvent))}\n\n`,
+				);
 			reply.raw.end();
 			return reply;
 		}
@@ -476,8 +480,10 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			gateway: taskGateway,
 			approvals: approvalService,
 			generationExecutionPolicy: config.generationExecutionPolicy,
+			continueAfterTask: intent.kind === "creative_workflow" || requestsPostGenerationFollowUp(content),
 			onGenerationSubmitted: async (action) => {
-				const batchItems = action.toolName === "submit_generation_batch" ? batchGenerationItems(action.params) : undefined;
+				const batchItems =
+					action.toolName === "submit_generation_batch" ? batchGenerationItems(action.params) : undefined;
 				const singleItem = batchItems ? undefined : singleGenerationItem(action.params);
 				const items = batchItems ?? [{ ...singleItem!, estimatedCost: action.estimatedCost }];
 				// Persist the proposed action before external submission so the task
@@ -512,13 +518,19 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 						requestId: request.id,
 					})),
 				);
+				const continueAfterTask = action.params.continueAfterTask === true;
 				for (const [index, result] of execution.results.entries()) {
 					const item = items[index]!;
 					const actionId = items.length === 1 ? action.actionId : nextId();
 					if (items.length === 1) {
 						await database.query(
 							"UPDATE agent_actions SET status = $1, task_id = $2, result = $3::jsonb WHERE id = $4",
-							[result.compensationRequired ? "compensation_required" : "running", result.taskId, JSON.stringify(result), actionId],
+							[
+								result.compensationRequired ? "compensation_required" : "running",
+								result.taskId,
+								JSON.stringify(result),
+								actionId,
+							],
 						);
 					} else {
 						await database.query(
@@ -526,14 +538,25 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 							 (id, session_id, run_id, user_id, action_type, tool_name, params, risk_level, status, canvas_version, estimated_cost, task_id, result, idempotency_key)
 							 VALUES ($1, $2, $3, $4, 'batch_task', 'submit_generation', $5::jsonb, 'high', $6, $7, $8, $9, $10::jsonb, $11)`,
 							[
-								actionId, sessionId, runId, userId, JSON.stringify(item),
-								result.compensationRequired ? "compensation_required" : "running", action.canvasVersion,
-								result.actualCost, result.taskId, JSON.stringify(result), `auto:${action.actionId}:${index}`,
+								actionId,
+								sessionId,
+								runId,
+								userId,
+								JSON.stringify({ ...item, ...(continueAfterTask ? { continueAfterTask: true } : {}) }),
+								result.compensationRequired ? "compensation_required" : "running",
+								action.canvasVersion,
+								result.actualCost,
+								result.taskId,
+								JSON.stringify(result),
+								`auto:${action.actionId}:${index}`,
 							],
 						);
 					}
 					const queued = await runService.appendEvent(runId, "task_status", {
-						task_id: result.taskId, status: "queued", node_id: item.nodeId, canvas_id: action.canvasId,
+						task_id: result.taskId,
+						status: "queued",
+						node_id: item.nodeId,
+						canvas_id: action.canvasId,
 					});
 					eventStream.publishEvent(toEnvelope(queued));
 				}
@@ -712,10 +735,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		reply.raw.flushHeaders();
 		reply.raw.write(": connected\n\n");
 		const persisted = await runService.listSessionEvents(sessionId, cursor);
-		const events = mergeRunEvents(
-			persisted.map(toEnvelope),
-			eventStream.replaySession(sessionId, cursor),
-		);
+		const events = mergeRunEvents(persisted.map(toEnvelope), eventStream.replaySession(sessionId, cursor));
 		let lastSeq = cursor;
 		const write = (event: ReturnType<typeof toEnvelope>): void => {
 			if (event.eventSeq <= lastSeq) return;
@@ -868,6 +888,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const batchItems = consumed.toolName === "submit_generation_batch" ? batchGenerationItems(params) : undefined;
 		const singleItem = batchItems ? undefined : singleGenerationItem(params);
 		const items = batchItems ?? [{ ...singleItem!, estimatedCost: consumed.estimatedCost }];
+		const continueAfterTask = params.continueAfterTask === true;
 		try {
 			const execution = await generationExecutor.executeBatch(
 				items.map((item, index) => ({
@@ -913,7 +934,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 							sessionId,
 							consumed.runId ?? "",
 							userId,
-							JSON.stringify(item),
+							JSON.stringify({ ...item, ...(continueAfterTask ? { continueAfterTask: true } : {}) }),
 							result.compensationRequired ? "compensation_required" : "running",
 							consumed.canvasVersion,
 							result.actualCost,
@@ -1853,11 +1874,11 @@ function registerInternalRoutes(
 		const planStep =
 			!result.duplicate && !result.conflict
 				? await planRepository?.completeTaskStep({
-					taskId: notice.taskId,
-					status: notice.status,
-					errorCode: notice.errorCode,
-					outputRef: notice.status === "succeeded" ? `task-result://${notice.taskId}` : undefined,
-				})
+						taskId: notice.taskId,
+						status: notice.status,
+						errorCode: notice.errorCode,
+						outputRef: notice.status === "succeeded" ? `task-result://${notice.taskId}` : undefined,
+					})
 				: undefined;
 		if (!result.duplicate && !result.conflict) {
 			const run = await runRepository.findById(result.association.runId);
@@ -1911,7 +1932,8 @@ function registerInternalRoutes(
 					await runService.setStatus(result.association.runId, "completed", {
 						text: outputText ? `生成完成：${outputText}` : "生成完成，产物已写回画布节点。",
 					});
-					scheduleTaskContinuation(app, result.association.sessionId, notice, result.association.runId);
+					if (result.association.continueAfterTask)
+						scheduleTaskContinuation(app, result.association.sessionId, notice, result.association.runId);
 				} else if (notice.status === "succeeded") {
 					const partialFailureMessage =
 						"批量生成已停止：部分关键帧未通过，后续视频、配音和字幕不会自动提交。请先重试失败镜头。";
@@ -2075,9 +2097,7 @@ function parseAgentPlan(value: unknown, sessionId: string): AgentPlan {
 				: { input: objectOrEmpty(step.input ?? step.params) }),
 			estimatedCost: requiredInteger(step.estimatedCost ?? 0, "step.estimatedCost"),
 			...(step.batchSize === undefined ? {} : { batchSize: requiredInteger(step.batchSize, "step.batchSize") }),
-			...(step.effect === undefined
-				? {}
-				: { effect: requiredPlanStepEffect(step.effect, "step.effect") }),
+			...(step.effect === undefined ? {} : { effect: requiredPlanStepEffect(step.effect, "step.effect") }),
 			...(step.concurrencyKey === undefined
 				? {}
 				: { concurrencyKey: requiredString(step.concurrencyKey, "step.concurrencyKey") }),
@@ -2329,7 +2349,9 @@ async function resolveSkillContext(
 		indexLines: resources.map((skill) => skillIndexLine(skill)),
 		skills: resources,
 		loadedSkillIds,
-		loadedSkills: resources.filter((skill) => loadedSkillIds.includes(skill.id) || explicitSkillIds.includes(skill.id)),
+		loadedSkills: resources.filter(
+			(skill) => loadedSkillIds.includes(skill.id) || explicitSkillIds.includes(skill.id),
+		),
 		explicitlySelectedSkills: resources.filter((skill) => explicitSkillIds.includes(skill.id)),
 		onLoad: async (skill) => {
 			if (loadedSkillIds.includes(skill.id)) return;
