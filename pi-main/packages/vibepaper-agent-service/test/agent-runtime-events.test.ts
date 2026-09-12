@@ -111,6 +111,27 @@ describe("Pi runtime event mapping", () => {
 		]);
 	});
 
+	it("maps tool-schema validation failures to INVALID_INPUT so a run cannot loop", () => {
+		const events: AgentTurnEvent[] = [];
+		captureEvent(
+			{
+				type: "tool_execution_end",
+				toolCallId: "tool-3",
+				toolName: "delete_nodes",
+				isError: true,
+				result: {
+					content: [{ type: "text", text: 'Validation failed for tool "delete_nodes": nodes must be an array' }],
+					details: {},
+				},
+			} as unknown as AgentEvent,
+			events,
+			() => undefined,
+			() => undefined,
+		);
+
+		expect(events[0]).toMatchObject({ type: "tool", toolName: "delete_nodes", ok: false, errorCode: "INVALID_INPUT" });
+	});
+
 	it("forces the requested canvas tool only on the initial model request", () => {
 		const choices: unknown[] = [];
 		const forced = forceInitialToolCall(

@@ -121,6 +121,45 @@ describe("runtime tool integration", () => {
 		expect(commands[0]).toMatchObject({ idempotencyKey: "301:canvas:call-1", expectedVersion: 7 });
 	});
 
+	it("normalizes serialized node IDs for deletion and owns mechanical write fields", async () => {
+		const commands: Array<Record<string, unknown>> = [];
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			runId: "301",
+			canvasId: "401",
+			canvasVersion: 7,
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				execute: async (command: Record<string, unknown>) => {
+					commands.push(command);
+					return { canvasVersion: 8 };
+				},
+			} as never,
+		});
+		const remove = tools.find((tool) => tool.name === "delete_nodes")!;
+
+		expect(
+			Value.Check(remove.parameters, {
+				nodeIds: '["node-a","node-b"]',
+				expectedVersion: "38",
+				idempotencyKey: "model-key",
+			}),
+		).toBe(true);
+		await remove.execute("delete-call", {
+			nodeIds: '["node-a","node-b"]',
+			expectedVersion: "38",
+			idempotencyKey: "model-key",
+		});
+
+		expect(commands[0]).toMatchObject({
+			operation: "delete_nodes",
+			expectedVersion: 7,
+			idempotencyKey: "model-key",
+			payload: { nodeIds: ["node-a", "node-b"] },
+		});
+	});
+
 	it("connects selected references to newly created media nodes", async () => {
 		const commands: Array<Record<string, unknown>> = [];
 		const tools = createRuntimeTools({

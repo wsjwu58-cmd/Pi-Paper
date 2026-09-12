@@ -12,8 +12,9 @@ import { GenerationTools } from "./generation-tools.ts";
 import { ReadTools } from "./read-tools.ts";
 
 const EmptySchema = Type.Object({}, { additionalProperties: false });
+const NodeIdArraySchema = Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 });
 const NodeIdsSchema = Type.Object(
-	{ nodeIds: Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }) },
+	{ nodeIds: NodeIdArraySchema },
 	{ additionalProperties: false },
 );
 const NodeDetailSchema = Type.Object({ nodeId: Type.String({ minLength: 1 }) }, { additionalProperties: false });
@@ -76,6 +77,17 @@ const CreateNodesSchema = Type.Object(
 		// The runtime owns optimistic-lock and idempotency values. Requiring the
 		// model to invent them made valid canvas writes unnecessarily fragile.
 		expectedVersion: Type.Optional(Type.Integer({ minimum: 0 })),
+		idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+	},
+	{ additionalProperties: false },
+);
+const DeleteNodesSchema = Type.Object(
+	{
+		// OpenAI-compatible models can serialize an ID array and numeric version
+		// while producing an otherwise valid deletion command. The runtime parses
+		// nodeIds and owns the optimistic-lock version and idempotency key.
+		nodeIds: Type.Union([NodeIdArraySchema, Type.String({ minLength: 2, maxLength: 8_192 })]),
+		expectedVersion: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.String({ pattern: "^[0-9]+$" })])),
 		idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 	},
 	{ additionalProperties: false },
@@ -279,15 +291,10 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 			"delete_nodes",
 			"删除画布节点",
 			"通过画布服务删除节点，最多 20 个。",
-			Type.Intersect([
-				NodeIdsSchema,
-				Type.Object({
-					expectedVersion: Type.Integer({ minimum: 0 }),
-					idempotencyKey: Type.String({ minLength: 1 }),
-				}),
-			]),
-			async (_id, params) => {
+			DeleteNodesSchema,
+			async (toolCallId, params) => {
 				assertNoPendingConfirmation(context);
+				const nodeIds = parseNodeIdArray(params.nodeIds);
 				return result(
 					rememberCanvasVersion(
 						context,
@@ -296,8 +303,8 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 							canvasId: context.canvasId,
 							requestId: context.requestId,
 							expectedVersion: context.canvasVersion,
-							idempotencyKey: params.idempotencyKey,
-							nodeIds: params.nodeIds,
+							idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
+							nodeIds,
 						}),
 						true,
 					),
@@ -485,6 +492,22 @@ function parseNodeArray(nodes: unknown): Array<{ type: string; sourceNodeIds?: r
 	if (!Value.Check(NodeArraySchema, parsed))
 		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数不符合节点数组契约。", {});
 	return parsed as Array<{ type: string; sourceNodeIds?: readonly string[] }>;
+}
+
+function parseNodeIdArray(nodeIds: unknown): string[] {
+	if (Array.isArray(nodeIds)) return nodeIds as string[];
+	if (typeof nodeIds !== "string")
+		throw new ToolGatewayError("INVALID_INPUT", "删除节点参数必须是节点 ID 数组。", {});
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(nodeIds);
+	} catch {
+		throw new ToolGatewayError("INVALID_INPUT", "删除节点参数不是有效的 JSON 数组。", {});
+	}
+	if (!Value.Check(NodeIdArraySchema, parsed))
+		throw new ToolGatewayError("INVALID_INPUT", "删除节点参数不符合节点 ID 数组契约。", {});
+	return parsed as string[];
 }
 
 function defaultIdempotencyKey(context: RuntimeToolContext, toolCallId: string): string {

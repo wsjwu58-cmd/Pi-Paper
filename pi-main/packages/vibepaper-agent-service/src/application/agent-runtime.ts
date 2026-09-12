@@ -306,6 +306,11 @@ function toolErrorCode(result: unknown): string | undefined {
 		if (typeof text !== "string") continue;
 		const match = /^\[([A-Z][A-Z0-9_]{2,63})\]\s/.exec(text);
 		if (match) return match[1];
+		// Tool-schema validation happens before our execute wrapper, so providers
+		// return a plain diagnostic instead of the normal [CODE] envelope. It is
+		// still terminal for this turn: retrying the exact malformed call only
+		// causes a loop and leaves the run in `running`.
+		if (/^Validation failed for tool\b/.test(text)) return "INVALID_INPUT";
 	}
 	return undefined;
 }
