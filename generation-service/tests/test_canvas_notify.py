@@ -101,6 +101,29 @@ def test_notify_agent_resume_on_terminal(monkeypatch):
     assert posts == []
 
 
+def test_notify_agent_resume_retries_transient_agent_failure(monkeypatch):
+    attempts = []
+
+    class FakeResp:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    def fake_post(*args, **kwargs):
+        attempts.append(1)
+        return FakeResp(503 if len(attempts) == 1 else 200)
+
+    monkeypatch.setattr("generation.services.task_service.httpx.post", fake_post)
+    monkeypatch.setattr("generation.services.task_service.time.sleep", lambda *_: None)
+    task = SimpleNamespace(
+        id=56, canvas_id=1, node_id=2, user_id=3, source="agent",
+        error_code=None, model_type="image",
+    )
+
+    TaskService().notify_agent_resume(task, "succeeded", [])
+
+    assert len(attempts) == 2
+
+
 def test_notify_canvas_reads_version_and_sends_required_update_contract(monkeypatch):
     calls = []
 

@@ -1,5 +1,5 @@
 import type { Agent, AgentEvent, AgentMessage, AgentOptions, AgentTool } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 
 import type { ServiceConfig } from "../config.ts";
@@ -8,6 +8,7 @@ import type { AgentProfile } from "../domain/tool-manifest.ts";
 import { createDramaAgent } from "../pi/drama-agent.ts";
 import { createLoadSkillTool, type LoadedSkillResource } from "../tools/skill-tools.ts";
 import { compactContext } from "./context-compaction-service.ts";
+import { resolveInstructionPrecedence } from "./instruction-precedence.ts";
 import { composeUserContent, type NodeReferenceSnapshot, nodeReferencesFromMeta } from "./node-reference-context.ts";
 
 // A drama-planning turn can legitimately make several read/write tool calls
@@ -33,6 +34,21 @@ export interface AgentTurnEvent {
 	ok?: boolean;
 }
 
+/**
+ * A user-visible execution summary. This deliberately derives from the
+ * operation category, not the model's hidden chain of thought.
+ */
+export function safeToolReasoningSummary(toolName?: string): string {
+	if (toolName?.startsWith("get_") || toolName === "list_models" || toolName === "search_assets")
+		return "正在核对画布与可用资源，确认下一步所需条件。";
+	if (toolName === "load_skill") return "正在加载所选 Skill 的创作方法，再据此组织本轮执行。";
+	if (toolName === "submit_generation" || toolName === "submit_generation_batch")
+		return "已完成输入与成本校验，正在将生成任务交给受控任务链路。";
+	if (toolName?.includes("node") || toolName === "connect_nodes" || toolName === "layout_nodes")
+		return "正在把已确认的创作计划写入画布，并保持素材引用关系。";
+	return "正在依据已验证的上下文推进下一步。";
+}
+
 export interface AgentRuntimeHooks {
 	onAgent?: (agent: Agent) => void;
 	onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
@@ -42,13 +58,30 @@ export interface AgentRuntimeHooks {
 	shouldStopAfterTurn?: NonNullable<AgentOptions["shouldStopAfterTurn"]>;
 	modelId?: string;
 	memoryContext?: string;
+	intentContext?: string;
+	/** Force the first model request to make one verified low-risk tool call. */
+	requiredToolName?: string;
 }
 
 export interface AgentSkillContext {
 	indexLines: readonly string[];
 	skills: readonly LoadedSkillResource[];
 	loadedSkillIds: readonly string[];
+	loadedSkills: readonly LoadedSkillResource[];
+	/** Skills selected explicitly from the composer for this turn. */
+	explicitlySelectedSkills: readonly LoadedSkillResource[];
 	onLoad(skill: LoadedSkillResource): Promise<void>;
+}
+
+const MAX_REHYDRATED_SKILLS = 4;
+const MAX_REHYDRATED_SKILL_CHARACTERS = 1_200;
+
+export function rehydratedSkillInstructions(skills: readonly LoadedSkillResource[]): string | undefined {
+	const visible = skills.slice(0, MAX_REHYDRATED_SKILLS).map((skill) => {
+		const instructions = skill.instructions.trim().slice(0, MAX_REHYDRATED_SKILL_CHARACTERS);
+		return `【已加载 Skill：${skill.name}】\n${instructions}`;
+	});
+	return visible.length > 0 ? `以下 Skill 已在此前轮次加载，必须遵循其方法论：\n${visible.join("\n\n")}` : undefined;
 }
 
 export function agnesModel(config: ServiceConfig, modelId = config.llmModel): Model<"openai-completions"> {
@@ -122,20 +155,31 @@ export async function runDramaTurn(
 			initialMessages.push(assistant);
 		}
 	}
+	const protectedFacts =
+		compacted.protectedFacts.length > 0
+			? `受保护业务事实（不可被模型删除）：\n${compacted.protectedFacts.join("\n")}`
+			: undefined;
+	const orderedInstructions = resolveInstructionPrecedence([
+		{ source: "confirmed-fact", text: protectedFacts ?? "" },
+		{ source: "skill", text: rehydratedSkillInstructions(skillContext.loadedSkills) ?? "" },
+		{
+			source: "profile-default",
+			text:
+				skillContext.indexLines.length > 0
+					? `可用 Skill 索引（正文未预载）：\n${skillContext.indexLines.join("\n")}`
+					: "",
+		},
+	]);
 	const agent = createDramaAgent(store, {
 		initialState: { model: agnesModel(config, hooks.modelId), messages: initialMessages },
-		streamFn: streamSimple,
+		streamFn: hooks.requiredToolName ? forceInitialToolCall(hooks.requiredToolName) : streamSimple,
 		sessionId,
 		getApiKey: async (provider) => (provider === "agnes" ? config.llmApiKey : undefined),
 		systemPromptSuffix:
 			[
 				compacted.summary ? `会话压缩摘要：${compacted.summary}` : undefined,
-				compacted.protectedFacts.length > 0
-					? `受保护业务事实（不可被模型删除）：\n${compacted.protectedFacts.join("\n")}`
-					: undefined,
-				skillContext.indexLines.length > 0
-					? `可用 Skill 索引（正文未预载）：\n${skillContext.indexLines.join("\n")}`
-					: undefined,
+				...orderedInstructions,
+				hooks.intentContext,
 				hooks.memoryContext,
 			]
 				.filter(Boolean)
@@ -172,6 +216,25 @@ export async function runDramaTurn(
 		MODEL_TURN_TIMEOUT_MS,
 	);
 	return { events, assistantText, totalTokens };
+}
+
+/**
+ * The upstream Agent loop does not expose toolChoice. Keep that contract
+ * untouched and wrap the VibePaper model stream instead. Only the first
+ * request is forced; follow-up turns can consume the tool result naturally.
+ */
+export function forceInitialToolCall(
+	toolName: string,
+	stream: typeof streamSimple = streamSimple,
+): typeof streamSimple {
+	let firstRequest = true;
+	return (model, context, options) => {
+		const toolChoice: SimpleStreamOptions["toolChoice"] = firstRequest
+			? ({ type: "function", function: { name: toolName } } as unknown as SimpleStreamOptions["toolChoice"])
+			: options?.toolChoice;
+		firstRequest = false;
+		return stream(model, context, { ...options, toolChoice });
+	};
 }
 
 export function awaitAgentTurn<T>(turn: Promise<T>, abort: () => void, timeoutMs: number): Promise<T> {
@@ -260,6 +323,11 @@ function toolErrorCode(result: unknown): string | undefined {
 		if (typeof text !== "string") continue;
 		const match = /^\[([A-Z][A-Z0-9_]{2,63})\]\s/.exec(text);
 		if (match) return match[1];
+		// Tool-schema validation happens before our execute wrapper, so providers
+		// return a plain diagnostic instead of the normal [CODE] envelope. It is
+		// still terminal for this turn: retrying the exact malformed call only
+		// causes a loop and leaves the run in `running`.
+		if (/^Validation failed for tool\b/.test(text)) return "INVALID_INPUT";
 	}
 	return undefined;
 }

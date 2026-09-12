@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SYSTEM_SKILLS } from "../src/domain/skill-manifest.ts";
 import { createLoadSkillTool } from "../src/tools/skill-tools.ts";
+import { rehydratedSkillInstructions } from "../src/application/agent-runtime.ts";
 
 describe("Skill progressive disclosure", () => {
 	it("extracts all workspace skills with the correct builtin/dynamic split", () => {
@@ -46,5 +47,13 @@ describe("Skill progressive disclosure", () => {
 		const second = await tool.execute("call-2", { skill: "story-bible" });
 		expect(second.details).toMatchObject({ alreadyLoaded: true });
 		expect(loads).toBe(1);
+	});
+
+	it("rehydrates bounded instructions from Skills loaded in an earlier turn", () => {
+		const context = rehydratedSkillInstructions([
+			{ id: "42", key: "story-bible", name: "短剧故事圣经", instructions: "建立结构化事实。" },
+		]);
+		expect(context).toContain("此前轮次加载");
+		expect(context).toContain("建立结构化事实。");
 	});
 });

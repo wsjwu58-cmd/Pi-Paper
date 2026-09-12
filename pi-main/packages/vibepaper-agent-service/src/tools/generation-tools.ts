@@ -13,6 +13,7 @@ export type SubmitGenerationInput = {
 	modelParams: Record<string, unknown>;
 	estimatedCost: number;
 	overwrite: boolean;
+	requiresApproval?: boolean;
 };
 
 export type SubmitGenerationBatchInput = Omit<
@@ -54,7 +55,7 @@ export class GenerationTools {
 			},
 			estimatedCost: input.estimatedCost,
 			risk: "high",
-			requiresApproval: true,
+			requiresApproval: input.requiresApproval ?? true,
 		};
 		const proposal = await this.approvals.planActionAsync(actionInput);
 		this.proposals.set(input.actionIdempotencyKey, proposal);
@@ -77,7 +78,7 @@ export class GenerationTools {
 			params: { generations: input.generations },
 			estimatedCost,
 			risk: "high",
-			requiresApproval: true,
+			requiresApproval: input.requiresApproval ?? true,
 		});
 		this.proposals.set(input.actionIdempotencyKey, proposal);
 		return proposal;

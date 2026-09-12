@@ -1,4 +1,5 @@
 export type PlanStepStatus = "pending" | "running" | "completed" | "failed" | "stale";
+export type PlanStepEffect = "read" | "write_canvas" | "create_task";
 
 export interface PlanStep {
 	id: string;
@@ -9,6 +10,18 @@ export interface PlanStep {
 	input?: Record<string, unknown>;
 	estimatedCost: number;
 	batchSize?: number;
+	/** Declared by a plan author and verified against the tool manifest at compile time. */
+	effect?: PlanStepEffect;
+	/** Steps sharing a key are never eligible for the same execution partition. */
+	concurrencyKey?: string;
+	/** Stable across retries; an executor must forward this to side-effecting services. */
+	idempotencyKey?: string;
+	/** Generation task identity once a confirmation-aware task submission succeeds. */
+	taskId?: string;
+	leaseUntil?: string;
+	attemptCount?: number;
+	outputRef?: string;
+	lastError?: string;
 }
 
 export interface AgentPlan {

@@ -57,4 +57,39 @@ describe("structured plans and dependency compiler", () => {
 			compiler.compile({ ...plan, steps: tooMany }, { expectedVersion: 1, profile: "canvas-general" }),
 		).toThrow(new PlanCompileError("BATCH_LIMIT_EXCEEDED"));
 	});
+
+	it("rejects indirect dependency cycles and forged tool effects", () => {
+		const compiler = new PlanCompiler();
+		expect(() =>
+			compiler.compile(
+				{ ...plan, steps: [step("first", ["second"]), step("second", ["first"])] },
+				{ expectedVersion: 1, profile: "canvas-general" },
+			),
+		).toThrow(new PlanCompileError("INVALID_DEPENDENCY"));
+		expect(() =>
+			compiler.compile(
+				{ ...plan, steps: [{ ...step("write"), tool: "create_nodes", effect: "read" }] },
+				{ expectedVersion: 1, profile: "canvas-general" },
+			),
+		).toThrow(new PlanCompileError("INVALID_DEPENDENCY"));
+	});
+
+	it("partitions concurrent reads while isolating canvas writes", () => {
+		const compiler = new PlanCompiler();
+		const compiled = compiler.compile(
+			{
+				...plan,
+				steps: [
+					step("read-one"),
+					step("read-two"),
+					{ ...step("write"), tool: "create_nodes", effect: "write_canvas", concurrencyKey: "canvas:7" },
+				],
+			},
+			{ expectedVersion: 1, profile: "canvas-general" },
+		);
+		expect(compiled.executionPartitions).toEqual([
+			{ effect: "read", concurrencyKey: "read", stepIds: ["read-one", "read-two"], maxParallelism: 2, requiresConfirmation: false },
+			{ effect: "write_canvas", concurrencyKey: "canvas:7", stepIds: ["write"], maxParallelism: 1, requiresConfirmation: false },
+		]);
+	});
 });

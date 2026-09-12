@@ -6,6 +6,7 @@ import {
 	type AgentTurnEvent,
 	awaitAgentTurn,
 	captureEvent,
+	forceInitialToolCall,
 	sanitizeAgentReply,
 } from "../src/application/agent-runtime.ts";
 
@@ -108,5 +109,40 @@ describe("Pi runtime event mapping", () => {
 				errorCode: "VERSION_CONFLICT",
 			},
 		]);
+	});
+
+	it("maps tool-schema validation failures to INVALID_INPUT so a run cannot loop", () => {
+		const events: AgentTurnEvent[] = [];
+		captureEvent(
+			{
+				type: "tool_execution_end",
+				toolCallId: "tool-3",
+				toolName: "delete_nodes",
+				isError: true,
+				result: {
+					content: [{ type: "text", text: 'Validation failed for tool "delete_nodes": nodes must be an array' }],
+					details: {},
+				},
+			} as unknown as AgentEvent,
+			events,
+			() => undefined,
+			() => undefined,
+		);
+
+		expect(events[0]).toMatchObject({ type: "tool", toolName: "delete_nodes", ok: false, errorCode: "INVALID_INPUT" });
+	});
+
+	it("forces the requested canvas tool only on the initial model request", () => {
+		const choices: unknown[] = [];
+		const forced = forceInitialToolCall(
+			"create_nodes",
+			((_, __, options) => {
+				choices.push(options?.toolChoice);
+				return {} as ReturnType<typeof import("@earendil-works/pi-ai").streamSimple>;
+			}) as typeof import("@earendil-works/pi-ai").streamSimple,
+		);
+		forced({} as never, {} as never, {});
+		forced({} as never, {} as never, {});
+		expect(choices).toEqual([{ type: "function", function: { name: "create_nodes" } }, undefined]);
 	});
 });

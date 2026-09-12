@@ -37,6 +37,24 @@ def publish_event(task_id, event: dict):
 
 
 class TaskService:
+    def replay_recent_agent_terminals(self, db: Session, limit: int = 20) -> None:
+        """补发刚完成的 Agent 任务终态；Agent 端会按 task_id 幂等去重。"""
+        terminal_statuses = ("succeeded", "failed", "cancelled", "expired", "settlement_error")
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        tasks = (
+            db.query(GenerationTask)
+            .filter(
+                GenerationTask.source == "agent",
+                GenerationTask.status.in_(terminal_statuses),
+                GenerationTask.finished_at >= cutoff,
+            )
+            .order_by(GenerationTask.finished_at.desc())
+            .limit(limit)
+            .all()
+        )
+        for task in tasks:
+            self.notify_agent_resume(task, task.status, self.get_outputs(db, task.id))
+
     def estimate(self, db: Session, model_type: str, model_params: dict, count: int = 1) -> dict:
         requested = (model_type or "").strip()
         exact = resolve_model_config(db, requested)
@@ -406,27 +424,43 @@ class TaskService:
         """HTTP 回调 agent-service：generation_terminal → resume。"""
         if status not in ("succeeded", "failed", "cancelled", "expired", "settlement_error"):
             return
-        try:
-            request = build_agent_terminal_callback(
-                settings.agent_base_url,
-                task,
-                status,
-                settings.environment,
-                settings.internal_service_token,
-                outputs,
-            )
-            if request is None:
-                return
-            if request["headers"]:
-                response = httpx.post(**request, timeout=8, trust_env=False)
-            else:
-                response = httpx.post(request["url"], json=request["json"], timeout=8, trust_env=False)
-            if not 200 <= response.status_code < 300:
-                raise RuntimeError(f"AGENT_CALLBACK_FAILED:{response.status_code}")
-        except Exception as e:
-            if settings.environment in {"production", "staging"}:
-                raise
-            print(f"[warn] notify agent resume failed: {e}")
+        request = build_agent_terminal_callback(
+            settings.agent_base_url,
+            task,
+            status,
+            settings.environment,
+            settings.internal_service_token,
+            outputs,
+        )
+        if request is None:
+            return
+        last_error: Exception | None = None
+        # The callback is idempotent on task_id + terminal status. A short retry
+        # window prevents a transient Agent restart from silently dropping the
+        # only signal that updates the chat and launches the continuation.
+        for attempt in range(3):
+            try:
+                if request["headers"]:
+                    response = httpx.post(**request, timeout=8, trust_env=False)
+                else:
+                    response = httpx.post(request["url"], json=request["json"], timeout=8, trust_env=False)
+                if 200 <= response.status_code < 300:
+                    return
+                if 400 <= response.status_code < 500:
+                    raise RuntimeError(f"AGENT_CALLBACK_FAILED:{response.status_code}")
+                last_error = RuntimeError(f"AGENT_CALLBACK_FAILED:{response.status_code}")
+            except Exception as error:
+                last_error = error
+                # Authentication and validation errors cannot recover by retrying.
+                if "AGENT_CALLBACK_FAILED:4" in str(error):
+                    break
+            if attempt < 2:
+                time.sleep(0.25 * (attempt + 1))
+        if last_error is None:
+            return
+        if settings.environment in {"production", "staging"}:
+            raise last_error
+        print(f"[warn] notify agent resume failed after retries: {last_error}")
 
     def notify_billing(self, task_id, action, payload):
         try:

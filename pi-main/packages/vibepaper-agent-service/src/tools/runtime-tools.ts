@@ -1,5 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type TSchema, Type } from "typebox";
+import { Value } from "typebox/value";
 
 import type { ApprovalService } from "../application/approval-service.ts";
 import { CanvasCommandService } from "../application/canvas-command-service.ts";
@@ -11,8 +12,9 @@ import { GenerationTools } from "./generation-tools.ts";
 import { ReadTools } from "./read-tools.ts";
 
 const EmptySchema = Type.Object({}, { additionalProperties: false });
+const NodeIdArraySchema = Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 });
 const NodeIdsSchema = Type.Object(
-	{ nodeIds: Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }) },
+	{ nodeIds: NodeIdArraySchema },
 	{ additionalProperties: false },
 );
 const NodeDetailSchema = Type.Object({ nodeId: Type.String({ minLength: 1 }) }, { additionalProperties: false });
@@ -60,11 +62,33 @@ const CanvasNodeSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+const NodeArraySchema = Type.Array(CanvasNodeSchema, { minItems: 1, maxItems: 20 });
 const CreateNodesSchema = Type.Object(
 	{
-		nodes: Type.Array(CanvasNodeSchema, { minItems: 1, maxItems: 20 }),
-		expectedVersion: Type.Integer({ minimum: 0 }),
-		idempotencyKey: Type.String({ minLength: 1, maxLength: 128 }),
+		// Some OpenAI-compatible providers occasionally serialize an otherwise
+		// valid JSON array into a string. Accept that transport form here, then
+		// parse and validate it against NodeArraySchema before any canvas write.
+		nodes: Type.Union([NodeArraySchema, Type.String({ minLength: 2, maxLength: 220_000 })]),
+		// A few compatible model endpoints add a display type beside `nodes`.
+		// It carries no command semantics and is intentionally ignored; accepting
+		// it prevents an otherwise valid canvas command from being rejected before
+		// the normalized node payload is validated.
+		type: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
+		// The runtime owns optimistic-lock and idempotency values. Requiring the
+		// model to invent them made valid canvas writes unnecessarily fragile.
+		expectedVersion: Type.Optional(Type.Integer({ minimum: 0 })),
+		idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+	},
+	{ additionalProperties: false },
+);
+const DeleteNodesSchema = Type.Object(
+	{
+		// OpenAI-compatible models can serialize an ID array and numeric version
+		// while producing an otherwise valid deletion command. The runtime parses
+		// nodeIds and owns the optimistic-lock version and idempotency key.
+		nodeIds: Type.Union([NodeIdArraySchema, Type.String({ minLength: 2, maxLength: 8_192 })]),
+		expectedVersion: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.String({ pattern: "^[0-9]+$" })])),
+		idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 	},
 	{ additionalProperties: false },
 );
@@ -121,9 +145,11 @@ export type RuntimeToolContext = {
 	referenceNodeIds?: readonly string[];
 	requestId?: string;
 	confirmationPending?: boolean;
+	generationExecutionPolicy?: "manual" | "auto";
 	gateway: ToolGateway;
 	approvals: ApprovalService;
 	onApprovalRequired?: (action: PlannedAction) => void | Promise<void>;
+	onGenerationSubmitted?: (action: PlannedAction) => Promise<{ taskIds: string[] }>;
 	onAuditRequested?: (input: AuditInput & { targetNodeId: string }) => Promise<Record<string, unknown>>;
 };
 
@@ -186,9 +212,16 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 			"创建画布节点",
 			"通过画布服务创建节点并返回真实节点 ID。每个节点必须提供 type；展示内容写入 params（如 params.content），不得传入 id、title、content 或 contentType。",
 			CreateNodesSchema,
-			async (_id, params) => {
+			async (toolCallId, params) => {
 				assertNoPendingConfirmation(context);
-				return result(await createNodesWithReferenceEdges(commands, context, params));
+				const nodes = parseNodeArray(params.nodes);
+				return result(
+					await createNodesWithReferenceEdges(commands, context, {
+						...params,
+						nodes,
+						idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
+					}),
+				);
 			},
 		),
 		tool("connect_nodes", "连接画布节点", "通过画布服务创建连线。", ConnectNodesSchema, async (_id, params) => {
@@ -260,15 +293,10 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 			"delete_nodes",
 			"删除画布节点",
 			"通过画布服务删除节点，最多 20 个。",
-			Type.Intersect([
-				NodeIdsSchema,
-				Type.Object({
-					expectedVersion: Type.Integer({ minimum: 0 }),
-					idempotencyKey: Type.String({ minLength: 1 }),
-				}),
-			]),
-			async (_id, params) => {
+			DeleteNodesSchema,
+			async (toolCallId, params) => {
 				assertNoPendingConfirmation(context);
+				const nodeIds = parseNodeIdArray(params.nodeIds);
 				return result(
 					rememberCanvasVersion(
 						context,
@@ -277,8 +305,8 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 							canvasId: context.canvasId,
 							requestId: context.requestId,
 							expectedVersion: context.canvasVersion,
-							idempotencyKey: params.idempotencyKey,
-							nodeIds: params.nodeIds,
+							idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
+							nodeIds,
 						}),
 						true,
 					),
@@ -288,7 +316,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 		tool(
 			"submit_generation",
 			"提交生成任务",
-			"先生成确认 action；用户确认后才会估价、冻结点数并提交生成。",
+			"经受控计费链路提交生成任务；服务端策略可能要求人工确认。",
 			GenerationSchema,
 			async (_id, params) => {
 				assertNoPendingConfirmation(context);
@@ -321,7 +349,16 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 					modelParams,
 					estimatedCost: estimate.estimatedCost,
 					overwrite: params.overwrite,
+					requiresApproval: context.generationExecutionPolicy !== "auto",
 				});
+				if (context.generationExecutionPolicy === "auto") {
+					const submitted = await context.onGenerationSubmitted?.(action);
+					if (!submitted) throw new ToolGatewayError("GENERATION_UNAVAILABLE", "生成提交服务不可用", {});
+					return {
+						content: [{ type: "text", text: "生成任务已提交，正在后台处理。" }],
+						details: { ack: true, taskIds: submitted.taskIds },
+					};
+				}
 				context.confirmationPending = true;
 				await context.onApprovalRequired?.(action);
 				return {
@@ -379,7 +416,16 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 					canvasId: context.canvasId,
 					canvasVersion: context.canvasVersion,
 					generations: prepared,
+					requiresApproval: context.generationExecutionPolicy !== "auto",
 				});
+				if (context.generationExecutionPolicy === "auto") {
+					const submitted = await context.onGenerationSubmitted?.(action);
+					if (!submitted) throw new ToolGatewayError("GENERATION_UNAVAILABLE", "生成提交服务不可用", {});
+					return {
+						content: [{ type: "text", text: "批量生成任务已提交，正在后台处理。" }],
+						details: { ack: true, taskIds: submitted.taskIds },
+					};
+				}
 				context.confirmationPending = true;
 				await context.onApprovalRequired?.(action);
 				return {
@@ -450,6 +496,42 @@ async function createNodesWithReferenceEdges(
 
 function isReferenceTarget(type: string | undefined): boolean {
 	return type === "image" || type === "video" || type === "audio" || type === "compose" || type === "director";
+}
+
+function parseNodeArray(nodes: unknown): Array<{ type: string; sourceNodeIds?: readonly string[] }> {
+	if (Array.isArray(nodes)) return nodes as Array<{ type: string; sourceNodeIds?: readonly string[] }>;
+	if (typeof nodes !== "string")
+		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数必须是节点数组。", {});
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(nodes);
+	} catch {
+		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数不是有效的 JSON 数组。", {});
+	}
+	if (!Value.Check(NodeArraySchema, parsed))
+		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数不符合节点数组契约。", {});
+	return parsed as Array<{ type: string; sourceNodeIds?: readonly string[] }>;
+}
+
+function parseNodeIdArray(nodeIds: unknown): string[] {
+	if (Array.isArray(nodeIds)) return nodeIds as string[];
+	if (typeof nodeIds !== "string")
+		throw new ToolGatewayError("INVALID_INPUT", "删除节点参数必须是节点 ID 数组。", {});
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(nodeIds);
+	} catch {
+		throw new ToolGatewayError("INVALID_INPUT", "删除节点参数不是有效的 JSON 数组。", {});
+	}
+	if (!Value.Check(NodeIdArraySchema, parsed))
+		throw new ToolGatewayError("INVALID_INPUT", "删除节点参数不符合节点 ID 数组契约。", {});
+	return parsed as string[];
+}
+
+function defaultIdempotencyKey(context: RuntimeToolContext, toolCallId: string): string {
+	return `${context.runId ?? context.sessionId}:canvas:${toolCallId}`.slice(0, 128);
 }
 
 function tool<T extends TSchema>(

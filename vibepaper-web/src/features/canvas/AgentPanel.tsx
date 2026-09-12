@@ -23,7 +23,7 @@ import {
 import { api, authedFetch } from '@/lib/api'
 import { parseJsonPreserveIds } from '@/lib/ids'
 import { useAuth } from '@/lib/auth'
-import type { MemoryView, ModelInfo } from '@/lib/types'
+import type { MemoryView, ModelInfo, SkillView } from '@/lib/types'
 import { SkillsPanel } from './SkillsPanel'
 import { ModelPicker } from '@/components/ui/ModelPicker'
 import { useCanvasStore } from './canvasStore'
@@ -39,7 +39,6 @@ import { AgentNextActions, AgentTaskBadge, AgentTurnTimeline } from './AgentExec
 import {
   applyAgentEvent,
   isChatVisibleMessage,
-  shouldRefreshCanvas,
   shouldRefreshCanvasEvent,
 } from './agentEventHandlers'
 import {
@@ -114,6 +113,10 @@ export function AgentPanel() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [tab, setTab] = useState<'chat' | 'pref' | 'skills' | 'usage' | 'history' | 'drama'>('chat')
   const [composerRefs, setComposerRefs] = useState<ComposerRef[]>([])
+  const [skillOptions, setSkillOptions] = useState<SkillView[]>([])
+  const [skillPaletteOpen, setSkillPaletteOpen] = useState(false)
+  const [skillQuery, setSkillQuery] = useState('')
+  const [skillHighlight, setSkillHighlight] = useState(0)
   const previousSelectedNodeIdsRef = useRef<Set<string>>(new Set())
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -149,6 +152,15 @@ export function AgentPanel() {
       toastError(String(event.data.message ?? event.data.errorCode ?? 'Agent 运行失败'))
     } else if (event.type === 'run_aborted') {
       setTypingTurnId(null)
+    }
+  }
+
+  const notifyCanvasForAgentEvent = (event: Record<string, unknown>) => {
+    if (!shouldRefreshCanvasEvent(event)) return
+    window.dispatchEvent(new Event('vp-agent-executed'))
+    if (event.type === 'task_status') {
+      const data = (event.data ?? {}) as Record<string, unknown>
+      window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: data.node_id ?? data.nodeId } }))
     }
   }
 
@@ -249,15 +261,11 @@ export function AgentPanel() {
 
   const handleBackgroundEvent = (ev: Record<string, unknown>) => {
     if (isAgentEventEnvelope(ev)) {
-      if (shouldRefreshCanvasEvent(ev)) {
-        window.dispatchEvent(new Event('vp-agent-executed'))
-      }
+      notifyCanvasForAgentEvent(ev)
       consumeAgentEnvelope(ev)
       return
     }
-    if (shouldRefreshCanvas(ev)) {
-      window.dispatchEvent(new Event('vp-agent-executed'))
-    }
+    notifyCanvasForAgentEvent(ev)
     if (ev.type === 'task_status') {
       const data = (ev.data || {}) as Record<string, unknown>
       const tid = String(data.task_id ?? '')
@@ -289,7 +297,7 @@ export function AgentPanel() {
   }
 
   const loadSessionQuiet = async (id: string | number, title?: string, epoch = sessionEpochRef.current) => {
-    const res = await api<{ items: AgentChatMsg[] }>(`/agent/sessions/${id}/messages`)
+    const res = await api<{ items: AgentChatMsg[]; latestEventSeq?: number }>(`/agent/sessions/${id}/messages`)
     if (epoch !== sessionEpochRef.current) return false
     activeSessionIdRef.current = id
     setSessionId(id)
@@ -298,7 +306,7 @@ export function AgentPanel() {
       .map((m) => ({ ...m, type: m.type || 'text', meta: (m.meta as AgentChatMsg['meta']) ?? {} }))
       .filter(isChatVisibleMessage)
     agentEventStateRef.current = { messages: loadedMessages, seenEventIds: new Set(), runStatus: 'running' }
-    lastEventSeqRef.current = 0
+    lastEventSeqRef.current = Number.isSafeInteger(res.latestEventSeq) ? Number(res.latestEventSeq) : 0
     setMessages(loadedMessages)
     setSuggestions([])
     setComposerRefs([])
@@ -448,6 +456,26 @@ export function AgentPanel() {
     return unsub
   }, [])
 
+  useEffect(() => {
+    if (!open) return
+    void api<{ items: SkillView[] }>('/skills')
+      .then((result) => setSkillOptions(result.items ?? []))
+      .catch(() => setSkillOptions([]))
+  }, [open])
+
+  const filteredSkills = skillOptions.filter((skill) => {
+    const query = skillQuery.trim().toLocaleLowerCase()
+    return !query || `${skill.name} ${skill.description ?? ''} ${skill.category ?? ''}`.toLocaleLowerCase().includes(query)
+  })
+
+  const selectSkillFromPalette = (skill: SkillView) => {
+    setComposerRefs((previous) => upsertRefs(previous, [{ id: `skill:${skill.id}`, kind: 'skill', title: skill.name }]))
+    setInput((value) => value.replace(/\/(?:[^\s/]*)$/, '').trimStart())
+    setSkillPaletteOpen(false)
+    setSkillQuery('')
+    setSkillHighlight(0)
+  }
+
   const loadSession = async (id: string | number, title?: string) => {
     try {
       const epoch = beginSessionTransition()
@@ -509,16 +537,12 @@ export function AgentPanel() {
 
     const processStreamEvent = (ev: Record<string, unknown>) => {
     if (isAgentEventEnvelope(ev)) {
-      if (shouldRefreshCanvasEvent(ev)) {
-        window.dispatchEvent(new Event('vp-agent-executed'))
-      }
+      notifyCanvasForAgentEvent(ev)
       if (ev.type === 'assistant_delta') setTypingTurnId(turnIdRef.current)
       consumeAgentEnvelope(ev)
       return
     }
-    if (shouldRefreshCanvas(ev)) {
-      window.dispatchEvent(new Event('vp-agent-executed'))
-    }
+    notifyCanvasForAgentEvent(ev)
     if (ev.type === 'assistant_message') {
       if (Array.isArray(ev.suggestions)) setSuggestions(ev.suggestions as Suggestion[])
       const tid = turnIdRef.current
@@ -647,6 +671,12 @@ export function AgentPanel() {
     }
     const sentNodeRefs = composerRefs.filter((ref) => ref.kind === 'node')
     const sentNodeIds = [...new Set(sentNodeRefs.map((ref) => ref.id))]
+    const selectedSkillIds = [...new Set(
+      composerRefs
+        .filter((ref) => ref.kind === 'skill')
+        .map((ref) => ref.id.match(/^skill:(\d+)$/)?.[1])
+        .filter((id): id is string => Boolean(id)),
+    )]
     const nodeReferences = nodeReferencesForComposer(sentNodeRefs, useCanvasStore.getState().nodes)
     const isFirstUserTurn = !agentEventStateRef.current.messages.some((m) => m.role === 'user')
     setInput('')
@@ -670,7 +700,7 @@ export function AgentPanel() {
           role: 'user',
           type: 'text',
           content,
-          meta: { selectedNodeIds: sentNodeIds, nodeReferences },
+          meta: { selectedNodeIds: sentNodeIds, selectedSkillIds, nodeReferences },
         },
         {
           id: turnId,
@@ -706,6 +736,7 @@ export function AgentPanel() {
         body: JSON.stringify({
           content,
           selectedNodeIds: sentNodeIds,
+	          selectedSkillIds,
           canvasId: canvas?.canvas.id != null ? String(canvas.canvas.id) : undefined,
           canvasVersion: requestCanvasVersion,
           modelId: agentModel,
@@ -986,8 +1017,37 @@ export function AgentPanel() {
                 />
                 <textarea
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    setInput(value)
+                    const match = value.match(/(?:^|\s)\/([^\s/]*)$/)
+                    setSkillQuery(match?.[1] ?? '')
+                    setSkillPaletteOpen(Boolean(match))
+                    setSkillHighlight(0)
+                  }}
                   onKeyDown={(e) => {
+                    if (skillPaletteOpen && filteredSkills.length > 0) {
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        setSkillHighlight((index) => (index + 1) % filteredSkills.length)
+                        return
+                      }
+                      if (e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        setSkillHighlight((index) => (index - 1 + filteredSkills.length) % filteredSkills.length)
+                        return
+                      }
+                      if (e.key === 'Enter' || e.key === 'Tab') {
+                        e.preventDefault()
+                        selectSkillFromPalette(filteredSkills[skillHighlight] ?? filteredSkills[0])
+                        return
+                      }
+                    }
+                    if (e.key === 'Escape' && skillPaletteOpen) {
+                      e.preventDefault()
+                      setSkillPaletteOpen(false)
+                      return
+                    }
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault()
                       if (!busy) void send()
@@ -998,6 +1058,37 @@ export function AgentPanel() {
                   disabled={busy || hasPendingConfirmation}
                   className="block min-h-[72px] w-full resize-none bg-transparent px-3 pb-12 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60"
                 />
+                {skillPaletteOpen && (
+                  <div
+                    role="listbox"
+                    aria-label="选择 Skill"
+                    className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-30 max-h-72 overflow-y-auto rounded-xl border border-[var(--canvas-border-strong)] bg-[var(--canvas-surface)] p-1.5 shadow-xl"
+                  >
+                    <p className="px-2.5 pb-1 pt-1 text-[11px] font-medium text-[var(--canvas-muted)]">选择 Skill</p>
+                    {filteredSkills.length ? filteredSkills.slice(0, 12).map((skill, index) => (
+                      <button
+                        key={String(skill.id)}
+                        type="button"
+                        role="option"
+                        aria-selected={index === skillHighlight}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => selectSkillFromPalette(skill)}
+                        className={cn(
+                          'flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-colors',
+                          index === skillHighlight ? 'bg-[var(--canvas-hover)]' : 'hover:bg-[var(--canvas-hover)]',
+                        )}
+                      >
+                        <Puzzle size={15} className="mt-0.5 shrink-0 text-[var(--canvas-muted)]" />
+                        <span className="min-w-0">
+                          <span className="block truncate text-[13px] font-medium text-[var(--canvas-text)]">{skill.name}</span>
+                          <span className="block truncate text-[11px] text-[var(--canvas-muted)]">{skill.description || skill.category || '创作 Skill'}</span>
+                        </span>
+                      </button>
+                    )) : (
+                      <p className="px-2.5 py-3 text-[12px] text-[var(--canvas-muted)]">没有匹配的 Skill</p>
+                    )}
+                  </div>
+                )}
                 <div className="absolute bottom-2 left-2 right-2 z-10 flex min-w-0 items-center gap-1.5">
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 items-center gap-0.5">
