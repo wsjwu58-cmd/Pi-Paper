@@ -145,9 +145,11 @@ export type RuntimeToolContext = {
 	referenceNodeIds?: readonly string[];
 	requestId?: string;
 	confirmationPending?: boolean;
+	generationExecutionPolicy?: "manual" | "auto";
 	gateway: ToolGateway;
 	approvals: ApprovalService;
 	onApprovalRequired?: (action: PlannedAction) => void | Promise<void>;
+	onGenerationSubmitted?: (action: PlannedAction) => Promise<{ taskIds: string[] }>;
 	onAuditRequested?: (input: AuditInput & { targetNodeId: string }) => Promise<Record<string, unknown>>;
 };
 
@@ -314,7 +316,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 		tool(
 			"submit_generation",
 			"提交生成任务",
-			"先生成确认 action；用户确认后才会估价、冻结点数并提交生成。",
+			"经受控计费链路提交生成任务；服务端策略可能要求人工确认。",
 			GenerationSchema,
 			async (_id, params) => {
 				assertNoPendingConfirmation(context);
@@ -347,7 +349,16 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 					modelParams,
 					estimatedCost: estimate.estimatedCost,
 					overwrite: params.overwrite,
+					requiresApproval: context.generationExecutionPolicy !== "auto",
 				});
+				if (context.generationExecutionPolicy === "auto") {
+					const submitted = await context.onGenerationSubmitted?.(action);
+					if (!submitted) throw new ToolGatewayError("GENERATION_UNAVAILABLE", "生成提交服务不可用", {});
+					return {
+						content: [{ type: "text", text: "生成任务已提交，正在后台处理。" }],
+						details: { ack: true, taskIds: submitted.taskIds },
+					};
+				}
 				context.confirmationPending = true;
 				await context.onApprovalRequired?.(action);
 				return {
@@ -405,7 +416,16 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 					canvasId: context.canvasId,
 					canvasVersion: context.canvasVersion,
 					generations: prepared,
+					requiresApproval: context.generationExecutionPolicy !== "auto",
 				});
+				if (context.generationExecutionPolicy === "auto") {
+					const submitted = await context.onGenerationSubmitted?.(action);
+					if (!submitted) throw new ToolGatewayError("GENERATION_UNAVAILABLE", "生成提交服务不可用", {});
+					return {
+						content: [{ type: "text", text: "批量生成任务已提交，正在后台处理。" }],
+						details: { ack: true, taskIds: submitted.taskIds },
+					};
+				}
 				context.confirmationPending = true;
 				await context.onApprovalRequired?.(action);
 				return {

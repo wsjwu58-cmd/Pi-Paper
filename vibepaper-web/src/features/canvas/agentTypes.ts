@@ -62,6 +62,7 @@ export interface AgentChatMsg {
     executionSteps?: ExecutionStep[]
     taskStatus?: { taskId?: string; status?: string; nodeId?: string; modelType?: string }
     selectedNodeIds?: string[]
+    selectedSkillIds?: string[]
     nodeReferences?: AgentNodeReference[]
     requiresConfirmation?: boolean
     confirmation?: AgentConfirmation

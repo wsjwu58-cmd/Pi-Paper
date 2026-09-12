@@ -6,6 +6,7 @@ import type { QueryResultRow } from "pg";
 
 import {
 	AgentRuntimeError,
+	safeToolReasoningSummary,
 	type AgentSkillContext,
 	type AgentTurnEvent,
 	runDramaTurn,
@@ -89,6 +90,7 @@ type SessionRow = {
 	points_used_total: number;
 	model_usage: unknown;
 	updated_at: Date;
+	event_seq?: number;
 };
 type MessageRow = {
 	id: string;
@@ -347,12 +349,13 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 
 	app.get("/api/v1/agent/sessions/:sessionId/messages", async (request) => {
 		const sessionId = routeId(request, "sessionId");
-		await requireSession(database, requireUserId(request), sessionId);
+		const session = await requireSession(database, requireUserId(request), sessionId);
 		const rows = await database.query<MessageRow>(
 			"SELECT id, role, msg_type, content, meta, created_at FROM agent_messages WHERE session_id = $1 ORDER BY id",
 			[sessionId],
 		);
 		return {
+			latestEventSeq: Number((session as SessionRow & { event_seq?: number }).event_seq ?? 0),
 			items: rows.rows.map((message) => ({
 				id: message.id,
 				role: message.role,
@@ -379,6 +382,11 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 				.map((id) => optionalId(id))
 				.filter((id): id is string => id !== undefined),
 		);
+		const selectedSkillIds = uniqueStrings(
+			stringArray(body.selectedSkillIds)
+				.map((id) => optionalId(id))
+				.filter((id): id is string => id !== undefined),
+		);
 		if (selectedNodeIds.length > MAX_NODE_REFERENCES) {
 			throw new NodeReferenceContextError("INVALID_INPUT", `每轮最多引用 ${MAX_NODE_REFERENCES} 个节点`);
 		}
@@ -399,13 +407,13 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			return sendRunEventSse(reply, await runService.listEvents(existingRun.runId));
 		}
 		const run = await runService.startRun({ sessionId, idempotencyKey });
-		await addMessage(database, sessionId, "user", content, { selectedNodeIds, nodeReferences });
+		await addMessage(database, sessionId, "user", content, { selectedNodeIds, selectedSkillIds, nodeReferences });
 		await database.query(
 			"UPDATE agent_sessions SET title = CASE WHEN title IN ('新对话', '画布对话') THEN $1 ELSE title END, updated_at = now() WHERE id = $2",
 			[content.slice(0, 48), sessionId],
 		);
 		const history = await readHistory(database, sessionId);
-		const skillContext = await resolveSkillContext(database, userId, sessionId);
+		const skillContext = await resolveSkillContext(database, userId, sessionId, selectedSkillIds);
 		const memoryContext = await resolveMemoryContext(
 			database,
 			userId,
@@ -461,6 +469,71 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			requestId: request.id,
 			gateway: taskGateway,
 			approvals: approvalService,
+			generationExecutionPolicy: config.generationExecutionPolicy,
+			onGenerationSubmitted: async (action) => {
+				const batchItems = action.toolName === "submit_generation_batch" ? batchGenerationItems(action.params) : undefined;
+				const singleItem = batchItems ? undefined : singleGenerationItem(action.params);
+				const items = batchItems ?? [{ ...singleItem!, estimatedCost: action.estimatedCost }];
+				// Persist the proposed action before external submission so the task
+				// callback has an auditable, idempotent association to this run.
+				await database.query(
+					`INSERT INTO agent_actions
+					 (id, session_id, run_id, user_id, action_type, tool_name, params, risk_level, status, canvas_version, estimated_cost, idempotency_key)
+					 VALUES ($1, $2, $3, $4, 'agent_tool', $5, $6::jsonb, 'high', 'planned', $7, $8, $9)
+					 ON CONFLICT (id) DO NOTHING`,
+					[
+						action.actionId,
+						sessionId,
+						runId,
+						userId,
+						action.toolName,
+						JSON.stringify(action.params),
+						action.canvasVersion,
+						action.estimatedCost,
+						`auto:${action.actionId}`,
+					],
+				);
+				const execution = await generationExecutor.executeBatch(
+					items.map((item, index) => ({
+						actionId: items.length === 1 ? action.actionId : `${action.actionId}:${index}`,
+						userId,
+						canvasId: action.canvasId,
+						nodeId: item.nodeId,
+						modelType: item.modelType,
+						modelParams: item.modelParams,
+						requestedCost: item.estimatedCost,
+						costCap: item.estimatedCost,
+						requestId: request.id,
+					})),
+				);
+				for (const [index, result] of execution.results.entries()) {
+					const item = items[index]!;
+					const actionId = items.length === 1 ? action.actionId : nextId();
+					if (items.length === 1) {
+						await database.query(
+							"UPDATE agent_actions SET status = $1, task_id = $2, result = $3::jsonb WHERE id = $4",
+							[result.compensationRequired ? "compensation_required" : "running", result.taskId, JSON.stringify(result), actionId],
+						);
+					} else {
+						await database.query(
+							`INSERT INTO agent_actions
+							 (id, session_id, run_id, user_id, action_type, tool_name, params, risk_level, status, canvas_version, estimated_cost, task_id, result, idempotency_key)
+							 VALUES ($1, $2, $3, $4, 'batch_task', 'submit_generation', $5::jsonb, 'high', $6, $7, $8, $9, $10::jsonb, $11)`,
+							[
+								actionId, sessionId, runId, userId, JSON.stringify(item),
+								result.compensationRequired ? "compensation_required" : "running", action.canvasVersion,
+								result.actualCost, result.taskId, JSON.stringify(result), `auto:${action.actionId}:${index}`,
+							],
+						);
+					}
+					const queued = await runService.appendEvent(runId, "task_status", {
+						task_id: result.taskId, status: "queued", node_id: item.nodeId, canvas_id: action.canvasId,
+					});
+					eventStream.publishEvent(toEnvelope(queued));
+				}
+				await runRepository.updateStatus(runId, "waiting_task");
+				return { taskIds: execution.results.map((result) => result.taskId) };
+			},
 			onAuditRequested: async (input) => {
 				const report = renderAuditService.audit({ ownerId: userId, ...input });
 				const reportId = nextId();
@@ -526,6 +599,10 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const unsubscribe = eventStream.subscribe(runId, (event) => {
 			reply.raw.write(`id: ${event.eventSeq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 		});
+		for (const skill of skillContext.explicitlySelectedSkills) {
+			const event = await runService.appendEvent(runId, "skill_loaded", { skill: skill.name, skillId: skill.id });
+			eventStream.publishEvent(toEnvelope(event));
+		}
 		try {
 			const outcome = await runTurn(
 				config,
@@ -575,6 +652,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 				return reply;
 			}
 			if ((await runRepository.findById(runId))?.status === "waiting_confirmation") return reply;
+			if ((await runRepository.findById(runId))?.status === "waiting_task") return reply;
 			if (live.errorCode) {
 				if (live.errorCode === "RUN_ABORTED") await runService.cancelRun(runId);
 				else await runService.setStatus(runId, "failed", { errorCode: live.errorCode, message: "模型调用失败" });
@@ -627,13 +705,11 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		});
 		reply.raw.flushHeaders();
 		reply.raw.write(": connected\n\n");
-		if (!active) {
-			reply.raw.write('event: idle\ndata: {"type":"idle"}\n\n');
-			reply.raw.end();
-			return reply;
-		}
-		const persisted = await runService.listEvents(active.runId, cursor);
-		const events = mergeRunEvents(persisted.map(toEnvelope), eventStream.replay(active.runId, cursor));
+		const persisted = await runService.listSessionEvents(sessionId, cursor);
+		const events = mergeRunEvents(
+			persisted.map(toEnvelope),
+			eventStream.replaySession(sessionId, cursor),
+		);
 		let lastSeq = cursor;
 		const write = (event: ReturnType<typeof toEnvelope>): void => {
 			if (event.eventSeq <= lastSeq) return;
@@ -641,7 +717,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			reply.raw.write(`id: ${event.eventSeq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 		};
 		for (const event of events) write(event);
-		if (active.status === "waiting_confirmation") {
+		if (!active || active.status === "waiting_confirmation") {
 			reply.raw.end();
 			return reply;
 		}
@@ -2163,6 +2239,7 @@ async function resolveSkillContext(
 	database: SqlExecutor,
 	userId: string,
 	sessionId: string,
+	explicitSkillIds: readonly string[] = [],
 ): Promise<AgentSkillContext> {
 	await ensureBuiltinSkills(database);
 	const session = await database.query<{ skill_snapshot: unknown; loaded_skill_ids: unknown }>(
@@ -2177,7 +2254,12 @@ async function resolveSkillContext(
 		 FROM skills WHERE enabled = true AND (owner_id = 0 OR owner_id = $1)`,
 		[userId],
 	);
-	const selected = rows.rows.filter((skill) => skill.source === "builtin" || snapshotIds.includes(skill.id));
+	const explicitlySelected = rows.rows.filter((skill) => explicitSkillIds.includes(skill.id));
+	if (explicitlySelected.length !== explicitSkillIds.length)
+		throw new ApiError(400, "INVALID_INPUT", "选择的 Skill 不存在、已停用或无权使用");
+	const selected = rows.rows.filter(
+		(skill) => skill.source === "builtin" || snapshotIds.includes(skill.id) || explicitSkillIds.includes(skill.id),
+	);
 	const versionRows = snapshots.length
 		? await database.query<SkillVersionRow>(
 				"SELECT skill_id, version, content_hash, content FROM skill_versions WHERE skill_id = ANY($1::bigint[])",
@@ -2205,7 +2287,8 @@ async function resolveSkillContext(
 		indexLines: resources.map((skill) => skillIndexLine(skill)),
 		skills: resources,
 		loadedSkillIds,
-		loadedSkills: resources.filter((skill) => loadedSkillIds.includes(skill.id)),
+		loadedSkills: resources.filter((skill) => loadedSkillIds.includes(skill.id) || explicitSkillIds.includes(skill.id)),
+		explicitlySelectedSkills: resources.filter((skill) => explicitSkillIds.includes(skill.id)),
 		onLoad: async (skill) => {
 			if (loadedSkillIds.includes(skill.id)) return;
 			await database.query(
@@ -2336,6 +2419,12 @@ async function persistTurnEvent(
 		type = "assistant_delta";
 		data = { text: delta };
 	} else if (event.type === "tool_started") {
+		// Deliberately derive a concise execution summary from the operation, not
+		// from private model reasoning. It is safe to persist and show to creators.
+		const reasoning = await runService.appendEvent(runId, "reasoning_summary", {
+			summary: safeToolReasoningSummary(event.toolName),
+		});
+		eventStream.publishEvent(toEnvelope(reasoning));
 		type = "tool_started";
 		data = { tool: event.toolName, args: event.details };
 	} else if (event.type === "tool") {

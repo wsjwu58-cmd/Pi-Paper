@@ -2,6 +2,8 @@ import type { AgentChatMsg, ExecutionStep } from './agentTypes'
 
 export type AgentEventType =
   | 'assistant_delta'
+  | 'reasoning_summary'
+  | 'skill_loaded'
   | 'tool_started'
   | 'tool_completed'
   | 'confirmation_required'
@@ -70,6 +72,33 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
   if (event.type === 'assistant_delta') {
     const delta = typeof event.data.text === 'string' ? event.data.text : ''
     updateAssistant((message) => ({ ...message, content: `${message.content}${delta}` }))
+  } else if (event.type === 'reasoning_summary') {
+    const summary = typeof event.data.summary === 'string' ? event.data.summary.trim() : ''
+    if (summary) {
+      updateAssistant((message) => ({
+        ...message,
+        meta: {
+          ...message.meta,
+          executionSteps: [
+            ...(message.meta?.executionSteps ?? []),
+            { id: event.eventId, kind: 'reasoning', label: '思考与计划', summary },
+          ],
+        },
+      }))
+    }
+  } else if (event.type === 'skill_loaded') {
+    const skill = typeof event.data.skill === 'string' ? event.data.skill : 'Skill'
+    updateAssistant((message) => ({
+      ...message,
+      meta: {
+        ...message.meta,
+        loadedSkills: [...new Set([...(message.meta?.loadedSkills ?? []), skill])],
+        executionSteps: [
+          ...(message.meta?.executionSteps ?? []),
+          { id: event.eventId, kind: 'result', tool: 'load_skill', label: '加载技能', summary: skill, ok: true },
+        ],
+      },
+    }))
   } else if (event.type === 'tool_started' || event.type === 'tool_completed') {
     const tool = typeof event.data.tool === 'string' ? event.data.tool : 'operation'
     const step: ExecutionStep = {
@@ -109,6 +138,31 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
           },
         },
       }))
+    }
+  } else if (event.type === 'task_status') {
+    const taskId = typeof event.data.task_id === 'string' ? event.data.task_id : undefined
+    const status = typeof event.data.status === 'string' ? event.data.status : undefined
+    updateAssistant((message) => ({
+      ...message,
+      meta: { ...message.meta, taskStatus: { taskId, status, nodeId: typeof event.data.node_id === 'string' ? event.data.node_id : undefined } },
+    }))
+    if ((status === 'succeeded' || status === 'failed') && !next.messages.some((message) => message.id === `task-${event.eventId}`)) {
+      const content = status === 'succeeded'
+        ? '生成完成，产物已写回画布节点。'
+        : `生成任务未成功完成：${String(event.data.error_code ?? '请稍后重试')}`
+      next.messages = [
+        ...next.messages,
+        {
+          id: `task-${event.eventId}`,
+          role: 'assistant',
+          type: 'text',
+          content,
+          meta: {
+            taskStatus: { taskId, status, nodeId: typeof event.data.node_id === 'string' ? event.data.node_id : undefined },
+            executionSteps: [{ id: `speech-${event.eventId}`, kind: 'speech', label: '回复', summary: content }],
+          },
+        },
+      ]
     }
   } else if (event.type === 'run_completed') {
     next.runStatus = 'completed'

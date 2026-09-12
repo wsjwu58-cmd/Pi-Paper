@@ -380,8 +380,9 @@ export function shouldRefreshCanvas(ev: Record<string, unknown>): boolean {
     return tool === 'create_nodes' || tool === 'connect_nodes'
   }
   if (ev.type === 'task_status') {
-    const data = (ev.data || {}) as Record<string, unknown>
-    return data.status === 'succeeded'
+    // Queue/running must invalidate the shared task feed too: otherwise a
+    // newly Agent-submitted node has no active item that would start polling.
+    return true
   }
   return false
 }

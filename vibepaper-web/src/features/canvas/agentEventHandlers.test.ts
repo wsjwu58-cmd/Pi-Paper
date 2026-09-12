@@ -45,4 +45,17 @@ describe('agent event envelope reducer', () => {
       ),
     ).toBe(true)
   })
+
+  it('shows safe thinking summaries and refreshes queued task state immediately', () => {
+    let state = reduceAgentEvent(base, event('reasoning_summary', { summary: '正在核对画布与可用资源。' }, 'think-1'))
+    state = reduceAgentEvent(state, event('task_status', { task_id: 'task-1', status: 'queued', node_id: 'node-1' }, 'task-1'))
+    expect(state.messages[0]?.meta?.executionSteps?.[0]?.kind).toBe('reasoning')
+    expect(state.messages[0]?.meta?.taskStatus?.status).toBe('queued')
+    expect(shouldRefreshCanvasEvent(event('task_status', { task_id: 'task-1', status: 'queued' }, 'queued-refresh'))).toBe(true)
+  })
+
+  it('adds a completion reply from a terminal task event without reloading messages', () => {
+    const state = reduceAgentEvent(base, event('task_status', { task_id: 'task-2', status: 'succeeded' }, 'task-done'))
+    expect(state.messages.at(-1)?.content).toContain('生成完成')
+  })
 })
