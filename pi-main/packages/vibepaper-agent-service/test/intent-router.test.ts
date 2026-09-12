@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { formatIntentContext, routeAgentIntent } from "../src/application/intent-router.ts";
+import {
+	formatIntentContext,
+	requestsPostGenerationFollowUp,
+	routeAgentIntent,
+} from "../src/application/intent-router.ts";
 
 describe("Agent intent router", () => {
 	it("routes canvas counts without planning or confirmation", () => {
@@ -30,5 +34,10 @@ describe("Agent intent router", () => {
 
 	it("keeps ambiguous language in the safe conversation path", () => {
 		expect(routeAgentIntent({ content: "帮我想想", profile: "canvas-general" }).kind).toBe("conversation");
+	});
+
+	it("recognizes a post-generation advice request as a continuation", () => {
+		expect(requestsPostGenerationFollowUp("再创建一张小猫图片，生成完以后告诉我下一步建议")).toBe(true);
+		expect(requestsPostGenerationFollowUp("生成一张小猫图片")).toBe(false);
 	});
 });

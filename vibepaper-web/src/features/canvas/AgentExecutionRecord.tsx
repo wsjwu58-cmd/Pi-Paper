@@ -326,7 +326,6 @@ export function AgentNextActions({
 
 export function AgentTaskBadge({
   status,
-  taskId,
 }: {
   status?: string
   taskId?: string
@@ -338,7 +337,6 @@ export function AgentTaskBadge({
     <p className="mt-2 flex items-center gap-1.5 text-[13px] font-medium text-[#888]">
       <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
       {label}
-      {taskId ? <span className="text-[#bbb]">#{String(taskId).slice(-6)}</span> : null}
     </p>
   )
 }

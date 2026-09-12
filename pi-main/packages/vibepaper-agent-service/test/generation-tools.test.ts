@@ -72,4 +72,22 @@ describe("proposed generation tool", () => {
 		expect(proposal.estimatedCost).toBe(16);
 		expect(proposal.approvalToken).toBeDefined();
 	});
+
+	it("keeps the workflow continuation intent in the approval payload", async () => {
+		const tools = new GenerationTools(new ApprovalService(new InMemoryApprovalRepository(), "secret", 300));
+		const proposal = await tools.submitGeneration({
+			actionIdempotencyKey: "continuation-1",
+			userId: "101",
+			sessionId: "s1",
+			canvasId: "301",
+			canvasVersion: 4,
+			nodeId: "node-1",
+			modelType: "image",
+			modelParams: { prompt: "keyframe" },
+			estimatedCost: 8,
+			overwrite: false,
+			continueAfterTask: true,
+		});
+		expect(proposal.params.continueAfterTask).toBe(true);
+	});
 });
