@@ -1,5 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type TSchema, Type } from "typebox";
+import { Value } from "typebox/value";
 
 import type { ApprovalService } from "../application/approval-service.ts";
 import { CanvasCommandService } from "../application/canvas-command-service.ts";
@@ -60,11 +61,22 @@ const CanvasNodeSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+const NodeArraySchema = Type.Array(CanvasNodeSchema, { minItems: 1, maxItems: 20 });
 const CreateNodesSchema = Type.Object(
 	{
-		nodes: Type.Array(CanvasNodeSchema, { minItems: 1, maxItems: 20 }),
-		expectedVersion: Type.Integer({ minimum: 0 }),
-		idempotencyKey: Type.String({ minLength: 1, maxLength: 128 }),
+		// Some OpenAI-compatible providers occasionally serialize an otherwise
+		// valid JSON array into a string. Accept that transport form here, then
+		// parse and validate it against NodeArraySchema before any canvas write.
+		nodes: Type.Union([NodeArraySchema, Type.String({ minLength: 2, maxLength: 220_000 })]),
+		// A few compatible model endpoints add a display type beside `nodes`.
+		// It carries no command semantics and is intentionally ignored; accepting
+		// it prevents an otherwise valid canvas command from being rejected before
+		// the normalized node payload is validated.
+		type: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
+		// The runtime owns optimistic-lock and idempotency values. Requiring the
+		// model to invent them made valid canvas writes unnecessarily fragile.
+		expectedVersion: Type.Optional(Type.Integer({ minimum: 0 })),
+		idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 	},
 	{ additionalProperties: false },
 );
@@ -186,9 +198,16 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 			"创建画布节点",
 			"通过画布服务创建节点并返回真实节点 ID。每个节点必须提供 type；展示内容写入 params（如 params.content），不得传入 id、title、content 或 contentType。",
 			CreateNodesSchema,
-			async (_id, params) => {
+			async (toolCallId, params) => {
 				assertNoPendingConfirmation(context);
-				return result(await createNodesWithReferenceEdges(commands, context, params));
+				const nodes = parseNodeArray(params.nodes);
+				return result(
+					await createNodesWithReferenceEdges(commands, context, {
+						...params,
+						nodes,
+						idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
+					}),
+				);
 			},
 		),
 		tool("connect_nodes", "连接画布节点", "通过画布服务创建连线。", ConnectNodesSchema, async (_id, params) => {
@@ -450,6 +469,26 @@ async function createNodesWithReferenceEdges(
 
 function isReferenceTarget(type: string | undefined): boolean {
 	return type === "image" || type === "video" || type === "audio" || type === "compose" || type === "director";
+}
+
+function parseNodeArray(nodes: unknown): Array<{ type: string; sourceNodeIds?: readonly string[] }> {
+	if (Array.isArray(nodes)) return nodes as Array<{ type: string; sourceNodeIds?: readonly string[] }>;
+	if (typeof nodes !== "string")
+		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数必须是节点数组。", {});
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(nodes);
+	} catch {
+		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数不是有效的 JSON 数组。", {});
+	}
+	if (!Value.Check(NodeArraySchema, parsed))
+		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数不符合节点数组契约。", {});
+	return parsed as Array<{ type: string; sourceNodeIds?: readonly string[] }>;
+}
+
+function defaultIdempotencyKey(context: RuntimeToolContext, toolCallId: string): string {
+	return `${context.runId ?? context.sessionId}:canvas:${toolCallId}`.slice(0, 128);
 }
 
 function tool<T extends TSchema>(

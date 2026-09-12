@@ -19,6 +19,8 @@ export type IntentDecision = {
 	confidence: number;
 	requiresPlan: boolean;
 	requiresConfirmation: boolean;
+	/** A concrete, low-risk canvas action the first model turn must perform. */
+	requiredToolName?: "create_nodes";
 	reasons: readonly string[];
 };
 
@@ -28,6 +30,7 @@ const WRITE_PATTERN = /(?:创建|新增|删除|移动|拖动|连接|连线|布�
 const CONTINUATION_PATTERN = /^(?:继续|确认|同意|执行|开始|取消|停止)(?:[。！!，,\s]|$)/i;
 const WORKFLOW_PATTERN = /(?:短剧|分镜|故事(?:圣经|板)|工作流|编排|批量|系列|多(?:个|张|段|节点)|先.+(?:再|然后|之后)|(?:图|图片).*(?:视频)|(?:文本|文案).*(?:图|图片))/i;
 const HIGH_RISK_PATTERN = /(?:生成|出图|做视频|渲染|模型|批量|覆盖)/i;
+const DIRECT_SCRIPT_NODE_PATTERN = /(?:直接|立即|现在|帮我)?(?:生成|创建|新建|写入|产出).{0,16}(?:脚本|剧本|分镜|故事圣经)/i;
 
 /** A deterministic first-stage router. Ambiguous requests stay conversational. */
 export function routeAgentIntent(input: IntentRouterInput): IntentDecision {
@@ -37,6 +40,9 @@ export function routeAgentIntent(input: IntentRouterInput): IntentDecision {
 	}
 	if (CONTINUATION_PATTERN.test(content)) {
 		return decision("resume", 0.9, false, false, ["请求续办、确认或取消既有动作"]);
+	}
+	if (DIRECT_SCRIPT_NODE_PATTERN.test(content)) {
+		return decision("single_write", 0.98, false, false, ["明确要求直接创建脚本文本节点"], "create_nodes");
 	}
 	if (input.profile === "vertical-short-drama" || WORKFLOW_PATTERN.test(content) || (input.selectedNodeCount ?? 0) > 1) {
 		return decision("creative_workflow", 0.9, true, HIGH_RISK_PATTERN.test(content), [
@@ -53,6 +59,8 @@ export function routeAgentIntent(input: IntentRouterInput): IntentDecision {
 }
 
 export function formatIntentContext(intent: IntentDecision): string {
+	if (intent.requiredToolName === "create_nodes")
+		return "这是明确的脚本节点创建请求：首轮必须调用创建节点工具，将完整正文写入 text/script 节点的 params.content；文字回复不能代替画布写入。";
 	const planInstruction = intent.requiresPlan
 		? "这是多步骤创作请求：先说明计划、依赖与需要确认的生成动作，再执行被允许的步骤。"
 		: "仅在用户请求明确且工具白名单允许时执行动作；不确定时先澄清。";
@@ -65,6 +73,7 @@ function decision(
 	requiresPlan: boolean,
 	requiresConfirmation: boolean,
 	reasons: readonly string[],
+	requiredToolName?: IntentDecision["requiredToolName"],
 ): IntentDecision {
-	return { kind, confidence, requiresPlan, requiresConfirmation, reasons };
+	return { kind, confidence, requiresPlan, requiresConfirmation, reasons, requiredToolName };
 }

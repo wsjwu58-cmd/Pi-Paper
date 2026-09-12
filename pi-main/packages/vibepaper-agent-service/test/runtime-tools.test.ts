@@ -35,7 +35,7 @@ describe("runtime tool integration", () => {
 		expect(commands[0]).toMatchObject({ expectedVersion: 7, operation: "create_nodes" });
 	});
 
-	it("requires Canvas node types instead of accepting display-only node shapes", () => {
+	it("accepts a serialized node array but rejects display-only node shapes", () => {
 		const tools = createRuntimeTools({
 			userId: "101",
 			sessionId: "201",
@@ -50,8 +50,13 @@ describe("runtime tool integration", () => {
 		expect(
 			Value.Check(create!.parameters, {
 				nodes: [{ type: "text", params: { content: "x" } }],
-				expectedVersion: 1,
-				idempotencyKey: "create-text",
+			}),
+		).toBe(true);
+		expect(Value.Check(create!.parameters, { nodes: '[{"type":"text","params":{"content":"x"}}]' })).toBe(true);
+		expect(
+			Value.Check(create!.parameters, {
+				type: "text",
+				nodes: '[{"type":"text","params":{"content":"x"}}]',
 			}),
 		).toBe(true);
 		expect(
@@ -61,6 +66,59 @@ describe("runtime tool integration", () => {
 				idempotencyKey: "create-text",
 			}),
 		).toBe(false);
+	});
+
+	it("parses a serialized node array before sending the canvas command", async () => {
+		const commands: Array<Record<string, unknown>> = [];
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			canvasId: "301",
+			canvasVersion: 7,
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				execute: async (command: Record<string, unknown>) => {
+					commands.push(command);
+					return { canvasVersion: 8 };
+				},
+			} as never,
+		});
+
+		await tools
+			.find((tool) => tool.name === "create_nodes")!
+			.execute("serialized-call", {
+				type: "text",
+				nodes: '[{"type":"text","params":{"content":"正文"}}]',
+			});
+
+		expect(commands[0]).toMatchObject({
+			operation: "create_nodes",
+			payload: { nodes: [{ type: "text", params: { content: "正文" } }] },
+		});
+	});
+
+	it("supplies canvas-write idempotency internally when the model only provides node content", async () => {
+		const commands: Array<Record<string, unknown>> = [];
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			runId: "301",
+			canvasId: "401",
+			canvasVersion: 7,
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				execute: async (command: Record<string, unknown>) => {
+					commands.push(command);
+					return { canvasVersion: 8 };
+				},
+			} as never,
+		});
+
+		await tools
+			.find((tool) => tool.name === "create_nodes")!
+			.execute("call-1", { nodes: [{ type: "text", creativeType: "script", params: { content: "正文" } }] });
+
+		expect(commands[0]).toMatchObject({ idempotencyKey: "301:canvas:call-1", expectedVersion: 7 });
 	});
 
 	it("connects selected references to newly created media nodes", async () => {

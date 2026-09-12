@@ -1,5 +1,5 @@
 import type { Agent, AgentEvent, AgentMessage, AgentOptions, AgentTool } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 
 import type { ServiceConfig } from "../config.ts";
@@ -44,6 +44,8 @@ export interface AgentRuntimeHooks {
 	modelId?: string;
 	memoryContext?: string;
 	intentContext?: string;
+	/** Force the first model request to make one verified low-risk tool call. */
+	requiredToolName?: string;
 }
 
 export interface AgentSkillContext {
@@ -153,7 +155,7 @@ export async function runDramaTurn(
 	]);
 	const agent = createDramaAgent(store, {
 		initialState: { model: agnesModel(config, hooks.modelId), messages: initialMessages },
-		streamFn: streamSimple,
+		streamFn: hooks.requiredToolName ? forceInitialToolCall(hooks.requiredToolName) : streamSimple,
 		sessionId,
 		getApiKey: async (provider) => (provider === "agnes" ? config.llmApiKey : undefined),
 		systemPromptSuffix:
@@ -197,6 +199,25 @@ export async function runDramaTurn(
 		MODEL_TURN_TIMEOUT_MS,
 	);
 	return { events, assistantText, totalTokens };
+}
+
+/**
+ * The upstream Agent loop does not expose toolChoice. Keep that contract
+ * untouched and wrap the VibePaper model stream instead. Only the first
+ * request is forced; follow-up turns can consume the tool result naturally.
+ */
+export function forceInitialToolCall(
+	toolName: string,
+	stream: typeof streamSimple = streamSimple,
+): typeof streamSimple {
+	let firstRequest = true;
+	return (model, context, options) => {
+		const toolChoice: SimpleStreamOptions["toolChoice"] = firstRequest
+			? ({ type: "function", function: { name: toolName } } as unknown as SimpleStreamOptions["toolChoice"])
+			: options?.toolChoice;
+		firstRequest = false;
+		return stream(model, context, { ...options, toolChoice });
+	};
 }
 
 export function awaitAgentTurn<T>(turn: Promise<T>, abort: () => void, timeoutMs: number): Promise<T> {

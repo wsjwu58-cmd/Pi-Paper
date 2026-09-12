@@ -542,6 +542,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 					modelId,
 					memoryContext,
 					intentContext: formatIntentContext(intent),
+					requiredToolName: intent.requiredToolName,
 					shouldStopAfterTurn: async () =>
 						cancelledSessions.has(sessionId) ||
 						Boolean(live.errorCode) ||

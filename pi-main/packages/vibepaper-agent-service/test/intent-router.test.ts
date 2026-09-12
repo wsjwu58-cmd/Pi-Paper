@@ -18,6 +18,16 @@ describe("Agent intent router", () => {
 		expect(formatIntentContext(intent)).toContain("先说明计划");
 	});
 
+	it("forces the first canvas write for an explicit script-node request", () => {
+		const intent = routeAgentIntent({ content: "直接生成本集脚本", profile: "canvas-general" });
+		expect(intent).toMatchObject({
+			kind: "single_write",
+			requiresPlan: false,
+			requiredToolName: "create_nodes",
+		});
+		expect(formatIntentContext(intent)).toContain("文字回复不能代替画布写入");
+	});
+
 	it("keeps ambiguous language in the safe conversation path", () => {
 		expect(routeAgentIntent({ content: "帮我想想", profile: "canvas-general" }).kind).toBe("conversation");
 	});
