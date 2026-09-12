@@ -373,6 +373,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const sessionId = routeId(request, "sessionId");
 		const body = recordBody(request.body);
 		const content = requiredString(body.content, "content");
+		const internalResume = body.internalResume === true;
 		const session = await requireSession(database, userId, sessionId);
 		const requestedCanvas = optionalId(body.canvasId ?? body.canvas_id);
 		assertSessionCanvasAccess(session.canvas_id, requestedCanvas);
@@ -383,7 +384,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 				.filter((id): id is string => id !== undefined),
 		);
 		const selectedSkillIds = uniqueStrings(
-			stringArray(body.selectedSkillIds)
+			stringArray(body.selectedSkillIds ?? [])
 				.map((id) => optionalId(id))
 				.filter((id): id is string => id !== undefined),
 		);
@@ -407,7 +408,12 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			return sendRunEventSse(reply, await runService.listEvents(existingRun.runId));
 		}
 		const run = await runService.startRun({ sessionId, idempotencyKey });
-		await addMessage(database, sessionId, "user", content, { selectedNodeIds, selectedSkillIds, nodeReferences });
+		await addMessage(database, sessionId, "user", content, {
+			selectedNodeIds,
+			...(selectedSkillIds.length ? { selectedSkillIds } : {}),
+			nodeReferences,
+			...(internalResume ? { internalResume: true } : {}),
+		});
 		await database.query(
 			"UPDATE agent_sessions SET title = CASE WHEN title IN ('新对话', '画布对话') THEN $1 ELSE title END, updated_at = now() WHERE id = $2",
 			[content.slice(0, 48), sessionId],
@@ -1905,6 +1911,7 @@ function registerInternalRoutes(
 					await runService.setStatus(result.association.runId, "completed", {
 						text: outputText ? `生成完成：${outputText}` : "生成完成，产物已写回画布节点。",
 					});
+					scheduleTaskContinuation(app, result.association.sessionId, notice, result.association.runId);
 				} else if (notice.status === "succeeded") {
 					const partialFailureMessage =
 						"批量生成已停止：部分关键帧未通过，后续视频、配音和字幕不会自动提交。请先重试失败镜头。";
@@ -1947,6 +1954,41 @@ function requireUserId(request: FastifyRequest): string {
 	if (typeof value !== "string" || !/^\d+$/.test(value) || value === "0")
 		throw new ApiError(401, "PERMISSION_DENIED", "未登录");
 	return value;
+}
+
+/**
+ * Wake the same Agent pipeline after a successful upstream task. This is
+ * intentionally asynchronous so the generation callback stays fast and the
+ * next run acquires the normal session lease/idempotency protections.
+ */
+function scheduleTaskContinuation(
+	app: FastifyInstance,
+	sessionId: string,
+	notice: TerminalNotice,
+	_parentRunId: string,
+): void {
+	const userId = notice.userId;
+	if (!userId || userId === "0") return;
+	const content =
+		"系统通知：上游生成任务已成功完成。请检查原始创作要求、当前画布和已完成产物；只有存在尚未执行且依赖已满足的下游步骤时才继续调用受控工具（例如创建并提交对应视频片段），否则用一句简短结果说明本轮已完成。不要重复已完成的步骤。";
+	setTimeout(() => {
+		void app
+			.inject({
+				method: "POST",
+				url: `/api/v1/agent/sessions/${sessionId}/messages`,
+				headers: {
+					"x-user-id": userId,
+					"idempotency-key": `resume:${notice.taskId}`,
+					"content-type": "application/json",
+				},
+				payload: JSON.stringify({
+					content,
+					internalResume: true,
+					canvasId: notice.canvasId,
+				}),
+			})
+			.catch(() => undefined);
+	}, 0);
 }
 
 function recordBody(value: unknown): Record<string, unknown> {

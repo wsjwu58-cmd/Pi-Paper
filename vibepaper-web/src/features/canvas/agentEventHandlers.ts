@@ -67,7 +67,7 @@ function upsertSpeech(steps: ExecutionStep[], content: string): ExecutionStep[] 
 }
 
 export function isChatVisibleMessage(m: AgentChatMsg): boolean {
-  if (m.role === 'user') return true
+	if (m.role === 'user') return m.meta?.internalResume !== true
   if (m.type && m.type !== 'text') return false
   if (m.content?.trim()) return true
   if ((m.meta?.executionSteps?.length ?? 0) > 0) return true

@@ -13,6 +13,7 @@ type AssociationRow = QueryResultRow & {
 	action_id: string;
 	session_id: string;
 	run_id: string | null;
+	user_id: string;
 };
 
 export class PgTaskTerminalStore implements TerminalStore {
@@ -24,7 +25,7 @@ export class PgTaskTerminalStore implements TerminalStore {
 
 	async findTask(taskId: string): Promise<TaskAssociation | undefined> {
 		const result = await this.database.query<AssociationRow>(
-			`SELECT a.task_id, a.id AS action_id, a.session_id, a.run_id
+			`SELECT a.task_id, a.id AS action_id, a.session_id, a.run_id, a.user_id
 			 FROM agent_actions a WHERE a.task_id = $1 ORDER BY a.created_at DESC LIMIT 1`,
 			[taskId],
 		);
@@ -35,6 +36,7 @@ export class PgTaskTerminalStore implements TerminalStore {
 			actionId: String(row.action_id),
 			sessionId: String(row.session_id),
 			runId: String(row.run_id),
+			userId: String(row.user_id),
 		};
 	}
 

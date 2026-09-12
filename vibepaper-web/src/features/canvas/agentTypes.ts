@@ -63,6 +63,7 @@ export interface AgentChatMsg {
     taskStatus?: { taskId?: string; status?: string; nodeId?: string; modelType?: string }
     selectedNodeIds?: string[]
     selectedSkillIds?: string[]
+    internalResume?: boolean
     nodeReferences?: AgentNodeReference[]
     requiresConfirmation?: boolean
     confirmation?: AgentConfirmation
