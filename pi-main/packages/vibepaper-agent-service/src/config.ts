@@ -73,9 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
 		// The policy is decided by the server, never by model output.  Auto mode
 		// still follows the same estimate → freeze → queue path as manual mode.
 		generationExecutionPolicy:
-			(env.VIBEPAPER_GENERATION_EXECUTION_POLICY ?? "auto").trim().toLowerCase() === "manual"
-				? "manual"
-				: "auto",
+			(env.VIBEPAPER_GENERATION_EXECUTION_POLICY ?? "auto").trim().toLowerCase() === "manual" ? "manual" : "auto",
 		internalServiceToken: (env.VIBEPAPER_INTERNAL_SERVICE_TOKEN ?? "").trim(),
 		workerId: coordinateSetting(env, "VIBEPAPER_SNOWFLAKE_WORKER_ID"),
 		datacenterId: coordinateSetting(env, "VIBEPAPER_SNOWFLAKE_DATACENTER_ID"),

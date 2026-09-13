@@ -88,8 +88,20 @@ describe("structured plans and dependency compiler", () => {
 			{ expectedVersion: 1, profile: "canvas-general" },
 		);
 		expect(compiled.executionPartitions).toEqual([
-			{ effect: "read", concurrencyKey: "read", stepIds: ["read-one", "read-two"], maxParallelism: 2, requiresConfirmation: false },
-			{ effect: "write_canvas", concurrencyKey: "canvas:7", stepIds: ["write"], maxParallelism: 1, requiresConfirmation: false },
+			{
+				effect: "read",
+				concurrencyKey: "read",
+				stepIds: ["read-one", "read-two"],
+				maxParallelism: 2,
+				requiresConfirmation: false,
+			},
+			{
+				effect: "write_canvas",
+				concurrencyKey: "canvas:7",
+				stepIds: ["write"],
+				maxParallelism: 1,
+				requiresConfirmation: false,
+			},
 		]);
 	});
 });
