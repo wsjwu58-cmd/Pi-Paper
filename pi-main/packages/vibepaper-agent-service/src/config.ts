@@ -19,7 +19,6 @@ export interface ServiceConfig {
 	llmModel: string;
 	confirmTokenTtlSeconds: number;
 	confirmSigningSecret: string;
-	generationExecutionPolicy: "manual" | "auto";
 	internalServiceToken: string;
 	workerId: number;
 	datacenterId: number;
@@ -70,10 +69,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig 
 		llmModel: (env.VIBEPAPER_LLM_MODEL ?? "agnes-2.5-flash").trim(),
 		confirmTokenTtlSeconds: integerSetting(env, "VIBEPAPER_CONFIRM_TOKEN_TTL_SECONDS", 300),
 		confirmSigningSecret: (env.VIBEPAPER_CONFIRM_SIGNING_SECRET ?? "").trim(),
-		// The policy is decided by the server, never by model output.  Auto mode
-		// still follows the same estimate → freeze → queue path as manual mode.
-		generationExecutionPolicy:
-			(env.VIBEPAPER_GENERATION_EXECUTION_POLICY ?? "auto").trim().toLowerCase() === "manual" ? "manual" : "auto",
 		internalServiceToken: (env.VIBEPAPER_INTERNAL_SERVICE_TOKEN ?? "").trim(),
 		workerId: coordinateSetting(env, "VIBEPAPER_SNOWFLAKE_WORKER_ID"),
 		datacenterId: coordinateSetting(env, "VIBEPAPER_SNOWFLAKE_DATACENTER_ID"),

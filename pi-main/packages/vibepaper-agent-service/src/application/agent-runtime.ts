@@ -34,21 +34,6 @@ export interface AgentTurnEvent {
 	ok?: boolean;
 }
 
-/**
- * A user-visible execution summary. This deliberately derives from the
- * operation category, not the model's hidden chain of thought.
- */
-export function safeToolReasoningSummary(toolName?: string): string {
-	if (toolName?.startsWith("get_") || toolName === "list_models" || toolName === "search_assets")
-		return "正在核对画布与可用资源，确认下一步所需条件。";
-	if (toolName === "load_skill") return "正在加载所选 Skill 的创作方法，再据此组织本轮执行。";
-	if (toolName === "submit_generation" || toolName === "submit_generation_batch")
-		return "已完成输入与成本校验，正在将生成任务交给受控任务链路。";
-	if (toolName?.includes("node") || toolName === "connect_nodes" || toolName === "layout_nodes")
-		return "正在把已确认的创作计划写入画布，并保持素材引用关系。";
-	return "正在依据已验证的上下文推进下一步。";
-}
-
 export interface AgentRuntimeHooks {
 	onAgent?: (agent: Agent) => void;
 	onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
@@ -68,8 +53,6 @@ export interface AgentSkillContext {
 	skills: readonly LoadedSkillResource[];
 	loadedSkillIds: readonly string[];
 	loadedSkills: readonly LoadedSkillResource[];
-	/** Skills selected explicitly from the composer for this turn. */
-	explicitlySelectedSkills: readonly LoadedSkillResource[];
 	onLoad(skill: LoadedSkillResource): Promise<void>;
 }
 

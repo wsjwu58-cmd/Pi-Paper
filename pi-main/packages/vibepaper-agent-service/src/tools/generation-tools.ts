@@ -13,8 +13,6 @@ export type SubmitGenerationInput = {
 	modelParams: Record<string, unknown>;
 	estimatedCost: number;
 	overwrite: boolean;
-	requiresApproval?: boolean;
-	/** Resume the originating workflow only after this task reaches success. */
 	continueAfterTask?: boolean;
 };
 
@@ -54,11 +52,11 @@ export class GenerationTools {
 				modelType: input.modelType,
 				modelParams: input.modelParams,
 				overwrite: input.overwrite,
-				...(input.continueAfterTask ? { continueAfterTask: true } : {}),
+				continueAfterTask: input.continueAfterTask,
 			},
 			estimatedCost: input.estimatedCost,
 			risk: "high",
-			requiresApproval: input.requiresApproval ?? true,
+			requiresApproval: true,
 		};
 		const proposal = await this.approvals.planActionAsync(actionInput);
 		this.proposals.set(input.actionIdempotencyKey, proposal);
@@ -78,13 +76,10 @@ export class GenerationTools {
 			canvasId: input.canvasId,
 			canvasVersion: input.canvasVersion,
 			toolName: "submit_generation_batch",
-			params: {
-				generations: input.generations,
-				...(input.continueAfterTask ? { continueAfterTask: true } : {}),
-			},
+			params: { generations: input.generations, continueAfterTask: input.continueAfterTask },
 			estimatedCost,
 			risk: "high",
-			requiresApproval: input.requiresApproval ?? true,
+			requiresApproval: true,
 		});
 		this.proposals.set(input.actionIdempotencyKey, proposal);
 		return proposal;

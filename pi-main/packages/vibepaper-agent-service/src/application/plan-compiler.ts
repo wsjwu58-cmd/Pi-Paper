@@ -49,7 +49,8 @@ export class PlanCompiler {
 				(step) =>
 					step.status === "pending" &&
 					step.dependsOn.every(
-						(dependency) => plan.steps.find((candidate) => candidate.id === dependency)?.status === "completed",
+						(dependency) =>
+							plan.steps.find((candidate) => candidate.id === dependency)?.status === "completed",
 					),
 			)
 			.map((step) => step.id);

@@ -83,9 +83,7 @@ function useNodeTasks(nodeId: string) {
   useEffect(() => {
     const handler = (ev: Event) => {
       const detail = (ev as CustomEvent<{ nodeId?: string }>).detail
-      // Agent submissions do not always know a node id before the canvas cache
-      // refreshes. Invalidate the one shared canvas query in that case.
-      if (detail?.nodeId && sid(detail.nodeId) !== sid(nodeId)) return
+      if (!detail?.nodeId || sid(detail.nodeId) !== sid(nodeId)) return
       void qc.invalidateQueries({ queryKey: ['canvas-tasks', canvasKey] })
     }
     window.addEventListener('vp-task-updated', handler)

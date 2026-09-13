@@ -10,7 +10,6 @@ import {
 	type AgentTurnEvent,
 	runDramaTurn,
 	type StoredAgentMessage,
-	safeToolReasoningSummary,
 	sanitizeAgentReply,
 } from "../application/agent-runtime.ts";
 import {
@@ -29,7 +28,11 @@ import {
 import { confirmationRecoveryMessage } from "../application/confirmation-recovery.ts";
 import { persistConfirmationStatus } from "../application/confirmation-status.ts";
 import { GenerationActionExecutor } from "../application/generation-action-executor.ts";
-import { formatIntentContext, requestsPostGenerationFollowUp, routeAgentIntent } from "../application/intent-router.ts";
+import {
+	formatIntentContext,
+	requestsPostGenerationFollowUp,
+	routeAgentIntent,
+} from "../application/intent-router.ts";
 import { MemoryService } from "../application/memory-service.ts";
 import {
 	MAX_NODE_REFERENCES,
@@ -45,6 +48,7 @@ import { InMemoryRunRepository, type RunRepository, SessionRunService } from "..
 import { BUILTIN_SKILL_INSERT_SQL } from "../application/skill-bootstrap.ts";
 import {
 	TaskTerminalService,
+	type TaskAssociation,
 	type TerminalNotice,
 	type TerminalResult,
 	type TerminalStatus,
@@ -90,7 +94,6 @@ type SessionRow = {
 	points_used_total: number;
 	model_usage: unknown;
 	updated_at: Date;
-	event_seq?: number;
 };
 type MessageRow = {
 	id: string;
@@ -174,6 +177,153 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 	const terminalService = hasTransaction(database)
 		? new TaskTerminalService(new PgTaskTerminalStore(database as MigrationDatabase), config.internalServiceToken)
 		: undefined;
+	const startContinuationRun = async (association: TaskAssociation, notice: TerminalNotice): Promise<void> => {
+		if (!association.continueAfterTask || notice.status !== "succeeded") return;
+		const userId = notice.userId ?? association.userId;
+		const canvasId = notice.canvasId;
+		if (!userId || !canvasId) return;
+		const continuationKey = `task-continuation:${notice.taskId}`;
+		const run = await runService.startRun({ sessionId: association.sessionId, idempotencyKey: continuationKey });
+		if (run.idempotencyKey !== continuationKey || run.status !== "queued") return;
+		const requestId = `continuation:${notice.taskId}`;
+		try {
+		const progressMessage = "上一阶段生成已完成，正在读取画布并继续执行后续步骤。";
+		await addMessage(database, association.sessionId, "assistant", progressMessage, {
+			continuation: true,
+			taskId: notice.taskId,
+		});
+		const canvasVersion = await taskGateway.getCanvasVersion(userId, canvasId, requestId);
+		const profile = selectProfile({ canvasDomain: "short-drama" });
+		const content =
+			"上一阶段生成任务已成功完成。请读取当前画布，严格按照用户上一条创作请求继续执行尚未完成的后续步骤：不要重复已完成的生成；如果请求包含创建视频片段，请使用已完成的关键帧作为上游，创建并连接对应的视频节点，再按确认规则提交生成。若没有后续动作，请总结已完成内容和下一步建议。";
+		const history = await readHistory(database, association.sessionId);
+		const skillContext = await resolveSkillContext(database, userId, association.sessionId);
+		const intent = routeAgentIntent({ content, profile });
+		const live: {
+			assistantText: string;
+			count: number;
+			repeatedReadLimitReached: boolean;
+			toolCalls: Map<string, number>;
+			errorCode?: string;
+		} = { assistantText: "", count: 0, repeatedReadLimitReached: false, toolCalls: new Map() };
+		const runtimeTools = createRuntimeTools({
+			userId,
+			sessionId: association.sessionId,
+			runId: run.runId,
+			canvasId,
+			canvasVersion,
+			canvasVersionPinned: true,
+			requestId,
+			referenceNodeIds: [],
+			gateway: taskGateway,
+			approvals: approvalService,
+			continueAfterTask: true,
+			onApprovalRequired: async (action) => {
+				await runRepository.updateStatus(run.runId, "waiting_confirmation");
+				const recovery = confirmationRecoveryMessage({
+					tool: action.toolName,
+					actionId: action.actionId,
+					approvalToken: action.approvalToken,
+					estimatedCost: action.estimatedCost,
+					canvasVersion: action.canvasVersion,
+					expiresAt: action.binding.expiresAt,
+					affectedNodeCount:
+						action.toolName === "submit_generation_batch" ? generationItemCount(action.params) : 1,
+				});
+				await addMessage(database, association.sessionId, "assistant", recovery.content, recovery.meta);
+				const event = await runService.appendEvent(run.runId, "confirmation_required", {
+					actionId: action.actionId,
+					approvalToken: action.approvalToken,
+					tool: action.toolName,
+					summary: `确认执行 ${action.toolName}`,
+					confirmReason: "该操作会产生外部副作用或点数费用",
+					estimatedCost: action.estimatedCost,
+					estimatedTotalCost: action.estimatedCost,
+					affectedNodeCount:
+						action.toolName === "submit_generation_batch" ? generationItemCount(action.params) : 1,
+					canvasVersion: action.canvasVersion,
+					expiresAt: action.binding.expiresAt,
+				});
+				eventStream.publishEvent(toEnvelope(event));
+			},
+		});
+		activeRuns.set(association.sessionId, run.runId);
+		await runRepository.updateStatus(run.runId, "running");
+		const progressEvent = await runService.appendEvent(run.runId, "assistant_delta", { text: progressMessage });
+		eventStream.publishEvent(toEnvelope(progressEvent));
+			const outcome = await runTurn(
+				config,
+				dramaState,
+				association.sessionId,
+				history,
+				content,
+				skillContext,
+				[],
+				{
+					onAgent: (agent) => activeAgents.set(association.sessionId, agent),
+					runtimeTools,
+					profile,
+					modelId: config.llmModel,
+					intentContext: formatIntentContext(intent),
+					shouldStopAfterTurn: async () =>
+						cancelledSessions.has(association.sessionId) ||
+						live.repeatedReadLimitReached ||
+						(await runRepository.findById(run.runId))?.status === "aborted",
+					onEvent: async (event) => {
+						live.count += 1;
+						if (event.type === "tool_started" && event.toolName === "get_canvas_summary") {
+							const calls = (live.toolCalls.get(event.toolName) ?? 0) + 1;
+							live.toolCalls.set(event.toolName, calls);
+							if (calls >= 2) live.repeatedReadLimitReached = true;
+						}
+						if (event.type === "error") live.errorCode = event.errorCode ?? "MODEL_UNAVAILABLE";
+						if (event.type === "tool" && event.ok === false && event.errorCode)
+							live.errorCode = event.errorCode;
+						live.assistantText = await persistTurnEvent(
+							runService,
+							eventStream,
+							run.runId,
+							association.sessionId,
+							event,
+							live.assistantText,
+						);
+					},
+				},
+			);
+			if ((await runRepository.findById(run.runId))?.status === "waiting_confirmation") return;
+			if (live.errorCode) {
+				await runService.setStatus(run.runId, "failed", {
+					errorCode: live.errorCode,
+					message: "后续步骤执行失败",
+				});
+				await publishLatestRunEvent(runService, eventStream, run.runId);
+				return;
+			}
+			if (live.count === 0)
+				await persistTurnEvents(runService, eventStream, run.runId, association.sessionId, outcome.events);
+			const assistantText = outcome.assistantText || live.assistantText || "后续步骤已处理。";
+			await addMessage(database, association.sessionId, "assistant", assistantText, { continuation: true });
+			await database.query(
+				`UPDATE agent_sessions SET token_used_total = token_used_total + $1,
+					model_usage = jsonb_set(model_usage, '{assistant}', to_jsonb(COALESCE((model_usage->>'assistant')::integer, 0) + $1)), updated_at = now()
+				 WHERE id = $2`,
+				[outcome.totalTokens, association.sessionId],
+			);
+			await runService.setStatus(run.runId, "completed", { text: assistantText });
+			await publishLatestRunEvent(runService, eventStream, run.runId);
+		} catch (error) {
+			const current = await runRepository.findById(run.runId);
+			if (current && isCallbackActiveRun(current.status))
+				await runService.setStatus(run.runId, "failed", {
+					errorCode: error instanceof AgentRuntimeError ? error.code : "INTERNAL_ERROR",
+					message: error instanceof Error ? error.message : "后续步骤执行失败",
+				});
+			await publishLatestRunEvent(runService, eventStream, run.runId);
+		} finally {
+			if (activeRuns.get(association.sessionId) === run.runId) activeRuns.delete(association.sessionId);
+			activeAgents.delete(association.sessionId);
+		}
+	};
 	const memoryService = hasTransaction(database) ? new MemoryService(new PgMemoryRepository(database)) : undefined;
 	app.register(multipart, { limits: { fileSize: 512 * 1024, files: 1 } });
 
@@ -349,13 +499,12 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 
 	app.get("/api/v1/agent/sessions/:sessionId/messages", async (request) => {
 		const sessionId = routeId(request, "sessionId");
-		const session = await requireSession(database, requireUserId(request), sessionId);
+		await requireSession(database, requireUserId(request), sessionId);
 		const rows = await database.query<MessageRow>(
 			"SELECT id, role, msg_type, content, meta, created_at FROM agent_messages WHERE session_id = $1 ORDER BY id",
 			[sessionId],
 		);
 		return {
-			latestEventSeq: Number((session as SessionRow & { event_seq?: number }).event_seq ?? 0),
 			items: rows.rows.map((message) => ({
 				id: message.id,
 				role: message.role,
@@ -373,18 +522,12 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const sessionId = routeId(request, "sessionId");
 		const body = recordBody(request.body);
 		const content = requiredString(body.content, "content");
-		const internalResume = body.internalResume === true;
 		const session = await requireSession(database, userId, sessionId);
 		const requestedCanvas = optionalId(body.canvasId ?? body.canvas_id);
 		assertSessionCanvasAccess(session.canvas_id, requestedCanvas);
 		if (!session.canvas_id) throw new ApiError(400, "INVALID_INPUT", "会话未绑定画布，请在画布页重新打开 Agent");
 		const selectedNodeIds = uniqueStrings(
 			stringArray(body.selectedNodeIds)
-				.map((id) => optionalId(id))
-				.filter((id): id is string => id !== undefined),
-		);
-		const selectedSkillIds = uniqueStrings(
-			stringArray(body.selectedSkillIds ?? [])
 				.map((id) => optionalId(id))
 				.filter((id): id is string => id !== undefined),
 		);
@@ -410,16 +553,15 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const run = await runService.startRun({ sessionId, idempotencyKey });
 		await addMessage(database, sessionId, "user", content, {
 			selectedNodeIds,
-			...(selectedSkillIds.length ? { selectedSkillIds } : {}),
 			nodeReferences,
-			...(internalResume ? { internalResume: true } : {}),
+			selectedSkillId: optionalId(body.selectedSkillId),
 		});
 		await database.query(
 			"UPDATE agent_sessions SET title = CASE WHEN title IN ('新对话', '画布对话') THEN $1 ELSE title END, updated_at = now() WHERE id = $2",
 			[content.slice(0, 48), sessionId],
 		);
 		const history = await readHistory(database, sessionId);
-		const skillContext = await resolveSkillContext(database, userId, sessionId, selectedSkillIds);
+		const skillContext = await resolveSkillContext(database, userId, sessionId, optionalId(body.selectedSkillId));
 		const memoryContext = await resolveMemoryContext(
 			database,
 			userId,
@@ -442,15 +584,11 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			});
 			reply.raw.write(": connected\n\n");
 			const responseEvent = await runService.appendEvent(runId, "assistant_delta", { text: directReply });
-			reply.raw.write(
-				`id: ${responseEvent.eventSeq}\nevent: ${responseEvent.type}\ndata: ${JSON.stringify(toEnvelope(responseEvent))}\n\n`,
-			);
+			reply.raw.write(`id: ${responseEvent.eventSeq}\nevent: ${responseEvent.type}\ndata: ${JSON.stringify(toEnvelope(responseEvent))}\n\n`);
 			await runService.setStatus(runId, "completed", { text: directReply });
 			const completedEvent = (await runService.listEvents(runId)).at(-1);
 			if (completedEvent)
-				reply.raw.write(
-					`id: ${completedEvent.eventSeq}\nevent: ${completedEvent.type}\ndata: ${JSON.stringify(toEnvelope(completedEvent))}\n\n`,
-				);
+				reply.raw.write(`id: ${completedEvent.eventSeq}\nevent: ${completedEvent.type}\ndata: ${JSON.stringify(toEnvelope(completedEvent))}\n\n`);
 			reply.raw.end();
 			return reply;
 		}
@@ -476,93 +614,10 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			canvasVersion: optionalInteger(body.canvasVersion) ?? 0,
 			canvasVersionPinned: (optionalInteger(body.canvasVersion) ?? 0) > 0,
 			referenceNodeIds: nodeReferences.map((reference) => reference.nodeId),
+			continueAfterTask: intent.kind === "creative_workflow" || requestsPostGenerationFollowUp(content),
 			requestId: request.id,
 			gateway: taskGateway,
 			approvals: approvalService,
-			generationExecutionPolicy: config.generationExecutionPolicy,
-			continueAfterTask: intent.kind === "creative_workflow" || requestsPostGenerationFollowUp(content),
-			onGenerationSubmitted: async (action) => {
-				const batchItems =
-					action.toolName === "submit_generation_batch" ? batchGenerationItems(action.params) : undefined;
-				const singleItem = batchItems ? undefined : singleGenerationItem(action.params);
-				const items = batchItems ?? [{ ...singleItem!, estimatedCost: action.estimatedCost }];
-				// Persist the proposed action before external submission so the task
-				// callback has an auditable, idempotent association to this run.
-				await database.query(
-					`INSERT INTO agent_actions
-					 (id, session_id, run_id, user_id, action_type, tool_name, params, risk_level, status, canvas_version, estimated_cost, idempotency_key)
-					 VALUES ($1, $2, $3, $4, 'agent_tool', $5, $6::jsonb, 'high', 'planned', $7, $8, $9)
-					 ON CONFLICT (id) DO NOTHING`,
-					[
-						action.actionId,
-						sessionId,
-						runId,
-						userId,
-						action.toolName,
-						JSON.stringify(action.params),
-						action.canvasVersion,
-						action.estimatedCost,
-						`auto:${action.actionId}`,
-					],
-				);
-				const execution = await generationExecutor.executeBatch(
-					items.map((item, index) => ({
-						actionId: items.length === 1 ? action.actionId : `${action.actionId}:${index}`,
-						userId,
-						canvasId: action.canvasId,
-						nodeId: item.nodeId,
-						modelType: item.modelType,
-						modelParams: item.modelParams,
-						requestedCost: item.estimatedCost,
-						costCap: item.estimatedCost,
-						requestId: request.id,
-					})),
-				);
-				const continueAfterTask = action.params.continueAfterTask === true;
-				for (const [index, result] of execution.results.entries()) {
-					const item = items[index]!;
-					const actionId = items.length === 1 ? action.actionId : nextId();
-					if (items.length === 1) {
-						await database.query(
-							"UPDATE agent_actions SET status = $1, task_id = $2, result = $3::jsonb WHERE id = $4",
-							[
-								result.compensationRequired ? "compensation_required" : "running",
-								result.taskId,
-								JSON.stringify(result),
-								actionId,
-							],
-						);
-					} else {
-						await database.query(
-							`INSERT INTO agent_actions
-							 (id, session_id, run_id, user_id, action_type, tool_name, params, risk_level, status, canvas_version, estimated_cost, task_id, result, idempotency_key)
-							 VALUES ($1, $2, $3, $4, 'batch_task', 'submit_generation', $5::jsonb, 'high', $6, $7, $8, $9, $10::jsonb, $11)`,
-							[
-								actionId,
-								sessionId,
-								runId,
-								userId,
-								JSON.stringify({ ...item, ...(continueAfterTask ? { continueAfterTask: true } : {}) }),
-								result.compensationRequired ? "compensation_required" : "running",
-								action.canvasVersion,
-								result.actualCost,
-								result.taskId,
-								JSON.stringify(result),
-								`auto:${action.actionId}:${index}`,
-							],
-						);
-					}
-					const queued = await runService.appendEvent(runId, "task_status", {
-						task_id: result.taskId,
-						status: "queued",
-						node_id: item.nodeId,
-						canvas_id: action.canvasId,
-					});
-					eventStream.publishEvent(toEnvelope(queued));
-				}
-				await runRepository.updateStatus(runId, "waiting_task");
-				return { taskIds: execution.results.map((result) => result.taskId) };
-			},
 			onAuditRequested: async (input) => {
 				const report = renderAuditService.audit({ ownerId: userId, ...input });
 				const reportId = nextId();
@@ -628,10 +683,6 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const unsubscribe = eventStream.subscribe(runId, (event) => {
 			reply.raw.write(`id: ${event.eventSeq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 		});
-		for (const skill of skillContext.explicitlySelectedSkills) {
-			const event = await runService.appendEvent(runId, "skill_loaded", { skill: skill.name, skillId: skill.id });
-			eventStream.publishEvent(toEnvelope(event));
-		}
 		try {
 			const outcome = await runTurn(
 				config,
@@ -681,7 +732,6 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 				return reply;
 			}
 			if ((await runRepository.findById(runId))?.status === "waiting_confirmation") return reply;
-			if ((await runRepository.findById(runId))?.status === "waiting_task") return reply;
 			if (live.errorCode) {
 				if (live.errorCode === "RUN_ABORTED") await runService.cancelRun(runId);
 				else await runService.setStatus(runId, "failed", { errorCode: live.errorCode, message: "模型调用失败" });
@@ -723,7 +773,6 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const query = request.query as { afterSeq?: string };
 		const afterSeq = Number.parseInt(query.afterSeq ?? "0", 10);
 		const cursor = Number.isSafeInteger(afterSeq) && afterSeq >= 0 ? afterSeq : 0;
-		const active = await runRepository.findActive(sessionId);
 		reply.hijack();
 		reply.raw.writeHead(200, {
 			"Content-Type": "text/event-stream; charset=utf-8",
@@ -734,6 +783,9 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		});
 		reply.raw.flushHeaders();
 		reply.raw.write(": connected\n\n");
+		// Keep one session-scoped stream open even when there is no active run yet.
+		// Generation callbacks can publish the next event after the original Agent
+		// stream has ended, so a one-shot `idle` response loses those updates.
 		const persisted = await runService.listSessionEvents(sessionId, cursor);
 		const events = mergeRunEvents(persisted.map(toEnvelope), eventStream.replaySession(sessionId, cursor));
 		let lastSeq = cursor;
@@ -743,18 +795,30 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			reply.raw.write(`id: ${event.eventSeq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 		};
 		for (const event of events) write(event);
-		if (!active || active.status === "waiting_confirmation") {
+		const active = await runRepository.findActive(sessionId);
+		if (active?.status === "waiting_confirmation") {
 			reply.raw.end();
 			return reply;
 		}
-		const unsubscribe = eventStream.subscribe(active.runId, (event) => {
+		let closeTimer: ReturnType<typeof setTimeout> | undefined;
+		let unsubscribe: () => void = () => undefined;
+		unsubscribe = eventStream.subscribeSession(sessionId, (event) => {
 			write(event);
-			if (event.type === "run_completed" || event.type === "run_failed" || event.type === "run_aborted") {
+			if (event.type !== "run_completed" && event.type !== "run_failed" && event.type !== "run_aborted") return;
+			// A creative task may start a new continuation run immediately after
+			// publishing its terminal event. Give that transition a short window;
+			// otherwise close so fetch-based SSE clients can reconnect cleanly.
+			closeTimer = setTimeout(async () => {
+				const next = await runRepository.findActive(sessionId);
+				if (next && next.runId !== event.runId) return;
 				unsubscribe();
 				reply.raw.end();
-			}
+			}, 250);
 		});
-		request.raw.once("close", unsubscribe);
+		request.raw.once("close", () => {
+			if (closeTimer) clearTimeout(closeTimer);
+			unsubscribe();
+		});
 		return reply;
 	});
 
@@ -888,7 +952,6 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const batchItems = consumed.toolName === "submit_generation_batch" ? batchGenerationItems(params) : undefined;
 		const singleItem = batchItems ? undefined : singleGenerationItem(params);
 		const items = batchItems ?? [{ ...singleItem!, estimatedCost: consumed.estimatedCost }];
-		const continueAfterTask = params.continueAfterTask === true;
 		try {
 			const execution = await generationExecutor.executeBatch(
 				items.map((item, index) => ({
@@ -934,7 +997,10 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 							sessionId,
 							consumed.runId ?? "",
 							userId,
-							JSON.stringify({ ...item, ...(continueAfterTask ? { continueAfterTask: true } : {}) }),
+							JSON.stringify({
+								...item,
+								continueAfterTask: consumed.params.continueAfterTask === true,
+							}),
 							result.compensationRequired ? "compensation_required" : "running",
 							consumed.canvasVersion,
 							result.actualCost,
@@ -995,6 +1061,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		terminalService,
 		renderBatchRepository,
 		planRepository,
+		startContinuationRun,
 	);
 	return app;
 }
@@ -1832,6 +1899,7 @@ function registerInternalRoutes(
 	terminalService?: TaskTerminalService,
 	renderBatchRepository?: PgRenderBatchRepository,
 	planRepository?: PgPlanRepository,
+	onTaskCompleted?: (association: TaskAssociation, notice: TerminalNotice) => Promise<void>,
 ): void {
 	app.post("/internal/agent/resume", async (request) => {
 		if (!terminalService) throw new ApiError(503, "INTERNAL_AUTH_NOT_CONFIGURED", "内部回调鉴权未配置");
@@ -1874,11 +1942,11 @@ function registerInternalRoutes(
 		const planStep =
 			!result.duplicate && !result.conflict
 				? await planRepository?.completeTaskStep({
-						taskId: notice.taskId,
-						status: notice.status,
-						errorCode: notice.errorCode,
-						outputRef: notice.status === "succeeded" ? `task-result://${notice.taskId}` : undefined,
-					})
+					taskId: notice.taskId,
+					status: notice.status,
+					errorCode: notice.errorCode,
+					outputRef: notice.status === "succeeded" ? `task-result://${notice.taskId}` : undefined,
+				})
 				: undefined;
 		if (!result.duplicate && !result.conflict) {
 			const run = await runRepository.findById(result.association.runId);
@@ -1932,8 +2000,6 @@ function registerInternalRoutes(
 					await runService.setStatus(result.association.runId, "completed", {
 						text: outputText ? `生成完成：${outputText}` : "生成完成，产物已写回画布节点。",
 					});
-					if (result.association.continueAfterTask)
-						scheduleTaskContinuation(app, result.association.sessionId, notice, result.association.runId);
 				} else if (notice.status === "succeeded") {
 					const partialFailureMessage =
 						"批量生成已停止：部分关键帧未通过，后续视频、配音和字幕不会自动提交。请先重试失败镜头。";
@@ -1959,6 +2025,32 @@ function registerInternalRoutes(
 					});
 				}
 				await publishLatestRunEvent(runService, eventStream, result.association.runId);
+			} else {
+				// A callback can arrive after a service restart has already closed the
+				// original run. Persist the user-visible terminal message regardless;
+				// a continuation below starts a fresh run and restores the live SSE path.
+				const outputText = optionalString(notice.output?.text ?? notice.output?.content);
+				await addMessage(
+					database,
+					result.association.sessionId,
+					"assistant",
+					notice.status === "succeeded"
+						? outputText
+							? `生成完成：${outputText}`
+							: "生成完成，产物已写回画布节点。"
+						: `生成任务未成功完成（${notice.errorCode ?? notice.status}）。`,
+					{ taskId: notice.taskId, output: notice.output ?? {}, errorCode: notice.errorCode },
+				);
+			}
+			if (
+				notice.status === "succeeded" &&
+				!(await hasPendingBatchTasks(database, result.association.runId)) &&
+				!(await hasFailedBatchTasks(database, result.association.runId))
+			) {
+				// Do not hold the Generation callback open for the next model turn.
+				// This also resumes work if the original run was closed during a restart.
+				const continuation = onTaskCompleted?.(result.association, notice);
+				if (continuation) void continuation.catch(() => undefined);
 			}
 		}
 		return {
@@ -1976,41 +2068,6 @@ function requireUserId(request: FastifyRequest): string {
 	if (typeof value !== "string" || !/^\d+$/.test(value) || value === "0")
 		throw new ApiError(401, "PERMISSION_DENIED", "未登录");
 	return value;
-}
-
-/**
- * Wake the same Agent pipeline after a successful upstream task. This is
- * intentionally asynchronous so the generation callback stays fast and the
- * next run acquires the normal session lease/idempotency protections.
- */
-function scheduleTaskContinuation(
-	app: FastifyInstance,
-	sessionId: string,
-	notice: TerminalNotice,
-	_parentRunId: string,
-): void {
-	const userId = notice.userId;
-	if (!userId || userId === "0") return;
-	const content =
-		"系统通知：上游生成任务已成功完成。请检查原始创作要求、当前画布和已完成产物；只有存在尚未执行且依赖已满足的下游步骤时才继续调用受控工具（例如创建并提交对应视频片段），否则用一句简短结果说明本轮已完成。不要重复已完成的步骤。";
-	setTimeout(() => {
-		void app
-			.inject({
-				method: "POST",
-				url: `/api/v1/agent/sessions/${sessionId}/messages`,
-				headers: {
-					"x-user-id": userId,
-					"idempotency-key": `resume:${notice.taskId}`,
-					"content-type": "application/json",
-				},
-				payload: JSON.stringify({
-					content,
-					internalResume: true,
-					canvasId: notice.canvasId,
-				}),
-			})
-			.catch(() => undefined);
-	}, 0);
 }
 
 function recordBody(value: unknown): Record<string, unknown> {
@@ -2097,7 +2154,9 @@ function parseAgentPlan(value: unknown, sessionId: string): AgentPlan {
 				: { input: objectOrEmpty(step.input ?? step.params) }),
 			estimatedCost: requiredInteger(step.estimatedCost ?? 0, "step.estimatedCost"),
 			...(step.batchSize === undefined ? {} : { batchSize: requiredInteger(step.batchSize, "step.batchSize") }),
-			...(step.effect === undefined ? {} : { effect: requiredPlanStepEffect(step.effect, "step.effect") }),
+			...(step.effect === undefined
+				? {}
+				: { effect: requiredPlanStepEffect(step.effect, "step.effect") }),
 			...(step.concurrencyKey === undefined
 				? {}
 				: { concurrencyKey: requiredString(step.concurrencyKey, "step.concurrencyKey") }),
@@ -2301,7 +2360,7 @@ async function resolveSkillContext(
 	database: SqlExecutor,
 	userId: string,
 	sessionId: string,
-	explicitSkillIds: readonly string[] = [],
+	selectedSkillId?: string,
 ): Promise<AgentSkillContext> {
 	await ensureBuiltinSkills(database);
 	const session = await database.query<{ skill_snapshot: unknown; loaded_skill_ids: unknown }>(
@@ -2316,11 +2375,9 @@ async function resolveSkillContext(
 		 FROM skills WHERE enabled = true AND (owner_id = 0 OR owner_id = $1)`,
 		[userId],
 	);
-	const explicitlySelected = rows.rows.filter((skill) => explicitSkillIds.includes(skill.id));
-	if (explicitlySelected.length !== explicitSkillIds.length)
-		throw new ApiError(400, "INVALID_INPUT", "选择的 Skill 不存在、已停用或无权使用");
+	const explicit = selectedSkillId ? rows.rows.find((skill) => skill.id === selectedSkillId) : undefined;
 	const selected = rows.rows.filter(
-		(skill) => skill.source === "builtin" || snapshotIds.includes(skill.id) || explicitSkillIds.includes(skill.id),
+		(skill) => skill.source === "builtin" || snapshotIds.includes(skill.id) || skill.id === explicit?.id,
 	);
 	const versionRows = snapshots.length
 		? await database.query<SkillVersionRow>(
@@ -2345,16 +2402,22 @@ async function resolveSkillContext(
 			kind: system?.kind ?? "dynamic",
 		};
 	});
+	const effectiveLoadedSkillIds = explicit && !loadedSkillIds.includes(explicit.id)
+		? [...loadedSkillIds, explicit.id]
+		: loadedSkillIds;
+	if (explicit && !loadedSkillIds.includes(explicit.id)) {
+		await database.query(
+			"UPDATE agent_sessions SET loaded_skill_ids = loaded_skill_ids || to_jsonb($1::text), updated_at = now() WHERE id = $2",
+			[explicit.id, sessionId],
+		);
+	}
 	return {
 		indexLines: resources.map((skill) => skillIndexLine(skill)),
 		skills: resources,
-		loadedSkillIds,
-		loadedSkills: resources.filter(
-			(skill) => loadedSkillIds.includes(skill.id) || explicitSkillIds.includes(skill.id),
-		),
-		explicitlySelectedSkills: resources.filter((skill) => explicitSkillIds.includes(skill.id)),
+		loadedSkillIds: effectiveLoadedSkillIds,
+		loadedSkills: resources.filter((skill) => effectiveLoadedSkillIds.includes(skill.id)),
 		onLoad: async (skill) => {
-			if (loadedSkillIds.includes(skill.id)) return;
+			if (effectiveLoadedSkillIds.includes(skill.id)) return;
 			await database.query(
 				"UPDATE agent_sessions SET loaded_skill_ids = loaded_skill_ids || to_jsonb($1::text), updated_at = now() WHERE id = $2",
 				[skill.id, sessionId],
@@ -2483,12 +2546,6 @@ async function persistTurnEvent(
 		type = "assistant_delta";
 		data = { text: delta };
 	} else if (event.type === "tool_started") {
-		// Deliberately derive a concise execution summary from the operation, not
-		// from private model reasoning. It is safe to persist and show to creators.
-		const reasoning = await runService.appendEvent(runId, "reasoning_summary", {
-			summary: safeToolReasoningSummary(event.toolName),
-		});
-		eventStream.publishEvent(toEnvelope(reasoning));
 		type = "tool_started";
 		data = { tool: event.toolName, args: event.details };
 	} else if (event.type === "tool") {

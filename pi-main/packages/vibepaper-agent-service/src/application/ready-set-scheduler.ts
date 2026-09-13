@@ -1,5 +1,5 @@
 import type { AgentPlan, PlanStep, PlanStepEffect } from "../domain/agent-plan.ts";
-import { getToolsForProfile, type ToolManifestEntry } from "../domain/tool-manifest.ts";
+import { type ToolManifestEntry, getToolsForProfile } from "../domain/tool-manifest.ts";
 
 export type ReadyExecutionPartition = {
 	effect: PlanStepEffect;
@@ -47,15 +47,14 @@ export function partitionReadySteps(
 			requiresConfirmation: tool.approvalPolicy === "required",
 		});
 	}
-	const readPartitions = chunks(reads, 4).map(
-		(group) =>
-			({
-				effect: "read",
-				concurrencyKey: "read",
-				stepIds: group.map((step) => step.id),
-				maxParallelism: group.length,
-				requiresConfirmation: false,
-			}) satisfies ReadyExecutionPartition,
+	const readPartitions = chunks(reads, 4).map((group) =>
+		({
+			effect: "read",
+			concurrencyKey: "read",
+			stepIds: group.map((step) => step.id),
+			maxParallelism: group.length,
+			requiresConfirmation: false,
+		}) satisfies ReadyExecutionPartition,
 	);
 	return [...readPartitions, ...partitions];
 }

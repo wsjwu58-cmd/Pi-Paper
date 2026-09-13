@@ -88,23 +88,13 @@ function ReasoningBlock({
   streaming?: boolean
 }) {
   const { text: shown, catchingUp } = useTypewriter(text, !!streaming, 18)
-  const [open, setOpen] = useState(false)
-
-  useEffect(() => {
-    if (streaming) setOpen(true)
-  }, [streaming])
   return (
     <div className="py-1">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="mb-1 flex w-full items-center gap-1.5 rounded-[8px] px-1 py-1 text-left text-[13px] font-medium text-[#888] hover:bg-black/[0.03]"
-      >
+      <p className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium text-[#888]">
         <Brain size={14} className="text-[#999]" strokeWidth={1.75} />
-        <span className="flex-1">思考与计划</span>
-        {open ? <ChevronDown size={15} className="text-[#aaa]" /> : <ChevronRight size={15} className="text-[#aaa]" />}
-      </button>
-      {open && <div className="max-h-[140px] overflow-y-auto rounded-[8px] bg-[#f7f7f8] px-3 py-2.5">
+        推理过程
+      </p>
+      <div className="max-h-[140px] overflow-y-auto rounded-[8px] bg-[#f7f7f8] px-3 py-2.5">
         <p className="whitespace-pre-wrap text-[13px] leading-[1.65] text-[#777]">
           {shown}
           {(streaming || catchingUp) && (
@@ -114,7 +104,7 @@ function ReasoningBlock({
             />
           )}
         </p>
-      </div>}
+      </div>
     </div>
   )
 }

@@ -67,7 +67,7 @@ function upsertSpeech(steps: ExecutionStep[], content: string): ExecutionStep[] 
 }
 
 export function isChatVisibleMessage(m: AgentChatMsg): boolean {
-	if (m.role === 'user') return m.meta?.internalResume !== true
+  if (m.role === 'user') return true
   if (m.type && m.type !== 'text') return false
   if (m.content?.trim()) return true
   if ((m.meta?.executionSteps?.length ?? 0) > 0) return true
@@ -329,22 +329,25 @@ export function applyAgentEvent(
   }
 
   if (ev.type === 'task_status') {
-    if (ev.silent) {
-      const data = (ev.data || {}) as Record<string, unknown>
-      return patchLastAssistant(messages, (m) => ({
-        ...m,
-        meta: {
-          ...m.meta,
-          taskStatus: {
-            taskId: data.task_id as string | undefined,
-            status: data.status as string | undefined,
-            nodeId: data.node_id as string | undefined,
-          },
-        },
-      }))
-    }
     const data = (ev.data || {}) as Record<string, unknown>
     const st = String(data.status ?? '')
+    const taskStatus = {
+      taskId: data.task_id as string | undefined,
+      status: st || undefined,
+      nodeId: data.node_id as string | undefined,
+    }
+    if (ev.silent) {
+      return patchLastAssistant(messages, (m) => ({
+        ...m,
+        meta: { ...m.meta, taskStatus },
+      }))
+    }
+    if (!['succeeded', 'failed'].includes(st)) {
+      return patchLastAssistant(messages, (m) => ({
+        ...m,
+        meta: { ...m.meta, taskStatus },
+      }))
+    }
     if (st === 'succeeded' || st === 'failed') {
       const content =
         st === 'succeeded'
@@ -380,9 +383,10 @@ export function shouldRefreshCanvas(ev: Record<string, unknown>): boolean {
     return tool === 'create_nodes' || tool === 'connect_nodes'
   }
   if (ev.type === 'task_status') {
-    // Queue/running must invalidate the shared task feed too: otherwise a
-    // newly Agent-submitted node has no active item that would start polling.
-    return true
+    const data = (ev.data || {}) as Record<string, unknown>
+    return ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'expired', 'settlement_error'].includes(
+      String(data.status ?? ''),
+    )
   }
   return false
 }

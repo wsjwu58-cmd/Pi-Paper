@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Bot,
   X,
@@ -39,6 +40,7 @@ import { AgentNextActions, AgentTaskBadge, AgentTurnTimeline } from './AgentExec
 import {
   applyAgentEvent,
   isChatVisibleMessage,
+  shouldRefreshCanvas,
   shouldRefreshCanvasEvent,
 } from './agentEventHandlers'
 import {
@@ -59,6 +61,8 @@ import {
 } from './agentNodeReferences'
 import { DramaAssetsTab } from './DramaAssetsTab'
 import { getEventStreamReconnectDelay, scrollChatToBottom, shouldReloadSessionAfterStream } from './agentEventStream'
+import { SkillCommandPicker } from './skillCommandPicker'
+import { filterSkillCommandItems } from './skillCommandPickerUtils'
 
 const AGENT_PANEL_DEFAULT_WIDTH = 380
 const AGENT_PANEL_MIN_WIDTH = 300
@@ -109,14 +113,13 @@ export function AgentPanel() {
   const [sessionTitle, setSessionTitle] = useState('新对话')
   const [messages, setMessages] = useState<AgentChatMsg[]>([])
   const [input, setInput] = useState('')
+  const [selectedSkill, setSelectedSkill] = useState<SkillView | null>(null)
+  const [skillOptions, setSkillOptions] = useState<SkillView[]>([])
+  const [skillPickerLoading, setSkillPickerLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [tab, setTab] = useState<'chat' | 'pref' | 'skills' | 'usage' | 'history' | 'drama'>('chat')
   const [composerRefs, setComposerRefs] = useState<ComposerRef[]>([])
-  const [skillOptions, setSkillOptions] = useState<SkillView[]>([])
-  const [skillPaletteOpen, setSkillPaletteOpen] = useState(false)
-  const [skillQuery, setSkillQuery] = useState('')
-  const [skillHighlight, setSkillHighlight] = useState(0)
   const previousSelectedNodeIdsRef = useRef<Set<string>>(new Set())
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -132,6 +135,7 @@ export function AgentPanel() {
   const canvasId = canvas?.canvas.id
   const previousCanvasIdRef = useRef<string | number | undefined>(undefined)
   const lastEventSeqRef = useRef(0)
+  const queryClient = useQueryClient()
   // Every asynchronous session operation carries this epoch. A response from
   // an older epoch is stale by definition and must never update the chat UI.
   const sessionEpochRef = useRef(0)
@@ -142,25 +146,69 @@ export function AgentPanel() {
     runStatus: 'running',
   })
 
+  const notifyCanvasChanged = useCallback(() => {
+    // Keep the window event for CanvasPage and invalidate the shared query
+    // directly so the sync does not depend on listener timing.
+    window.dispatchEvent(new Event('vp-agent-executed'))
+    if (canvasId != null) {
+      void queryClient.invalidateQueries({ queryKey: ['canvas', String(canvasId)] })
+    }
+  }, [canvasId, queryClient])
+
+  const skillCommandQuery = useMemo(() => {
+    const match = /^\/([^\s]*)$/.exec(input)
+    return match?.[1] ?? null
+  }, [input])
+  const skillCommandItems = useMemo(
+    () => (skillCommandQuery == null ? [] : filterSkillCommandItems(skillOptions, skillCommandQuery)),
+    [skillCommandQuery, skillOptions],
+  )
+
+  useEffect(() => {
+    if (!open || tab !== 'chat' || skillCommandQuery == null) return
+    let cancelled = false
+    setSkillPickerLoading(true)
+    void api<{ items: SkillView[] }>(
+      `/skills${skillCommandQuery ? `?keyword=${encodeURIComponent(skillCommandQuery)}` : ''}`,
+    )
+      .then((result) => {
+        if (!cancelled) setSkillOptions(result.items ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setSkillOptions([])
+      })
+      .finally(() => {
+        if (!cancelled) setSkillPickerLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, tab, skillCommandQuery])
+
   const consumeAgentEnvelope = (event: AgentEventEnvelope): void => {
     setMessages((previous) => {
       const next = reduceAgentEvent({ ...agentEventStateRef.current, messages: previous }, event)
       agentEventStateRef.current = next
       return next.messages
     })
+    if (event.type === 'confirmation_required') {
+      // A background continuation is interactive again once it reaches a
+      // confirmation card; keep the card actionable without a new message.
+      setBusy(false)
+    } else if (event.type === 'run_completed' || event.type === 'run_failed' || event.type === 'run_aborted') {
+      setBusy(false)
+    } else if (event.type === 'task_status') {
+      const status = String(event.data.status ?? '')
+      if (status === 'queued' || status === 'running') setBusy(true)
+      if (['succeeded', 'failed', 'cancelled', 'expired', 'settlement_error'].includes(status)) setBusy(false)
+    } else {
+      // Auto-continuation has no originating send() call to set busy=true.
+      setBusy(true)
+    }
     if (event.type === 'run_failed') {
       toastError(String(event.data.message ?? event.data.errorCode ?? 'Agent 运行失败'))
     } else if (event.type === 'run_aborted') {
       setTypingTurnId(null)
-    }
-  }
-
-  const notifyCanvasForAgentEvent = (event: Record<string, unknown>) => {
-    if (!shouldRefreshCanvasEvent(event)) return
-    window.dispatchEvent(new Event('vp-agent-executed'))
-    if (event.type === 'task_status') {
-      const data = (event.data ?? {}) as Record<string, unknown>
-      window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: data.node_id ?? data.nodeId } }))
     }
   }
 
@@ -179,6 +227,7 @@ export function AgentPanel() {
     setMessages([])
     setSuggestions([])
     setComposerRefs([])
+    setSelectedSkill(null)
     setTypingTurnId(null)
   }
 
@@ -261,11 +310,15 @@ export function AgentPanel() {
 
   const handleBackgroundEvent = (ev: Record<string, unknown>) => {
     if (isAgentEventEnvelope(ev)) {
-      notifyCanvasForAgentEvent(ev)
+      if (shouldRefreshCanvasEvent(ev)) {
+        notifyCanvasChanged()
+      }
       consumeAgentEnvelope(ev)
       return
     }
-    notifyCanvasForAgentEvent(ev)
+    if (shouldRefreshCanvas(ev)) {
+      notifyCanvasChanged()
+    }
     if (ev.type === 'task_status') {
       const data = (ev.data || {}) as Record<string, unknown>
       const tid = String(data.task_id ?? '')
@@ -296,8 +349,16 @@ export function AgentPanel() {
     setMessages((m) => applyAgentEvent(m, ev, turnIdRef.current))
   }
 
-  const loadSessionQuiet = async (id: string | number, title?: string, epoch = sessionEpochRef.current) => {
-    const res = await api<{ items: AgentChatMsg[]; latestEventSeq?: number }>(`/agent/sessions/${id}/messages`)
+  const handleBackgroundEventRef = useRef<(ev: Record<string, unknown>) => void>(() => undefined)
+  handleBackgroundEventRef.current = handleBackgroundEvent
+
+  const loadSessionQuiet = async (
+    id: string | number,
+    title?: string,
+    epoch = sessionEpochRef.current,
+    preserveEventStream = false,
+  ) => {
+    const res = await api<{ items: AgentChatMsg[] }>(`/agent/sessions/${id}/messages`)
     if (epoch !== sessionEpochRef.current) return false
     activeSessionIdRef.current = id
     setSessionId(id)
@@ -305,8 +366,12 @@ export function AgentPanel() {
     const loadedMessages = res.items
       .map((m) => ({ ...m, type: m.type || 'text', meta: (m.meta as AgentChatMsg['meta']) ?? {} }))
       .filter(isChatVisibleMessage)
-    agentEventStateRef.current = { messages: loadedMessages, seenEventIds: new Set(), runStatus: 'running' }
-    lastEventSeqRef.current = Number.isSafeInteger(res.latestEventSeq) ? Number(res.latestEventSeq) : 0
+    agentEventStateRef.current = {
+      messages: loadedMessages,
+      seenEventIds: preserveEventStream ? agentEventStateRef.current.seenEventIds : new Set(),
+      runStatus: preserveEventStream ? agentEventStateRef.current.runStatus : 'running',
+    }
+    if (!preserveEventStream) lastEventSeqRef.current = 0
     setMessages(loadedMessages)
     setSuggestions([])
     setComposerRefs([])
@@ -369,7 +434,6 @@ export function AgentPanel() {
       let retryMs = 250
       while (active && !ac.signal.aborted) {
         if (String(activeSessionIdRef.current) !== String(boundSessionId)) break
-        let terminal = false
         try {
           const cursor = lastEventSeqRef.current
           const query = cursor > 0 ? `?afterSeq=${cursor}` : ''
@@ -392,13 +456,9 @@ export function AgentPanel() {
               const dataLine = part.split('\n').find((l) => l.startsWith('data: '))
               if (!dataLine) continue
               const ev = parseJsonPreserveIds(dataLine.slice(6)) as Record<string, unknown>
-              if (ev.type === 'idle') {
-                terminal = true
-                continue
-              }
+              if (ev.type === 'idle') continue
               if (isAgentEventEnvelope(ev)) {
                 lastEventSeqRef.current = Math.max(lastEventSeqRef.current, ev.eventSeq)
-                if (ev.type === 'run_completed' || ev.type === 'run_failed' || ev.type === 'run_aborted') terminal = true
               }
               if (
                 isAgentEventEnvelope(ev) ||
@@ -406,11 +466,10 @@ export function AgentPanel() {
                 ev.type === 'assistant_message' ||
                 ev.type === 'canvas_changed'
               ) {
-                handleBackgroundEvent(ev)
+                handleBackgroundEventRef.current(ev)
               }
             }
           }
-          if (terminal) break
           await new Promise<void>((resolve) => window.setTimeout(resolve, getEventStreamReconnectDelay(retryMs)))
           retryMs = getEventStreamReconnectDelay(retryMs * 2)
         } catch {
@@ -456,26 +515,6 @@ export function AgentPanel() {
     return unsub
   }, [])
 
-  useEffect(() => {
-    if (!open) return
-    void api<{ items: SkillView[] }>('/skills')
-      .then((result) => setSkillOptions(result.items ?? []))
-      .catch(() => setSkillOptions([]))
-  }, [open])
-
-  const filteredSkills = skillOptions.filter((skill) => {
-    const query = skillQuery.trim().toLocaleLowerCase()
-    return !query || `${skill.name} ${skill.description ?? ''} ${skill.category ?? ''}`.toLocaleLowerCase().includes(query)
-  })
-
-  const selectSkillFromPalette = (skill: SkillView) => {
-    setComposerRefs((previous) => upsertRefs(previous, [{ id: `skill:${skill.id}`, kind: 'skill', title: skill.name }]))
-    setInput((value) => value.replace(/\/(?:[^\s/]*)$/, '').trimStart())
-    setSkillPaletteOpen(false)
-    setSkillQuery('')
-    setSkillHighlight(0)
-  }
-
   const loadSession = async (id: string | number, title?: string) => {
     try {
       const epoch = beginSessionTransition()
@@ -508,7 +547,7 @@ export function AgentPanel() {
         })
       }
       toastSuccess(`已添加 ${items.length} 个节点到画布`)
-      window.dispatchEvent(new Event('vp-agent-executed'))
+      notifyCanvasChanged()
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -537,12 +576,16 @@ export function AgentPanel() {
 
     const processStreamEvent = (ev: Record<string, unknown>) => {
     if (isAgentEventEnvelope(ev)) {
-      notifyCanvasForAgentEvent(ev)
+      if (shouldRefreshCanvasEvent(ev)) {
+        notifyCanvasChanged()
+      }
       if (ev.type === 'assistant_delta') setTypingTurnId(turnIdRef.current)
       consumeAgentEnvelope(ev)
       return
     }
-    notifyCanvasForAgentEvent(ev)
+    if (shouldRefreshCanvas(ev)) {
+      notifyCanvasChanged()
+    }
     if (ev.type === 'assistant_message') {
       if (Array.isArray(ev.suggestions)) setSuggestions(ev.suggestions as Suggestion[])
       const tid = turnIdRef.current
@@ -671,15 +714,14 @@ export function AgentPanel() {
     }
     const sentNodeRefs = composerRefs.filter((ref) => ref.kind === 'node')
     const sentNodeIds = [...new Set(sentNodeRefs.map((ref) => ref.id))]
-    const selectedSkillIds = [...new Set(
-      composerRefs
-        .filter((ref) => ref.kind === 'skill')
-        .map((ref) => ref.id.match(/^skill:(\d+)$/)?.[1])
-        .filter((id): id is string => Boolean(id)),
-    )]
     const nodeReferences = nodeReferencesForComposer(sentNodeRefs, useCanvasStore.getState().nodes)
+    const sentSkillId = selectedSkill ? String(selectedSkill.id) : undefined
     const isFirstUserTurn = !agentEventStateRef.current.messages.some((m) => m.role === 'user')
     setInput('')
+    setSelectedSkill(null)
+    if (sentSkillId) {
+      setComposerRefs((prev) => prev.filter((ref) => ref.id !== `skill:${sentSkillId}`))
+    }
     setSuggestions([])
     // 对话历史命名：首条用户语句
     if (
@@ -700,7 +742,7 @@ export function AgentPanel() {
           role: 'user',
           type: 'text',
           content,
-          meta: { selectedNodeIds: sentNodeIds, selectedSkillIds, nodeReferences },
+          meta: { selectedNodeIds: sentNodeIds, nodeReferences, selectedSkillId: sentSkillId },
         },
         {
           id: turnId,
@@ -718,7 +760,7 @@ export function AgentPanel() {
     let confirmationRehydrate: Promise<void> | null = null
     const rehydrateAfterConfirmation = () => {
       if (!confirmationRehydrate) {
-        confirmationRehydrate = loadSessionQuiet(sid, undefined, sendSessionEpoch)
+        confirmationRehydrate = loadSessionQuiet(sid, undefined, sendSessionEpoch, true)
           .then(() => undefined)
           .catch((error) => {
             toastError((error as Error).message || '确认状态刷新失败')
@@ -736,10 +778,10 @@ export function AgentPanel() {
         body: JSON.stringify({
           content,
           selectedNodeIds: sentNodeIds,
-	          selectedSkillIds,
           canvasId: canvas?.canvas.id != null ? String(canvas.canvas.id) : undefined,
           canvasVersion: requestCanvasVersion,
           modelId: agentModel,
+          selectedSkillId: sentSkillId,
         }),
         signal: ac.signal,
       })
@@ -786,8 +828,8 @@ export function AgentPanel() {
       // the authoritative session after every normal stream completion so pending
       // confirmations and terminal messages cannot be lost in local reducer state.
       if (confirmationRehydrate) await confirmationRehydrate
-      else await loadSessionQuiet(sid, undefined, sendSessionEpoch)
-      window.dispatchEvent(new Event('vp-agent-executed'))
+      else await loadSessionQuiet(sid, undefined, sendSessionEpoch, true)
+      notifyCanvasChanged()
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') return
       toastError((e as Error).message)
@@ -1011,43 +1053,29 @@ export function AgentPanel() {
                 <AgentComposerBar
                   refs={composerRefs}
                   nodes={canvasNodes}
-                  onRemove={(ref) =>
+                  onRemove={(ref) => {
+                    if (ref.kind === 'skill' && selectedSkill && ref.id === `skill:${String(selectedSkill.id)}`)
+                      setSelectedSkill(null)
                     setComposerRefs((prev) => prev.filter((x) => !(x.kind === ref.kind && x.id === ref.id)))
-                  }
+                  }}
                 />
+                {skillCommandQuery != null && (
+                  <SkillCommandPicker
+                    items={skillCommandItems}
+                    loading={skillPickerLoading}
+                    onSelect={(skill) => {
+                      setSelectedSkill(skill)
+                      setComposerRefs((prev) =>
+                        upsertRefs(prev, [{ id: `skill:${String(skill.id)}`, kind: 'skill', title: skill.name }]),
+                      )
+                      setInput('')
+                    }}
+                  />
+                )}
                 <textarea
                   value={input}
-                  onChange={(e) => {
-                    const value = e.target.value
-                    setInput(value)
-                    const match = value.match(/(?:^|\s)\/([^\s/]*)$/)
-                    setSkillQuery(match?.[1] ?? '')
-                    setSkillPaletteOpen(Boolean(match))
-                    setSkillHighlight(0)
-                  }}
+                  onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (skillPaletteOpen && filteredSkills.length > 0) {
-                      if (e.key === 'ArrowDown') {
-                        e.preventDefault()
-                        setSkillHighlight((index) => (index + 1) % filteredSkills.length)
-                        return
-                      }
-                      if (e.key === 'ArrowUp') {
-                        e.preventDefault()
-                        setSkillHighlight((index) => (index - 1 + filteredSkills.length) % filteredSkills.length)
-                        return
-                      }
-                      if (e.key === 'Enter' || e.key === 'Tab') {
-                        e.preventDefault()
-                        selectSkillFromPalette(filteredSkills[skillHighlight] ?? filteredSkills[0])
-                        return
-                      }
-                    }
-                    if (e.key === 'Escape' && skillPaletteOpen) {
-                      e.preventDefault()
-                      setSkillPaletteOpen(false)
-                      return
-                    }
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault()
                       if (!busy) void send()
@@ -1058,37 +1086,6 @@ export function AgentPanel() {
                   disabled={busy || hasPendingConfirmation}
                   className="block min-h-[72px] w-full resize-none bg-transparent px-3 pb-12 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60"
                 />
-                {skillPaletteOpen && (
-                  <div
-                    role="listbox"
-                    aria-label="选择 Skill"
-                    className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-30 max-h-72 overflow-y-auto rounded-xl border border-[var(--canvas-border-strong)] bg-[var(--canvas-surface)] p-1.5 shadow-xl"
-                  >
-                    <p className="px-2.5 pb-1 pt-1 text-[11px] font-medium text-[var(--canvas-muted)]">选择 Skill</p>
-                    {filteredSkills.length ? filteredSkills.slice(0, 12).map((skill, index) => (
-                      <button
-                        key={String(skill.id)}
-                        type="button"
-                        role="option"
-                        aria-selected={index === skillHighlight}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => selectSkillFromPalette(skill)}
-                        className={cn(
-                          'flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition-colors',
-                          index === skillHighlight ? 'bg-[var(--canvas-hover)]' : 'hover:bg-[var(--canvas-hover)]',
-                        )}
-                      >
-                        <Puzzle size={15} className="mt-0.5 shrink-0 text-[var(--canvas-muted)]" />
-                        <span className="min-w-0">
-                          <span className="block truncate text-[13px] font-medium text-[var(--canvas-text)]">{skill.name}</span>
-                          <span className="block truncate text-[11px] text-[var(--canvas-muted)]">{skill.description || skill.category || '创作 Skill'}</span>
-                        </span>
-                      </button>
-                    )) : (
-                      <p className="px-2.5 py-3 text-[12px] text-[var(--canvas-muted)]">没有匹配的 Skill</p>
-                    )}
-                  </div>
-                )}
                 <div className="absolute bottom-2 left-2 right-2 z-10 flex min-w-0 items-center gap-1.5">
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 items-center gap-0.5">

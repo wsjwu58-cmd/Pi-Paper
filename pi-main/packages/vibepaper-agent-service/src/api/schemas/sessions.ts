@@ -5,8 +5,7 @@ export const sessionMessageSchema = {
 		content: { type: "string" },
 		canvasId: { type: "string" },
 		selectedNodeIds: { type: "array", items: { type: "string" } },
-		selectedSkillIds: { type: "array", items: { type: "string" } },
-		internalResume: { type: "boolean" },
+		selectedSkillId: { type: "string" },
 		modelId: { type: "string" },
 	},
 } as const;

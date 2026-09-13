@@ -38,7 +38,7 @@ export class PgTaskTerminalStore implements TerminalStore {
 			sessionId: String(row.session_id),
 			runId: String(row.run_id),
 			userId: String(row.user_id),
-			continueAfterTask: actionRequestsContinuation(row.params),
+			continueAfterTask: actionContinueAfterTask(row.params),
 		};
 	}
 
@@ -92,20 +92,17 @@ export class PgTaskTerminalStore implements TerminalStore {
 	}
 }
 
-function actionRequestsContinuation(params: unknown): boolean {
-	if (typeof params === "string") {
+function actionContinueAfterTask(value: unknown): boolean {
+	if (typeof value === "string") {
 		try {
-			return actionRequestsContinuation(JSON.parse(params));
+			return actionContinueAfterTask(JSON.parse(value) as unknown);
 		} catch {
 			return false;
 		}
 	}
-	return (
-		typeof params === "object" &&
-		params !== null &&
-		!Array.isArray(params) &&
-		(params as Record<string, unknown>).continueAfterTask === true
-	);
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as { continueAfterTask?: unknown }).continueAfterTask === true
+		: false;
 }
 
 let auditSequence = 0;

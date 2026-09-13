@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentArtifact } from "../src/domain/agent-artifact.ts";
-import type { SqlExecutor } from "../src/infrastructure/database.ts";
 import { PgAgentArtifactRepository } from "../src/infrastructure/pg-agent-artifact-repository.ts";
+import type { SqlExecutor } from "../src/infrastructure/database.ts";
 
 const artifact: AgentArtifact = {
 	id: "artifact-1",
@@ -39,10 +39,7 @@ class ArtifactDatabase implements SqlExecutor {
 describe("PgAgentArtifactRepository", () => {
 	it("persists and loads owner-scoped typed artifacts", async () => {
 		const repository = new PgAgentArtifactRepository(new ArtifactDatabase());
-		await expect(repository.append("user-1", artifact)).resolves.toMatchObject({
-			id: "artifact-1",
-			producerRole: "script",
-		});
+		await expect(repository.append("user-1", artifact)).resolves.toMatchObject({ id: "artifact-1", producerRole: "script" });
 		await expect(repository.list("plan-1", "user-1")).resolves.toEqual([artifact]);
 	});
 });
