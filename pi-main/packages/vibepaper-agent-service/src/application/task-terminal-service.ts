@@ -13,14 +13,7 @@ export type TerminalNotice = {
 	actualCost?: number;
 };
 
-export type TaskAssociation = {
-	taskId: string;
-	actionId: string;
-	runId: string;
-	sessionId: string;
-	userId?: string;
-	continueAfterTask?: boolean;
-};
+export type TaskAssociation = { taskId: string; actionId: string; runId: string; sessionId: string; userId?: string };
 
 export interface TerminalStore {
 	findTask(taskId: string): TaskAssociation | undefined | Promise<TaskAssociation | undefined>;

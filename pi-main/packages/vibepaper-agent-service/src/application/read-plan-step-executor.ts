@@ -1,5 +1,5 @@
-import type { ReadTools } from "../tools/read-tools.ts";
 import type { ReadPlanStepExecutor } from "./plan-execution-service.ts";
+import type { ReadTools } from "../tools/read-tools.ts";
 
 /** Adapter which exposes the already-sanitised Tool Gateway read surface to plans. */
 export class ToolGatewayReadPlanStepExecutor implements ReadPlanStepExecutor {
@@ -9,9 +9,7 @@ export class ToolGatewayReadPlanStepExecutor implements ReadPlanStepExecutor {
 		this.readTools = readTools;
 	}
 
-	async execute(
-		input: Parameters<ReadPlanStepExecutor["execute"]>[0],
-	): Promise<{ outputRef: string; result: unknown }> {
+	async execute(input: Parameters<ReadPlanStepExecutor["execute"]>[0]): Promise<{ outputRef: string; result: unknown }> {
 		const args = input.step.input ?? {};
 		const result = await this.executeTool(input.step.tool, input.ownerId, input.canvasId, args, input.requestId);
 		return {
@@ -31,12 +29,7 @@ export class ToolGatewayReadPlanStepExecutor implements ReadPlanStepExecutor {
 			case "get_canvas_summary":
 				return await this.readTools.getCanvasSummary(ownerId, canvasId, requestId);
 			case "get_selected_nodes":
-				return await this.readTools.getSelectedNodes(
-					ownerId,
-					canvasId,
-					requiredStringArray(args, "nodeIds"),
-					requestId,
-				);
+				return await this.readTools.getSelectedNodes(ownerId, canvasId, requiredStringArray(args, "nodeIds"), requestId);
 			case "get_node_detail":
 				return await this.readTools.getNodeDetail(ownerId, canvasId, requiredString(args, "nodeId"), requestId);
 			case "list_models":

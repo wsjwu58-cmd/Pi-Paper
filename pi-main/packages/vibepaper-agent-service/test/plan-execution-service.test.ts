@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
+
+import { PlanExecutionService, type PlanExecutionRepository, type ReadPlanStepExecutor } from "../src/application/plan-execution-service.ts";
 import { PlanCompiler } from "../src/application/plan-compiler.ts";
-import {
-	type PlanExecutionRepository,
-	PlanExecutionService,
-	type ReadPlanStepExecutor,
-} from "../src/application/plan-execution-service.ts";
 import { claimPlanStep, completePlanStep, failPlanStep } from "../src/application/plan-step-state.ts";
 import type { AgentPlan, PlanStep } from "../src/domain/agent-plan.ts";
 import type { AgentProfile } from "../src/domain/tool-manifest.ts";

@@ -14,8 +14,6 @@ export type SubmitGenerationInput = {
 	estimatedCost: number;
 	overwrite: boolean;
 	requiresApproval?: boolean;
-	/** Resume the originating workflow only after this task reaches success. */
-	continueAfterTask?: boolean;
 };
 
 export type SubmitGenerationBatchInput = Omit<
@@ -54,7 +52,6 @@ export class GenerationTools {
 				modelType: input.modelType,
 				modelParams: input.modelParams,
 				overwrite: input.overwrite,
-				...(input.continueAfterTask ? { continueAfterTask: true } : {}),
 			},
 			estimatedCost: input.estimatedCost,
 			risk: "high",
@@ -78,10 +75,7 @@ export class GenerationTools {
 			canvasId: input.canvasId,
 			canvasVersion: input.canvasVersion,
 			toolName: "submit_generation_batch",
-			params: {
-				generations: input.generations,
-				...(input.continueAfterTask ? { continueAfterTask: true } : {}),
-			},
+			params: { generations: input.generations },
 			estimatedCost,
 			risk: "high",
 			requiresApproval: input.requiresApproval ?? true,

@@ -14,7 +14,6 @@ type AssociationRow = QueryResultRow & {
 	session_id: string;
 	run_id: string | null;
 	user_id: string;
-	params: unknown;
 };
 
 export class PgTaskTerminalStore implements TerminalStore {
@@ -26,7 +25,7 @@ export class PgTaskTerminalStore implements TerminalStore {
 
 	async findTask(taskId: string): Promise<TaskAssociation | undefined> {
 		const result = await this.database.query<AssociationRow>(
-			`SELECT a.task_id, a.id AS action_id, a.session_id, a.run_id, a.user_id, a.params
+			`SELECT a.task_id, a.id AS action_id, a.session_id, a.run_id, a.user_id
 			 FROM agent_actions a WHERE a.task_id = $1 ORDER BY a.created_at DESC LIMIT 1`,
 			[taskId],
 		);
@@ -38,7 +37,6 @@ export class PgTaskTerminalStore implements TerminalStore {
 			sessionId: String(row.session_id),
 			runId: String(row.run_id),
 			userId: String(row.user_id),
-			continueAfterTask: actionRequestsContinuation(row.params),
 		};
 	}
 
@@ -90,22 +88,6 @@ export class PgTaskTerminalStore implements TerminalStore {
 			[nextIdForAudit(), notice.taskId, previous, notice.status, JSON.stringify(notice)],
 		);
 	}
-}
-
-function actionRequestsContinuation(params: unknown): boolean {
-	if (typeof params === "string") {
-		try {
-			return actionRequestsContinuation(JSON.parse(params));
-		} catch {
-			return false;
-		}
-	}
-	return (
-		typeof params === "object" &&
-		params !== null &&
-		!Array.isArray(params) &&
-		(params as Record<string, unknown>).continueAfterTask === true
-	);
 }
 
 let auditSequence = 0;
