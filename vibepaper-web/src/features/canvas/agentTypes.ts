@@ -9,6 +9,9 @@ export interface ExecutionStep {
   reasoning?: string
   ok?: boolean
   detail?: string
+  rawDetail?: string
+  attempt?: number
+  maxAttempts?: number
 }
 
 export interface AgentSuggestion {
@@ -68,6 +71,7 @@ export interface AgentChatMsg {
     confirmation?: AgentConfirmation
     errorCode?: string
     runStatus?: string
+    runId?: string
   }
 }
 

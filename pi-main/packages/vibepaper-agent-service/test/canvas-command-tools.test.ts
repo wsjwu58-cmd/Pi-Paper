@@ -39,7 +39,7 @@ describe("canvas command tools", () => {
 		});
 	});
 
-	it("is idempotent and maps stale canvas versions to VERSION_CONFLICT", async () => {
+	it("does not permanently cache a failed canvas command", async () => {
 		let calls = 0;
 		const service = new CanvasCommandService({
 			execute: async () => {
@@ -50,7 +50,7 @@ describe("canvas command tools", () => {
 		const input = { userId: "101", canvasId: "301", expectedVersion: 1, idempotencyKey: "k1", nodeIds: ["1"] };
 		await expect(service.connectNodes(input)).rejects.toThrow("VERSION_CONFLICT");
 		await expect(service.connectNodes(input)).rejects.toThrow("VERSION_CONFLICT");
-		expect(calls).toBe(1);
+		expect(calls).toBe(2);
 	});
 
 	it("preserves the structured downstream input error code", async () => {

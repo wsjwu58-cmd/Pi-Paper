@@ -9,8 +9,10 @@ export type AgentRunStatus =
 
 export type AgentRunEventType =
 	| "assistant_delta"
+	| "thinking"
 	| "tool_started"
 	| "tool_completed"
+	| "tool_retry"
 	| "confirmation_required"
 	| "task_status"
 	| "run_completed"

@@ -28,11 +28,7 @@ import {
 import { confirmationRecoveryMessage } from "../application/confirmation-recovery.ts";
 import { persistConfirmationStatus } from "../application/confirmation-status.ts";
 import { GenerationActionExecutor } from "../application/generation-action-executor.ts";
-import {
-	formatIntentContext,
-	requestsPostGenerationFollowUp,
-	routeAgentIntent,
-} from "../application/intent-router.ts";
+import { formatIntentContext, routeAgentIntent } from "../application/intent-router.ts";
 import { MemoryService } from "../application/memory-service.ts";
 import {
 	MAX_NODE_REFERENCES,
@@ -47,8 +43,8 @@ import { AgentEventStream } from "../application/run-event-stream.ts";
 import { InMemoryRunRepository, type RunRepository, SessionRunService } from "../application/session-run-service.ts";
 import { BUILTIN_SKILL_INSERT_SQL } from "../application/skill-bootstrap.ts";
 import {
-	TaskTerminalService,
 	type TaskAssociation,
+	TaskTerminalService,
 	type TerminalNotice,
 	type TerminalResult,
 	type TerminalStatus,
@@ -178,118 +174,117 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		? new TaskTerminalService(new PgTaskTerminalStore(database as MigrationDatabase), config.internalServiceToken)
 		: undefined;
 	const startContinuationRun = async (association: TaskAssociation, notice: TerminalNotice): Promise<void> => {
-		if (!association.continueAfterTask || notice.status !== "succeeded") return;
 		const userId = notice.userId ?? association.userId;
 		const canvasId = notice.canvasId;
 		if (!userId || !canvasId) return;
-		const continuationKey = `task-continuation:${notice.taskId}`;
+		// The terminal callback can arrive concurrently for every task in a batch.
+		// Bind the continuation to the originating Run, not an individual task, so
+		// the final barrier opens exactly one follow-up Run.
+		const continuationKey = `task-continuation:${association.runId}`;
 		const run = await runService.startRun({ sessionId: association.sessionId, idempotencyKey: continuationKey });
 		if (run.idempotencyKey !== continuationKey || run.status !== "queued") return;
 		const requestId = `continuation:${notice.taskId}`;
 		try {
-		const progressMessage = "上一阶段生成已完成，正在读取画布并继续执行后续步骤。";
-		await addMessage(database, association.sessionId, "assistant", progressMessage, {
-			continuation: true,
-			taskId: notice.taskId,
-		});
-		const canvasVersion = await taskGateway.getCanvasVersion(userId, canvasId, requestId);
-		const profile = selectProfile({ canvasDomain: "short-drama" });
-		const content =
-			"上一阶段生成任务已成功完成。请读取当前画布，严格按照用户上一条创作请求继续执行尚未完成的后续步骤：不要重复已完成的生成；如果请求包含创建视频片段，请使用已完成的关键帧作为上游，创建并连接对应的视频节点，再按确认规则提交生成。若没有后续动作，请总结已完成内容和下一步建议。";
-		const history = await readHistory(database, association.sessionId);
-		const skillContext = await resolveSkillContext(database, userId, association.sessionId);
-		const intent = routeAgentIntent({ content, profile });
-		const live: {
-			assistantText: string;
-			count: number;
-			repeatedReadLimitReached: boolean;
-			toolCalls: Map<string, number>;
-			errorCode?: string;
-		} = { assistantText: "", count: 0, repeatedReadLimitReached: false, toolCalls: new Map() };
-		const runtimeTools = createRuntimeTools({
-			userId,
-			sessionId: association.sessionId,
-			runId: run.runId,
-			canvasId,
-			canvasVersion,
-			canvasVersionPinned: true,
-			requestId,
-			referenceNodeIds: [],
-			gateway: taskGateway,
-			approvals: approvalService,
-			continueAfterTask: true,
-			onApprovalRequired: async (action) => {
-				await runRepository.updateStatus(run.runId, "waiting_confirmation");
-				const recovery = confirmationRecoveryMessage({
-					tool: action.toolName,
-					actionId: action.actionId,
-					approvalToken: action.approvalToken,
-					estimatedCost: action.estimatedCost,
-					canvasVersion: action.canvasVersion,
-					expiresAt: action.binding.expiresAt,
-					affectedNodeCount:
-						action.toolName === "submit_generation_batch" ? generationItemCount(action.params) : 1,
-				});
-				await addMessage(database, association.sessionId, "assistant", recovery.content, recovery.meta);
-				const event = await runService.appendEvent(run.runId, "confirmation_required", {
-					actionId: action.actionId,
-					approvalToken: action.approvalToken,
-					tool: action.toolName,
-					summary: `确认执行 ${action.toolName}`,
-					confirmReason: "该操作会产生外部副作用或点数费用",
-					estimatedCost: action.estimatedCost,
-					estimatedTotalCost: action.estimatedCost,
-					affectedNodeCount:
-						action.toolName === "submit_generation_batch" ? generationItemCount(action.params) : 1,
-					canvasVersion: action.canvasVersion,
-					expiresAt: action.binding.expiresAt,
-				});
-				eventStream.publishEvent(toEnvelope(event));
-			},
-		});
-		activeRuns.set(association.sessionId, run.runId);
-		await runRepository.updateStatus(run.runId, "running");
-		const progressEvent = await runService.appendEvent(run.runId, "assistant_delta", { text: progressMessage });
-		eventStream.publishEvent(toEnvelope(progressEvent));
-			const outcome = await runTurn(
-				config,
-				dramaState,
-				association.sessionId,
-				history,
-				content,
-				skillContext,
-				[],
-				{
-					onAgent: (agent) => activeAgents.set(association.sessionId, agent),
-					runtimeTools,
-					profile,
-					modelId: config.llmModel,
-					intentContext: formatIntentContext(intent),
-					shouldStopAfterTurn: async () =>
-						cancelledSessions.has(association.sessionId) ||
-						live.repeatedReadLimitReached ||
-						(await runRepository.findById(run.runId))?.status === "aborted",
-					onEvent: async (event) => {
-						live.count += 1;
-						if (event.type === "tool_started" && event.toolName === "get_canvas_summary") {
-							const calls = (live.toolCalls.get(event.toolName) ?? 0) + 1;
-							live.toolCalls.set(event.toolName, calls);
-							if (calls >= 2) live.repeatedReadLimitReached = true;
-						}
-						if (event.type === "error") live.errorCode = event.errorCode ?? "MODEL_UNAVAILABLE";
-						if (event.type === "tool" && event.ok === false && event.errorCode)
-							live.errorCode = event.errorCode;
-						live.assistantText = await persistTurnEvent(
-							runService,
-							eventStream,
-							run.runId,
-							association.sessionId,
-							event,
-							live.assistantText,
-						);
-					},
+			const progressMessage =
+				notice.status === "succeeded"
+					? "上一阶段生成已完成，正在读取画布并继续执行后续步骤。"
+					: "上一阶段生成已结束，正在读取画布并整理失败影响与后续步骤。";
+			await addMessage(database, association.sessionId, "assistant", progressMessage, {
+				continuation: true,
+				taskId: notice.taskId,
+			});
+			const canvasVersion = await taskGateway.getCanvasVersion(userId, canvasId, requestId);
+			const profile = selectProfile({ canvasDomain: "short-drama" });
+			const content =
+				notice.status === "succeeded"
+					? "上一阶段生成任务已完成。请读取当前画布，严格按照用户上一条创作请求继续执行尚未完成的后续步骤：不要重复已完成的生成；如果请求包含创建视频片段，请使用已完成的关键帧作为上游，创建并连接对应的视频节点，再按确认规则提交生成。若没有后续动作，请总结已完成内容和下一步建议。"
+					: "上一阶段全部生成任务已结束，其中至少一个未成功。请读取当前画布，保留已完成产物，明确失败影响和可恢复的下一步；不要自动新建收费生成任务，也不要执行依赖失败产物的下游步骤。";
+			const history = await readHistory(database, association.sessionId);
+			const skillContext = await resolveSkillContext(database, userId, association.sessionId);
+			const intent = routeAgentIntent({ content, profile });
+			const live: {
+				assistantText: string;
+				count: number;
+				repeatedReadLimitReached: boolean;
+				toolCalls: Map<string, number>;
+				errorCode?: string;
+			} = { assistantText: "", count: 0, repeatedReadLimitReached: false, toolCalls: new Map() };
+			const runtimeTools = createRuntimeTools({
+				userId,
+				sessionId: association.sessionId,
+				runId: run.runId,
+				canvasId,
+				canvasVersion,
+				canvasVersionPinned: true,
+				requestId,
+				referenceNodeIds: [],
+				gateway: taskGateway,
+				approvals: approvalService,
+				continueAfterTask: true,
+				onApprovalRequired: async (action) => {
+					await runRepository.updateStatus(run.runId, "waiting_confirmation");
+					const recovery = confirmationRecoveryMessage({
+						tool: action.toolName,
+						actionId: action.actionId,
+						approvalToken: action.approvalToken,
+						estimatedCost: action.estimatedCost,
+						canvasVersion: action.canvasVersion,
+						expiresAt: action.binding.expiresAt,
+						affectedNodeCount:
+							action.toolName === "submit_generation_batch" ? generationItemCount(action.params) : 1,
+					});
+					await addMessage(database, association.sessionId, "assistant", recovery.content, {
+						...recovery.meta,
+						runId: run.runId,
+					});
+					const event = await runService.appendEvent(run.runId, "confirmation_required", {
+						actionId: action.actionId,
+						approvalToken: action.approvalToken,
+						tool: action.toolName,
+						summary: `确认执行 ${action.toolName}`,
+						confirmReason: "该操作会产生外部副作用或点数费用",
+						estimatedCost: action.estimatedCost,
+						estimatedTotalCost: action.estimatedCost,
+						affectedNodeCount:
+							action.toolName === "submit_generation_batch" ? generationItemCount(action.params) : 1,
+						canvasVersion: action.canvasVersion,
+						expiresAt: action.binding.expiresAt,
+					});
+					eventStream.publishEvent(toEnvelope(event));
 				},
-			);
+			});
+			activeRuns.set(association.sessionId, run.runId);
+			await runRepository.updateStatus(run.runId, "running");
+			const progressEvent = await runService.appendEvent(run.runId, "assistant_delta", { text: progressMessage });
+			eventStream.publishEvent(toEnvelope(progressEvent));
+			const outcome = await runTurn(config, dramaState, association.sessionId, history, content, skillContext, [], {
+				onAgent: (agent) => activeAgents.set(association.sessionId, agent),
+				runtimeTools,
+				profile,
+				modelId: config.llmModel,
+				intentContext: formatIntentContext(intent),
+				shouldStopAfterTurn: async () =>
+					cancelledSessions.has(association.sessionId) ||
+					live.repeatedReadLimitReached ||
+					(await runRepository.findById(run.runId))?.status === "aborted",
+				onEvent: async (event) => {
+					live.count += 1;
+					if (event.type === "tool_started" && event.toolName === "get_canvas_summary") {
+						const calls = (live.toolCalls.get(event.toolName) ?? 0) + 1;
+						live.toolCalls.set(event.toolName, calls);
+						if (calls >= 2) live.repeatedReadLimitReached = true;
+					}
+					if (event.type === "error") live.errorCode = event.errorCode ?? "MODEL_UNAVAILABLE";
+					live.assistantText = await persistTurnEvent(
+						runService,
+						eventStream,
+						run.runId,
+						association.sessionId,
+						event,
+						live.assistantText,
+					);
+				},
+			});
 			if ((await runRepository.findById(run.runId))?.status === "waiting_confirmation") return;
 			if (live.errorCode) {
 				await runService.setStatus(run.runId, "failed", {
@@ -302,7 +297,10 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			if (live.count === 0)
 				await persistTurnEvents(runService, eventStream, run.runId, association.sessionId, outcome.events);
 			const assistantText = outcome.assistantText || live.assistantText || "后续步骤已处理。";
-			await addMessage(database, association.sessionId, "assistant", assistantText, { continuation: true });
+			await addMessage(database, association.sessionId, "assistant", assistantText, {
+				continuation: true,
+				runId: run.runId,
+			});
 			await database.query(
 				`UPDATE agent_sessions SET token_used_total = token_used_total + $1,
 					model_usage = jsonb_set(model_usage, '{assistant}', to_jsonb(COALESCE((model_usage->>'assistant')::integer, 0) + $1)), updated_at = now()
@@ -513,6 +511,10 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 				meta: objectOrEmpty(message.meta),
 				createdAt: message.created_at.toISOString(),
 			})),
+			// Event history is replayed on page refresh. Keep the detail useful for
+			// the execution record without returning an unbounded Skill/tool payload
+			// that can make a normal session read too large to render.
+			events: (await runService.listSessionEvents(sessionId)).map(toReplayEnvelope),
 		};
 	});
 
@@ -584,11 +586,15 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			});
 			reply.raw.write(": connected\n\n");
 			const responseEvent = await runService.appendEvent(runId, "assistant_delta", { text: directReply });
-			reply.raw.write(`id: ${responseEvent.eventSeq}\nevent: ${responseEvent.type}\ndata: ${JSON.stringify(toEnvelope(responseEvent))}\n\n`);
+			reply.raw.write(
+				`id: ${responseEvent.eventSeq}\nevent: ${responseEvent.type}\ndata: ${JSON.stringify(toEnvelope(responseEvent))}\n\n`,
+			);
 			await runService.setStatus(runId, "completed", { text: directReply });
 			const completedEvent = (await runService.listEvents(runId)).at(-1);
 			if (completedEvent)
-				reply.raw.write(`id: ${completedEvent.eventSeq}\nevent: ${completedEvent.type}\ndata: ${JSON.stringify(toEnvelope(completedEvent))}\n\n`);
+				reply.raw.write(
+					`id: ${completedEvent.eventSeq}\nevent: ${completedEvent.type}\ndata: ${JSON.stringify(toEnvelope(completedEvent))}\n\n`,
+				);
 			reply.raw.end();
 			return reply;
 		}
@@ -614,7 +620,10 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			canvasVersion: optionalInteger(body.canvasVersion) ?? 0,
 			canvasVersionPinned: (optionalInteger(body.canvasVersion) ?? 0) > 0,
 			referenceNodeIds: nodeReferences.map((reference) => reference.nodeId),
-			continueAfterTask: intent.kind === "creative_workflow" || requestsPostGenerationFollowUp(content),
+			// Every confirmed generation enters the terminal barrier and starts one
+			// follow-up Run. The follow-up may only summarize for a one-shot image,
+			// but it must never leave the Agent silently stranded after completion.
+			continueAfterTask: true,
 			requestId: request.id,
 			gateway: taskGateway,
 			approvals: approvalService,
@@ -651,7 +660,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 					affectedNodeCount:
 						action.toolName === "submit_generation_batch" ? generationItemCount(action.params) : 1,
 				});
-				await addMessage(database, sessionId, "assistant", recovery.content, recovery.meta);
+				await addMessage(database, sessionId, "assistant", recovery.content, { ...recovery.meta, runId });
 				const event = await runService.appendEvent(runId, "confirmation_required", {
 					actionId: action.actionId,
 					approvalToken: action.approvalToken,
@@ -702,7 +711,6 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 					requiredToolName: intent.requiredToolName,
 					shouldStopAfterTurn: async () =>
 						cancelledSessions.has(sessionId) ||
-						Boolean(live.errorCode) ||
 						live.repeatedReadLimitReached ||
 						(await runRepository.findById(runId))?.status === "aborted",
 					onEvent: async (event) => {
@@ -715,7 +723,6 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 							if (calls >= 2) live.repeatedReadLimitReached = true;
 						}
 						if (event.type === "error") live.errorCode = event.errorCode ?? "MODEL_UNAVAILABLE";
-						if (event.type === "tool" && event.ok === false && event.errorCode) live.errorCode = event.errorCode;
 						live.assistantText = await persistTurnEvent(
 							runService,
 							eventStream,
@@ -740,7 +747,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			}
 			if (live.count === 0) await persistTurnEvents(runService, eventStream, runId, sessionId, outcome.events);
 			const assistantText = outcome.assistantText || live.assistantText || missingAssistantReply(content);
-			if (assistantText) await addMessage(database, sessionId, "assistant", assistantText, {});
+			if (assistantText) await addMessage(database, sessionId, "assistant", assistantText, { runId });
 			await database.query(
 				`UPDATE agent_sessions SET token_used_total = token_used_total + $1,
 					model_usage = jsonb_set(model_usage, '{assistant}', to_jsonb(COALESCE((model_usage->>'assistant')::integer, 0) + $1)), updated_at = now()
@@ -999,7 +1006,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 							userId,
 							JSON.stringify({
 								...item,
-								continueAfterTask: consumed.params.continueAfterTask === true,
+								continueAfterTask: true,
 							}),
 							result.compensationRequired ? "compensation_required" : "running",
 							consumed.canvasVersion,
@@ -1942,11 +1949,11 @@ function registerInternalRoutes(
 		const planStep =
 			!result.duplicate && !result.conflict
 				? await planRepository?.completeTaskStep({
-					taskId: notice.taskId,
-					status: notice.status,
-					errorCode: notice.errorCode,
-					outputRef: notice.status === "succeeded" ? `task-result://${notice.taskId}` : undefined,
-				})
+						taskId: notice.taskId,
+						status: notice.status,
+						errorCode: notice.errorCode,
+						outputRef: notice.status === "succeeded" ? `task-result://${notice.taskId}` : undefined,
+					})
 				: undefined;
 		if (!result.duplicate && !result.conflict) {
 			const run = await runRepository.findById(result.association.runId);
@@ -2042,13 +2049,12 @@ function registerInternalRoutes(
 					{ taskId: notice.taskId, output: notice.output ?? {}, errorCode: notice.errorCode },
 				);
 			}
-			if (
-				notice.status === "succeeded" &&
-				!(await hasPendingBatchTasks(database, result.association.runId)) &&
-				!(await hasFailedBatchTasks(database, result.association.runId))
-			) {
+			if (!(await hasPendingBatchTasks(database, result.association.runId))) {
 				// Do not hold the Generation callback open for the next model turn.
-				// This also resumes work if the original run was closed during a restart.
+				// The barrier opens on every terminal outcome. A failed dependency must
+				// resume the Agent into recovery rather than leaving the conversation
+				// silently stranded; the continuation itself cannot re-submit billable
+				// work without a fresh confirmation.
 				const continuation = onTaskCompleted?.(result.association, notice);
 				if (continuation) void continuation.catch(() => undefined);
 			}
@@ -2154,9 +2160,7 @@ function parseAgentPlan(value: unknown, sessionId: string): AgentPlan {
 				: { input: objectOrEmpty(step.input ?? step.params) }),
 			estimatedCost: requiredInteger(step.estimatedCost ?? 0, "step.estimatedCost"),
 			...(step.batchSize === undefined ? {} : { batchSize: requiredInteger(step.batchSize, "step.batchSize") }),
-			...(step.effect === undefined
-				? {}
-				: { effect: requiredPlanStepEffect(step.effect, "step.effect") }),
+			...(step.effect === undefined ? {} : { effect: requiredPlanStepEffect(step.effect, "step.effect") }),
 			...(step.concurrencyKey === undefined
 				? {}
 				: { concurrencyKey: requiredString(step.concurrencyKey, "step.concurrencyKey") }),
@@ -2402,9 +2406,8 @@ async function resolveSkillContext(
 			kind: system?.kind ?? "dynamic",
 		};
 	});
-	const effectiveLoadedSkillIds = explicit && !loadedSkillIds.includes(explicit.id)
-		? [...loadedSkillIds, explicit.id]
-		: loadedSkillIds;
+	const effectiveLoadedSkillIds =
+		explicit && !loadedSkillIds.includes(explicit.id) ? [...loadedSkillIds, explicit.id] : loadedSkillIds;
 	if (explicit && !loadedSkillIds.includes(explicit.id)) {
 		await database.query(
 			"UPDATE agent_sessions SET loaded_skill_ids = loaded_skill_ids || to_jsonb($1::text), updated_at = now() WHERE id = $2",
@@ -2545,12 +2548,18 @@ async function persistTurnEvent(
 		if (!delta) return nextAssistantText;
 		type = "assistant_delta";
 		data = { text: delta };
+	} else if (event.type === "thinking" && event.content) {
+		type = "thinking";
+		data = { text: event.content };
 	} else if (event.type === "tool_started") {
 		type = "tool_started";
 		data = { tool: event.toolName, args: event.details };
 	} else if (event.type === "tool") {
 		type = "tool_completed";
 		data = { tool: event.toolName, details: event.details, ok: event.ok !== false };
+	} else if (event.type === "tool_retry") {
+		type = "tool_retry";
+		data = { tool: event.toolName, ...objectOrEmpty(event.details) };
 	} else if (event.type === "error") {
 		type = event.errorCode === "RUN_ABORTED" ? "run_aborted" : "run_failed";
 		data = { errorCode: event.errorCode ?? "MODEL_UNAVAILABLE", message: event.content };
@@ -2585,6 +2594,34 @@ function toEnvelope(event: AgentRunEvent) {
 		runtimeVersion: event.runtimeVersion,
 		data: event.data,
 	};
+}
+
+function toReplayEnvelope(event: AgentRunEvent) {
+	return {
+		...toEnvelope(event),
+		data: compactReplayData(event.data),
+	};
+}
+
+function compactReplayData(value: unknown, depth = 0): unknown {
+	if (typeof value === "string") {
+		const maxLength = 6_000;
+		return value.length <= maxLength ? value : `${value.slice(0, maxLength)}\n…（会话回放已截断）`;
+	}
+	if (value == null || typeof value !== "object") return value;
+	if (depth >= 8) return "…（会话回放层级已截断）";
+	if (Array.isArray(value)) {
+		const maxItems = 40;
+		const items = value.slice(0, maxItems).map((item) => compactReplayData(item, depth + 1));
+		if (value.length > maxItems) items.push(`…（其余 ${value.length - maxItems} 项已截断）`);
+		return items;
+	}
+	const entries = Object.entries(value as Record<string, unknown>);
+	const maxEntries = 60;
+	const output: Record<string, unknown> = {};
+	for (const [key, item] of entries.slice(0, maxEntries)) output[key] = compactReplayData(item, depth + 1);
+	if (entries.length > maxEntries) output._truncated = `…（其余 ${entries.length - maxEntries} 个字段已截断）`;
+	return output;
 }
 
 function mergeRunEvents(

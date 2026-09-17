@@ -36,6 +36,12 @@ describe("Agent intent router", () => {
 		expect(routeAgentIntent({ content: "帮我想想", profile: "canvas-general" }).kind).toBe("conversation");
 	});
 
+	it("marks an unclear reference for a clarification-only semantic stage", () => {
+		const intent = routeAgentIntent({ content: "处理刚才那个", profile: "canvas-general" });
+		expect(intent).toMatchObject({ kind: "conversation", stage: "clarify", requiresClarification: true });
+		expect(formatIntentContext(intent)).toContain("禁止调用写入、生成或计费工具");
+	});
+
 	it("recognizes a post-generation advice request as a continuation", () => {
 		expect(requestsPostGenerationFollowUp("再创建一张小猫图片，生成完以后告诉我下一步建议")).toBe(true);
 		expect(requestsPostGenerationFollowUp("生成一张小猫图片")).toBe(false);

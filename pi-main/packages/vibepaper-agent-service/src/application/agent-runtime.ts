@@ -25,7 +25,7 @@ export interface StoredAgentMessage {
 }
 
 export interface AgentTurnEvent {
-	type: "thinking" | "assistant_message" | "tool_started" | "tool" | "usage" | "error";
+	type: "thinking" | "assistant_message" | "tool_started" | "tool" | "tool_retry" | "usage" | "error";
 	content?: string;
 	toolName?: string;
 	details?: unknown;
@@ -237,6 +237,8 @@ export function captureEvent(
 	setTotalTokens: (tokens: number) => void,
 ): void {
 	if (event.type === "message_update" && event.message.role === "assistant") {
+		const thinking = thinkingText(event.message);
+		if (thinking) events.push({ type: "thinking", content: thinking });
 		const text = sanitizeAgentReply(contentText(event.message));
 		if (text) events.push({ type: "assistant_message", content: text });
 		return;
@@ -265,6 +267,11 @@ export function captureEvent(
 		events.push({ type: "tool_started", toolName: event.toolName, details: event.args });
 		return;
 	}
+	if (event.type === "tool_execution_update") {
+		const details = event.partialResult.details;
+		if (isRetryUpdate(details)) events.push({ type: "tool_retry", toolName: event.toolName, details });
+		return;
+	}
 	if (event.type === "tool_execution_end") {
 		events.push({
 			type: "tool",
@@ -290,7 +297,11 @@ export function sanitizeAgentReply(content: string): string {
 			// details and must never reach the user-facing Agent reply.
 			.replace(/\b\d{15,}\b/g, "")
 			.replace(/[，,;；]?\s*(?:并)?\s*(?:调用|使用)\s*[`"']?[a-z][a-z0-9_]{2,}[`"']?/gi, "")
-			.replace(/\s{2,}/g, " ")
+			// Agent replies are Markdown; retain newlines so headings and dividers
+			// continue to render as structure instead of becoming inline text.
+			.replace(/[ \t]{2,}/g, " ")
+			.replace(/[ \t]+\n/g, "\n")
+			.replace(/\n[ \t]+/g, "\n")
 			.replace(/[，,;；]\s*。/g, "。")
 			.trim()
 	);
@@ -322,6 +333,27 @@ function contentText(message: AgentMessage): string {
 		.filter((item) => item.type === "text")
 		.map((item) => item.text)
 		.join("");
+}
+
+function thinkingText(message: AgentMessage): string {
+	if (message.role !== "assistant" || typeof message.content === "string") return "";
+	return message.content
+		.filter(
+			(item): item is Extract<AssistantMessage["content"][number], { type: "thinking" }> => item.type === "thinking",
+		)
+		.map((item) => item.thinking)
+		.join("\n")
+		.trim();
+}
+
+function isRetryUpdate(details: unknown): details is { retrying: true; attempt: number; maxAttempts: number } {
+	return (
+		typeof details === "object" &&
+		details !== null &&
+		(details as { retrying?: unknown }).retrying === true &&
+		typeof (details as { attempt?: unknown }).attempt === "number" &&
+		typeof (details as { maxAttempts?: unknown }).maxAttempts === "number"
+	);
 }
 
 export class AgentRuntimeError extends Error {

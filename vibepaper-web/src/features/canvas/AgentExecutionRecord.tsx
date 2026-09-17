@@ -114,7 +114,7 @@ function ToolRow({ step }: { step: ExecutionStep }) {
   const isDone = step.kind === 'result' && step.ok !== false
   const isFail = step.kind === 'result' && step.ok === false
   const isPending = step.kind === 'plan'
-  const detail = (step.detail || step.reasoning || '').trim()
+  const detail = (step.rawDetail || step.detail || step.reasoning || '').trim()
   const canExpand = Boolean(detail) && detail !== step.label
 
   return (
@@ -160,7 +160,7 @@ function ToolRow({ step }: { step: ExecutionStep }) {
         )}
       </button>
       {open && detail ? (
-        <p className="pb-2.5 pl-[30px] text-[13px] leading-relaxed text-[#888]">{detail}</p>
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[#f7f7f8] pb-2.5 pl-[30px] pr-2 pt-2 text-[12px] leading-relaxed text-[#777]">{detail}</pre>
       ) : null}
     </div>
   )

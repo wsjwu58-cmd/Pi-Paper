@@ -2,9 +2,93 @@ import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
 
 import { ApprovalService, InMemoryApprovalRepository } from "../src/application/approval-service.ts";
+import { ToolGatewayError } from "../src/infrastructure/tool-gateway.ts";
 import { createRuntimeTools } from "../src/tools/runtime-tools.ts";
 
 describe("runtime tool integration", () => {
+	it("retries transient gateway failures and reports each retry to the execution timeline", async () => {
+		let calls = 0;
+		const updates: unknown[] = [];
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			canvasId: "301",
+			canvasVersion: 1,
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				getCanvasSummary: async () => {
+					calls += 1;
+					if (calls < 3) throw new ToolGatewayError("MODEL_TIMEOUT", "temporary timeout", {}, 504);
+					return { canvas: { version: 1 }, nodes: [], edges: [] };
+				},
+			} as never,
+		});
+
+		await expect(
+			tools
+				.find((tool) => tool.name === "get_canvas_summary")!
+				.execute("retry-summary", {}, undefined, (update) => updates.push(update)),
+		).resolves.toMatchObject({ content: [{ type: "text" }] });
+		expect(calls).toBe(3);
+		expect(updates.map((update) => (update as { details?: { attempt?: number } }).details?.attempt)).toEqual([2, 3]);
+	});
+
+	it("does not retry a non-recoverable gateway error", async () => {
+		let calls = 0;
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			canvasId: "301",
+			canvasVersion: 1,
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				getCanvasSummary: async () => {
+					calls += 1;
+					throw new ToolGatewayError("VERSION_CONFLICT", "stale canvas", {}, 409);
+				},
+			} as never,
+		});
+
+		await expect(
+			tools.find((tool) => tool.name === "get_canvas_summary")!.execute("no-retry", {}),
+		).rejects.toMatchObject({
+			code: "VERSION_CONFLICT",
+		});
+		expect(calls).toBe(1);
+	});
+
+	it("refreshes the canvas version and retries a conflicted node creation once", async () => {
+		let writes = 0;
+		let reads = 0;
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			canvasId: "301",
+			canvasVersion: 1,
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				execute: async () => {
+					writes += 1;
+					if (writes === 1) throw new ToolGatewayError("VERSION_CONFLICT", "stale canvas", {}, 409);
+					return { createdNodes: [], canvasVersion: 5 };
+				},
+				getCanvasSummary: async () => {
+					reads += 1;
+					return { canvas: { version: 4 }, nodes: [], edges: [] };
+				},
+			} as never,
+		});
+
+		await expect(
+			tools
+				.find((tool) => tool.name === "create_nodes")!
+				.execute("create-after-conflict", {
+					nodes: [{ type: "text", params: { content: "故事圣经" } }],
+				}),
+		).resolves.toMatchObject({ content: [{ type: "text" }] });
+		expect({ reads, writes }).toEqual({ reads: 1, writes: 2 });
+	});
+
 	it("adopts the authoritative canvas version returned by a summary before writes", async () => {
 		const approvals = new ApprovalService(new InMemoryApprovalRepository(), "secret", 300);
 		const commands: unknown[] = [];

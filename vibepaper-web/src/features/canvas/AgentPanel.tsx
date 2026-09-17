@@ -18,8 +18,6 @@ import {
   Megaphone,
   Clapperboard,
   AlertTriangle,
-  Check,
-  XCircle,
 } from 'lucide-react'
 import { api, authedFetch } from '@/lib/api'
 import { parseJsonPreserveIds } from '@/lib/ids'
@@ -45,6 +43,7 @@ import {
 } from './agentEventHandlers'
 import {
   isAgentEventEnvelope,
+  mergeSessionMessages,
   reduceAgentEvent,
   type AgentEventEnvelope,
   type AgentEventState,
@@ -144,6 +143,8 @@ export function AgentPanel() {
     messages: [],
     seenEventIds: new Set(),
     runStatus: 'running',
+    messageIdByRun: new Map(),
+    persistedAssistantRunIds: new Set(),
   })
 
   const notifyCanvasChanged = useCallback(() => {
@@ -222,7 +223,9 @@ export function AgentPanel() {
     turnIdRef.current = null
     seenTaskIdsRef.current.clear()
     seenWakeupRef.current.clear()
-    agentEventStateRef.current = { messages: [], seenEventIds: new Set(), runStatus: 'running' }
+    agentEventStateRef.current = {
+      messages: [], seenEventIds: new Set(), runStatus: 'running', messageIdByRun: new Map(), persistedAssistantRunIds: new Set(),
+    }
     setSessionTitle('新对话')
     setMessages([])
     setSuggestions([])
@@ -358,7 +361,7 @@ export function AgentPanel() {
     epoch = sessionEpochRef.current,
     preserveEventStream = false,
   ) => {
-    const res = await api<{ items: AgentChatMsg[] }>(`/agent/sessions/${id}/messages`)
+    const res = await api<{ items: AgentChatMsg[]; events?: AgentEventEnvelope[] }>(`/agent/sessions/${id}/messages`)
     if (epoch !== sessionEpochRef.current) return false
     activeSessionIdRef.current = id
     setSessionId(id)
@@ -366,13 +369,30 @@ export function AgentPanel() {
     const loadedMessages = res.items
       .map((m) => ({ ...m, type: m.type || 'text', meta: (m.meta as AgentChatMsg['meta']) ?? {} }))
       .filter(isChatVisibleMessage)
-    agentEventStateRef.current = {
-      messages: loadedMessages,
+    const mergedMessages = preserveEventStream
+      ? mergeSessionMessages(loadedMessages, agentEventStateRef.current.messages)
+      : loadedMessages
+    let nextState: AgentEventState = {
+      messages: mergedMessages,
       seenEventIds: preserveEventStream ? agentEventStateRef.current.seenEventIds : new Set(),
       runStatus: preserveEventStream ? agentEventStateRef.current.runStatus : 'running',
+      pendingMessageId: preserveEventStream ? agentEventStateRef.current.pendingMessageId : undefined,
+      messageIdByRun: preserveEventStream ? agentEventStateRef.current.messageIdByRun : new Map(),
+      persistedAssistantRunIds: new Set([
+        ...(preserveEventStream ? agentEventStateRef.current.persistedAssistantRunIds : []),
+        ...loadedMessages.flatMap((message) => message.role === 'assistant' && message.content.trim() && message.meta?.runId
+          ? [message.meta.runId]
+          : []),
+      ]),
     }
-    if (!preserveEventStream) lastEventSeqRef.current = 0
-    setMessages(loadedMessages)
+    for (const event of res.events ?? []) {
+      if (!isAgentEventEnvelope(event)) continue
+      nextState = reduceAgentEvent(nextState, event)
+      lastEventSeqRef.current = Math.max(lastEventSeqRef.current, event.eventSeq)
+    }
+    agentEventStateRef.current = nextState
+    if (!preserveEventStream && (res.events?.length ?? 0) === 0) lastEventSeqRef.current = 0
+    setMessages(nextState.messages)
     setSuggestions([])
     setComposerRefs([])
     return true
@@ -455,7 +475,15 @@ export function AgentPanel() {
               }
               const dataLine = part.split('\n').find((l) => l.startsWith('data: '))
               if (!dataLine) continue
-              const ev = parseJsonPreserveIds(dataLine.slice(6)) as Record<string, unknown>
+              // Do not let one malformed/proxy-truncated SSE frame tear down
+              // the background stream. The next persisted event remains
+              // authoritative and can still restore the Agent trace.
+              let ev: Record<string, unknown>
+              try {
+                ev = parseJsonPreserveIds(dataLine.slice(6)) as Record<string, unknown>
+              } catch {
+                continue
+              }
               if (ev.type === 'idle') continue
               if (isAgentEventEnvelope(ev)) {
                 lastEventSeqRef.current = Math.max(lastEventSeqRef.current, ev.eventSeq)
@@ -677,10 +705,13 @@ export function AgentPanel() {
     }
   }
 
-  const hasPendingConfirmation = messages.some((item) => {
-    const status = item.meta?.confirmation?.status
-    return status === 'pending' || status === 'submitting'
-  })
+  const pendingConfirmations = messages
+    .map((item) => item.meta?.confirmation)
+    .filter((confirmation): confirmation is AgentConfirmation =>
+      confirmation?.status === 'pending' || confirmation?.status === 'submitting',
+    )
+  const activeConfirmation = pendingConfirmations[0]
+  const hasPendingConfirmation = pendingConfirmations.length > 0
 
   const send = async () => {
     const content = input.trim()
@@ -752,7 +783,14 @@ export function AgentPanel() {
           meta: { executionSteps: [] as ExecutionStep[] },
         },
       ]
-      agentEventStateRef.current = { messages: next, seenEventIds: new Set(), runStatus: 'running' }
+      agentEventStateRef.current = {
+        messages: next,
+        seenEventIds: new Set(),
+        runStatus: 'running',
+        pendingMessageId: turnId,
+        messageIdByRun: new Map(),
+        persistedAssistantRunIds: new Set(),
+      }
       return next
     })
     const ac = new AbortController()
@@ -924,6 +962,15 @@ export function AgentPanel() {
 
       {tab === 'chat' && (
         <div className="flex min-h-0 flex-1 flex-col bg-[var(--canvas-surface)]">
+          {activeConfirmation && (
+            <div className="shrink-0 border-y border-[var(--canvas-border)] bg-[var(--canvas-surface-muted)] px-3 py-2">
+              <AgentConfirmationCard
+                confirmation={activeConfirmation}
+                queuedCount={pendingConfirmations.length - 1}
+                onConfirm={(accept) => void confirmAction(activeConfirmation, accept)}
+              />
+            </div>
+          )}
           <div ref={chatScrollRef} className="relative min-h-0 flex-1 overflow-y-auto bg-transparent px-3.5 pb-8 pt-3.5">
             {composerRefs.some((ref) => ref.kind === 'node') && (
               <p className="mb-3 rounded-full bg-[#f2f2f2] px-3 py-1.5 text-[11px] font-semibold text-[#555]">
@@ -979,12 +1026,6 @@ export function AgentPanel() {
                         }}
                       />
                       <AgentTaskBadge status={m.meta?.taskStatus?.status} taskId={m.meta?.taskStatus?.taskId} />
-                      {m.meta?.confirmation && (
-                        <AgentConfirmationCard
-                          confirmation={m.meta.confirmation}
-                          onConfirm={(accept) => void confirmAction(m.meta!.confirmation!, accept)}
-                        />
-                      )}
                       {m.meta?.nextActions && m.meta.nextActions.length > 0 && (
                         <AgentNextActions
                           actions={m.meta.nextActions}
@@ -1197,66 +1238,34 @@ export function AgentPanel() {
 
 function AgentConfirmationCard({
   confirmation,
+  queuedCount = 0,
   onConfirm,
 }: {
   confirmation: AgentConfirmation
+  queuedCount?: number
   onConfirm: (accept: boolean) => void
 }) {
   const pending = confirmation.status === 'pending'
   const submitting = confirmation.status === 'submitting'
   const total = confirmation.estimatedTotalCost ?? confirmation.estimatedCost ?? 0
-  const statusText =
-    confirmation.status === 'accepted'
-      ? '已确认，正在继续执行'
-      : confirmation.status === 'rejected'
-        ? '已取消此操作'
-        : submitting
-          ? '正在提交确认…'
-          : '需要你的确认'
+  const statusText = submitting ? '正在提交确认…' : '待确认生成'
 
   return (
-    <section className="mt-2 rounded-xl border border-amber-300/80 bg-amber-50 p-3 text-[12px] text-amber-950">
+    <section className="rounded-lg border border-[var(--canvas-border-strong)] bg-[var(--canvas-surface)] px-2.5 py-2 text-[11px] text-[var(--canvas-text)] shadow-sm">
       <div className="flex items-start gap-2">
-        {confirmation.status === 'accepted' ? (
-          <Check className="mt-0.5 size-4 shrink-0 text-emerald-700" />
-        ) : confirmation.status === 'rejected' ? (
-          <XCircle className="mt-0.5 size-4 shrink-0 text-[#777]" />
-        ) : (
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700" />
-        )}
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-[var(--canvas-text-muted)]" />
         <div className="min-w-0 flex-1">
-          <p className="font-bold">{statusText}</p>
-          <p className="mt-1 break-words leading-relaxed">{confirmation.summary}</p>
-          {confirmation.confirmReason && (
-            <p className="mt-1 leading-relaxed text-amber-900/80">原因：{confirmation.confirmReason}</p>
-          )}
-          <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-amber-900/85">
-            <div>
-              <dt className="inline">预计点数：</dt>
-              <dd className="inline font-semibold">{total}</dd>
-            </div>
-            {confirmation.affectedNodeCount ? (
-              <div>
-                <dt className="inline">影响节点：</dt>
-                <dd className="inline font-semibold">{confirmation.affectedNodeCount}</dd>
-              </div>
-            ) : null}
-            {confirmation.expiresAt ? (
-              <div className="col-span-2">
-                <dt className="inline">确认有效期至：</dt>
-                <dd className="inline font-semibold">{new Date(confirmation.expiresAt).toLocaleString()}</dd>
-              </div>
-            ) : null}
-          </dl>
+          <p className="font-semibold">{statusText}{queuedCount > 0 ? `，还有 ${queuedCount} 项排队` : ''}</p>
+          <p className="mt-0.5 truncate text-[var(--canvas-text-muted)]">{confirmation.summary}</p>
+          <p className="mt-0.5 text-[var(--canvas-text-muted)]">预计 {total} 点{confirmation.affectedNodeCount ? ` · ${confirmation.affectedNodeCount} 个节点` : ''}</p>
         </div>
-      </div>
-      {pending || submitting ? (
-        <div className="mt-3 flex justify-end gap-2">
+        {pending || submitting ? (
+          <div className="flex shrink-0 gap-1.5">
           <button
             type="button"
             disabled={submitting}
             onClick={() => onConfirm(false)}
-            className="rounded-lg border border-amber-400/80 bg-white px-2.5 py-1.5 font-semibold text-amber-950 transition hover:bg-amber-100 disabled:cursor-wait disabled:opacity-60"
+            className="rounded-md border border-[var(--canvas-border)] px-2 py-1 font-medium text-[var(--canvas-text-muted)] transition hover:bg-[var(--canvas-hover)] disabled:cursor-wait disabled:opacity-60"
           >
             取消
           </button>
@@ -1264,12 +1273,13 @@ function AgentConfirmationCard({
             type="button"
             disabled={submitting}
             onClick={() => onConfirm(true)}
-            className="rounded-lg bg-amber-800 px-2.5 py-1.5 font-semibold text-white transition hover:bg-amber-900 disabled:cursor-wait disabled:opacity-60"
+            className="rounded-md bg-[var(--canvas-active)] px-2 py-1 font-medium text-[var(--canvas-active-text)] transition hover:opacity-90 disabled:cursor-wait disabled:opacity-60"
           >
             确认执行
           </button>
-        </div>
-      ) : null}
+          </div>
+        ) : null}
+      </div>
     </section>
   )
 }

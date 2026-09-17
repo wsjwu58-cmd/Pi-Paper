@@ -64,11 +64,23 @@ export class ReadTools {
 		try {
 			return await operation();
 		} catch (error) {
+			// Keep structured gateway failures intact so the runtime retry policy can
+			// distinguish a transient downstream timeout from a conflict or permission
+			// denial. Collapsing every error here made safe retries impossible.
+			if (isGatewayError(error)) throw error;
 			const message = error instanceof Error ? error.message : String(error);
 			if (message.includes("403") || message.includes("PERMISSION_DENIED")) throw new Error("PERMISSION_DENIED");
 			throw new Error(message.includes("TIMEOUT") ? "SERVICE_TIMEOUT" : "DOWNSTREAM_UNAVAILABLE");
 		}
 	}
+}
+
+function isGatewayError(error: unknown): error is Error & { code: string; statusCode: number } {
+	return (
+		error instanceof Error &&
+		typeof (error as { code?: unknown }).code === "string" &&
+		typeof (error as { statusCode?: unknown }).statusCode === "number"
+	);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

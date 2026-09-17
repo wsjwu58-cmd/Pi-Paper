@@ -21,6 +21,12 @@ describe("Pi runtime event mapping", () => {
 		expect(sanitizeAgentReply("Shot 1\t220099587095007232\t雨夜车内\tfailed")).toBe("Shot 1 雨夜车内\tfailed");
 	});
 
+	it("preserves Markdown paragraph and heading boundaries while sanitizing", () => {
+		expect(sanitizeAgentReply("整体架构如下：\n\n---\n\n## 故事圣经\n\n内容完整。")).toBe(
+			"整体架构如下：\n\n---\n\n## 故事圣经\n\n内容完整。",
+		);
+	});
+
 	it("emits assistant text deltas and tool lifecycle events", () => {
 		const events: AgentTurnEvent[] = [];
 		captureEvent(
@@ -41,6 +47,31 @@ describe("Pi runtime event mapping", () => {
 		);
 
 		expect(events.map((event) => event.type)).toEqual(["assistant_message", "tool_started"]);
+	});
+
+	it("preserves provider thinking as a separate execution event", () => {
+		const events: AgentTurnEvent[] = [];
+		captureEvent(
+			{
+				type: "message_update",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "先读取画布，再确认生成成本。" },
+						{ type: "text", text: "我先检查现有内容。" },
+					],
+				},
+				assistantMessageEvent: {} as never,
+			} as unknown as AgentEvent,
+			events,
+			() => undefined,
+			() => undefined,
+		);
+
+		expect(events).toEqual([
+			{ type: "thinking", content: "先读取画布，再确认生成成本。" },
+			{ type: "assistant_message", content: "我先检查现有内容。" },
+		]);
 	});
 
 	it("preserves provider abort as a terminal error instead of a successful message", () => {
@@ -129,18 +160,20 @@ describe("Pi runtime event mapping", () => {
 			() => undefined,
 		);
 
-		expect(events[0]).toMatchObject({ type: "tool", toolName: "delete_nodes", ok: false, errorCode: "INVALID_INPUT" });
+		expect(events[0]).toMatchObject({
+			type: "tool",
+			toolName: "delete_nodes",
+			ok: false,
+			errorCode: "INVALID_INPUT",
+		});
 	});
 
 	it("forces the requested canvas tool only on the initial model request", () => {
 		const choices: unknown[] = [];
-		const forced = forceInitialToolCall(
-			"create_nodes",
-			((_, __, options) => {
-				choices.push(options?.toolChoice);
-				return {} as ReturnType<typeof import("@earendil-works/pi-ai").streamSimple>;
-			}) as typeof import("@earendil-works/pi-ai").streamSimple,
-		);
+		const forced = forceInitialToolCall("create_nodes", ((_, __, options) => {
+			choices.push(options?.toolChoice);
+			return {} as ReturnType<typeof import("@earendil-works/pi-ai").streamSimple>;
+		}) as typeof import("@earendil-works/pi-ai").streamSimple);
 		forced({} as never, {} as never, {});
 		forced({} as never, {} as never, {});
 		expect(choices).toEqual([{ type: "function", function: { name: "create_nodes" } }, undefined]);

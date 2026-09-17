@@ -13,10 +13,7 @@ import { ReadTools } from "./read-tools.ts";
 
 const EmptySchema = Type.Object({}, { additionalProperties: false });
 const NodeIdArraySchema = Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 });
-const NodeIdsSchema = Type.Object(
-	{ nodeIds: NodeIdArraySchema },
-	{ additionalProperties: false },
-);
+const NodeIdsSchema = Type.Object({ nodeIds: NodeIdArraySchema }, { additionalProperties: false });
 const NodeDetailSchema = Type.Object({ nodeId: Type.String({ minLength: 1 }) }, { additionalProperties: false });
 const SearchSchema = Type.Object(
 	{ query: Type.String({ minLength: 1, maxLength: 200 }) },
@@ -216,11 +213,13 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 				assertNoPendingConfirmation(context);
 				const nodes = parseNodeArray(params.nodes);
 				return result(
-					await createNodesWithReferenceEdges(commands, context, {
-						...params,
-						nodes,
-						idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
-					}),
+					await withCanvasVersionRetry(context, () =>
+						createNodesWithReferenceEdges(commands, context, {
+							...params,
+							nodes,
+							idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
+						}),
+					),
 				);
 			},
 		),
@@ -478,14 +477,37 @@ async function createNodesWithReferenceEdges(
 	return referenceEdges.length > 0 ? { ...created, canvasVersion: context.canvasVersion, referenceEdges } : created;
 }
 
+async function withCanvasVersionRetry<T>(context: RuntimeToolContext, operation: () => Promise<T>): Promise<T> {
+	try {
+		return await operation();
+	} catch (error) {
+		if (!isVersionConflict(error)) throw error;
+		const gateway = context.gateway as Partial<ToolGateway>;
+		if (typeof gateway.getCanvasSummary !== "function") throw error;
+		const summary = await gateway.getCanvasSummary(context.userId, context.canvasId, context.requestId);
+		const canvas =
+			typeof summary.canvas === "object" && summary.canvas !== null
+				? (summary.canvas as Record<string, unknown>)
+				: {};
+		if (typeof canvas.version !== "number" || !Number.isInteger(canvas.version)) throw error;
+		context.canvasVersion = canvas.version;
+		return await operation();
+	}
+}
+
+function isVersionConflict(error: unknown): boolean {
+	return error instanceof ToolGatewayError
+		? error.code === "VERSION_CONFLICT"
+		: error instanceof Error && error.message.includes("VERSION_CONFLICT");
+}
+
 function isReferenceTarget(type: string | undefined): boolean {
 	return type === "image" || type === "video" || type === "audio" || type === "compose" || type === "director";
 }
 
 function parseNodeArray(nodes: unknown): Array<{ type: string; sourceNodeIds?: readonly string[] }> {
 	if (Array.isArray(nodes)) return nodes as Array<{ type: string; sourceNodeIds?: readonly string[] }>;
-	if (typeof nodes !== "string")
-		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数必须是节点数组。", {});
+	if (typeof nodes !== "string") throw new ToolGatewayError("INVALID_INPUT", "创建节点参数必须是节点数组。", {});
 
 	let parsed: unknown;
 	try {
@@ -500,8 +522,7 @@ function parseNodeArray(nodes: unknown): Array<{ type: string; sourceNodeIds?: r
 
 function parseNodeIdArray(nodeIds: unknown): string[] {
 	if (Array.isArray(nodeIds)) return nodeIds as string[];
-	if (typeof nodeIds !== "string")
-		throw new ToolGatewayError("INVALID_INPUT", "删除节点参数必须是节点 ID 数组。", {});
+	if (typeof nodeIds !== "string") throw new ToolGatewayError("INVALID_INPUT", "删除节点参数必须是节点 ID 数组。", {});
 
 	let parsed: unknown;
 	try {
@@ -526,17 +547,81 @@ function tool<T extends TSchema>(
 	execute: AgentTool<T>["execute"],
 ): AgentTool<T> {
 	const wrappedExecute: AgentTool<T>["execute"] = async (toolCallId, params, signal, onUpdate) => {
-		try {
-			return await execute(toolCallId, params, signal, onUpdate);
-		} catch (error) {
-			if (error instanceof ToolGatewayError)
-				throw new ToolGatewayError(error.code, `[${error.code}] ${error.message}`, error.details, error.statusCode);
-			const code = toolErrorCodeFromMessage(error);
-			if (code) throw new Error(`[${code}] ${error instanceof Error ? error.message : String(error)}`);
-			throw error;
+		const maxAttempts = 3;
+		for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+			try {
+				return await execute(toolCallId, params, signal, onUpdate);
+			} catch (error) {
+				if (!isRetryableToolError(error) || attempt === maxAttempts) {
+					if (error instanceof ToolGatewayError)
+						throw new ToolGatewayError(
+							error.code,
+							`[${error.code}] ${error.message}`,
+							error.details,
+							error.statusCode,
+						);
+					const code = toolErrorCodeFromMessage(error);
+					if (code) throw new Error(`[${code}] ${error instanceof Error ? error.message : String(error)}`);
+					throw error;
+				}
+				const nextAttempt = attempt + 1;
+				onUpdate?.({
+					content: [{ type: "text", text: `正在重试 ${name}（第 ${nextAttempt}/${maxAttempts} 次）` }],
+					details: {
+						retrying: true,
+						attempt: nextAttempt,
+						maxAttempts,
+						errorCode: retryErrorCode(error),
+					} as never,
+				});
+				await retryDelay(attempt, signal);
+			}
 		}
+		throw new Error("TOOL_RETRY_EXHAUSTED");
 	};
 	return { name, label, description, parameters, executionMode: "sequential", execute: wrappedExecute };
+}
+
+function isRetryableToolError(error: unknown): boolean {
+	if (!(error instanceof ToolGatewayError)) return false;
+	if (
+		[
+			"INVALID_INPUT",
+			"PERMISSION_DENIED",
+			"NOT_FOUND",
+			"VERSION_CONFLICT",
+			"INSUFFICIENT_POINTS",
+			"CONTENT_BLOCKED",
+			"COST_CAP_EXCEEDED",
+		].includes(error.code)
+	)
+		return false;
+	return (
+		error.statusCode === 408 ||
+		error.statusCode === 429 ||
+		error.statusCode >= 500 ||
+		["MODEL_TIMEOUT", "MODEL_UNAVAILABLE", "CANVAS_UNAVAILABLE", "DOWNSTREAM_UNAVAILABLE"].includes(error.code)
+	);
+}
+
+function retryErrorCode(error: unknown): string | undefined {
+	return error instanceof ToolGatewayError ? error.code : toolErrorCodeFromMessage(error);
+}
+
+function retryDelay(attempt: number, signal?: AbortSignal): Promise<void> {
+	const milliseconds = 250 * 2 ** (attempt - 1) + Math.floor(Math.random() * 100);
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) return reject(signal.reason);
+		const timer = setTimeout(resolve, milliseconds);
+		signal?.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timer);
+				reject(signal.reason);
+			},
+			{ once: true },
+		);
+	});
 }
 
 async function resolveGenerationModel(context: RuntimeToolContext, requestedModel: string): Promise<string> {

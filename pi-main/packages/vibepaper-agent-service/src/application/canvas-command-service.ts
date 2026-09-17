@@ -15,7 +15,6 @@ export type CanvasCommandGateway = {
 export class CanvasCommandService {
 	private readonly gateway: CanvasCommandGateway;
 	private readonly results = new Map<string, Record<string, unknown>>();
-	private readonly failures = new Map<string, string>();
 
 	constructor(gateway: CanvasCommandGateway) {
 		this.gateway = gateway;
@@ -24,13 +23,22 @@ export class CanvasCommandService {
 	async execute(command: CanvasCommand): Promise<Record<string, unknown>> {
 		const cached = this.results.get(command.idempotencyKey);
 		if (cached) return cached;
-		const failure = this.failures.get(command.idempotencyKey);
-		if (failure) throw new Error(failure);
 		try {
 			const result = await this.gateway.execute(command);
 			this.results.set(command.idempotencyKey, result);
 			return result;
 		} catch (error) {
+			// Gateway errors carry retryability and conflict information. Preserve
+			// them so the runtime can recover; caching one failure here previously
+			// turned a transient canvas error into a permanent failure for the Run.
+			const structuredCode = structuredErrorCode(error);
+			if (structuredCode && structuredStatusCode(error) !== undefined) throw error;
+			if (structuredCode) {
+				const message = error instanceof Error ? error.message : structuredCode;
+				const wrapped = new Error(`[${structuredCode}] ${message}`) as Error & { code: string };
+				wrapped.code = structuredCode;
+				throw wrapped;
+			}
 			const message = error instanceof Error ? error.message : String(error);
 			const known = [
 				"PERMISSION_DENIED",
@@ -42,7 +50,6 @@ export class CanvasCommandService {
 			const code =
 				known.find((candidate) => structuredErrorCode(error) === candidate || message.includes(candidate)) ??
 				(message.includes("409") ? "VERSION_CONFLICT" : "CANVAS_UNAVAILABLE");
-			this.failures.set(command.idempotencyKey, code);
 			throw new Error(code);
 		}
 	}
@@ -121,4 +128,10 @@ function structuredErrorCode(error: unknown): string | undefined {
 	if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
 	const code = (error as { code?: unknown }).code;
 	return typeof code === "string" ? code : undefined;
+}
+
+function structuredStatusCode(error: unknown): number | undefined {
+	if (typeof error !== "object" || error === null || !("statusCode" in error)) return undefined;
+	const statusCode = (error as { statusCode?: unknown }).statusCode;
+	return typeof statusCode === "number" ? statusCode : undefined;
 }
