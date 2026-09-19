@@ -76,7 +76,7 @@ public class CanvasService {
                         .eq(Canvas::getOwnerId, userId)
                         .like(keyword != null && !keyword.isBlank(), Canvas::getName, keyword)
                         .orderByDesc(Canvas::getUpdatedAt));
-        return PageResult.of(p.getRecords().stream().map(this::toView).toList(), p.getTotal(), page, pageSize);
+        return PageResult.of(toListViews(p.getRecords()), p.getTotal(), page, pageSize);
     }
 
     public CanvasDtos.CanvasDetail detail(Long canvasId) {
@@ -850,9 +850,59 @@ public class CanvasService {
         return new CanvasDtos.StackPayload(s.getId(), s.getCollapsed(), s.getNodeIds());
     }
 
+    /**
+     * 画布列表的封面始终反映画布内最后生成的有效图片；没有图片产出时由前端展示默认封面。
+     * 历史 thumbnailUrl 不参与列表展示，避免旧封面掩盖最新的创作结果。
+     */
+    private List<CanvasDtos.CanvasView> toListViews(List<Canvas> canvases) {
+        if (canvases.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> canvasIds = canvases.stream().map(Canvas::getId).collect(Collectors.toSet());
+        Map<Long, String> thumbnails = new HashMap<>();
+        List<CanvasNode> imageNodes = nodeMapper.selectList(new LambdaQueryWrapper<CanvasNode>()
+                .in(CanvasNode::getCanvasId, canvasIds)
+                .eq(CanvasNode::getNodeType, "image")
+                .orderByDesc(CanvasNode::getUpdatedAt));
+        for (CanvasNode node : imageNodes) {
+            if (Boolean.TRUE.equals(node.getStale())) {
+                continue;
+            }
+            String outputUrl = imageOutputUrl(node);
+            if (!outputUrl.isBlank()) {
+                thumbnails.putIfAbsent(node.getCanvasId(), outputUrl);
+            }
+        }
+        return canvases.stream().map(canvas -> toView(canvas, thumbnails.get(canvas.getId()))).toList();
+    }
+
+    private String imageOutputUrl(CanvasNode node) {
+        Map<String, Object> output = readMap(node.getOutput());
+        String url = firstNonBlank(output, "url", "imageUrl", "thumbnailUrl");
+        if (!url.isBlank()) {
+            return url;
+        }
+        Map<String, Object> params = readMap(node.getParams());
+        return firstNonBlank(params, "lastOutputUrl", "output_url", "url", "thumbnailUrl", "imageUrl");
+    }
+
+    private String firstNonBlank(Map<String, Object> values, String... keys) {
+        for (String key : keys) {
+            Object value = values.get(key);
+            if (value != null && !value.toString().isBlank()) {
+                return value.toString();
+            }
+        }
+        return "";
+    }
+
     public CanvasDtos.CanvasView toView(Canvas c) {
+        return toView(c, c.getThumbnailUrl());
+    }
+
+    private CanvasDtos.CanvasView toView(Canvas c, String thumbnailUrl) {
         return new CanvasDtos.CanvasView(c.getId(), c.getOwnerId(), c.getName(), c.getDescription(),
-                c.getSchemaVersion(), c.getVersion(), c.getThumbnailUrl(), c.getVisibility(), c.getShareToken(),
+                c.getSchemaVersion(), c.getVersion(), thumbnailUrl, c.getVisibility(), c.getShareToken(),
                 c.getCreatedAt() == null ? null : c.getCreatedAt().toString(),
                 c.getUpdatedAt() == null ? null : c.getUpdatedAt().toString());
     }
