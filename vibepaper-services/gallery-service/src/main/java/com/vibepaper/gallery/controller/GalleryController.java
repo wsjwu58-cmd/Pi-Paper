@@ -2,6 +2,8 @@ package com.vibepaper.gallery.controller;
 
 import com.vibepaper.gallery.entity.Publication;
 import com.vibepaper.gallery.service.GalleryService;
+import com.vibepaper.common.api.ApiException;
+import com.vibepaper.common.api.ErrorCode;
 import com.vibepaper.common.api.PageResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -23,8 +25,22 @@ public class GalleryController {
 
     @PostMapping("/api/v1/publications")
     public Publication publish(@RequestBody Map<String, Object> body) {
-        return galleryService.publish(((Number) body.get("canvasId")).longValue(),
+        return galleryService.publish(requiredLong(body.get("canvasId"), "canvasId"),
                 body.get("title") == null ? null : body.get("title").toString());
+    }
+
+    private Long requiredLong(Object value, String field) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+                // Fall through to the public input-validation error below.
+            }
+        }
+        throw ApiException.badRequest(ErrorCode.INVALID_INPUT, field + " 必须是有效的整数");
     }
 
     @GetMapping("/api/v1/gallery/publications/{id}")
