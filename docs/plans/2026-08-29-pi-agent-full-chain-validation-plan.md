@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Agent/文本模型固定为 `agnes-2.5-flash`。
-- 图片模型固定为 `agnes-image-2.5-flash`；参考图放在 `extra_body.image`。
+- 图片模型固定为 `agnes-image-2.5-flash`；参考图放在 `extra_body.image`，本地素材与 Data URI 在请求前转换为纯 Base64（不携带 `data:image/...;base64,` 前缀）。
 - 视频模型固定为 `agnes-video-2.5-flash`；`size="720P"`，`seconds="4"` 至 `"12"`，参考图最多 5 张。
 - 开发 E2E 的 TTS 使用本机 Windows SAPI，不产生 API 费用；豆包 TTS 生产接口继续保留。
 - 所有生成任务保持确认、点数冻结、终态结算、Canvas 乐观锁和幂等约束。
@@ -845,7 +845,7 @@ Expected: 无密钥命中；源码文本 diff 无空白错误。已存在二进�
 | IMG-05 | 姿势参考 + 风格参考 | 两张有序参考图 |
 | IMG-06 | 三张多图合成 | 三张输入完整传递 |
 | IMG-07 | 四/五张参考 | 免费范围内成功 |
-| IMG-08 | 私有本地参考图 | 转 Data URI，远端可访问 |
+| IMG-08 | 私有本地参考图 | 转纯 Base64，Agnes 可校验 |
 | IMG-09 | 参考 URL 失效 | 稳定失败且可重试 |
 | IMG-10 | 图生图缺 image | `INVALID_INPUT` |
 | IMG-11 | 非法 ratio | 服务端拒绝，不调用 Agnes |

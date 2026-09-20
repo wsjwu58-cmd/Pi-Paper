@@ -596,30 +596,14 @@ def _preserve_reference_fields(old: dict, new: dict) -> dict:
 
 
 def _reinforce_prompt_with_reference(params: dict, model_type: str) -> dict:
-    """有参考图时，提示词强调忠实于首帧/参考，避免文生漂移。"""
-    out = dict(params or {})
-    has_image = bool(
-        out.get("firstFrameUrl")
-        or out.get("imageUrl")
-        or out.get("image")
-        or (isinstance(out.get("referenceImages"), list) and out.get("referenceImages"))
-        or (isinstance(out.get("referenceUrls"), list) and out.get("referenceUrls"))
-    )
-    if not has_image:
-        return out
-    prompt = str(out.get("prompt") or "").strip()
-    mt = str(model_type or "").lower()
-    fidelity = ""
-    if mt in ("video",) or str(out.get("model") or "").startswith(("agnes-video", "doubao-seedance", "seedance")):
-        fidelity = "严格保持与参考首帧同一主体、构图、服装与色调；只描述运动与镜头变化，勿重新创造形象。"
-    elif mt in ("image",) or str(out.get("model") or "").startswith(("agnes-image", "doubao-seedream", "seedream")):
-        fidelity = "严格参考输入图片的主体、构图与风格，仅按提示词做有限调整，勿整体重绘成另一张图。"
-    if not fidelity:
-        return out
-    if fidelity[:8] in prompt:
-        return out
-    out["prompt"] = f"{prompt}\n{fidelity}".strip() if prompt else fidelity
-    return out
+    """Keep the creator's prompt unchanged when reference media is present.
+
+    Reference URLs are model inputs rather than implicit prompt instructions.
+    The name is retained for call-site compatibility while the former prompt
+    mutation is intentionally removed.
+    """
+    del model_type
+    return dict(params or {})
 
 
 def _collect_input_references(canvas_id: int, user_id: int, node_id: int) -> dict:

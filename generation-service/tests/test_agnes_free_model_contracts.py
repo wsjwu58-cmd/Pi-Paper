@@ -30,6 +30,15 @@ def test_image_21_compatibility_alias_resolves_to_image_25() -> None:
     assert payload["model"] == "agnes-image-2.5-flash"
 
 
+def test_image_reference_strips_data_uri_prefix_before_sending_to_agnes() -> None:
+    raw_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlQY6sAAAAASUVORK5CYII="
+    payload = build_agnes_image_payload(
+        {"prompt": "保留画面主体", "referenceImages": [f"data:image/png;base64,{raw_png}"]}
+    )
+
+    assert payload["extra_body"]["image"] == [raw_png]
+
+
 @pytest.mark.parametrize(
     ("params", "mode"),
     [

@@ -41,22 +41,20 @@ def test_merge_reference_params_appends_lists():
     assert out["firstFrameUrl"] == "http://a"
 
 
-def test_reinforce_video_prompt_with_first_frame():
+def test_reference_media_does_not_rewrite_video_prompt():
     out = _reinforce_prompt_with_reference(
         {"prompt": "pan left", "firstFrameUrl": "http://x/a.jpg", "model": "agnes-video-v2.0"},
         "video",
     )
-    assert "pan left" in out["prompt"]
-    assert len(out["prompt"]) > len("pan left")
+    assert out["prompt"] == "pan left"
 
 
-def test_reinforce_image_prompt_with_refs():
+def test_reference_media_does_not_rewrite_image_prompt():
     out = _reinforce_prompt_with_reference(
         {"prompt": "cinematic", "referenceImages": ["http://x/a.jpg"], "model": "agnes-image-2.5-flash"},
         "image",
     )
-    assert "cinematic" in out["prompt"]
-    assert len(out["prompt"]) > len("cinematic")
+    assert out["prompt"] == "cinematic"
 
 
 def test_image_then_video_prompt_stresses_first_frame_fidelity():

@@ -31,6 +31,18 @@ const RES_MAP: Record<string, string> = {
   '4K': '3840x2160',
 }
 
+const LEGACY_REFERENCE_FIDELITY_PROMPTS = [
+  '严格参考输入图片的主体、构图与风格，仅按提示词做有限调整，勿整体重绘成另一张图。',
+  '严格保持与参考首帧同一主体、构图、服装与色调；只描述运动与镜头变化，勿重新创造形象。',
+]
+
+function stripLegacyReferenceFidelity(prompt: string): string {
+  return LEGACY_REFERENCE_FIDELITY_PROMPTS.reduce(
+    (current, legacy) => current.replaceAll(legacy, ''),
+    prompt,
+  ).replace(/\n{3,}/g, '\n\n').trim()
+}
+
 export interface UpstreamRef {
   id: string
   sourceNodeId: string
@@ -451,7 +463,7 @@ export function NodeEditorDialog({
   )
   const [localRefs, setLocalRefs] = useState<LocalRef[]>([])
   const [frameOrder, setFrameOrder] = useState<'asc' | 'swap'>('asc')
-  const [prompt, setPrompt] = useState((node.params.prompt as string) ?? '')
+  const [prompt, setPrompt] = useState(stripLegacyReferenceFidelity((node.params.prompt as string) ?? ''))
   const [model, setModel] = useState((node.params.model as string) ?? '')
   const [aspect, setAspect] = useState((node.params.aspect as string) || '1:1')
   const [resKey, setResKey] = useState((node.params.resKey as string) || '2K')
@@ -486,7 +498,7 @@ export function NodeEditorDialog({
   }, [upstream, excludedIds])
 
   useEffect(() => {
-    setPrompt((node.params.prompt as string) ?? '')
+    setPrompt(stripLegacyReferenceFidelity((node.params.prompt as string) ?? ''))
     const raw = (node.params.model as string) || preferred || ''
     const allowed = typeModels.some((m) => m.name === raw) ? raw : preferred || ''
     setModel(allowed)
@@ -581,7 +593,7 @@ export function NodeEditorDialog({
       const refTexts = refsForUi
         .map((r) => r.text)
         .filter((t): t is string => Boolean(t && String(t).trim()))
-      const trimmedPrompt = prompt.trim()
+      const trimmedPrompt = stripLegacyReferenceFidelity(prompt)
       const effectivePrompt =
         trimmedPrompt && refTexts.length
           ? `${refTexts.join('\n')}\n\n${trimmedPrompt}`
@@ -593,25 +605,13 @@ export function NodeEditorDialog({
       }
       const resolution = RES_MAP[resKey] || '1024x1024'
       const outputCount = isSplitLayout && node.type === 'text' ? count : 1
-      let finalPrompt = effectivePrompt
-      if (node.type === 'video' && firstFrame?.url) {
-        const fidelity =
-          '严格保持与参考首帧同一主体、构图、服装与色调；只描述运动与镜头变化，勿重新创造形象。'
-        if (!finalPrompt.includes('严格保持与参考首帧')) {
-          finalPrompt = finalPrompt.trim() ? `${finalPrompt.trim()}\n${fidelity}` : fidelity
-        }
-      } else if (node.type === 'image' && refUrls.length > 0) {
-        const fidelity =
-          '严格参考输入图片的主体、构图与风格，仅按提示词做有限调整，勿整体重绘成另一张图。'
-        if (!finalPrompt.includes('严格参考输入图片')) {
-          finalPrompt = finalPrompt.trim() ? `${finalPrompt.trim()}\n${fidelity}` : fidelity
-        }
-      }
       await submitNodeTask(
         node.id,
         model || preferred || node.type,
         {
-          prompt: finalPrompt,
+          // References are supplied as separate model inputs. Never append
+          // hidden fidelity instructions to the creator's prompt.
+          prompt: effectivePrompt,
           resolution,
           aspect,
           style,

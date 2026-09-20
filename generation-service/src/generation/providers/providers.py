@@ -193,10 +193,10 @@ def build_agnes_image_payload(params: dict) -> dict:
     images: list[str] = []
     primary = first_reference_image(params)
     if primary:
-        images.append(_media_url_for_remote_api(str(primary)))
+        images.append(_agnes_image_reference(str(primary)))
     for key in ("referenceImages", "reference_images", "referenceUrls"):
         for item in _normalize_str_list(params.get(key)):
-            media = _media_url_for_remote_api(item)
+            media = _agnes_image_reference(item)
             if media and media not in images:
                 images.append(media)
     if images:
@@ -593,6 +593,36 @@ def _media_url_for_remote_api(url: str) -> str:
         mime = mimetypes.guess_type(str(local))[0] or "application/octet-stream"
         encoded = base64.b64encode(local.read_bytes()).decode("ascii")
         return f"data:{mime};base64,{encoded}"
+    return src
+
+
+def _agnes_image_reference(value: str) -> str:
+    """Return Agnes Image's required raw Base64 representation for local media.
+
+    Agnes Image validates ``extra_body.image`` as a Base64 string.  The generic
+    remote-media helper returns a browser-friendly data URI for local canvas
+    assets, but its ``data:image/...;base64,`` prefix is not accepted by this
+    endpoint.  Strip that prefix here while leaving ordinary public URLs intact
+    for existing remote-reference compatibility.
+    """
+    import base64
+
+    src = (value or "").strip()
+    if not src:
+        return src
+    if src.startswith("data:"):
+        header, separator, encoded = src.partition(",")
+        if not separator or ";base64" not in header.lower() or not header.lower().startswith("data:image/"):
+            raise ValueError("Agnes 图片参考必须是有效的图片 Base64 数据")
+        try:
+            base64.b64decode(encoded, validate=True)
+        except ValueError as error:
+            raise ValueError("Agnes 图片参考的 Base64 编码无效") from error
+        return encoded
+
+    local = _resolve_local_media_path(src)
+    if local and local.is_file():
+        return base64.b64encode(local.read_bytes()).decode("ascii")
     return src
 
 
