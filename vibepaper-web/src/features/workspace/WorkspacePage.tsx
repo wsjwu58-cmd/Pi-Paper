@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FilePlus2, Upload, Download, Pencil, Trash2, FolderOpen, Search, LayoutGrid } from 'lucide-react'
-import { api, ApiError } from '@/lib/api'
+import { api, ApiError, assetUrl } from '@/lib/api'
 import { sid } from '@/lib/ids'
 import type { CanvasView, Id, PageResult } from '@/lib/types'
 import { Button } from '@/components/ui/Button'
@@ -155,8 +155,8 @@ export function WorkspacePage() {
                 onClick={() => nav(`/canvas/${sid(c.id)}`)}
               >
                 <div className="absolute inset-0 bg-gradient-to-b from-[#ececee] via-[#e4e4e8] to-[#c8c8ce]" />
-                {c.thumbnailUrl ? (
-                  <img src={c.thumbnailUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                {assetUrl(c.thumbnailUrl) ? (
+                  <img src={assetUrl(c.thumbnailUrl)} alt="" className="absolute inset-0 h-full w-full object-cover" />
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center">
                     <OrigamiIcon />

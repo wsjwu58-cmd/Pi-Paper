@@ -32,4 +32,14 @@ describe('parseJsonPreserveIds', () => {
     expect(typeof parsed.decimal).toBe('number')
     expect(typeof parsed.exponent).toBe('number')
   })
+
+  it('keeps long fractional canvas coordinates intact', () => {
+    const parsed = parseJsonPreserveIds<{ node: { id: string; x: number; y: number } }>(
+      '{"node":{"id":227301055640244224,"x":570.398866556266,"y":-0.2751493544461425}}',
+    )
+
+    expect(parsed).toEqual({
+      node: { id: '227301055640244224', x: 570.398866556266, y: -0.2751493544461425 },
+    })
+  })
 })

@@ -28,4 +28,11 @@ describe("business-fact protected compaction", () => {
 		);
 		expect(result.tokenEstimate).toBeLessThanOrEqual(40);
 	});
+
+	it("keeps a bounded preview for oversized tool results", () => {
+		const result = compactContext([{ role: "tool", content: "a".repeat(20_000) }], { maxTokens: 2_000 });
+		const message = result.recentMessages[0];
+		expect(message?.meta?.compacted).toBe(true);
+		expect(message?.content.length).toBeLessThan(6_000);
+	});
 });

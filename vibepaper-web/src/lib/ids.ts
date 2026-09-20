@@ -60,8 +60,25 @@ function quoteUnsafeIntegerLiterals(text: string): string {
     if (char === '-') index += 1
     const digitsStart = index
     while (/\d/.test(text[index] ?? '')) index += 1
-    const isInteger = text[index] !== '.' && text[index] !== 'e' && text[index] !== 'E'
     const digitCount = index - digitsStart
+    let isInteger = true
+
+    // Consume the *whole* JSON number token before deciding whether it is a
+    // Snowflake-sized integer. Leaving the cursor at a decimal point caused
+    // the fractional digits of a coordinate such as `570.398866556266...` to
+    // be processed as a separate unsafe integer and turned valid JSON into
+    // `570."398866..."`.
+    if (text[index] === '.') {
+      isInteger = false
+      index += 1
+      while (/\d/.test(text[index] ?? '')) index += 1
+    }
+    if (text[index] === 'e' || text[index] === 'E') {
+      isInteger = false
+      index += 1
+      if (text[index] === '+' || text[index] === '-') index += 1
+      while (/\d/.test(text[index] ?? '')) index += 1
+    }
     const literal = text.slice(start, index)
     output += isInteger && digitCount >= 16 ? JSON.stringify(literal) : literal
   }

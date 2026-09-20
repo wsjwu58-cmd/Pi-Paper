@@ -91,6 +91,7 @@ export interface AgentChatMsg {
     change_model: '切换模型',
     replace_output: '覆盖输出',
     submit_generation: '提交生成',
+    submit_generation_batch: '提交批量生成',
     check_task_status: '查询任务',
     update_memory: '更新记忆',
     clock: '安排跟进',

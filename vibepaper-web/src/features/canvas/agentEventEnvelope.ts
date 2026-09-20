@@ -1,4 +1,4 @@
-import type { AgentChatMsg, ExecutionStep } from './agentTypes'
+import type { AgentChatMsg, AgentConfirmation, ExecutionStep } from './agentTypes'
 import { stepFromThinking, toolLabel } from './agentTypes'
 
 export type AgentEventType =
@@ -170,7 +170,7 @@ export function mergeSessionMessages(persisted: AgentChatMsg[], runtime: AgentCh
         meta: {
           ...stored.meta,
           ...live.meta,
-          confirmation: stored.meta?.confirmation ?? live.meta?.confirmation,
+          confirmation: mergeConfirmation(stored.meta?.confirmation, live.meta?.confirmation),
           executionSteps: live.meta?.executionSteps?.length
             ? live.meta.executionSteps
             : stored.meta?.executionSteps,
@@ -182,6 +182,16 @@ export function mergeSessionMessages(persisted: AgentChatMsg[], runtime: AgentCh
     merged.push(live)
   }
   return merged
+}
+
+function mergeConfirmation(
+  persisted?: AgentConfirmation,
+  runtime?: AgentConfirmation,
+): AgentConfirmation | undefined {
+  const terminal = (value?: AgentConfirmation) => value?.status === 'accepted' || value?.status === 'rejected'
+  if (terminal(persisted)) return persisted
+  if (terminal(runtime)) return runtime
+  return runtime ?? persisted
 }
 
 function appendUniqueText(previous: string, summary: unknown): string {

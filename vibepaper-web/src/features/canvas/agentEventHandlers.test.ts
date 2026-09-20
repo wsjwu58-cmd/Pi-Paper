@@ -84,6 +84,19 @@ describe('agent event envelope reducer', () => {
     expect(mergeSessionMessages(persisted, runtime)[0]?.meta?.executionSteps).toEqual(runtime[0]?.meta.executionSteps)
   })
 
+  it('keeps a terminal persisted confirmation when a reconnect replays its pending event', () => {
+    const persisted = [{
+      id: 'turn-1', role: 'assistant' as const, type: 'text' as const, content: '请确认生成。',
+      meta: { confirmation: { actionId: 'action-1', status: 'accepted' as const, approvalToken: 'token', summary: '已确认' } },
+    }]
+    const runtime = [{
+      id: 'turn-1', role: 'assistant' as const, type: 'text' as const, content: '请确认生成。',
+      meta: { confirmation: { actionId: 'action-1', status: 'pending' as const, approvalToken: 'token', summary: '旧事件' } },
+    }]
+
+    expect(mergeSessionMessages(persisted, runtime)[0]?.meta?.confirmation?.status).toBe('accepted')
+  })
+
   it('replays persisted run events into the assistant message that owns the run', () => {
     const hydrated: AgentEventState = {
       ...base,

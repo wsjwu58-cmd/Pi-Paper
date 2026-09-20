@@ -13,6 +13,9 @@ describe("Agent OpenAPI contract", () => {
 			"/api/v1/agent/sessions/{sessionId}/cancel",
 			"/api/v1/agent/sessions/{sessionId}/skills/{skillId}:attach",
 			"/api/v1/memories",
+			"/api/v1/memory-candidates",
+			"/api/v1/memory-candidates/{candidateId}/accept",
+			"/api/v1/memory-candidates/{candidateId}/reject",
 			"/api/v1/drama/series",
 			"/api/v1/render-reviews",
 		])
@@ -22,6 +25,14 @@ describe("Agent OpenAPI contract", () => {
 	it("keeps stable error fields and event envelope fields", () => {
 		const document = createAgentOpenApi();
 		expect(document.components.schemas.Error.required).toEqual(["code", "message", "request_id", "retryable"]);
+		expect(document.components.schemas.MemoryCandidate.required).toEqual([
+			"id",
+			"content",
+			"memoryType",
+			"scope",
+			"confidence",
+			"createdAt",
+		]);
 		expect(document.components.schemas.AgentEventEnvelope.required).toEqual([
 			"eventId",
 			"runId",

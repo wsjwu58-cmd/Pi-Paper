@@ -5,6 +5,7 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { ServiceConfig } from "../config.ts";
 import type { DramaStateStore } from "../domain/drama-state.ts";
 import type { AgentProfile } from "../domain/tool-manifest.ts";
+import type { SessionContext } from "../domain/session-context.ts";
 import { createDramaAgent } from "../pi/drama-agent.ts";
 import { createLoadSkillTool, type LoadedSkillResource } from "../tools/skill-tools.ts";
 import { compactContext } from "./context-compaction-service.ts";
@@ -43,6 +44,7 @@ export interface AgentRuntimeHooks {
 	shouldStopAfterTurn?: NonNullable<AgentOptions["shouldStopAfterTurn"]>;
 	modelId?: string;
 	memoryContext?: string;
+	sessionContext?: SessionContext;
 	intentContext?: string;
 	/** Force the first model request to make one verified low-risk tool call. */
 	requiredToolName?: string;
@@ -102,7 +104,7 @@ export async function runDramaTurn(
 			meta: message.meta,
 			sourceIndex,
 		})),
-		{ maxTokens: 24_000 },
+		{ maxTokens: 24_000, sessionContext: hooks.sessionContext },
 	);
 	const recentIndexes = new Set(compacted.recentMessages.map((message) => message.sourceIndex));
 	const initialMessages: AgentMessage[] = [];

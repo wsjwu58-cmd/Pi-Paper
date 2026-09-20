@@ -19,7 +19,7 @@ import {
   Clapperboard,
   AlertTriangle,
 } from 'lucide-react'
-import { api, authedFetch } from '@/lib/api'
+import { api, ApiError, authedFetch } from '@/lib/api'
 import { parseJsonPreserveIds } from '@/lib/ids'
 import { useAuth } from '@/lib/auth'
 import type { MemoryView, ModelInfo, SkillView } from '@/lib/types'
@@ -33,7 +33,7 @@ import {
   resolveBoundConfirmationCanvasVersion,
   resolveConfirmationCanvasVersion,
 } from './confirmationVersion'
-import type { AgentChatMsg, AgentConfirmation, AgentSuggestion, ExecutionStep } from './agentTypes'
+import { toolLabel, type AgentChatMsg, type AgentConfirmation, type AgentSuggestion, type ExecutionStep } from './agentTypes'
 import { AgentNextActions, AgentTaskBadge, AgentTurnTimeline } from './AgentExecutionRecord'
 import {
   applyAgentEvent,
@@ -129,7 +129,9 @@ export function AgentPanel() {
   const seenWakeupRef = useRef<Map<string, number>>(new Map())
   /** 本轮回复逐字动画标记 */
   const [typingTurnId, setTypingTurnId] = useState<string | null>(null)
-  const [confirmingActionId, setConfirmingActionId] = useState<string | null>(null)
+  // State updates are asynchronous, while a double-click can dispatch two
+  // confirmation requests in the same render frame. Keep an immediate lock.
+  const confirmingActionRef = useRef<string | null>(null)
   const busyRef = useRef(false)
   const canvasId = canvas?.canvas.id
   const previousCanvasIdRef = useRef<string | number | undefined>(undefined)
@@ -665,8 +667,8 @@ export function AgentPanel() {
   }
 
   const confirmAction = async (confirmation: AgentConfirmation, accept: boolean) => {
-    if (!sessionId || confirmingActionId) return
-    setConfirmingActionId(confirmation.actionId)
+    if (!sessionId || confirmingActionRef.current) return
+    confirmingActionRef.current = confirmation.actionId
     patchConfirmation(confirmation.actionId, 'submitting')
     try {
       const canvasVersion = confirmation.canvasVersion != null
@@ -698,19 +700,70 @@ export function AgentPanel() {
       for (const event of result.events ?? []) processStreamEvent(event)
       if (accept) toastSuccess(result.taskId ? '已确认，生成任务已提交' : '已确认，Agent 正在继续执行')
     } catch (error) {
+      if (
+        accept &&
+        error instanceof ApiError &&
+        (error.code === 'VERSION_CONFLICT' || error.code === 'CONFIRMATION_REQUIRED')
+      ) {
+        try {
+          // A confirmation binds the canvas version and can only be consumed
+          // once. A stale locally cached card must not keep the composer locked.
+          // Best-effort cancellation is enough here: an already consumed or
+          // expired approval is safe to remove from the local queue as well.
+          try {
+            await api(`/agent/sessions/${sessionId}/confirmations/${confirmation.actionId}`, {
+              method: 'POST',
+              body: JSON.stringify({
+                approvalToken: confirmation.approvalToken,
+                accept: false,
+              }),
+            })
+          } catch (cancelError) {
+            if (!(cancelError instanceof ApiError && cancelError.code === 'CONFIRMATION_REQUIRED')) throw cancelError
+          }
+          patchConfirmation(confirmation.actionId, 'rejected')
+          await loadSessionQuiet(sessionId, undefined, sessionEpochRef.current, true)
+          notifyCanvasChanged()
+          toastError(
+            error.code === 'VERSION_CONFLICT'
+              ? '画布已更新，过期确认已取消；请基于当前画布重新发送生成请求'
+              : '确认已失效，已刷新为最新待确认项',
+          )
+          return
+        } catch (cancelError) {
+          patchConfirmation(confirmation.actionId, 'pending')
+          toastError((cancelError as Error).message || '画布版本已变化，请先取消过期确认后重新发送')
+          return
+        }
+      }
       patchConfirmation(confirmation.actionId, 'pending')
       toastError((error as Error).message || '确认操作失败')
     } finally {
-      setConfirmingActionId(null)
+      if (confirmingActionRef.current === confirmation.actionId) confirmingActionRef.current = null
     }
   }
 
+  // A reconnect can replay an old `confirmation_required` event after the
+  // authoritative message snapshot already records that same action as
+  // accepted/rejected. Terminal persisted state must always win over replayed
+  // pending cards, otherwise a completed generation is offered again.
+  const terminalConfirmationActionIds = new Set(
+    messages.flatMap((item) => {
+      const confirmation = item.meta?.confirmation
+      return confirmation && (confirmation.status === 'accepted' || confirmation.status === 'rejected')
+        ? [confirmation.actionId]
+        : []
+    }),
+  )
   const pendingConfirmations = messages
     .map((item) => item.meta?.confirmation)
     .filter((confirmation): confirmation is AgentConfirmation =>
-      confirmation?.status === 'pending' || confirmation?.status === 'submitting',
+      (confirmation?.status === 'pending' || confirmation?.status === 'submitting') &&
+      !terminalConfirmationActionIds.has(confirmation.actionId),
     )
-  const activeConfirmation = pendingConfirmations[0]
+  // A session can contain a locally stale card while the Agent has already
+  // planned its next action. The latest card is the only actionable one.
+  const activeConfirmation = pendingConfirmations.at(-1)
   const hasPendingConfirmation = pendingConfirmations.length > 0
 
   const send = async () => {
@@ -1123,8 +1176,12 @@ export function AgentPanel() {
                     }
                   }}
                   rows={3}
-                  placeholder="描述创意或需求，@ 引用参考，/ 选择 Skill"
-                  disabled={busy || hasPendingConfirmation}
+                  placeholder={
+                    hasPendingConfirmation
+                      ? '可先编辑下一步需求；请先处理上方待确认生成'
+                      : '描述创意或需求，@ 引用参考，/ 选择 Skill'
+                  }
+                  disabled={busy}
                   className="block min-h-[72px] w-full resize-none bg-transparent px-3 pb-12 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60"
                 />
                 <div className="absolute bottom-2 left-2 right-2 z-10 flex min-w-0 items-center gap-1.5">
@@ -1248,6 +1305,7 @@ function AgentConfirmationCard({
   const pending = confirmation.status === 'pending'
   const submitting = confirmation.status === 'submitting'
   const total = confirmation.estimatedTotalCost ?? confirmation.estimatedCost ?? 0
+  const summary = confirmation.tool ? `确认${toolLabel(confirmation.tool)}` : confirmation.summary
   const statusText = submitting ? '正在提交确认…' : '待确认生成'
 
   return (
@@ -1256,7 +1314,7 @@ function AgentConfirmationCard({
         <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-[var(--canvas-text-muted)]" />
         <div className="min-w-0 flex-1">
           <p className="font-semibold">{statusText}{queuedCount > 0 ? `，还有 ${queuedCount} 项排队` : ''}</p>
-          <p className="mt-0.5 truncate text-[var(--canvas-text-muted)]">{confirmation.summary}</p>
+          <p className="mt-0.5 truncate text-[var(--canvas-text-muted)]">{summary}</p>
           <p className="mt-0.5 text-[var(--canvas-text-muted)]">预计 {total} 点{confirmation.affectedNodeCount ? ` · ${confirmation.affectedNodeCount} 个节点` : ''}</p>
         </div>
         {pending || submitting ? (

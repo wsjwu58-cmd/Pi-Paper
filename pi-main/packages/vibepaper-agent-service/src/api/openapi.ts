@@ -1,7 +1,7 @@
 import { errorSchema } from "./schemas/common.ts";
 import { dramaSeriesSchema } from "./schemas/drama.ts";
 import { agentEventEnvelopeSchema } from "./schemas/events.ts";
-import { memorySchema } from "./schemas/memories.ts";
+import { memoryCandidateSchema, memorySchema } from "./schemas/memories.ts";
 import { sessionMessageSchema } from "./schemas/sessions.ts";
 import { skillAttachSchema } from "./schemas/skills.ts";
 
@@ -27,6 +27,9 @@ export function createAgentOpenApi(): AgentOpenApiDocument {
 			"/api/v1/agent/plans/{planId}/ready-set": { get: {} },
 			"/api/v1/agent/plans/{planId}/rerun": { post: {} },
 			"/api/v1/memories": { get: {}, post: {} },
+			"/api/v1/memory-candidates": { get: {} },
+			"/api/v1/memory-candidates/{candidateId}/accept": { post: {} },
+			"/api/v1/memory-candidates/{candidateId}/reject": { post: {} },
 			"/api/v1/drama/series": { post: {} },
 			"/api/v1/drama/story-bibles": { post: {} },
 			"/api/v1/drama/story-bibles/{bibleId}": { get: {} },
@@ -55,6 +58,7 @@ export function createAgentOpenApi(): AgentOpenApiDocument {
 				SessionMessage: sessionMessageSchema,
 				SkillAttach: skillAttachSchema,
 				Memory: memorySchema,
+				MemoryCandidate: memoryCandidateSchema,
 				DramaSeries: dramaSeriesSchema,
 			},
 		},
