@@ -70,6 +70,7 @@ agent-test-framework/
 resume-highlights/
 /简历亮点-STAR法则.md
 tmp/pdfs/
+output/pdf/武世杰-后端开发-Agent开发-优化版简历.pdf
 
 # --- Misc ---
 *.local
