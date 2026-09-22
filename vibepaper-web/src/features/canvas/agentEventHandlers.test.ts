@@ -44,6 +44,17 @@ describe('agent event envelope reducer', () => {
     expect(state.errorCode).toBe('MODEL_TIMEOUT')
   })
 
+  it('replaces a restarted streamed reply instead of appending a duplicate paragraph', () => {
+    let state = reduceAgentEvent(base, event('assistant_delta', { text: '你好！我是小P，陪你一起创作。\n\n今天想做什么？' }, 'delta-1'))
+    state = reduceAgentEvent(
+      state,
+      event('assistant_delta', { text: '你好！我是小P，陪你一起创作。\n\n今天想做什么？可以从一张图开始。', replace: true }, 'delta-2'),
+    )
+
+    expect(state.messages).toHaveLength(1)
+    expect(state.messages[0]?.content).toBe('你好！我是小P，陪你一起创作。\n\n今天想做什么？可以从一张图开始。')
+  })
+
   it('keeps a completed turn intact when a continuation run starts', () => {
     const waiting: AgentEventState = {
       ...base,

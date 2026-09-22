@@ -88,10 +88,11 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
 
   if (event.type === 'assistant_delta') {
     const delta = typeof event.data.text === 'string' ? event.data.text : ''
+    const replace = event.data.replace === true
     // Historical deltas restore the execution record after refresh. The
     // durable assistant message already contains their complete visible text.
     if (!next.persistedAssistantRunIds.has(event.runId)) {
-      updateAssistant((message) => ({ ...message, meta: withRun(message), content: `${message.content}${delta}` }))
+      updateAssistant((message) => ({ ...message, meta: withRun(message), content: replace ? delta : `${message.content}${delta}` }))
     }
   } else if (event.type === 'thinking') {
     const text = typeof event.data.text === 'string' ? event.data.text.trim() : ''

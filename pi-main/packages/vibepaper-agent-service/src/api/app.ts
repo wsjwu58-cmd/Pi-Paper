@@ -12,6 +12,7 @@ import {
 	type StoredAgentMessage,
 	sanitizeAgentReply,
 } from "../application/agent-runtime.ts";
+import { updateAssistantText } from "../application/assistant-text.ts";
 import {
 	ApprovalError,
 	type ApprovalRepository,
@@ -2763,11 +2764,11 @@ async function persistTurnEvent(
 	let data: Record<string, unknown> = {};
 	let nextAssistantText = assistantText;
 	if (event.type === "assistant_message" && event.content) {
-		const delta = event.content.startsWith(assistantText) ? event.content.slice(assistantText.length) : event.content;
-		nextAssistantText = event.content;
-		if (!delta) return nextAssistantText;
+		const update = updateAssistantText(assistantText, event.content);
+		nextAssistantText = update.next;
+		if (!update.delta) return nextAssistantText;
 		type = "assistant_delta";
-		data = { text: delta };
+		data = { text: update.delta, ...(update.replace ? { replace: true } : {}) };
 	} else if (event.type === "thinking" && event.content) {
 		type = "thinking";
 		data = { text: event.content };
