@@ -11,14 +11,16 @@ export function Modal({
   wide,
   size = 'md',
   hideHeader,
+  className,
 }: {
   open: boolean
   onClose: () => void
   title?: string
   children: React.ReactNode
   wide?: boolean
-  size?: 'md' | 'lg' | 'xl'
+  size?: 'md' | 'lg' | 'xl' | 'publication'
   hideHeader?: boolean
+  className?: string
 }) {
   useEffect(() => {
     if (!open) return
@@ -28,13 +30,20 @@ export function Modal({
   }, [open, onClose])
 
   if (!open || typeof document === 'undefined') return null
-  const maxW = wide || size === 'lg' ? 'max-w-3xl' : size === 'xl' ? 'max-w-5xl' : 'max-w-md'
+  const maxW = wide || size === 'lg'
+    ? 'max-w-3xl'
+    : size === 'xl'
+      ? 'max-w-5xl'
+      : size === 'publication'
+        ? 'max-w-[1380px]'
+        : 'max-w-md'
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#8a8c91]/60 p-4 backdrop-blur-sm" onClick={onClose}>
       <div
         className={cn(
           'relative max-h-[90vh] w-full overflow-auto rounded-[32px] bg-white p-6 shadow-[0_24px_80px_rgba(0,0,0,0.18)] sm:p-8',
           maxW,
+          className,
         )}
         onClick={(e) => e.stopPropagation()}
       >

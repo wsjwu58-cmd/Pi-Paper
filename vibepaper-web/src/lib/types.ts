@@ -221,11 +221,14 @@ export interface PublicationView {
   canvasId: Id;
   ownerId: Id;
   title: string;
+  description?: string;
   status: string;
   thumbnailUrl?: string;
   previewAssetUrl?: string;
+  previewAssetType?: string;
   authorName?: string;
   authorAvatar?: string;
+  shareWorkflow: boolean;
   publishedAt?: string;
   createdAt?: string;
 }

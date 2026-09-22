@@ -40,7 +40,8 @@ public class GalleryService {
     private final IdentityInternalClient identityClient;
 
     @Transactional
-    public Publication publish(Long canvasId, String title) {
+    public Publication publish(Long canvasId, String title, String description, String previewAssetUrl,
+                               String previewAssetType, String thumbnailUrl, boolean shareWorkflow) {
         Long userId = RequestContext.userIdLong();
         Map<String, Object> export;
         try {
@@ -52,7 +53,15 @@ public class GalleryService {
         pub.setId(idGenerator.nextId());
         pub.setCanvasId(canvasId);
         pub.setOwnerId(userId);
-        pub.setTitle(title == null || title.isBlank() ? "未命名作品" : title);
+        if (title == null || title.isBlank() || description == null || description.isBlank()) {
+            throw ApiException.badRequest(ErrorCode.INVALID_INPUT, "项目名称和作品描述均为必填项");
+        }
+        pub.setTitle(limit(title, 128, "项目名称"));
+        pub.setDescription(limit(description, 1000, "作品描述"));
+        pub.setPreviewAssetUrl(limitOptional(previewAssetUrl, 2048, "作品文件地址"));
+        pub.setPreviewAssetType(validPreviewType(previewAssetType));
+        pub.setThumbnailUrl(limitOptional(thumbnailUrl, 2048, "封面地址"));
+        pub.setShareWorkflow(shareWorkflow);
         pub.setStatus("pending");
         pub.setCreatedAt(OffsetDateTime.now());
         publicationMapper.insert(pub);
@@ -91,7 +100,7 @@ public class GalleryService {
         CanvasSnapshot snapshot = snapshotMapper.selectOne(new LambdaQueryWrapper<CanvasSnapshot>()
                 .eq(CanvasSnapshot::getPublicationId, publicationId));
         Map<String, Object> view = new HashMap<>(toView(pub));
-        if (snapshot != null) {
+        if (snapshot != null && (Boolean.TRUE.equals(pub.getShareWorkflow()) || isOwner(pub))) {
             view.put("snapshot", parse(snapshot.getPayload()));
         }
         return view;
@@ -101,7 +110,7 @@ public class GalleryService {
     public Map<String, Object> clone(Long publicationId) {
         Long userId = RequestContext.userIdLong();
         Publication pub = publicationMapper.selectById(publicationId);
-        if (pub == null || !"published".equals(pub.getStatus())) {
+        if (pub == null || !"published".equals(pub.getStatus()) || !Boolean.TRUE.equals(pub.getShareWorkflow())) {
             throw ApiException.badRequest(ErrorCode.INVALID_INPUT, "仅可克隆已发布作品");
         }
         CanvasSnapshot snapshot = snapshotMapper.selectOne(new LambdaQueryWrapper<CanvasSnapshot>()
@@ -189,9 +198,12 @@ public class GalleryService {
         view.put("canvasId", pub.getCanvasId());
         view.put("ownerId", pub.getOwnerId());
         view.put("title", pub.getTitle());
+        view.put("description", pub.getDescription());
         view.put("status", pub.getStatus());
         view.put("thumbnailUrl", pub.getThumbnailUrl());
         view.put("previewAssetUrl", pub.getPreviewAssetUrl());
+        view.put("previewAssetType", pub.getPreviewAssetType());
+        view.put("shareWorkflow", Boolean.TRUE.equals(pub.getShareWorkflow()));
         view.put("rejectedReason", pub.getRejectedReason());
         view.put("publishedAt", pub.getPublishedAt() == null ? null : pub.getPublishedAt().toString());
         view.put("createdAt", pub.getCreatedAt() == null ? null : pub.getCreatedAt().toString());
@@ -221,5 +233,35 @@ public class GalleryService {
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private boolean isOwner(Publication pub) {
+        Long userId = RequestContext.userIdLong();
+        return userId != null && pub.getOwnerId().equals(userId);
+    }
+
+    private String limit(String value, int max, String field) {
+        String trimmed = value.trim();
+        if (trimmed.length() > max) {
+            throw ApiException.badRequest(ErrorCode.INVALID_INPUT, field + "最多" + max + "个字符");
+        }
+        return trimmed;
+    }
+
+    private String limitOptional(String value, int max, String field) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return limit(value, max, field);
+    }
+
+    private String validPreviewType(String type) {
+        if (type == null || type.isBlank()) {
+            return null;
+        }
+        if (!List.of("image", "video", "audio").contains(type)) {
+            throw ApiException.badRequest(ErrorCode.INVALID_INPUT, "作品文件类型无效");
+        }
+        return type;
     }
 }

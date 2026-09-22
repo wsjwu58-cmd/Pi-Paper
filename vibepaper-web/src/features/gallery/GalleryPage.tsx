@@ -96,10 +96,11 @@ export function GalleryPage() {
               <div className="flex items-center justify-between px-4 py-3">
                 <div className="min-w-0">
                   <p className="truncate text-[14px] font-bold text-[#111]">{p.title}</p>
+                  {p.description ? <p className="mt-0.5 truncate text-[12px] text-[#777]">{p.description}</p> : null}
                   <p className="text-[12px] text-[#999]">by {p.authorName ?? '创作者'}</p>
                 </div>
                 <div className="flex gap-1.5">
-                  <button onClick={() => clone.mutate(p.id)} className="rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white">
+                  <button disabled={!p.shareWorkflow} onClick={() => clone.mutate(p.id)} className="rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:bg-[#aaa]">
                     克隆
                   </button>
                   <button onClick={() => setDelTarget(p)} className="rounded-lg p-1.5 text-[#bbb] hover:text-red-500" title="删除自己的作品">
@@ -115,18 +116,15 @@ export function GalleryPage() {
       <Modal open={!!preview} onClose={() => setPreview(null)} title={preview?.title} wide>
         <div className="mb-4 flex h-80 items-center justify-center overflow-hidden rounded-2xl bg-slate-100">
           {preview?.previewAssetUrl || preview?.thumbnailUrl ? (
-            <img
-              src={preview.previewAssetUrl || preview.thumbnailUrl}
-              alt={preview.title}
-              className="h-full w-full object-contain"
-            />
+            <PublicationMedia publication={preview} />
           ) : (
             <span className="text-[13px] text-[#999]">暂无成品预览图</span>
           )}
         </div>
+        {preview?.description ? <p className="mb-4 text-[14px] leading-6 text-[#666]">{preview.description}</p> : null}
         <div className="flex justify-end gap-2">
-          <button onClick={() => preview && void openProcess(preview)} className="h-10 rounded-xl border border-black/10 px-4 text-[13px] font-semibold">查看制作过程</button>
-          <button onClick={() => preview && clone.mutate(preview.id)} className="h-10 rounded-xl bg-[#111] px-4 text-[13px] font-bold text-white">一键克隆</button>
+          <button disabled={!preview?.shareWorkflow} onClick={() => preview && void openProcess(preview)} className="h-10 rounded-xl border border-black/10 px-4 text-[13px] font-semibold disabled:cursor-not-allowed disabled:text-[#aaa]">查看制作过程</button>
+          <button disabled={!preview?.shareWorkflow} onClick={() => preview && clone.mutate(preview.id)} className="h-10 rounded-xl bg-[#111] px-4 text-[13px] font-bold text-white disabled:cursor-not-allowed disabled:bg-[#aaa]">一键克隆</button>
         </div>
       </Modal>
 
@@ -182,4 +180,14 @@ export function GalleryPage() {
       />
     </div>
   )
+}
+
+function PublicationMedia({ publication }: { publication: PublicationView }) {
+  const url = publication.previewAssetUrl || publication.thumbnailUrl
+  const isVideo = publication.previewAssetType === 'video'
+  const isAudio = publication.previewAssetType === 'audio'
+  if (!url) return null
+  if (isVideo) return <video src={url} className="h-full w-full object-contain" controls />
+  if (isAudio) return <audio src={url} className="w-4/5" controls />
+  return <img src={url} alt={publication.title} className="h-full w-full object-contain" />
 }

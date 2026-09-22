@@ -26,7 +26,12 @@ public class GalleryController {
     @PostMapping("/api/v1/publications")
     public Publication publish(@RequestBody Map<String, Object> body) {
         return galleryService.publish(requiredLong(body.get("canvasId"), "canvasId"),
-                body.get("title") == null ? null : body.get("title").toString());
+                body.get("title") == null ? null : body.get("title").toString(),
+                body.get("description") == null ? null : body.get("description").toString(),
+                body.get("previewAssetUrl") == null ? null : body.get("previewAssetUrl").toString(),
+                body.get("previewAssetType") == null ? null : body.get("previewAssetType").toString(),
+                body.get("thumbnailUrl") == null ? null : body.get("thumbnailUrl").toString(),
+                body.get("shareWorkflow") == null || Boolean.parseBoolean(body.get("shareWorkflow").toString()));
     }
 
     private Long requiredLong(Object value, String field) {

@@ -15,10 +15,13 @@ public class Publication {
     private Long canvasId;
     private Long ownerId;
     private String title;
+    private String description;
     /** pending / published / rejected / taken_down */
     private String status;
     private String thumbnailUrl;
     private String previewAssetUrl;
+    private String previewAssetType;
+    private Boolean shareWorkflow;
     private String rejectedReason;
     private OffsetDateTime publishedAt;
     private OffsetDateTime createdAt;

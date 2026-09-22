@@ -23,6 +23,7 @@ import { useCanvasStore } from './canvasStore'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Modal } from '@/components/ui/Modal'
 import { cn } from '@/lib/cn'
+import { PublicationDialog } from './PublicationDialog'
 
 export function CanvasTopBar() {
   const nav = useNavigate()
@@ -39,6 +40,7 @@ export function CanvasTopBar() {
   const account = useAuth((s) => s.account)
   const refreshAccount = useAuth((s) => s.refreshAccount)
   const [shareOpen, setShareOpen] = useState(false)
+  const [publicationOpen, setPublicationOpen] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const accountRef = useRef<HTMLDivElement>(null)
@@ -109,23 +111,6 @@ export function CanvasTopBar() {
           `${location.origin}/canvas/shared/${d.canvas.shareToken}`,
         )
       }
-      setShareOpen(false)
-    } catch (e) {
-      toastError((e as Error).message)
-    }
-  }
-
-  const onPublish = async () => {
-    if (!canvas) return
-    try {
-      await api('/publications', {
-        method: 'POST',
-        body: JSON.stringify({
-          canvasId: canvas.canvas.id,
-          title: canvas.canvas.name,
-        }),
-      })
-      toastSuccess('已提交创意广场，等待审核')
       setShareOpen(false)
     } catch (e) {
       toastError((e as Error).message)
@@ -258,14 +243,27 @@ export function CanvasTopBar() {
 
                 <button
                   type="button"
-                  onClick={() => void onPublish()}
+                  onClick={() => {
+                    setShareOpen(false)
+                    setPublicationOpen(true)
+                  }}
                   className="mt-2 flex w-full items-center justify-center gap-2 rounded-[20px] bg-[#111] py-3 text-[14px] font-bold text-white"
                 >
-                  <Share2 size={16} /> 上传到创意广场
+                  <Share2 size={16} /> 分享到创意广场
                 </button>
               </div>
             </div>
           </Modal>
+
+          <PublicationDialog
+            open={publicationOpen}
+            canvas={canvas}
+            onClose={() => setPublicationOpen(false)}
+            onBack={() => {
+              setPublicationOpen(false)
+              setShareOpen(true)
+            }}
+          />
 
           <input
             ref={fileRef}
