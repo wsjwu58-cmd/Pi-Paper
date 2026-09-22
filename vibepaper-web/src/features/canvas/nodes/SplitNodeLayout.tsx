@@ -33,8 +33,8 @@ export function SplitNodeLayout({
   extra?: ReactNode
   topMinHeight?: string
   topMinHeightCollapsed?: string
-  /** Media outputs use their own frame so artwork reaches the edge of the node. */
-  mediaFrame?: 'square' | 'video'
+  /** Media outputs size the node from the media's own aspect ratio. */
+  mediaFrame?: 'natural'
 }) {
   const nodeId = sid(node.id)
   const badge = statusBadge(node.status)
@@ -42,7 +42,6 @@ export function SplitNodeLayout({
   const expanded = selected
   const shellWidth = expanded ? 'w-[440px]' : 'w-[280px]'
   const topWidth = expanded ? 'w-[240px]' : 'w-full'
-  const mediaFrameClass = mediaFrame === 'square' ? 'aspect-square' : 'aspect-video'
 
   return (
     <div className={`relative flex flex-col items-center ${shellWidth}`}>
@@ -98,7 +97,7 @@ export function SplitNodeLayout({
             <div
               className={
                 mediaFrame
-                  ? `relative flex w-full ${mediaFrameClass} items-start justify-center overflow-hidden`
+                  ? 'relative flex w-full items-start justify-center overflow-hidden'
                   : `relative flex ${expanded ? topMinHeight : topMinHeightCollapsed} max-h-[120px] items-start justify-center overflow-hidden`
               }
             >
