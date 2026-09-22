@@ -19,6 +19,7 @@ export function SplitNodeLayout({
   extra,
   topMinHeight = 'min-h-[72px]',
   topMinHeightCollapsed = 'min-h-0',
+  mediaFrame,
 }: {
   node: NodePayload
   selected: boolean
@@ -32,6 +33,8 @@ export function SplitNodeLayout({
   extra?: ReactNode
   topMinHeight?: string
   topMinHeightCollapsed?: string
+  /** Media outputs use their own frame so artwork reaches the edge of the node. */
+  mediaFrame?: 'square' | 'video'
 }) {
   const nodeId = sid(node.id)
   const badge = statusBadge(node.status)
@@ -39,6 +42,7 @@ export function SplitNodeLayout({
   const expanded = selected
   const shellWidth = expanded ? 'w-[440px]' : 'w-[280px]'
   const topWidth = expanded ? 'w-[240px]' : 'w-full'
+  const mediaFrameClass = mediaFrame === 'square' ? 'aspect-square' : 'aspect-video'
 
   return (
     <div className={`relative flex flex-col items-center ${shellWidth}`}>
@@ -69,9 +73,9 @@ export function SplitNodeLayout({
               )
             }}
           />
-          <div className={expanded ? 'px-3 py-2.5' : 'px-3.5 py-3'}>
+          <div className={mediaFrame ? 'p-0' : expanded ? 'px-3 py-2.5' : 'px-3.5 py-3'}>
             {expanded && topUpload && (
-              <div className="mb-1.5 flex justify-end">
+              <div className={mediaFrame ? 'absolute right-2 top-2 z-10' : 'mb-1.5 flex justify-end'}>
                 <label
                   className="nodrag nowheel flex h-6 w-6 cursor-pointer items-center justify-center rounded-lg bg-[#f0f0f2] text-[#888] ring-1 ring-black/6 hover:bg-[#e8e8ec]"
                   title="上传素材"
@@ -92,7 +96,11 @@ export function SplitNodeLayout({
               </div>
             )}
             <div
-              className={`relative flex ${expanded ? topMinHeight : topMinHeightCollapsed} max-h-[120px] items-start justify-center overflow-hidden`}
+              className={
+                mediaFrame
+                  ? `relative flex w-full ${mediaFrameClass} items-start justify-center overflow-hidden`
+                  : `relative flex ${expanded ? topMinHeight : topMinHeightCollapsed} max-h-[120px] items-start justify-center overflow-hidden`
+              }
             >
               {topContent}
               {busy && (

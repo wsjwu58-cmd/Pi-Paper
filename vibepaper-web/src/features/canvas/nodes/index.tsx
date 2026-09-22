@@ -134,11 +134,14 @@ function MediaContent({
   meta,
   large = false,
   outputType,
+  fill = false,
 }: {
   url?: string
   meta?: Record<string, unknown>
   large?: boolean
   outputType?: string
+  /** Use the full media frame instead of a compact preview. */
+  fill?: boolean
 }) {
   const resolvedMeta = { ...meta, outputType: meta?.outputType ?? outputType }
   const raw = resolveMediaUrl(url, resolvedMeta)
@@ -148,18 +151,18 @@ function MediaContent({
     setVideoError(false)
   }, [src])
   if (!src) return null
-  const box = large ? 'h-full max-h-[108px] min-h-[72px] w-full' : 'max-h-[72px] w-full'
+  const box = fill ? 'h-full w-full' : large ? 'h-full max-h-[108px] min-h-[72px] w-full' : 'max-h-[72px] w-full'
   const isImage =
     outputType === 'image' ||
     /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(raw ?? '') ||
     Boolean(raw?.includes('/assets/file') && outputType !== 'video' && outputType !== 'audio')
   if (isImage || (!outputType && raw)) {
-    return <img src={src} alt="" className={`${box} rounded-xl object-contain bg-[#f4f4f9]`} />
+    return <img src={src} alt="" className={`${box} ${fill ? '' : 'rounded-xl'} bg-[#f4f4f9] ${fill ? 'object-cover' : 'object-contain'}`} />
   }
   if (outputType === 'video' || /\.(mp4|webm|mov)(\?|$)/i.test(raw ?? '')) {
     if (videoError) {
       return (
-        <div className={`${box} flex items-center justify-center rounded-xl bg-[#1a1a2e] px-3 text-center text-[11px] font-semibold text-[#f87171]`}>
+        <div className={`${box} flex items-center justify-center ${fill ? '' : 'rounded-xl'} bg-[#1a1a2e] px-3 text-center text-[11px] font-semibold text-[#f87171]`}>
           视频无法播放，请重新生成
         </div>
       )
@@ -171,7 +174,7 @@ function MediaContent({
         controls
         playsInline
         preload="metadata"
-        className={`${box} rounded-xl bg-black/5 object-contain`}
+        className={`${box} ${fill ? '' : 'rounded-xl'} bg-black/5 ${fill ? 'object-cover' : 'object-contain'}`}
         onError={() => setVideoError(true)}
       />
     )
@@ -188,10 +191,8 @@ function MediaContent({
 
 function OutputGrid({
   outputs,
-  large,
 }: {
   outputs: Array<{ url?: string; outputType?: string; meta?: Record<string, unknown> }>
-  large?: boolean
 }) {
   if (outputs.length <= 1) {
     const o = outputs[0]
@@ -200,16 +201,16 @@ function OutputGrid({
         url={o?.url}
         meta={o?.meta}
         outputType={o?.outputType}
-        large={large}
+        fill
       />
     )
   }
   const cols = outputs.length <= 4 ? 2 : 3
   return (
-    <div className={`grid gap-1 ${cols === 2 ? 'grid-cols-2' : 'grid-cols-3'} ${large ? 'max-h-[108px] min-h-[72px]' : 'max-h-[72px]'}`}>
+    <div className={`grid h-full w-full gap-1 ${cols === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
       {outputs.map((o, i) => (
         <div key={i} className="overflow-hidden rounded-lg bg-[#f4f4f9]">
-          <MediaContent url={o.url} meta={o.meta} outputType={o.outputType} />
+          <MediaContent url={o.url} meta={o.meta} outputType={o.outputType} fill />
         </div>
       ))}
     </div>
@@ -522,14 +523,15 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
         label="Image"
         icon={meta.icon}
         topUpload={{ accept: 'image/*', onUpload: (f) => uploadNodeOutput(node.id, node, f) }}
+        mediaFrame={outputs.length > 0 || mediaUrl ? 'square' : undefined}
         topMinHeight="min-h-[72px]"
         topMinHeightCollapsed="min-h-[72px]"
         topContent={
           <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-[#f4f4f9]">
             {outputs.length > 0 ? (
-              <OutputGrid outputs={outputs} large={props.selected} />
+              <OutputGrid outputs={outputs} />
             ) : mediaUrl ? (
-              <MediaContent url={mediaUrl} large={props.selected} outputType="image" />
+              <MediaContent url={mediaUrl} outputType="image" fill />
             ) : (
               <ImageIconPlaceholder compact={!props.selected} />
             )}
@@ -577,6 +579,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
         label="Video"
         icon={meta.icon}
         topUpload={{ accept: 'video/*', onUpload: (f) => uploadNodeOutput(node.id, node, f) }}
+        mediaFrame={mediaUrl ? 'video' : undefined}
         topMinHeight="min-h-[72px]"
         topMinHeightCollapsed="min-h-[72px]"
         topContent={
@@ -586,7 +589,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
                 url={out?.url ?? assetFallback}
                 meta={out?.meta as Record<string, unknown>}
                 outputType="video"
-                large={props.selected}
+                fill
               />
             ) : (
               <ImageIconPlaceholder compact={!props.selected} />
@@ -792,6 +795,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
         icon={Clapperboard}
         topMinHeight="min-h-[88px]"
         topMinHeightCollapsed="min-h-[72px]"
+        mediaFrame={mediaUrl ? 'video' : undefined}
         topContent={
           <div className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-xl bg-[#111]/90">
             {mediaUrl ? (
@@ -799,7 +803,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
                 url={out?.url ?? (node.params.url as string | undefined)}
                 meta={out?.meta as Record<string, unknown>}
                 outputType="video"
-                large={props.selected}
+                fill
               />
             ) : (
               <div className="flex flex-col items-center gap-1 text-[#b0b0b8]">
