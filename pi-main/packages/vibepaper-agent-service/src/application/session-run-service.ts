@@ -79,7 +79,15 @@ export class SessionRunService {
 
 	async setStatus(runId: string, status: AgentRunStatus, data: Record<string, unknown> = {}): Promise<void> {
 		const run = await this.requireRun(runId);
+		const terminalType = status === "completed" ? "run_completed" : status === "failed" ? "run_failed" : undefined;
+		const existingTerminal = terminalType
+			? (await this.repository.listEvents(runId)).some((event) => event.type === terminalType)
+			: false;
 		await this.repository.updateStatus(runId, status);
+		// Runtime error events are persisted before the route marks the run as
+		// failed. Do not append a second terminal event for the same run: the
+		// duplicate used to produce two red error toasts for one upstream failure.
+		if (existingTerminal) return;
 		if (status === "completed") await this.append(run, "run_completed", data);
 		if (status === "failed") await this.append(run, "run_failed", data);
 	}

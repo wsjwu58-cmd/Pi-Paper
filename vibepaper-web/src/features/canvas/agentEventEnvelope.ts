@@ -46,6 +46,16 @@ export function isAgentEventEnvelope(value: unknown): value is AgentEventEnvelop
     typeof event.runtimeVersion === 'string' && !!event.data && typeof event.data === 'object'
 }
 
+/** Keep provider diagnostics and raw gateway responses out of the chat UI. */
+export function friendlyAgentErrorMessage(value: unknown): string {
+  const message = typeof value === 'string' ? value.trim() : ''
+  if (/do_request_failed|failed to reach upstream|agnesai_error|upstream|^500\s*:/i.test(message)) {
+    return '模型服务暂时不可用，请稍后重试。'
+  }
+  if (/timeout|timed out|超时/i.test(message)) return '模型响应超时，请稍后重试。'
+  return message || '模型调用失败，请稍后重试。'
+}
+
 export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelope): AgentEventState {
   if (state.seenEventIds.has(event.eventId)) return state
   const next: AgentEventState = {

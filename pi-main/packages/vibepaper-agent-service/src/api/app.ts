@@ -2807,7 +2807,13 @@ async function persistTurnEvent(
 		data = { tool: event.toolName, ...objectOrEmpty(event.details) };
 	} else if (event.type === "error") {
 		type = event.errorCode === "RUN_ABORTED" ? "run_aborted" : "run_failed";
-		data = { errorCode: event.errorCode ?? "MODEL_UNAVAILABLE", message: event.content };
+		data = {
+			errorCode: event.errorCode ?? "MODEL_UNAVAILABLE",
+			// Keep provider diagnostics in server logs only. The raw upstream
+			// response can contain request ids and implementation details that
+			// should never be rendered in the Agent conversation.
+			message: friendlyAgentErrorMessage(event.content),
+		};
 	}
 	if (!type) return nextAssistantText;
 	try {
@@ -2817,6 +2823,15 @@ async function persistTurnEvent(
 		if (!(error instanceof Error) || error.message !== "RUN_NOT_ACTIVE") throw error;
 	}
 	return nextAssistantText;
+}
+
+function friendlyAgentErrorMessage(content?: string): string {
+	const message = content?.trim() ?? "";
+	if (/do_request_failed|failed to reach upstream|agnesai_error|模型服务|upstream/i.test(message)) {
+		return "模型服务暂时不可用，请稍后重试。";
+	}
+	if (/timeout|timed out|超时/i.test(message)) return "模型响应超时，请稍后重试。";
+	return "模型调用失败，请稍后重试。";
 }
 
 async function publishLatestRunEvent(

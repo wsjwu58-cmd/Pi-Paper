@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mergeSessionMessages, reduceAgentEvent, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
+import { friendlyAgentErrorMessage, mergeSessionMessages, reduceAgentEvent, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
 import { shouldRefreshCanvasEvent } from './agentEventHandlers'
 
 const base: AgentEventState = {
@@ -42,6 +42,11 @@ describe('agent event envelope reducer', () => {
     ])
     expect(state.runStatus).toBe('failed')
     expect(state.errorCode).toBe('MODEL_TIMEOUT')
+  })
+
+  it('hides raw upstream diagnostics from model failure feedback', () => {
+    expect(friendlyAgentErrorMessage('500: Failed to reach upstream (request id: secret)')).toBe('模型服务暂时不可用，请稍后重试。')
+    expect(friendlyAgentErrorMessage('模型调用失败')).toBe('模型调用失败')
   })
 
   it('replaces a restarted streamed reply instead of appending a duplicate paragraph', () => {

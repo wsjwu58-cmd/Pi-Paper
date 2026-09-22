@@ -44,6 +44,7 @@ import {
 } from './agentEventHandlers'
 import {
   isAgentEventEnvelope,
+  friendlyAgentErrorMessage,
   mergeSessionMessages,
   reduceAgentEvent,
   type AgentEventEnvelope,
@@ -128,6 +129,11 @@ export function AgentPanel() {
   const turnIdRef = useRef<string | null>(null)
   const seenTaskIdsRef = useRef<Set<string>>(new Set())
   const seenWakeupRef = useRef<Map<string, number>>(new Map())
+  // SSE reconnects and session rehydration can deliver the same envelope more
+  // than once. Keep a synchronous guard so duplicate terminal events cannot
+  // trigger duplicate toasts before React flushes state updates.
+  const seenEnvelopeIdsRef = useRef<Set<string>>(new Set())
+  const seenRunFailureToastsRef = useRef<Set<string>>(new Set())
   /** 本轮回复逐字动画标记 */
   const [typingTurnId, setTypingTurnId] = useState<string | null>(null)
   // State updates are asynchronous, while a double-click can dispatch two
@@ -190,6 +196,9 @@ export function AgentPanel() {
   }, [open, tab, skillCommandQuery])
 
   const consumeAgentEnvelope = (event: AgentEventEnvelope): void => {
+    const duplicate = seenEnvelopeIdsRef.current.has(event.eventId) || agentEventStateRef.current.seenEventIds.has(event.eventId)
+    seenEnvelopeIdsRef.current.add(event.eventId)
+    if (duplicate) return
     setMessages((previous) => {
       const next = reduceAgentEvent({ ...agentEventStateRef.current, messages: previous }, event)
       agentEventStateRef.current = next
@@ -210,7 +219,9 @@ export function AgentPanel() {
       setBusy(true)
     }
     if (event.type === 'run_failed') {
-      toastError(String(event.data.message ?? event.data.errorCode ?? 'Agent 运行失败'))
+      if (seenRunFailureToastsRef.current.has(event.runId)) return
+      seenRunFailureToastsRef.current.add(event.runId)
+      toastError(friendlyAgentErrorMessage(event.data.message ?? event.data.errorCode))
     } else if (event.type === 'run_aborted') {
       setTypingTurnId(null)
     }
@@ -226,6 +237,8 @@ export function AgentPanel() {
     turnIdRef.current = null
     seenTaskIdsRef.current.clear()
     seenWakeupRef.current.clear()
+    seenEnvelopeIdsRef.current.clear()
+    seenRunFailureToastsRef.current.clear()
     agentEventStateRef.current = {
       messages: [], seenEventIds: new Set(), runStatus: 'running', messageIdByRun: new Map(), persistedAssistantRunIds: new Set(),
     }
@@ -394,6 +407,7 @@ export function AgentPanel() {
       lastEventSeqRef.current = Math.max(lastEventSeqRef.current, event.eventSeq)
     }
     agentEventStateRef.current = nextState
+    seenEnvelopeIdsRef.current = new Set(nextState.seenEventIds)
     if (!preserveEventStream && (res.events?.length ?? 0) === 0) lastEventSeqRef.current = 0
     setMessages(nextState.messages)
     setSuggestions([])

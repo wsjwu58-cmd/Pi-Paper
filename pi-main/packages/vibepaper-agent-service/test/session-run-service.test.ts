@@ -38,6 +38,22 @@ describe("session run service", () => {
 		await expect(service.appendEvent(run.runId, "tool_completed", {})).rejects.toThrow("RUN_NOT_ACTIVE");
 	});
 
+	it("does not append a second terminal failure after an error event", async () => {
+		const service = new SessionRunService(new InMemoryRunRepository());
+		const run = await service.startRun({ sessionId: "session-1", idempotencyKey: "message-1" });
+
+		await service.appendEvent(run.runId, "run_failed", {
+			errorCode: "MODEL_UNAVAILABLE",
+			message: "模型服务暂时不可用，请稍后重试。",
+		});
+		await service.setStatus(run.runId, "failed", {
+			errorCode: "MODEL_UNAVAILABLE",
+			message: "模型调用失败",
+		});
+
+		expect((await service.listEvents(run.runId)).filter((event) => event.type === "run_failed")).toHaveLength(1);
+	});
+
 	it("uses repository capabilities instead of an InMemoryRunRepository type check", async () => {
 		const backing = new InMemoryRunRepository();
 		const repository: RunRepository = {
