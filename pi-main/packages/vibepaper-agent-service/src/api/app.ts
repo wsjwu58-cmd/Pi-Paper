@@ -1001,16 +1001,29 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const session = await requireSession(database, userId, sessionId);
 		if (!session.canvas_id) throw new ApiError(400, "INVALID_INPUT", "会话未绑定画布，请在画布页重新打开 Agent");
 		if (!accepted) {
-			const approval = await database.query<{ id: string; token_signature: string; expires_at: Date }>(
-				"SELECT id, token_signature, expires_at FROM agent_approvals WHERE action_id = $1 AND session_id = $2 AND user_id = $3 AND status = 'pending'",
+			const approval = await database.query<{ id: string; token_signature: string; status: "pending" | "accepted" | "rejected"; expires_at: Date }>(
+				"SELECT id, token_signature, status, expires_at FROM agent_approvals WHERE action_id = $1 AND session_id = $2 AND user_id = $3",
 				[actionId, sessionId, userId],
 			);
 			const record = approval.rows[0];
 			// Rejecting is a safe cleanup operation and must remain possible after the
 			// confirmation TTL. Keep signature validation so an expired token cannot
 			// be used to reject another user's pending action.
-			if (!record || !verifyToken(config, token, record.token_signature))
-				throw new ApiError(400, "CONFIRMATION_REQUIRED", "确认令牌无效或已过期");
+			if (!record || !verifyToken(config, token, record.token_signature)) {
+				// This can only affect messages in the caller's own session. An
+				// approval record that no longer exists can never be consumed, so
+				// mark its historical recovery card terminal instead of trapping the
+				// creator behind an invalid confirmation forever.
+				await persistConfirmationStatus(database, sessionId, actionId, "rejected");
+				const waitingRun = await runRepository.findActive(sessionId);
+				if (waitingRun?.status === "waiting_confirmation")
+					await runService.setStatus(waitingRun.runId, "completed", { text: "过期确认已清理，未执行生成任务" });
+				return { ok: true, actionId, accepted: false, status: "rejected", stale: true };
+			}
+			if (record.status !== "pending") {
+				await persistConfirmationStatus(database, sessionId, actionId, record.status);
+				return { ok: true, actionId, accepted: record.status === "accepted", status: record.status, stale: true };
+			}
 			await database.query(
 				"UPDATE agent_approvals SET status = 'rejected', consumed_at = now() WHERE id = $1 AND status = 'pending'",
 				[record.id],

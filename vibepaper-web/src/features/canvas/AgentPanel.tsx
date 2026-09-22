@@ -33,6 +33,7 @@ import {
   resolveBoundConfirmationCanvasVersion,
   resolveConfirmationCanvasVersion,
 } from './confirmationVersion'
+import { isActionableConfirmation } from './confirmationState'
 import { toolLabel, type AgentChatMsg, type AgentConfirmation, type AgentSuggestion, type ExecutionStep } from './agentTypes'
 import { AgentNextActions, AgentTaskBadge, AgentTurnTimeline } from './AgentExecutionRecord'
 import {
@@ -657,13 +658,22 @@ export function AgentPanel() {
   }
 
   const patchConfirmation = (actionId: string, status: AgentConfirmation['status']) => {
-    setMessages((items) =>
-      items.map((item) =>
+    setMessages((items) => {
+      const next = items.map((item) =>
         item.meta?.confirmation?.actionId === actionId
-          ? { ...item, meta: { ...item.meta, confirmation: { ...item.meta.confirmation, status } } }
+          ? {
+              ...item,
+              meta: {
+                ...item.meta,
+                requiresConfirmation: status === 'pending' || status === 'submitting',
+                confirmation: { ...item.meta.confirmation, status },
+              },
+            }
           : item,
-      ),
-    )
+      )
+      agentEventStateRef.current = { ...agentEventStateRef.current, messages: next }
+      return next
+    })
   }
 
   const confirmAction = async (confirmation: AgentConfirmation, accept: boolean) => {
@@ -700,6 +710,14 @@ export function AgentPanel() {
       for (const event of result.events ?? []) processStreamEvent(event)
       if (accept) toastSuccess(result.taskId ? '已确认，生成任务已提交' : '已确认，Agent 正在继续执行')
     } catch (error) {
+      if (!accept && error instanceof ApiError && error.code === 'CONFIRMATION_REQUIRED') {
+        // The approval was already consumed, removed, or expired. It cannot
+        // become actionable again, so dismiss the stale local card instead of
+        // restoring it to pending and locking the composer.
+        patchConfirmation(confirmation.actionId, 'rejected')
+        toastSuccess('过期确认已移除')
+        return
+      }
       if (
         accept &&
         error instanceof ApiError &&
@@ -758,7 +776,7 @@ export function AgentPanel() {
   const pendingConfirmations = messages
     .map((item) => item.meta?.confirmation)
     .filter((confirmation): confirmation is AgentConfirmation =>
-      (confirmation?.status === 'pending' || confirmation?.status === 'submitting') &&
+      isActionableConfirmation(confirmation) &&
       !terminalConfirmationActionIds.has(confirmation.actionId),
     )
   // A session can contain a locally stale card while the Agent has already
