@@ -66,6 +66,10 @@ export class SessionRunService {
 		return run;
 	}
 
+	async findActive(sessionId: string): Promise<AgentRun | undefined> {
+		return await this.repository.findActive(sessionId);
+	}
+
 	async appendEvent(runId: string, type: AgentRunEventType, data: Record<string, unknown>): Promise<AgentRunEvent> {
 		const run = await this.requireRun(runId);
 		if (!isActiveRunStatus(run.status)) throw new Error("RUN_NOT_ACTIVE");

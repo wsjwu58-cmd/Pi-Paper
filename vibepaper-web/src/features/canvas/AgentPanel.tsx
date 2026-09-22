@@ -894,7 +894,13 @@ export function AgentPanel() {
         }),
         signal: ac.signal,
       })
-      if (!res.ok) throw new Error(`Agent 请求失败 (${res.status})`)
+      if (!res.ok) {
+        if (res.status === 409) {
+          await loadSessionQuiet(sid, undefined, sendSessionEpoch, true).catch(() => undefined)
+          throw new Error('当前会话有待确认操作，请先处理确认卡片')
+        }
+        throw new Error(`Agent 请求失败 (${res.status})`)
+      }
       setComposerRefs((prev) => consumeSentNodeRefs(prev, new Set(sentNodeIds)))
       const reader = res.body?.getReader()
       const decoder = new TextDecoder()

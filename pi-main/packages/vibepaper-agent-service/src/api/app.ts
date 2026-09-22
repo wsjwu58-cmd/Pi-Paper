@@ -28,6 +28,7 @@ import {
 } from "../application/canvas-fact-reply.ts";
 import { confirmationRecoveryMessage } from "../application/confirmation-recovery.ts";
 import { persistConfirmationStatus } from "../application/confirmation-status.ts";
+import { isExpiredConfirmation } from "../application/confirmation-expiry.ts";
 import {
 	DailyMemoryService,
 	extractDailyMemory,
@@ -51,7 +52,12 @@ import { RenderAuditService } from "../application/render-audit-service.ts";
 import { AgentEventStream } from "../application/run-event-stream.ts";
 import { SessionContextService } from "../application/session-context-service.ts";
 import { MemoryUpdateWorker, type MemoryUpdateQueue } from "../application/memory-update-queue.ts";
-import { InMemoryRunRepository, type RunRepository, SessionRunService } from "../application/session-run-service.ts";
+import {
+	InMemoryRunRepository,
+	RunConflictError,
+	type RunRepository,
+	SessionRunService,
+} from "../application/session-run-service.ts";
 import { BUILTIN_SKILL_INSERT_SQL } from "../application/skill-bootstrap.ts";
 import {
 	type TaskAssociation,
@@ -402,6 +408,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const planCompileError = error instanceof PlanCompileError;
 		const renderBatchError = error instanceof RenderBatchError;
 		const approvalError = error instanceof ApprovalError;
+		const sessionBusy = error instanceof RunConflictError || (error instanceof Error && error.message === "SESSION_BUSY");
 		const known =
 			domainError ||
 			referenceError ||
@@ -412,11 +419,14 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			planError ||
 			planCompileError ||
 			renderBatchError ||
-			approvalError;
+			approvalError ||
+			sessionBusy;
 		const status = referenceError
 			? error.code === "NOT_FOUND"
 				? 404
 				: 400
+			: sessionBusy
+				? 409
 			: gatewayError || apiError || authorizationError
 				? error.statusCode
 				: postProductionError
@@ -443,7 +453,9 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 											? error.statusCode
 											: 500;
 		const code =
-			known && "code" in error && typeof error.code === "string"
+			sessionBusy
+				? "SESSION_BUSY"
+			: known && "code" in error && typeof error.code === "string"
 				? error.code
 				: status === 500
 					? "INTERNAL_ERROR"
@@ -617,6 +629,18 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const existingRun = await runRepository.findByIdempotency(sessionId, idempotencyKey);
 		if (existingRun) {
 			return sendRunEventSse(reply, await runService.listEvents(existingRun.runId));
+		}
+		const activeRun = await runService.findActive(sessionId);
+		if (
+			activeRun?.status === "waiting_confirmation" &&
+			isExpiredConfirmation(
+				await runService.listEvents(activeRun.runId),
+				activeRun.updatedAt,
+				Date.now(),
+				config.confirmTokenTtlSeconds * 1000,
+			)
+		) {
+			await runService.cancelRun(activeRun.runId);
 		}
 		const run = await runService.startRun({ sessionId, idempotencyKey });
 		await addMessage(database, sessionId, "user", content, {
