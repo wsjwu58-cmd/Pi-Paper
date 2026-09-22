@@ -25,11 +25,14 @@ export function updateAssistantText(previous: string, incoming: string): Assista
 
 /** Keep the most complete copy when an already persisted reply repeats its opening. */
 export function removeRepeatedOpening(content: string): string {
-	const normalized = content.trim();
-	if (normalized.length < 48) return normalized;
-	const anchor = normalized.slice(0, Math.min(24, normalized.length));
-	const repeatAt = normalized.indexOf(anchor, anchor.length);
-	return repeatAt >= 24 ? normalized.slice(repeatAt).trim() : normalized;
+	let normalized = content.trim();
+	while (normalized.length >= 48) {
+		const anchor = normalized.slice(0, Math.min(24, normalized.length));
+		const repeatAt = normalized.indexOf(anchor, anchor.length);
+		if (repeatAt < 24) break;
+		normalized = normalized.slice(repeatAt).trim();
+	}
+	return normalized;
 }
 
 function sharedPrefixLength(left: string, right: string): number {

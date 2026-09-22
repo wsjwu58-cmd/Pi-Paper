@@ -55,6 +55,14 @@ describe('agent event envelope reducer', () => {
     expect(state.messages[0]?.content).toBe('你好！我是小P，陪你一起创作。\n\n今天想做什么？可以从一张图开始。')
   })
 
+  it('removes repeated openings even when a legacy stream lacks replacement metadata', () => {
+    const opening = '《猫鼠大战》分镜概览：第一幕追逐，第二幕设局，第三幕和解。'
+    let state = reduceAgentEvent(base, event('assistant_delta', { text: `${opening}\n\n下一步可以做关键帧。` }, 'delta-1'))
+    state = reduceAgentEvent(state, event('assistant_delta', { text: `\n\n${opening}\n\n下一步可以做关键帧和分镜。` }, 'delta-2'))
+
+    expect(state.messages[0]?.content).toBe(`${opening}\n\n下一步可以做关键帧和分镜。`)
+  })
+
   it('keeps a completed turn intact when a continuation run starts', () => {
     const waiting: AgentEventState = {
       ...base,

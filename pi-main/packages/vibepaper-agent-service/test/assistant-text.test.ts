@@ -19,6 +19,6 @@ describe("assistant text streaming", () => {
 
 	it("keeps the later complete copy from a persisted duplicated reply", () => {
 		const opening = "你好！我是小P，陪你一起创作。今天想从哪里开始？";
-		expect(removeRepeatedOpening(`${opening} 可以先聊聊灵感。\n\n${opening} 我们可以先做一张图。`)).toBe(`${opening} 我们可以先做一张图。`);
+		expect(removeRepeatedOpening(`${opening} 可以先聊聊灵感。\n\n${opening} 先做一张图。\n\n${opening} 我们可以先做一张图。`)).toBe(`${opening} 我们可以先做一张图。`);
 	});
 });

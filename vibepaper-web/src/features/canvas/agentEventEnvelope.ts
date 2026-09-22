@@ -92,7 +92,11 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
     // Historical deltas restore the execution record after refresh. The
     // durable assistant message already contains their complete visible text.
     if (!next.persistedAssistantRunIds.has(event.runId)) {
-      updateAssistant((message) => ({ ...message, meta: withRun(message), content: replace ? delta : `${message.content}${delta}` }))
+      updateAssistant((message) => ({
+        ...message,
+        meta: withRun(message),
+        content: removeRepeatedOpening(replace ? delta : `${message.content}${delta}`),
+      }))
     }
   } else if (event.type === 'thinking') {
     const text = typeof event.data.text === 'string' ? event.data.text.trim() : ''
@@ -219,6 +223,18 @@ function appendUniqueText(previous: string, summary: unknown): string {
   const current = previous?.trim() ?? ''
   if (!next || current.includes(next)) return previous
   return current ? `${current}\n\n${next}` : next
+}
+
+/** A defensive client-side guard for legacy or replayed streams without replace metadata. */
+function removeRepeatedOpening(content: string): string {
+  let normalized = content.trim()
+  while (normalized.length >= 48) {
+    const anchor = normalized.slice(0, Math.min(24, normalized.length))
+    const repeatAt = normalized.indexOf(anchor, anchor.length)
+    if (repeatAt < 24) break
+    normalized = normalized.slice(repeatAt).trim()
+  }
+  return normalized
 }
 
 function appendReasoning(steps: ExecutionStep[], text: string): ExecutionStep[] {
