@@ -11,7 +11,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js_22-Pi_Agent_Core-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![Docker](https://img.shields.io/badge/Docker-Deployment-2496ED?logo=docker&logoColor=white)](#docker-deployment-recommended)
 
-Pi-Paper uses an infinite canvas as its workspace and nodes to represent text, images, video, and audio. Edges establish references between nodes, while an Agent orchestrates the creative workflow and a points-based billing loop supports the complete production lifecycle:
+Pi-Paper is an AI-native creative workspace built around an infinite canvas. Text, images, video, audio, prompts, and production notes become connected nodes; the Agent helps turn an idea into an editable, reproducible workflow:
 
 **Idea → Generation → Editing → Composition → Export**
 
@@ -36,37 +36,78 @@ Pi-Paper uses an infinite canvas as its workspace and nodes to represent text, i
 
 | Capability | Description |
 |------------|-------------|
-| Infinite canvas | Pan and zoom, node/edge CRUD, optimistic-lock autosave, import, and export |
-| Multimodal generation | Text, image, video, and audio nodes with task state management and cost previews |
-| Agent orchestration | SSE-streamed conversations based on Pi Agent Core, an allowlisted tool set, and confirmation tokens for high-risk operations |
-| Agent control plane | Session and run lifecycles, event-stream recovery, cancellation, terminal-task callbacks, permissions, and auditing |
-| Short-form drama workflow | Story bibles, episodes, shots, keyframes, video, audio/subtitles, and composition dependencies |
-| Points billing | Freeze → settlement/unfreeze, append-only ledgers, and automatic unfreezing on timeout |
-| Asset library | Upload assets, drag them onto the canvas, and check references |
-| Workspace Hub | Canvas management, task history, subscriptions/points, and personal settings |
-| Extensions (P1+) | Groups/stacks, Enterprise Center, Creative Gallery, operations console, and more |
+| Canvas-first creation | Pan and zoom across an infinite canvas, create and connect nodes, autosave with optimistic locking, and import/export reusable workflows |
+| Xiaop (小P) Agent companion | A warm, creative partner that understands the current canvas, discusses ideas, plans the next step, and reports progress in plain language |
+| Multimodal generation | Create text, image, video, and audio outputs as editable nodes with task status, cost previews, and recoverable execution records |
+| Workflow-aware orchestration | Let the Agent read references, create nodes, connect inputs, submit generation tasks, and resume interrupted runs through an allowlisted tool gateway |
+| Short-form drama pipeline | Move from story bible to episodes, shots, prompts, keyframes, video, audio/subtitles, and composition dependencies |
+| Asset and reference library | Upload or reuse assets, drag them onto the canvas, reference selected nodes in a conversation, and preserve the source-to-result graph |
+| Workspace management | Manage canvases, browse history, inspect personal settings, and keep creative work organized in one place |
+| Billing and safety controls | Preview point usage, freeze and settle costs safely, audit task state changes, and require confirmation for high-risk operations |
+| Creative Gallery | Publish approved works, browse community creations, clone a work, and inspect its node arrangement for learning and remixing |
 
-See docs/ for the complete requirements and delivery plan.
+## Product Showcase
+
+The same canvas can hold a complete creative workflow while the Agent stays beside it as a conversational companion. The workspace hub provides a visual overview of saved canvases and recent creations.
+
+<p align="center">
+  <img src="docs/images/canvas-agent-workflow.png" alt="Pi-Paper canvas with Xiaop Agent and connected creative workflow" width="49%">
+  <img src="docs/images/canvas-management.png" alt="Pi-Paper canvas management workspace" width="49%">
+</p>
 
 ---
 
 ## Technical Architecture
 
-~~~
-vibepaper-web (React + TypeScript + Vite + @xyflow/react)
-        │ REST / SSE
-        ▼
-vibepaper-gateway (Spring Cloud Gateway)
-        │
-   ┌────┴─────────────────────────────┐
-   │ Java 21 + Spring Boot            │ Python 3.12 + FastAPI
-   │ identity · canvas · asset        │ generation-service
-   │ billing · enterprise · gallery   │
-   │ admin               Node.js + TypeScript + Fastify
-   │                     agent-service (Pi Agent Core)
-   └────┬─────────────────────────────┘
-   PostgreSQL · Redis · Nacos · RocketMQ · MinIO (local files may be used instead)
-~~~
+```mermaid
+flowchart TB
+    Web["vibepaper-web\nReact + TypeScript + Vite + @xyflow/react"]
+    Gateway["vibepaper-gateway\nSpring Cloud Gateway\nREST / SSE / Auth"]
+
+    subgraph Java["Java 21 · Spring Boot 3"]
+        Identity["identity-service"]
+        Canvas["canvas-service"]
+        Asset["asset-service"]
+        Billing["billing-service"]
+        Enterprise["enterprise-service"]
+        Gallery["gallery-service"]
+        Admin["admin-service"]
+    end
+
+    Generation["generation-service\nPython 3.12 · FastAPI"]
+    Agent["agent-service\nNode.js 22 · TypeScript · Pi Agent Core"]
+
+    subgraph Infra["Shared infrastructure"]
+        PostgreSQL[("PostgreSQL")]
+        Redis[("Redis")]
+        Nacos[("Nacos")]
+        RocketMQ[("RocketMQ")]
+        MinIO[("MinIO / local files")]
+    end
+
+    Web -->|REST + SSE| Gateway
+    Gateway --> Identity
+    Gateway --> Canvas
+    Gateway --> Asset
+    Gateway --> Billing
+    Gateway --> Enterprise
+    Gateway --> Gallery
+    Gateway --> Admin
+    Gateway --> Generation
+    Gateway --> Agent
+
+    Agent -->|controlled tools| Canvas
+    Agent -->|generation tasks| Generation
+    Agent -->|sessions and runs| PostgreSQL
+    Java --> PostgreSQL
+    Generation --> PostgreSQL
+    Java -. events .-> RocketMQ
+    Agent -. events .-> Redis
+    Asset --> MinIO
+    Java --> Nacos
+    Generation --> Nacos
+    Agent --> Nacos
+```
 
 | Module | Technology | Responsibility |
 |--------|------------|----------------|
@@ -206,41 +247,6 @@ pnpm dev   # http://localhost:5173
 ~~~
 
 ---
-
-## Core Design Principles
-
-**Billing loop:** Check available points and freeze them before submitting a task; settle the actual cost on success; fully unfreeze points on failure, cancellation, or timeout; keep the ledger append-only.
-
-**Agent safety:** Agents may call only allowlisted tools. Deletion, high-cost operations, model changes, and other sensitive actions require confirmation tokens bound to the user, canvas version, and operation summary.
-
-**Canvas concurrency:** Use optimistic locking through canvas.version. Real-time multi-user editing is not supported in V1.
-
-**End-to-end Agent workflow:** The Agent reads and writes canvas and short-form drama facts through controlled tools. Sequence numbers and SSE cursors support event recovery, while generation submission, confirmation, cancellation, terminal-state callbacks, and points reconciliation remain auditable. The server rejects high-risk writes that do not include a valid confirmation token.
-
-**Validation status:** Unit tests, contract tests, frontend builds, and offline evaluations are included in the current regression cycle. Real PostgreSQL/RocketMQ/Billing/Generation integration, SSE reconnects, process-restart recovery, Nacos fault injection, and canary releases remain release gates for production. See the document index below for validation plans and results.
-
-For more details, see [docs/VibePaper产品需求文档新版.md](./docs/VibePaper产品需求文档新版.md) and [docs/技术概要设计方案.md](./docs/技术概要设计方案.md).
-
----
-
-## Documentation Index
-
-| Document | Description |
-|----------|-------------|
-| [AGENTS.md](./AGENTS.md) | Terminology, technology constraints, and engineering guidelines |
-| [Product Requirements](./docs/VibePaper产品需求文档新版.md) | Product contract |
-| [Technical Overview](./docs/技术概要设计方案.md) | Microservices and technology choices |
-| [Engineering Spec](./docs/specs/V1.0-engineering-spec.md) | V1.0 engineering specification |
-| [Execution Plan](./docs/plans/execution-plan.md) | Phased delivery plan |
-| [Pi Migration Design](./docs/specs/pi-agent-full-replacement-design.md) | Node.js + Pi Agent Core migration baseline |
-| [Short-Form Drama Agent Direction](./docs/specs/pi-vertical-short-drama-agent-direction.md) | Drama state layer, shot pipeline, review, and scheduling |
-| [End-to-End Validation Plan](./docs/plans/2026-08-29-pi-agent-full-chain-validation-plan.md) | Agent A–D validation, evidence, and release gates |
-| [Implementation Gap Audit](./docs/audits/pi-agent-full-implementation-gap-2026-08-29.md) | Differences between the Agent implementation and its contract |
-| [Remediation Tracker](./docs/audits/pi-agent-remediation-tracker.md) | Audit items, test evidence, and validation status |
-| [Evaluation Protocol](./docs/evals/pi-agent-evaluation-protocol.md) | Offline/online evaluation fields and hard-failure rules |
-| [Operations Runbook](./docs/operations/pi-agent-runbook.md) | Operations troubleshooting, tracing, and rollback gates |
-
-Evaluation outputs are written to output/evals/ by default and may include screenshots and media probe results. These run artifacts are not source-code deliverables; before committing, keep only reproducible cases, scripts, and reports.
 
 ---
 
