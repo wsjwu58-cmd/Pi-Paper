@@ -84,6 +84,24 @@ describe('agent event envelope reducer', () => {
     expect(mergeSessionMessages(persisted, runtime)[0]?.meta?.executionSteps).toEqual(runtime[0]?.meta.executionSteps)
   })
 
+  it('merges a partial streamed reply into its durable reply by run id', () => {
+    const persisted = [{
+      id: '100', role: 'assistant' as const, type: 'text' as const,
+      content: '你好！我是 Agnes，由 Sapiens AI 开发。\n\n我可以继续帮助你创作。',
+      meta: { runId: 'run-1' },
+    }]
+    const runtime = [{
+      id: 'run-run-1', role: 'assistant' as const, type: 'text' as const,
+      content: '你好！我是 Agnes，由 Sapiens AI 开发。',
+      meta: { runId: 'run-1', executionSteps: [{ id: 'tool-1', kind: 'plan' as const, tool: 'get_canvas_summary', label: '读取画布概览', summary: '读取画布概览' }] },
+    }]
+
+    const merged = mergeSessionMessages(persisted, runtime)
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.content).toBe(persisted[0]?.content)
+    expect(merged[0]?.meta?.executionSteps).toEqual(runtime[0]?.meta.executionSteps)
+  })
+
   it('keeps a terminal persisted confirmation when a reconnect replays its pending event', () => {
     const persisted = [{
       id: 'turn-1', role: 'assistant' as const, type: 'text' as const, content: '请确认生成。',

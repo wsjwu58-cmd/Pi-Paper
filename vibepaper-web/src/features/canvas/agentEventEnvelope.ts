@@ -157,7 +157,7 @@ export function mergeSessionMessages(persisted: AgentChatMsg[], runtime: AgentCh
   const merged = [...persisted]
   for (const live of runtime) {
     const matchIndex = merged.findIndex((stored) =>
-      stored.id === live.id || (
+      stored.id === live.id || sameAssistantRun(stored, live) || (
         stored.role === live.role &&
         Boolean(stored.content?.trim()) &&
         stored.content === live.content
@@ -167,6 +167,10 @@ export function mergeSessionMessages(persisted: AgentChatMsg[], runtime: AgentCh
       const stored = merged[matchIndex]!
       merged[matchIndex] = {
         ...stored,
+        // The durable message is the completed reply. A live message may be a
+        // partially streamed prefix from the same run, so never append it or
+        // render it as a second assistant reply during rehydration.
+        content: preferredMessageContent(stored.content, live.content),
         meta: {
           ...stored.meta,
           ...live.meta,
@@ -182,6 +186,21 @@ export function mergeSessionMessages(persisted: AgentChatMsg[], runtime: AgentCh
     merged.push(live)
   }
   return merged
+}
+
+function sameAssistantRun(stored: AgentChatMsg, live: AgentChatMsg): boolean {
+  return stored.role === 'assistant' &&
+    live.role === 'assistant' &&
+    Boolean(stored.meta?.runId) &&
+    stored.meta?.runId === live.meta?.runId
+}
+
+function preferredMessageContent(persisted: string, runtime: string): string {
+  const durable = persisted?.trim() ?? ''
+  const streamed = runtime?.trim() ?? ''
+  if (!durable) return runtime
+  if (!streamed || durable.length >= streamed.length) return persisted
+  return runtime
 }
 
 function mergeConfirmation(
