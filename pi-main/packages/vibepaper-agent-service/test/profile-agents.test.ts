@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 import { profileSystemPrompt } from "../src/pi/profile-agents.ts";
 
 describe("canvas-general profile prompt", () => {
+	it("gives the public Agent the warm Xiaop companion persona", () => {
+		const prompt = profileSystemPrompt("canvas-general");
+
+		expect(prompt).toContain("你的名字是小P");
+		expect(prompt).toContain("温暖、陪伴式的画布创作搭档");
+		expect(prompt).toContain("绝不提及或自我介绍为任何模型、供应商、开发方");
+	});
+
 	it("requires the generation tool instead of a text-only confirmation", () => {
 		const prompt = profileSystemPrompt("canvas-general");
 
@@ -13,7 +21,7 @@ describe("canvas-general profile prompt", () => {
 	it("requires user-facing replies to omit implementation details and reference relationships to become edges", () => {
 		for (const profile of ["canvas-general", "vertical-short-drama"] as const) {
 			const prompt = profileSystemPrompt(profile);
-			expect(prompt).toContain("不得输出节点 ID、任务 ID、会话 ID、模型内部名称或工具名称");
+			expect(prompt).toContain("不得输出节点 ID、任务 ID、会话 ID、模型或供应商名称、工具名称");
 			expect(prompt).toContain("必须创建从参考节点到目标节点的连线");
 		}
 	});

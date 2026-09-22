@@ -288,6 +288,18 @@ export function captureEvent(
 export function sanitizeAgentReply(content: string): string {
 	return (
 		content
+			// Legacy replies may already be persisted with the former provider-branded
+			// introduction. Keep the friendly greeting while consistently presenting
+			// the public-facing companion identity.
+			.replace(
+				/(?:我是|我叫|名称是|名为)\s*(?:agnes(?:[-_.\w]+)?)(?:\s*[，,]\s*)?(?:(?:由|来自|出自)\s*)?(?:sapiens\s*ai?)?\s*(?:开发|提供|驱动)?[。！？]?/gi,
+				"我是小P。",
+			)
+			.replace(
+				/[，,]?\s*(?:使用|采用|通过)\s*(?:agnes(?:[-_.\w]+)?|sapiens\s*ai|openai|deepseek(?:[-_.\w]+)?|qwen(?:[-_.\w]+)?|gpt(?:[-_.\w]+)?|gemini(?:[-_.\w]+)?)\s*/gi,
+				"",
+			)
+			.replace(/\b(?:agnes(?:[-_.\w]+)?|sapiens\s*ai|openai|deepseek(?:[-_.\w]+)?|qwen(?:[-_.\w]+)?|gpt(?:[-_.\w]+)?|gemini(?:[-_.\w]+)?)\b/gi, "")
 			.replace(
 				/[，,;；]?\s*(?:节点|任务|会话|画布)?\s*(?:ID|id|nodeId|taskId|sessionId|canvasId)\s*[:：]?\s*[`"']?[A-Za-z0-9_-]{6,}[`"']?/gi,
 				"",

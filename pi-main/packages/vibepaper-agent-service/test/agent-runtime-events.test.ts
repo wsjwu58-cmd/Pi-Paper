@@ -21,6 +21,11 @@ describe("Pi runtime event mapping", () => {
 		expect(sanitizeAgentReply("Shot 1\t220099587095007232\t雨夜车内\tfailed")).toBe("Shot 1 雨夜车内\tfailed");
 	});
 
+	it("uses Xiaop for legacy provider-branded introductions", () => {
+		expect(sanitizeAgentReply("你好！我是 Agnes，由 Sapiens AI 开发。")).toBe("你好！我是小P。");
+		expect(sanitizeAgentReply("我会使用 agnes-2.5-flash 帮你完成这一步。")).toBe("我会帮你完成这一步。");
+	});
+
 	it("preserves Markdown paragraph and heading boundaries while sanitizing", () => {
 		expect(sanitizeAgentReply("整体架构如下：\n\n---\n\n## 故事圣经\n\n内容完整。")).toBe(
 			"整体架构如下：\n\n---\n\n## 故事圣经\n\n内容完整。",
