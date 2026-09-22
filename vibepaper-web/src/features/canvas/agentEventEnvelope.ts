@@ -1,5 +1,6 @@
 import type { AgentChatMsg, AgentConfirmation, ExecutionStep } from './agentTypes'
 import { stepFromThinking, toolLabel } from './agentTypes'
+import { normalizeConfirmationExpiry } from './confirmationState'
 
 export type AgentEventType =
   | 'assistant_delta'
@@ -131,7 +132,7 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
         estimatedCost: numberValue(event.data.estimatedCost),
         estimatedTotalCost: numberValue(event.data.estimatedTotalCost),
         canvasVersion: numberValue(event.data.canvasVersion),
-        expiresAt: typeof event.data.expiresAt === 'string' ? event.data.expiresAt : undefined,
+        expiresAt: normalizeConfirmationExpiry(event.data.expiresAt),
         status: 'pending',
       } },
     }))

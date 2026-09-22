@@ -36,7 +36,8 @@ export interface AgentConfirmation {
   affectedNodeCount?: number
   canvasVersion?: number
   planVersion?: number
-  expiresAt?: string
+  /** Approval expiry can be ISO text or a Unix timestamp from the agent API. */
+  expiresAt?: string | number
   status?: 'pending' | 'submitting' | 'accepted' | 'rejected'
 }
 

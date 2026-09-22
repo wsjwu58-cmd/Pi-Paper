@@ -1,5 +1,6 @@
 import type { AgentChatMsg, AgentConfirmation, ExecutionStep } from './agentTypes'
 import { stepFromPlan, stepFromResult, stepFromSpeech, stepFromThinking, toolLabel } from './agentTypes'
+import { normalizeConfirmationExpiry } from './confirmationState'
 
 function stripEmbeddedReactJson(text: string): string {
   const s = text.trim()
@@ -111,7 +112,7 @@ export function applyAgentEvent(
       affectedNodeCount: Number(ev.affectedNodeCount ?? 0) || 0,
       canvasVersion: Number(ev.canvasVersion ?? 0) || undefined,
       planVersion: Number(ev.planVersion ?? 0) || undefined,
-      expiresAt: typeof ev.expiresAt === 'string' ? ev.expiresAt : undefined,
+      expiresAt: normalizeConfirmationExpiry(ev.expiresAt),
       status: 'pending',
     }
     return patchLastAssistant(messages, (m) => ({
