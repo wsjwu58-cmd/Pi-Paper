@@ -95,7 +95,7 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
       updateAssistant((message) => ({
         ...message,
         meta: withRun(message),
-        content: removeRepeatedOpening(replace ? delta : `${message.content}${delta}`),
+        content: dedupeRepeatedSegments(removeRepeatedOpening(replace ? delta : `${message.content}${delta}`)),
       }))
     }
   } else if (event.type === 'thinking') {
@@ -235,6 +235,23 @@ function removeRepeatedOpening(content: string): string {
     normalized = normalized.slice(repeatAt).trim()
   }
   return normalized
+}
+
+/** Mirrors the server guard so a live stream cannot flood the chat before persistence. */
+function dedupeRepeatedSegments(content: string): string {
+  const seen = new Set<string>()
+  return content
+    .split(/(?<=[。！？\n])|(?=\p{Extended_Pictographic})/u)
+    .filter((segment) => {
+      const key = segment.replace(/[\s\p{P}\p{Extended_Pictographic}]/gu, '')
+      if (key.length < 10 || !seen.has(key)) {
+        if (key.length >= 10) seen.add(key)
+        return true
+      }
+      return false
+    })
+    .join('')
+    .trim()
 }
 
 function appendReasoning(steps: ExecutionStep[], text: string): ExecutionStep[] {

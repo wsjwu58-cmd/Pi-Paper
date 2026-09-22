@@ -9,7 +9,7 @@ import type { SessionContext } from "../domain/session-context.ts";
 import { createDramaAgent } from "../pi/drama-agent.ts";
 import { createLoadSkillTool, type LoadedSkillResource } from "../tools/skill-tools.ts";
 import { compactContext } from "./context-compaction-service.ts";
-import { removeRepeatedOpening } from "./assistant-text.ts";
+import { dedupeRepeatedSegments, removeRepeatedOpening } from "./assistant-text.ts";
 import { resolveInstructionPrecedence } from "./instruction-precedence.ts";
 import { composeUserContent, type NodeReferenceSnapshot, nodeReferencesFromMeta } from "./node-reference-context.ts";
 
@@ -288,7 +288,7 @@ export function captureEvent(
 
 export function sanitizeAgentReply(content: string): string {
 	return (
-		removeRepeatedOpening(content)
+		dedupeRepeatedSegments(removeRepeatedOpening(content))
 			// Legacy replies may already be persisted with the former provider-branded
 			// introduction. Keep the friendly greeting while consistently presenting
 			// the public-facing companion identity.

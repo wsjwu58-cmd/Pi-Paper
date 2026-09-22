@@ -63,6 +63,15 @@ describe('agent event envelope reducer', () => {
     expect(state.messages[0]?.content).toBe(`${opening}\n\n下一步可以做关键帧和分镜。`)
   })
 
+  it('removes repeated progress phrases that do not repeat the reply opening', () => {
+    const created = '10个关键帧节点已创建！'
+    const submit = '现在一次性提交生成所有画面 '
+    const content = `好的！${created}${submit}🎨${created}${submit}🎨${created}`
+    const state = reduceAgentEvent(base, event('assistant_delta', { text: content }, 'delta-1'))
+
+    expect(state.messages[0]?.content).toBe(`好的！${created}${submit.trimEnd()}`)
+  })
+
   it('keeps a completed turn intact when a continuation run starts', () => {
     const waiting: AgentEventState = {
       ...base,

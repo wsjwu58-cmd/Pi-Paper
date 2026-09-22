@@ -10,6 +10,8 @@ export type AssistantTextUpdate = {
  * a replacement snapshot instead of appending a second visible paragraph.
  */
 export function updateAssistantText(previous: string, incoming: string): AssistantTextUpdate {
+	previous = dedupeRepeatedSegments(previous);
+	incoming = dedupeRepeatedSegments(incoming);
 	if (!previous) return { next: incoming, delta: incoming, replace: false };
 	if (!incoming || previous === incoming || previous.startsWith(incoming)) {
 		return { next: previous, delta: "", replace: false };
@@ -33,6 +35,27 @@ export function removeRepeatedOpening(content: string): string {
 		normalized = normalized.slice(repeatAt).trim();
 	}
 	return normalized;
+}
+
+/**
+ * A final reply can contain a repeated status sentence without repeating its
+ * first line (for example, when a tool result is woven back into a streamed
+ * reply). Keep the first complete sentence/emoji segment and drop later copies.
+ */
+export function dedupeRepeatedSegments(content: string): string {
+	const seen = new Set<string>();
+	return content
+		.split(/(?<=[。！？\n])|(?=\p{Extended_Pictographic})/u)
+		.filter((segment) => {
+			const key = segment.replace(/[\s\p{P}\p{Extended_Pictographic}]/gu, "");
+			if (key.length < 10 || !seen.has(key)) {
+				if (key.length >= 10) seen.add(key);
+				return true;
+			}
+			return false;
+		})
+		.join("")
+		.trim();
 }
 
 function sharedPrefixLength(left: string, right: string): number {
