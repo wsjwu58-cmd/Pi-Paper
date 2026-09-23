@@ -1,6 +1,6 @@
 # 桌面本地数据格式（项目与模型设置）
 
-状态：Electron 项目引导、本地画布存储、首批图片素材导入/引用、任务状态存储与本地文本任务执行，以及当前格式下的画布/素材/成功任务输出备份恢复切片已实现。恢复会创建新身份的副本，不覆盖原项目。Agent 会话、云端凭据、跨版本恢复与完整项目升级流程尚未实现。
+状态：Electron 项目引导、本地画布存储、首批图片素材导入/引用、任务状态存储、本地文本执行、Agnes 文本/图像/视频云端任务，以及当前格式下的画布/素材/成功任务输出备份恢复切片已实现。恢复会创建新身份的副本，不覆盖原项目。Agent 会话/控制库备份、跨版本恢复与完整项目升级流程尚未实现。
 
 ## 项目目录
 
@@ -12,7 +12,7 @@
     assets/<sha256>/<assetId>.<ext>
 ```
 
-不把当前绝对路径写入项目身份。项目搬迁后，用户打开新位置即可通过 `projectId`、`canvasId` 恢复相同项目身份。操作系统用户数据目录保存 `recent-project.json` 和非密钥 `settings.json`；凭据仍不进入普通设置文件。
+不把当前绝对路径写入项目身份。项目搬迁后，用户打开新位置即可通过 `projectId`、`canvasId` 恢复相同项目身份。操作系统用户数据目录保存 `recent-project.json` 和非密钥 `settings.json`。Agnes API Key 经 Electron `safeStorage` 使用 OS 密钥能力加密后，单独保存为 `credentials/agnes-api-key.bin`；Linux 未提供 Secret Service/KWallet/Secret Portal 时拒绝保存。凭据不进入普通设置文件、项目目录或项目备份。
 
 ## 本地文本模型设置
 
@@ -27,7 +27,13 @@
 | `modalities`、`inputModes` | 固定为 `['text']` | 当前只声明文本输入/输出 |
 | `toolCalling`、`streaming`、`cancellation` | 固定为 `false` | 未接入对应执行能力，不向调用方虚报支持 |
 
-Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访问此目录项。应用不会自动探测服务；用户点击“读取模型”后，Main 才向 loopback 地址的 `/models` 发起无凭据请求。此设置不进入项目目录或项目备份，也不包含 API Key。文本节点的生成操作会用该目录项创建本地 TaskStore 任务，由独立 Generation Worker 访问 `/chat/completions`；当前仅声明文本能力，不支持工具调用、流式或运行中取消。
+Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访问此目录项。应用不会自动探测服务；用户点击“读取模型”后，Main 才向 loopback 地址的 `/models` 发起无凭据请求。此设置不进入项目目录或项目备份，也不包含 API Key。文本节点可用该目录项创建本地 TaskStore 任务，由独立 Generation Worker 访问 `/chat/completions`；本地目录只声明文本能力，不支持工具调用、流式或运行中取消。
+
+## Agnes 云端模型目录
+
+桌面版内置固定目录：文本 `agnes-2.5-flash`、图像 `agnes-image-2.5-flash`、视频 `agnes-video-2.5-flash`，API Base URL 为 `https://apihub.agnes-ai.com/v1`。模型 ID 和 endpoint 是非密钥能力元数据，不保存在项目内。API Key 只能通过受限 IPC 在 Electron Main 接收，并使用 Electron `safeStorage` 加密到独立凭据文件；Renderer 只能读取“是否已配置”，不能读取 Key。Generation Worker 只在调用 Agnes 时从 Main 收到短期内存副本，Key 不进入任务参数、SQLite、JSONL、日志或备份。
+
+用户从文本节点选择 Agnes 模型后，每个云端任务在进入 TaskStore 前都会显示一次确认，说明将发送当前文本提示词、供应商和可能费用。拒绝不会创建任务。图像和视频当前仅发送文本提示词及模型参数，不上传本地参考素材；返回媒体下载并校验后仍保存在项目任务目录。图像/视频模型目前不支持运行中取消。
 
 ## `project.json`
 
@@ -51,12 +57,12 @@ Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访�
 | `edges` | 画布 ID、连线 ID、来源/目标及完整连线 JSON；外键要求两端节点存在 |
 | `assets` | 素材 ID、SHA-256、显示名、图片 MIME、大小和项目内相对路径 |
 | `asset_references` | 画布图片节点与本地素材的关系；删除节点时级联清除引用 |
-| `tasks` | 本地生成任务输入哈希、Idempotency-Key、画布版本、提供方/模型标识、状态、结果路径与哈希、错误码和时间 |
+| `tasks` | 本地/云端生成任务输入哈希、Idempotency-Key、画布版本、提供方/模型标识、状态、结果路径与哈希、错误码和时间 |
 | `task_events` | 任务状态事件的单调序号、类型、JSON 数据和时间 |
 
 Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写入须同时匹配项目/画布身份和 `expectedVersion`；Local Core 校验连线引用及载荷大小，再在一个 SQLite 事务中替换节点/连线并递增画布版本。若数据库版本已被其他写者更新，事务回滚并要求重新打开画布。
 
-文本节点可将当前内容作为提示词提交本地文本任务。任务输入使用 `Idempotency-Key` 和画布版本；Worker 输出固定写入该任务目录的 `result.txt`，Local Core 校验文件类型、路径、可读性、SHA-256 与大小后才提交 `succeeded`。面板可读取已校验的文本结果，并由用户操作将结果作为新文本节点追加，不覆盖提示节点。
+文本节点可将当前内容作为提示词提交本地文本，或在逐项确认后提交 Agnes 文本/图像/视频任务。任务输入使用 `Idempotency-Key` 和画布版本；Worker 将输出写入该任务目录，Local Core 校验文件类型、路径、可读性、SHA-256 与大小后才提交 `succeeded`。面板可读取文本结果，预览媒体，并由用户操作将结果作为新文本/图像/视频节点追加，不覆盖提示节点。
 
 ## 素材首个切片
 

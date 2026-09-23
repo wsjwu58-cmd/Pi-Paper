@@ -38,13 +38,16 @@ export interface DesktopTask {
   completedAt: string | null
 }
 
-export interface DesktopCreateTextTaskInput {
+export interface DesktopCreateGenerationTaskInput {
   projectId: string
   canvasId: string
   canvasVersion: number
   nodeId: string
   prompt: string
   idempotencyKey: string
+  providerType: 'local' | 'cloud'
+  modality: 'text' | 'image' | 'video'
+  parameters?: Record<string, unknown>
 }
 
 export interface DesktopLocalTextModel {
@@ -54,6 +57,19 @@ export interface DesktopLocalTextModel {
   modelId: string
   modalities: ['text']
   inputModes: ['text']
+  toolCalling: false
+  streaming: false
+  cancellation: false
+}
+
+export interface DesktopAgnesModelCatalog {
+  providerId: 'agnes'
+  providerType: 'cloud'
+  apiBaseUrl: 'https://apihub.agnes-ai.com/v1'
+  models: { text: 'agnes-2.5-flash'; image: 'agnes-image-2.5-flash'; video: 'agnes-video-2.5-flash' }
+  apiKeyConfigured: boolean
+  modalities: ['text', 'image', 'video']
+  inputModes: { text: ['text']; image: ['text']; video: ['text'] }
   toolCalling: false
   streaming: false
   cancellation: false
@@ -77,8 +93,11 @@ export interface DesktopBridge {
   }): Promise<{ version: number }>
   listTasks(projectId: string, limit?: number): Promise<DesktopTask[]>
   cancelTask(projectId: string, taskId: string): Promise<DesktopTask>
-  createTextTask(input: DesktopCreateTextTaskInput): Promise<DesktopTask>
+  createGenerationTask(input: DesktopCreateGenerationTaskInput): Promise<DesktopTask | null>
   readTaskOutput(projectId: string, taskId: string): Promise<string>
+  getAgnesModels(): Promise<DesktopAgnesModelCatalog>
+  saveAgnesApiKey(apiKey: string): Promise<DesktopAgnesModelCatalog>
+  clearAgnesApiKey(): Promise<DesktopAgnesModelCatalog>
   getLocalTextModel(): Promise<DesktopLocalTextModel | null>
   discoverLocalModels(endpoint: string): Promise<string[]>
   saveLocalTextModel(config: Pick<DesktopLocalTextModel, 'endpoint' | 'modelId'>): Promise<DesktopLocalTextModel>

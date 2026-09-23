@@ -50,6 +50,8 @@ async function dispatch(method, payload) {
       return store.getTaskInput(payload?.projectId, payload?.taskId)
     case 'task:read-output':
       return store.readTaskOutputText(payload?.projectId, payload?.taskId)
+    case 'task:resolve-output-preview':
+      return store.resolveTaskOutputForPreview(payload?.projectId, payload?.taskId)
     case 'task:events':
       return store.listTaskEvents(payload?.projectId, payload?.taskId, payload?.afterSeq)
     case 'task:claim-next':

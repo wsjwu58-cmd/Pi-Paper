@@ -1,5 +1,7 @@
 const path = require('node:path')
 const fs = require('node:fs/promises')
+const nativeFs = require('node:fs')
+const { Readable } = require('node:stream')
 const { randomUUID } = require('node:crypto')
 const { pathToFileURL } = require('node:url')
 const {
@@ -13,9 +15,11 @@ const {
   ipcMain,
   net,
   protocol,
+  safeStorage,
   session,
   utilityProcess,
 } = require('electron')
+const { AGNES_MODELS, AGNES_PROVIDER_ID, getAgnesModelCatalog } = require('./agnes-model-catalog.cjs')
 
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
@@ -28,6 +32,7 @@ let mainWindow = null
 let localCore = null
 let recentProjectFile = null
 let desktopSettingsFile = null
+let agnesCredentialFile = null
 let quittingAfterCoreClose = false
 let stopping = false
 let generationWorker = null
@@ -149,11 +154,15 @@ function startGenerationWorker() {
       if (exitError) throw exitError
       const id = nextRequestId++
       return new Promise((resolve, reject) => {
+        const timeout = payload?.modality === 'video' ? 17 * 60 * 1000
+          : payload?.providerType === 'cloud' && payload?.modality === 'image' ? 10 * 60 * 1000
+            : payload?.providerType === 'cloud' ? 8 * 60 * 1000
+            : 4 * 60 * 1000
         const timer = setTimeout(() => {
           pending.delete(id)
           child.kill()
-          reject(codedError('LOCAL_MODEL_UNAVAILABLE'))
-        }, 4 * 60 * 1000)
+          reject(codedError(payload?.providerType === 'cloud' ? 'CLOUD_REQUEST_TIMEOUT' : 'LOCAL_MODEL_UNAVAILABLE'))
+        }, timeout)
         pending.set(id, { resolve, reject, timer })
         try {
           child.postMessage({ id, method, payload })
@@ -208,8 +217,6 @@ function startGenerationWorker() {
 
 async function drainTaskQueue(projectId) {
   if (stopping || !localCore) return
-  const model = await getLocalTextModelConfig()
-  if (!model) return
 
   while (!stopping) {
     const claimed = await localCore.request('task:claim-next', { projectId })
@@ -217,17 +224,41 @@ async function drainTaskQueue(projectId) {
     if (stopping) return
     const { task, parameters, outputDirectory } = claimed
     try {
-      if (task.providerType !== 'local') throw codedError('CLOUD_TASK_DISABLED')
-      if (task.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
-      if (task.providerId !== model.providerId || task.modelId !== model.modelId) {
-        throw codedError('LOCAL_MODEL_CONFIGURATION_CHANGED')
+      let model
+      if (task.providerType === 'local') {
+        model = await getLocalTextModelConfig()
+        if (!model) throw codedError('LOCAL_MODEL_CONFIGURATION_MISSING')
+        if (task.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
+        if (task.providerId !== model.providerId || task.modelId !== model.modelId) {
+          throw codedError('LOCAL_MODEL_CONFIGURATION_CHANGED')
+        }
+      } else if (task.providerType === 'cloud') {
+        if (task.providerId !== AGNES_PROVIDER_ID || AGNES_MODELS[task.modality] !== task.modelId) {
+          throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
+        }
+        const apiKey = await getAgnesApiKey()
+        if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
+        model = {
+          providerId: AGNES_PROVIDER_ID,
+          providerType: 'cloud',
+          endpoint: 'https://apihub.agnes-ai.com/v1',
+          modelId: task.modelId,
+          apiKey,
+        }
+      } else {
+        throw codedError('PROVIDER_TYPE_UNSUPPORTED')
       }
       const worker = startGenerationWorker()
-      const result = await worker.request('generate:text', {
+      const result = await worker.request(`generate:${task.modality}`, {
         taskId: task.taskId,
+        modality: task.modality,
+        providerType: task.providerType,
+        providerId: model.providerId,
         prompt: parameters?.prompt,
         endpoint: model.endpoint,
         modelId: model.modelId,
+        apiKey: model.apiKey,
+        parameters,
         outputDirectory,
       })
       if (stopping) return
@@ -351,6 +382,79 @@ async function writeDesktopSettings(settings) {
   }
 }
 
+async function assertCredentialVaultAvailable() {
+  if (!await safeStorage.isAsyncEncryptionAvailable()) {
+    throw new Error('此设备的系统凭据存储当前不可用，未保存云端 API Key。')
+  }
+  if (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') {
+    throw new Error('Linux 系统未提供安全凭据库。请启用 Secret Service、KWallet 或 Secret Portal 后再配置 API Key。')
+  }
+}
+
+async function writeAgnesCredentialCiphertext(ciphertext) {
+  const temporaryPath = path.join(path.dirname(agnesCredentialFile), `.agnes-credential.${randomUUID()}.tmp`)
+  let handle
+  try {
+    await fs.mkdir(path.dirname(agnesCredentialFile), { recursive: true })
+    handle = await fs.open(temporaryPath, 'wx', 0o600)
+    await handle.writeFile(ciphertext)
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await fs.rename(temporaryPath, agnesCredentialFile)
+  } catch (error) {
+    if (handle) await handle.close().catch(() => undefined)
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
+async function getAgnesApiKey() {
+  await assertCredentialVaultAvailable()
+  let ciphertext
+  try {
+    ciphertext = await fs.readFile(agnesCredentialFile)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw new Error('无法读取系统保护的 Agnes 凭据。')
+  }
+  try {
+    const decrypted = await safeStorage.decryptStringAsync(ciphertext)
+    if (decrypted.shouldReEncrypt) {
+      const reencrypted = await safeStorage.encryptStringAsync(decrypted.result)
+      await writeAgnesCredentialCiphertext(reencrypted)
+    }
+    return decrypted.result
+  } catch {
+    throw new Error('无法解密系统保护的 Agnes 凭据；请重新配置 API Key。')
+  }
+}
+
+async function saveAgnesApiKey(input) {
+  if (typeof input !== 'string') throw new Error('Agnes API Key 格式无效。')
+  const apiKey = input.trim()
+  if (apiKey.length < 16 || apiKey.length > 1024 || /\s|[\u0000-\u001f\u007f]/u.test(apiKey)) {
+    throw new Error('Agnes API Key 格式无效。')
+  }
+  await assertCredentialVaultAvailable()
+  const ciphertext = await safeStorage.encryptStringAsync(apiKey)
+  await writeAgnesCredentialCiphertext(ciphertext)
+  return getAgnesModelCatalog(true)
+}
+
+async function clearAgnesApiKey() {
+  try {
+    await fs.rm(agnesCredentialFile, { force: true })
+  } catch {
+    throw new Error('无法移除 Agnes 凭据。')
+  }
+  return getAgnesModelCatalog(false)
+}
+
+async function getAgnesModelSettings() {
+  return getAgnesModelCatalog(Boolean(await getAgnesApiKey()))
+}
+
 async function getLocalTextModelConfig() {
   const settings = await readDesktopSettings()
   if (settings.localTextModel === undefined || settings.localTextModel === null) return null
@@ -420,6 +524,55 @@ function registerRendererProtocol() {
       requestedPath = decodeURIComponent(url.pathname)
     } catch {
       return new Response('Bad path', { status: 400, headers: { 'content-type': 'text/plain' } })
+    }
+    const taskOutputMatch = /^\/tasks\/([a-f0-9-]{36})\/output$/iu.exec(requestedPath)
+    if (taskOutputMatch && !url.search && !url.hash) {
+      try {
+        const activeProject = await localCore.request('project:get-active')
+        if (!activeProject) throw new Error('NO_ACTIVE_PROJECT')
+        const output = await localCore.request('task:resolve-output-preview', {
+          projectId: activeProject.projectId,
+          taskId: taskOutputMatch[1],
+        })
+        const rangeHeader = request.headers.get('range')
+        let start = 0
+        let end = output.sizeBytes - 1
+        let status = 200
+        const headers = new Headers({
+          'content-type': output.mimeType,
+          'x-content-type-options': 'nosniff',
+          'cache-control': 'private, no-store',
+          'accept-ranges': 'bytes',
+        })
+        if (rangeHeader) {
+          const match = /^bytes=(\d*)-(\d*)$/iu.exec(rangeHeader.trim())
+          if (!match || (!match[1] && !match[2])) {
+            return new Response(null, { status: 416, headers: { 'content-range': `bytes */${output.sizeBytes}` } })
+          }
+          if (!match[1]) {
+            const suffixLength = Number(match[2])
+            if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+              return new Response(null, { status: 416, headers: { 'content-range': `bytes */${output.sizeBytes}` } })
+            }
+            start = Math.max(0, output.sizeBytes - suffixLength)
+          } else {
+            start = Number(match[1])
+            end = match[2] ? Number(match[2]) : end
+          }
+          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+            || start < 0 || end < start || start >= output.sizeBytes) {
+            return new Response(null, { status: 416, headers: { 'content-range': `bytes */${output.sizeBytes}` } })
+          }
+          end = Math.min(end, output.sizeBytes - 1)
+          status = 206
+          headers.set('content-range', `bytes ${start}-${end}/${output.sizeBytes}`)
+        }
+        headers.set('content-length', String(end - start + 1))
+        const fileStream = nativeFs.createReadStream(output.filePath, { start, end })
+        return new Response(Readable.toWeb(fileStream), { status, headers })
+      } catch {
+        return new Response('Task output not found', { status: 404, headers: { 'content-type': 'text/plain' } })
+      }
     }
     const assetMatch = /^\/assets\/([a-f0-9-]{36})$/iu.exec(requestedPath)
     if (assetMatch && !url.search && !url.hash) {
@@ -557,31 +710,59 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     return localCore.request('task:cancel', { projectId, taskId })
   })
-  ipcMain.handle('desktop:task:create-text', async (event, input) => {
+  ipcMain.handle('desktop:task:create-generation', async (event, input) => {
     assertTrustedSender(event)
     if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
     beginTaskCreation()
     try {
+      const modalities = ['text', 'image', 'video']
       if (!input || typeof input !== 'object' || Array.isArray(input)
         || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
         || !Number.isSafeInteger(input.canvasVersion) || typeof input.nodeId !== 'string'
         || typeof input.prompt !== 'string' || input.prompt.trim().length === 0
-        || input.prompt.length > 200_000 || typeof input.idempotencyKey !== 'string') {
-        throw new Error('文本生成请求无效。')
+        || input.prompt.length > 200_000 || typeof input.idempotencyKey !== 'string'
+        || !modalities.includes(input.modality)
+        || !['local', 'cloud'].includes(input.providerType)
+        || (input.parameters !== undefined && (!input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)))) {
+        throw new Error('生成任务请求无效。')
       }
-      const model = await getLocalTextModelConfig()
-      if (!model) throw new Error('请先配置本地文本模型。')
+      let providerId
+      let modelId
+      if (input.providerType === 'local') {
+        if (input.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
+        const model = await getLocalTextModelConfig()
+        if (!model) throw new Error('请先配置本地文本模型。')
+        providerId = model.providerId
+        modelId = model.modelId
+      } else {
+        const catalog = await getAgnesModelSettings()
+        if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING')
+        modelId = AGNES_MODELS[input.modality]
+        providerId = AGNES_PROVIDER_ID
+        const modalityName = ({ text: '文本', image: '图像', video: '视频' })[input.modality]
+        const consent = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: `将${modalityName}提示词发送到 Agnes`,
+          buttons: ['取消', '发送到 Agnes'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+          message: `本次${modalityName}任务会把当前文本节点的内容发送至 Agnes AI（Sapiens Technology）。`,
+          detail: '请求将离开本机并由供应商处理；供应商可能按其规则收费。此请求只发送提示词和生成参数，不会上传整个项目或本地素材。',
+        })
+        if (consent.response !== 1) return null
+      }
       const task = await localCore.request('task:create', {
         projectId: input.projectId,
         canvasId: input.canvasId,
         canvasVersion: input.canvasVersion,
         nodeId: input.nodeId,
-        modality: 'text',
-        providerType: 'local',
-        providerId: model.providerId,
-        modelId: model.modelId,
+        modality: input.modality,
+        providerType: input.providerType,
+        providerId,
+        modelId,
         idempotencyKey: input.idempotencyKey,
-        parameters: { prompt: input.prompt },
+        parameters: { ...(input.parameters ?? {}), prompt: input.prompt },
       })
       void scheduleTaskPump(input.projectId)
       return task
@@ -592,6 +773,18 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:task:read-output', (event, projectId, taskId) => {
     assertTrustedSender(event)
     return localCore.request('task:read-output', { projectId, taskId })
+  })
+  ipcMain.handle('desktop:model:get-agnes', async (event) => {
+    assertTrustedSender(event)
+    return getAgnesModelSettings()
+  })
+  ipcMain.handle('desktop:model:save-agnes-key', async (event, apiKey) => {
+    assertTrustedSender(event)
+    return saveAgnesApiKey(apiKey)
+  })
+  ipcMain.handle('desktop:model:clear-agnes-key', async (event) => {
+    assertTrustedSender(event)
+    return clearAgnesApiKey()
   })
   ipcMain.handle('desktop:model:get-local-text', (event) => {
     assertTrustedSender(event)
@@ -661,6 +854,7 @@ if (hasSingleInstanceLock) {
     if (!developmentUrl) await fs.access(rendererIndex)
     recentProjectFile = path.join(app.getPath('userData'), 'recent-project.json')
     desktopSettingsFile = path.join(app.getPath('userData'), 'settings.json')
+    agnesCredentialFile = path.join(app.getPath('userData'), 'credentials', 'agnes-api-key.bin')
     localCore = startLocalCore()
     const restoredProject = await restoreRecentProject()
     if (restoredProject) void scheduleTaskPump(restoredProject.projectId)

@@ -345,7 +345,11 @@ function validateTaskOutputRelativePath(taskId, modality, relativePath) {
   return relativePath
 }
 
-async function resolveTaskOutputFile(dataDirectory, taskId, modality, relativePath) {
+function taskOutputFingerprint(info) {
+  return `${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.ino}`
+}
+
+async function resolveTaskOutputFile(dataDirectory, taskId, modality, relativePath, cached = null) {
   validateTaskOutputRelativePath(taskId, modality, relativePath)
   const generatedDirectory = path.join(dataDirectory, 'generated')
   const taskDirectory = path.join(generatedDirectory, taskId)
@@ -366,11 +370,14 @@ async function resolveTaskOutputFile(dataDirectory, taskId, modality, relativePa
   }
   const actualPath = await fs.realpath(filePath)
   if (path.relative(filePath, actualPath) !== '') throw new Error('生成结果不能是符号链接。')
-  const digest = await hashFile(actualPath)
+  const fingerprint = taskOutputFingerprint(info)
+  const digest = cached?.filePath === actualPath && cached.fingerprint === fingerprint
+    ? cached.digest
+    : await hashFile(actualPath)
   if (digest.sizeBytes <= 0 || digest.sizeBytes > MAX_TASK_OUTPUT_BYTES) {
     throw new Error('生成结果文件超过本地结果上限。')
   }
-  return { filePath: actualPath, ...digest }
+  return { filePath: actualPath, fingerprint, ...digest }
 }
 
 async function ensureTaskOutputDirectory(dataDirectory, taskId) {
@@ -1094,6 +1101,7 @@ async function closeProjectData(project) {
 function createLocalProjectStore() {
   let active = null
   let serial = Promise.resolve()
+  const previewDigestCache = new Map()
 
   function enqueue(operation) {
     const result = serial.then(operation)
@@ -1110,6 +1118,7 @@ function createLocalProjectStore() {
       const next = await openProjectData(directory)
       const previous = active
       active = next
+      if (previous?.metadata.projectId !== next.metadata.projectId) previewDigestCache.clear()
       if (previous && previous.database !== next.database) await closeProjectData(previous)
       return { project: publicProject(next.metadata), directory: next.directory }
     })
@@ -1383,10 +1392,6 @@ function createLocalProjectStore() {
       if (normalized.projectId !== active.metadata.projectId || normalized.canvasId !== active.metadata.canvasId) {
         throw new Error('当前项目已更改，无法创建生成任务。')
       }
-      if (normalized.providerType === 'cloud') {
-        throw new Error('云端任务尚未配置桌面版数据发送说明与用户授权。')
-      }
-
       const existing = active.database.prepare('SELECT * FROM tasks WHERE idempotency_key = ?')
         .get(normalized.idempotencyKey)
       if (existing) {
@@ -1499,6 +1504,48 @@ function createLocalProjectStore() {
         throw new Error('读取任务结果时校验失败。')
       }
       return contents.toString('utf8')
+    })
+  }
+
+  function resolveTaskOutputForPreview(projectId, taskId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务结果。')
+      if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
+      const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (!row || row.status !== 'succeeded' || !['image', 'video'].includes(row.modality)) {
+        throw new Error('此任务没有可预览的媒体结果。')
+      }
+      const cacheKey = `${projectId}:${taskId}`
+      const output = await resolveTaskOutputFile(
+        path.join(active.directory, '.vibepaper'),
+        row.task_id,
+        row.modality,
+        row.output_path,
+        previewDigestCache.get(cacheKey),
+      )
+      if (output.sha256 !== row.output_sha256 || output.sizeBytes !== row.output_size_bytes) {
+        previewDigestCache.delete(cacheKey)
+        throw new Error('任务结果校验失败。')
+      }
+      previewDigestCache.set(cacheKey, {
+        filePath: output.filePath,
+        fingerprint: output.fingerprint,
+        digest: { sha256: output.sha256, sizeBytes: output.sizeBytes },
+      })
+      const extension = path.extname(output.filePath).toLowerCase()
+      const mimeType = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+        '.mp4': 'video/mp4',
+        '.webm': 'video/webm',
+      }[extension]
+      if (!mimeType || (row.modality === 'image' && !mimeType.startsWith('image/'))
+        || (row.modality === 'video' && !mimeType.startsWith('video/'))) {
+        throw new Error('任务结果格式与模态不匹配。')
+      }
+      return { filePath: output.filePath, mimeType, sizeBytes: output.sizeBytes }
     })
   }
 
@@ -1730,6 +1777,7 @@ function createLocalProjectStore() {
     listTaskEvents,
     listTasks,
     readTaskOutputText,
+    resolveTaskOutputForPreview,
     loadCanvas,
     openProject,
     recordTaskFailed,

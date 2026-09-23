@@ -18,7 +18,7 @@ import {
   type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import type { DesktopAsset, DesktopCanvas, DesktopLocalTextModel, DesktopProject, DesktopTask } from './desktop-bridge'
+import type { DesktopAgnesModelCatalog, DesktopAsset, DesktopCanvas, DesktopLocalTextModel, DesktopProject, DesktopTask } from './desktop-bridge'
 
 const bridge = window.vibepaperDesktop
 
@@ -96,18 +96,30 @@ export function DesktopWorkspace() {
 
 function TextNode({ id, data }: NodeProps<Node<{ label?: string }>>) {
   const actions = useContext(TextNodeContext)
+  const [menuOpen, setMenuOpen] = useState(false)
   const label = typeof data.label === 'string' ? data.label : ''
   return (
     <div className="relative min-w-[240px] overflow-visible rounded-2xl border border-black/12 bg-white shadow-[0_6px_20px_rgba(0,0,0,0.08)]">
       <div className="flex items-center justify-between border-b border-black/8 px-3 py-2">
         <span className="text-[11px] font-bold text-[#777]">文本</span>
-        <button
-          className="nodrag rounded-md bg-[#eeeafc] px-2 py-1 text-[10px] font-bold text-[#6d55c9] disabled:opacity-50"
-          disabled={actions.pendingNodeId === id || (actions.modelAvailable && !label.trim())}
-          onClick={() => actions.generateText(id, label)}
-        >
-          {actions.pendingNodeId === id ? '正在提交…' : actions.modelAvailable ? '生成文本' : '配置模型'}
-        </button>
+        <div className="relative nodrag">
+          <button
+            className="rounded-md bg-[#eeeafc] px-2 py-1 text-[10px] font-bold text-[#6d55c9] disabled:opacity-50"
+            disabled={actions.pendingNodeId === id || !label.trim()}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            {actions.pendingNodeId === id ? '正在提交…' : '生成 ▾'}
+          </button>
+          {menuOpen && <div className="absolute right-0 top-full z-30 mt-1 min-w-40 rounded-lg border border-black/10 bg-white p-1 shadow-xl">
+            {actions.localModelAvailable && <button className="block w-full rounded-md px-3 py-2 text-left text-[11px] hover:bg-[#f5f3fc]" onClick={() => { setMenuOpen(false); actions.generate(id, label, 'local', 'text') }}>本地文本生成</button>}
+            {actions.agnesAvailable && <>
+              <button className="block w-full rounded-md px-3 py-2 text-left text-[11px] hover:bg-[#f5f3fc]" onClick={() => { setMenuOpen(false); actions.generate(id, label, 'cloud', 'text') }}>Agnes 文本生成</button>
+              <button className="block w-full rounded-md px-3 py-2 text-left text-[11px] hover:bg-[#f5f3fc]" onClick={() => { setMenuOpen(false); actions.generate(id, label, 'cloud', 'image') }}>Agnes 图像生成</button>
+              <button className="block w-full rounded-md px-3 py-2 text-left text-[11px] hover:bg-[#f5f3fc]" onClick={() => { setMenuOpen(false); actions.generate(id, label, 'cloud', 'video') }}>Agnes 视频生成</button>
+            </>}
+            {!actions.localModelAvailable && !actions.agnesAvailable && <button className="block w-full rounded-md px-3 py-2 text-left text-[11px] hover:bg-[#f5f3fc]" onClick={() => { setMenuOpen(false); actions.openModelSettings() }}>配置模型</button>}
+          </div>}
+        </div>
       </div>
       <textarea
         aria-label="文本节点内容"
@@ -124,13 +136,15 @@ function TextNode({ id, data }: NodeProps<Node<{ label?: string }>>) {
   )
 }
 
-function ImageNode({ data }: NodeProps<Node<{ assetId?: string; name?: string }>>) {
+function ImageNode({ data }: NodeProps<Node<{ assetId?: string; taskId?: string; name?: string }>>) {
   const [imageUnavailable, setImageUnavailable] = useState(false)
   const assetId = typeof data.assetId === 'string' ? data.assetId : ''
+  const taskId = typeof data.taskId === 'string' ? data.taskId : ''
+  const source = taskId ? `vibe://app/tasks/${taskId}/output` : assetId ? `vibe://app/assets/${assetId}` : ''
   return (
     <div className="relative w-[260px] overflow-visible rounded-2xl border border-black/12 bg-white p-2 shadow-[0_6px_20px_rgba(0,0,0,0.08)]">
-      {assetId && !imageUnavailable
-        ? <img className="pointer-events-none max-h-[220px] w-full rounded-xl object-contain" src={`vibe://app/assets/${assetId}`} alt={typeof data.name === 'string' ? data.name : '本地图片素材'} draggable={false} onError={() => setImageUnavailable(true)} />
+      {source && !imageUnavailable
+        ? <img className="pointer-events-none max-h-[220px] w-full rounded-xl object-contain" src={source} alt={typeof data.name === 'string' ? data.name : '本地图片素材'} draggable={false} onError={() => setImageUnavailable(true)} />
         : <div className="flex h-32 items-center justify-center text-xs text-[#888]">素材不可用</div>}
       <p className="mt-2 truncate px-1 text-[11px] text-[#777]">{typeof data.name === 'string' ? data.name : '图片素材'}</p>
       <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-[#8a72e8]" />
@@ -139,20 +153,38 @@ function ImageNode({ data }: NodeProps<Node<{ assetId?: string; name?: string }>
   )
 }
 
+function VideoNode({ data }: NodeProps<Node<{ taskId?: string; name?: string }>>) {
+  const taskId = typeof data.taskId === 'string' ? data.taskId : ''
+  return (
+    <div className="relative w-[320px] overflow-visible rounded-2xl border border-black/12 bg-white p-2 shadow-[0_6px_20px_rgba(0,0,0,0.08)]">
+      {taskId
+        ? <video className="max-h-[220px] w-full rounded-xl bg-black" src={`vibe://app/tasks/${taskId}/output`} controls preload="metadata" />
+        : <div className="flex h-32 items-center justify-center text-xs text-[#888]">视频结果不可用</div>}
+      <p className="mt-2 truncate px-1 text-[11px] text-[#777]">{typeof data.name === 'string' ? data.name : '本地视频结果'}</p>
+      <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-[#8a72e8]" />
+      <Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-[#8a72e8]" />
+    </div>
+  )
+}
+
 interface TextNodeContextValue {
   updateText: (id: string, label: string, immediate?: boolean) => void
-  generateText: (id: string, prompt: string) => void
+  generate: (id: string, prompt: string, providerType: 'local' | 'cloud', modality: 'text' | 'image' | 'video') => void
+  openModelSettings: () => void
   pendingNodeId: string | null
-  modelAvailable: boolean
+  localModelAvailable: boolean
+  agnesAvailable: boolean
 }
 
 const TextNodeContext = createContext<TextNodeContextValue>({
   updateText: () => {},
-  generateText: () => {},
+  generate: () => {},
+  openModelSettings: () => {},
   pendingNodeId: null,
-  modelAvailable: false,
+  localModelAvailable: false,
+  agnesAvailable: false,
 })
-const nodeTypes = { text: TextNode, image: ImageNode }
+const nodeTypes = { text: TextNode, image: ImageNode, video: VideoNode }
 
 function LoadingScreen() {
   return <div className="flex min-h-screen items-center justify-center bg-[#f7f7f8] text-sm text-[#666]">正在打开本地项目…</div>
@@ -246,6 +278,7 @@ function LocalCanvas({
   const [submittingNode, setSubmittingNode] = useState<string | null>(null)
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
   const [localTextModel, setLocalTextModel] = useState<DesktopLocalTextModel | null>(null)
+  const [agnesModels, setAgnesModels] = useState<DesktopAgnesModelCatalog | null>(null)
   const [modelLoadError, setModelLoadError] = useState('')
   const version = useRef(initialCanvas.version)
   const nodesRef = useRef(nodes)
@@ -267,13 +300,17 @@ function LocalCanvas({
   }, [project.projectId])
   useEffect(() => {
     let cancelled = false
-    void bridge?.getLocalTextModel().then((config) => {
+    void Promise.allSettled([bridge?.getLocalTextModel(), bridge?.getAgnesModels()]).then(([localResult, cloudResult]) => {
       if (!cancelled) {
-        setLocalTextModel(config)
-        setModelLoadError('')
+        if (localResult.status === 'fulfilled') setLocalTextModel(localResult.value ?? null)
+        if (cloudResult.status === 'fulfilled') {
+          setAgnesModels(cloudResult.value ?? null)
+        }
+        const errors = [localResult, cloudResult]
+          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map((result) => result.reason instanceof Error ? result.reason.message : '无法读取模型配置。')
+        setModelLoadError(errors.join(' '))
       }
-    }).catch((cause: unknown) => {
-      if (!cancelled) setModelLoadError(cause instanceof Error ? cause.message : '无法读取本地模型配置。')
     })
     return () => { cancelled = true }
   }, [])
@@ -393,8 +430,26 @@ function LocalCanvas({
 
   const addTextNode = () => insertTextNode('')
 
-  const generateText = async (nodeId: string, prompt: string) => {
-    if (!localTextModel) {
+  const insertTaskMediaNode = (task: DesktopTask) => {
+    if (task.modality !== 'image' && task.modality !== 'video') return
+    const next = [...nodesRef.current, {
+      id: crypto.randomUUID(),
+      type: task.modality,
+      position: { x: 160 + nodesRef.current.length * 24, y: 120 + nodesRef.current.length * 24 },
+      data: { taskId: task.taskId, name: `Agnes ${task.modality === 'image' ? '图像' : '视频'}结果` },
+    }]
+    nodesRef.current = next
+    setNodes(next)
+    schedulePersist(next, edgesRef.current, true)
+  }
+
+  const insertTaskOutput = (task: DesktopTask, text?: string) => {
+    if (task.modality === 'text' && typeof text === 'string') insertTextNode(text)
+    else insertTaskMediaNode(task)
+  }
+
+  const generateTask = async (nodeId: string, prompt: string, providerType: 'local' | 'cloud', modality: 'text' | 'image' | 'video') => {
+    if ((providerType === 'local' && !localTextModel) || (providerType === 'cloud' && !agnesModels?.apiKeyConfigured)) {
       setModelSettingsOpen(true)
       return
     }
@@ -409,17 +464,22 @@ function LocalCanvas({
       }
       await saveQueue.current
       if (saveFailure.current) throw new Error(saveFailure.current)
-      await bridge.createTextTask({
+      const task = await bridge.createGenerationTask({
         projectId: project.projectId,
         canvasId: project.canvasId,
         canvasVersion: version.current,
         nodeId,
         prompt,
         idempotencyKey: crypto.randomUUID(),
+        providerType,
+        modality,
+        parameters: modality === 'image' ? { size: '2K', ratio: '1:1' }
+          : modality === 'video' ? { seconds: 5, aspectRatio: '16:9' }
+            : {},
       })
-      setTasksOpen(true)
+      if (task) setTasksOpen(true)
     } catch (cause) {
-      setTaskError(cause instanceof Error ? cause.message : '无法提交本地文本任务。')
+      setTaskError(cause instanceof Error ? cause.message : '无法提交生成任务。')
       setTasksOpen(true)
     } finally {
       setSubmittingNode(null)
@@ -546,7 +606,7 @@ function LocalCanvas({
           <button onClick={() => void restoreBackup()} disabled={backupPending || restorePending || assetPending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{restorePending ? '正在恢复…' : '恢复备份副本'}</button>
           <button onClick={() => { setTaskError(''); setTasksOpen(true) }} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">任务记录</button>
           <button onClick={() => setModelSettingsOpen(true)} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">
-            {localTextModel ? '本地文本模型已配置' : '配置本地文本模型'}
+            {agnesModels?.apiKeyConfigured ? 'Agnes 云端模型已配置' : localTextModel ? '本地模型已配置' : '模型与 API Key'}
           </button>
           <button onClick={addTextNode} className="rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">添加文本节点</button>
           <button onClick={() => void openOtherProject()} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">切换项目</button>
@@ -570,9 +630,11 @@ function LocalCanvas({
       <section className="relative min-h-0 flex-1">
         <TextNodeContext.Provider value={{
           updateText,
-          generateText: (nodeId, prompt) => { void generateText(nodeId, prompt) },
+          generate: (nodeId, prompt, providerType, modality) => { void generateTask(nodeId, prompt, providerType, modality) },
+          openModelSettings: () => setModelSettingsOpen(true),
           pendingNodeId: submittingNode,
-          modelAvailable: localTextModel !== null,
+          localModelAvailable: localTextModel !== null,
+          agnesAvailable: agnesModels?.apiKeyConfigured === true,
         }}>
           <ReactFlow
             nodes={nodes}
@@ -603,23 +665,24 @@ function LocalCanvas({
           cancellingTask={cancellingTask}
           onCancel={(task) => void cancelQueuedTask(task)}
           onReadOutput={(taskId) => bridge?.readTaskOutput(project.projectId, taskId) ?? Promise.reject(new Error('桌面任务接口不可用。'))}
-          onInsertOutput={(text) => insertTextNode(text)}
+          onInsertOutput={insertTaskOutput}
           onClose={() => setTasksOpen(false)}
         />
       )}
       {modelSettingsOpen && (
-        <LocalTextModelSettings
+        <DesktopModelSettings
           initialConfig={localTextModel}
+          agnesConfigured={agnesModels?.apiKeyConfigured === true}
           loadError={modelLoadError}
-          onSaved={(config) => {
+          onSavedLocal={(config) => {
             setLocalTextModel(config)
             setModelLoadError('')
-            setModelSettingsOpen(false)
           }}
-          onCleared={() => {
+          onClearedLocal={() => {
             setLocalTextModel(null)
-            setModelSettingsOpen(false)
           }}
+          onSavedAgnes={(catalog) => setAgnesModels(catalog)}
+          onClearedAgnes={(catalog) => setAgnesModels(catalog)}
           onClose={() => setModelSettingsOpen(false)}
         />
       )}
@@ -641,7 +704,7 @@ function TaskHistoryPanel({
   cancellingTask: string | null
   onCancel: (task: DesktopTask) => void
   onReadOutput: (taskId: string) => Promise<string>
-  onInsertOutput: (text: string) => void
+  onInsertOutput: (task: DesktopTask, text?: string) => void
   onClose: () => void
 }) {
   const [outputTaskId, setOutputTaskId] = useState<string | null>(null)
@@ -675,13 +738,13 @@ function TaskHistoryPanel({
       <aside className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="desktop-task-history-title">
         <header className="flex items-center justify-between border-b border-black/8 px-5 py-4">
           <div>
-            <h2 id="desktop-task-history-title" className="text-base font-bold">本地任务记录</h2>
+            <h2 id="desktop-task-history-title" className="text-base font-bold">生成任务记录</h2>
             <p className="mt-1 text-xs text-[#777]">任务状态保存在当前项目中。</p>
           </div>
           <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">关闭</button>
         </header>
         <p className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-900">
-          已接入本地文本生成；图像、音频和视频生成尚未接入。任务仅发送到已配置的本机模型服务。
+          本地文本任务只访问本机模型。Agnes 文本、图像和视频任务会在提交前询问，并把当前文本节点的提示词发送给 Agnes；本轮不上传素材文件。
         </p>
         {error && <p role="alert" className="border-b border-red-100 bg-red-50 px-5 py-3 text-xs text-red-700">{error}</p>}
         {outputError && <p role="alert" className="border-b border-red-100 bg-red-50 px-5 py-3 text-xs text-red-700">{outputError}</p>}
@@ -692,7 +755,7 @@ function TaskHistoryPanel({
               <li key={task.taskId} className="rounded-xl border border-black/8 p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-semibold">{taskModalityLabel(task.modality)} · {taskStatusLabel(task.status)}</p>
+                    <p className="text-sm font-semibold">{taskModalityLabel(task.modality)} · {taskStatusLabel(task.status)} · {task.providerType === 'cloud' ? '云端 Agnes' : '本地模型'}</p>
                     <p className="mt-1 text-xs text-[#777]">{formatTaskDate(task.updatedAt)} · 尝试 {task.attemptCount} 次</p>
                     {task.status === 'failed' && <p className="mt-2 text-xs text-red-700">{taskFailureLabel(task.errorCode)}</p>}
                     {task.status === 'interrupted' && <p className="mt-2 text-xs text-amber-800">应用关闭时任务仍在执行，系统没有自动重复提交。</p>}
@@ -715,9 +778,21 @@ function TaskHistoryPanel({
                     {outputTaskId === task.taskId && outputs[task.taskId] !== undefined && (
                       <>
                         <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#f7f7f8] p-3 text-xs leading-5">{outputs[task.taskId]}</pre>
-                        <button onClick={() => onInsertOutput(outputs[task.taskId])} className="mt-2 rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">加入画布新文本节点</button>
+                        <button onClick={() => onInsertOutput(task, outputs[task.taskId])} className="mt-2 rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">加入画布新文本节点</button>
                       </>
                     )}
+                  </div>
+                )}
+                {task.status === 'succeeded' && task.modality === 'image' && (
+                  <div className="mt-3 border-t border-black/8 pt-3">
+                    <img className="max-h-64 w-full rounded-lg bg-[#f7f7f8] object-contain" src={`vibe://app/tasks/${task.taskId}/output`} alt="Agnes 生成的本地图片结果" />
+                    <button onClick={() => onInsertOutput(task)} className="mt-2 rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">加入画布图片节点</button>
+                  </div>
+                )}
+                {task.status === 'succeeded' && task.modality === 'video' && (
+                  <div className="mt-3 border-t border-black/8 pt-3">
+                    <video className="max-h-64 w-full rounded-lg bg-black" src={`vibe://app/tasks/${task.taskId}/output`} controls preload="metadata" />
+                    <button onClick={() => onInsertOutput(task)} className="mt-2 rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">加入画布视频节点</button>
                   </div>
                 )}
               </li>
@@ -749,12 +824,25 @@ function taskFailureLabel(errorCode: string | null) {
     UNSUPPORTED_MODALITY: '此生成类型尚未接入本地执行器。',
     LOCAL_MODEL_CONFIGURATION_CHANGED: '模型配置已变化，请使用当前配置重新提交。',
     LOCAL_MODEL_CONFIGURATION_INVALID: '本地模型配置无效，请重新配置。',
+    LOCAL_MODEL_CONFIGURATION_MISSING: '当前没有可用的本地模型配置。',
     LOCAL_MODEL_UNAVAILABLE: '无法连接本地模型服务，请确认服务已启动。',
     LOCAL_MODEL_REQUEST_FAILED: '本地模型请求失败，请检查模型服务。',
     LOCAL_MODEL_INVALID_RESPONSE: '本地模型没有返回可用的文本结果。',
     LOCAL_MODEL_OUTPUT_INVALID: '本地模型结果无法安全保存。',
     LOCAL_MODEL_EXECUTION_FAILED: '本地文本生成失败。',
-  } as Record<string, string>)[errorCode ?? ''] ?? '本地任务未完成。'
+    CLOUD_CREDENTIAL_MISSING: 'Agnes API Key 尚未配置或系统凭据库不可用。',
+    CLOUD_CONFIGURATION_INVALID: 'Agnes 模型配置无效。',
+    CLOUD_MODEL_CONFIGURATION_INVALID: '任务使用的 Agnes 模型与当前能力不匹配。',
+    CLOUD_INPUT_INVALID: '云端任务参数无效。',
+    CLOUD_REQUEST_FAILED: 'Agnes 请求失败，请检查账号与模型服务状态。',
+    CLOUD_REQUEST_TIMEOUT: 'Agnes 请求超时；任务不会自动重复提交。',
+    CLOUD_PROVIDER_UNAVAILABLE: '无法连接 Agnes 服务，请检查网络连接。',
+    CLOUD_INVALID_RESPONSE: 'Agnes 没有返回可用的结果。',
+    CLOUD_GENERATION_FAILED: 'Agnes 生成任务失败。',
+    CLOUD_OUTPUT_TOO_LARGE: 'Agnes 生成的媒体文件超过本地保存上限。',
+    CLOUD_MEDIA_DOWNLOAD_FAILED: '无法下载 Agnes 生成的媒体文件。',
+    MODEL_OUTPUT_INVALID: '生成结果无法安全保存到本地项目。',
+  } as Record<string, string>)[errorCode ?? ''] ?? '生成任务未完成。'
 }
 
 function formatTaskDate(value: string) {
@@ -762,23 +850,30 @@ function formatTaskDate(value: string) {
   return Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString()
 }
 
-function LocalTextModelSettings({
+function DesktopModelSettings({
   initialConfig,
+  agnesConfigured,
   loadError,
-  onSaved,
-  onCleared,
+  onSavedLocal,
+  onClearedLocal,
+  onSavedAgnes,
+  onClearedAgnes,
   onClose,
 }: {
   initialConfig: DesktopLocalTextModel | null
+  agnesConfigured: boolean
   loadError: string
-  onSaved: (config: DesktopLocalTextModel) => void
-  onCleared: () => void
+  onSavedLocal: (config: DesktopLocalTextModel) => void
+  onClearedLocal: () => void
+  onSavedAgnes: (catalog: DesktopAgnesModelCatalog) => void
+  onClearedAgnes: (catalog: DesktopAgnesModelCatalog) => void
   onClose: () => void
 }) {
   const [endpoint, setEndpoint] = useState(initialConfig?.endpoint ?? 'http://127.0.0.1:1234/v1')
   const [modelId, setModelId] = useState(initialConfig?.modelId ?? '')
   const [models, setModels] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
+  const [apiKey, setApiKey] = useState('')
   const [error, setError] = useState(loadError)
   const [message, setMessage] = useState('')
 
@@ -808,7 +903,7 @@ function LocalTextModelSettings({
     setError('')
     setMessage('')
     try {
-      onSaved(await bridge.saveLocalTextModel({ endpoint, modelId }))
+      onSavedLocal(await bridge.saveLocalTextModel({ endpoint, modelId }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '保存本地模型配置失败。')
     } finally {
@@ -822,9 +917,41 @@ function LocalTextModelSettings({
     setError('')
     try {
       await bridge.clearLocalTextModel()
-      onCleared()
+      onClearedLocal()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '移除本地模型配置失败。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveAgnesKey = async () => {
+    if (!bridge || busy || !apiKey.trim()) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      onSavedAgnes(await bridge.saveAgnesApiKey(apiKey))
+      setApiKey('')
+      setMessage('Agnes API Key 已由系统凭据能力加密保存；模型可在云端任务提交前选择。')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '保存 Agnes API Key 失败。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const clearAgnesKey = async () => {
+    if (!bridge || busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      onClearedAgnes(await bridge.clearAgnesApiKey())
+      setApiKey('')
+      setMessage('Agnes API Key 已从此设备移除。')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '移除 Agnes API Key 失败。')
     } finally {
       setBusy(false)
     }
@@ -834,15 +961,45 @@ function LocalTextModelSettings({
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-5" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
     }}>
-      <section className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="local-model-settings-title">
+      <section className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="local-model-settings-title">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 id="local-model-settings-title" className="text-lg font-bold">本地文本模型</h2>
-            <p className="mt-1 text-xs leading-5 text-[#777]">只连接本机服务，不会自动切换到云端，也不需要在此输入 API Key。</p>
+            <h2 id="local-model-settings-title" className="text-lg font-bold">本地与 Agnes 模型</h2>
+            <p className="mt-1 text-xs leading-5 text-[#777]">本地模型请求不联网。Agnes 仅在你发起云端任务并确认发送时调用。</p>
           </div>
           <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">关闭</button>
         </div>
-        <label htmlFor="local-model-endpoint" className="mt-6 block text-sm font-semibold">OpenAI 兼容服务地址</label>
+        <section className="mt-5 rounded-xl border border-black/8 bg-[#fbfaff] p-4">
+          <h3 className="text-sm font-bold">Agnes 云端模型</h3>
+          <p className="mt-1 text-xs leading-5 text-[#666]">API 地址：<span className="font-mono">https://apihub.agnes-ai.com/v1</span></p>
+          <ul className="mt-2 space-y-1 text-xs text-[#666]">
+            <li>文本：agnes-2.5-flash</li>
+            <li>图像：agnes-image-2.5-flash</li>
+            <li>视频：agnes-video-2.5-flash</li>
+          </ul>
+          <p className="mt-2 text-xs leading-5 text-amber-800">云端调用会发送当前提示词，数据由 Agnes 处理，供应商可能收费。每个云端任务提交前都会再次显示发送确认。</p>
+          <label htmlFor="agnes-api-key" className="mt-4 block text-xs font-semibold">Agnes API Key</label>
+          <input
+            id="agnes-api-key"
+            type="password"
+            autoComplete="new-password"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            maxLength={1024}
+            placeholder={agnesConfigured ? '已配置；输入新 Key 可替换' : '粘贴 API Key'}
+            className="mt-2 h-10 w-full rounded-lg border border-black/12 bg-white px-3 text-sm outline-none focus:border-[#8a72e8]"
+          />
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <span className="text-xs text-[#777]">{agnesConfigured ? '此设备已配置 Key' : '尚未配置 Key'}</span>
+            <div className="flex gap-2">
+              {agnesConfigured && <button onClick={() => void clearAgnesKey()} disabled={busy} className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">移除 Key</button>}
+              <button onClick={() => void saveAgnesKey()} disabled={busy || !apiKey.trim()} className="rounded-lg bg-[#6d55c9] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{busy ? '请稍候…' : '安全保存 Key'}</button>
+            </div>
+          </div>
+        </section>
+        <div className="my-5 border-t border-black/8" />
+        <h3 className="text-sm font-bold">本地文本模型</h3>
+        <label htmlFor="local-model-endpoint" className="mt-4 block text-sm font-semibold">OpenAI 兼容服务地址</label>
         <input
           id="local-model-endpoint"
           value={endpoint}
@@ -871,7 +1028,7 @@ function LocalTextModelSettings({
         {message && <p role="status" className="mt-3 text-xs text-[#666]">{message}</p>}
         {(error || loadError) && <p role="alert" className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error || loadError}</p>}
         <div className="mt-6 flex justify-end gap-2">
-          {initialConfig && <button onClick={() => void clear()} disabled={busy} className="mr-auto rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">移除配置</button>}
+          {initialConfig && <button onClick={() => void clear()} disabled={busy} className="mr-auto rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">移除本地配置</button>}
           <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">取消</button>
           <button onClick={() => void save()} disabled={busy || !modelId.trim()} className="rounded-lg bg-[#171717] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">保存配置</button>
         </div>

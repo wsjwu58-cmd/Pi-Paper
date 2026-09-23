@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化、PNG/JPEG/GIF/WebP 素材导入与画布引用，以及当前项目格式下的带校验清单备份/恢复副本已实现。桌面支持用户配置 loopback OpenAI 兼容文本模型，从文本节点提交本地任务，由隔离 Worker 执行并把校验后的结果写入项目；任务结果可查看并作为新节点加入画布。图像、音频、视频生成以及 Agent Worker/Tool Gateway、任务与会话备份、跨版本恢复验证、素材完整管理及其余阶段未落地，未做跨平台验收。Pi JSONL 与 SQLite Agent 存储适配器原型已实现，但未接入桌面 Worker。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化、PNG/JPEG/GIF/WebP 素材导入与画布引用，以及当前项目格式下的带校验清单备份/恢复副本已实现。文本任务支持用户配置的 loopback 模型，也支持 Agnes 云端模型；图像与视频任务接入 Agnes 2.5 Flash。三类任务经本地 TaskStore 和隔离 Worker 执行，结果写入项目并可加入画布。云端任务逐项显示数据范围、供应商和可能费用后再请求确认；Agnes Key 通过 Electron `safeStorage` 使用系统密钥能力加密，独立于普通设置和项目数据。音频生成、Agent Worker/Tool Gateway、Agent 云端对话、任务与会话备份、跨版本恢复验证、素材完整管理及其余阶段未落地，未做跨平台验收。Pi JSONL 与 SQLite Agent 存储适配器原型已实现，但未接入桌面 Worker。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 ## 1. 已确定的产品决策
 
@@ -88,7 +88,7 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 - 云端模式先在设置中配置供应商、API Key 和允许发送的数据类型；任务界面显示当前为联网调用，参考素材发送前展示范围。API Key 通过 OS 凭据能力保存；日志、Agent JSONL、项目导出均不包含明文密钥。供应商费用由供应商承担计费，UI 可显示 Token/时长但不显示平台点数。
 - 本地模式做网络出口验收；本地模型未安装、内存不足或服务退出时明确失败/等待，不自动切云。用户明确选择云端时，断网或 Key 无效也明确报错，不自动换另一个供应商。
 
-本地模型与文本任务进展（2026-09-23）：用户可在桌面设置中保存一个 OpenAI 兼容文本模型，配置文件位于 OS userData 的 `settings.json`，仅接受 `localhost`、`127.0.0.1`、`::1` 和有限 API 路径，不含凭据。应用不会自动探测；用户点击“读取模型”后，Main 通过无代理 HTTP(S) 客户端访问该 loopback 服务的 `/models`。文本节点的显式操作会创建带幂等键的本地 TaskStore 任务；Main 协调独立 Generation Worker 调用已配置模型，Worker 只写任务专属临时/结果文件，Local Core 校验文件并记录成功。恢复只领取 `queued`，进程退出后遗留 `running` 转为 `interrupted`，不盲重放。目录仅声明文本输入/输出，工具调用、流式和运行中取消均不支持；云端任务仍拒绝。
+模型与任务进展（2026-09-23）：本地文本目录仍只接受 `localhost`、`127.0.0.1`、`::1` 和有限 API 路径，不含凭据，且只在用户点击后发现。Agnes 目录固定为文本 `agnes-2.5-flash`、图像 `agnes-image-2.5-flash`、视频 `agnes-video-2.5-flash`，地址固定为 `https://apihub.agnes-ai.com/v1`。Key 经 Renderer 密码框传给 Electron Main 后，由 `safeStorage` 使用 OS 密钥能力加密保存为独立凭据文件；它不进入 `settings.json`、项目、SQLite、日志或 Worker 请求记录。用户从文本节点选择云端模态时，Main 先显示提示词数据范围、供应商和可能费用的确认框；确认后任务写入本地 TaskStore，独立 Worker 才调用 Agnes。媒体输出下载到任务目录并由 Local Core 校验后登记成功。项目恢复仅领取 `queued`，进程退出时遗留 `running` 转为 `interrupted`，不盲重放。图像/视频当前只发送提示词和参数，不传本地参考素材；视频调用使用 720P、4–12 秒文本生成。音频、工具调用、Agent 云端对话、流式/运行中取消尚未接入。
 
 ## 6. 实施顺序与每阶段完成条件
 
@@ -106,7 +106,7 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 
 迁移实现进展（2026-09-23）：Agent 存储适配原型现位于 `pi-main/packages/vibepaper-agent-service/src/desktop/`，提供项目单写者锁、Pi JSONL 会话存储、SQLite Run/操作/outbox 存储，以及 outbox 补投 JSONL。SQLite 适配器通过 `SessionRunService` 可选原子接口将 Run 终态、事件和 outbox 一起提交。会话索引使用稳定 `projectId` 键支持项目目录搬迁。此原型尚未由桌面 Worker 装配，也未与本地 Canvas/Asset/Task Tool Gateway、确认/记忆端口和桌面备份链路连接，相关阶段验收仍待完成。
 
-本地任务存储进展（2026-09-23）：桌面 `project.sqlite` 已升级到 schema v3，新增带 `Idempotency-Key`、画布版本/节点关联、模态与提供方信息的 TaskStore，以及顺序事件表。进程重开时，遗留 `running` 任务转为 `interrupted`，不自动重新提交；只有 `queued` 可直接领取。文本生成 Worker 已接入；成功终态要求任务专属结果文件已落盘且可读，记录 SHA-256/大小，任务面板可校验读取结果并插入新文本节点。项目备份清单会包含已登记的成功结果，v3 升级先生成数据库回退副本。图像/音频/视频 Worker、Agent Tool Gateway 与云端授权/数据告知仍未接入，云端任务明确拒绝。
+本地任务存储进展（2026-09-23）：桌面 `project.sqlite` schema v3 记录带 `Idempotency-Key`、画布版本/节点关联、模态与提供方信息的 TaskStore，以及顺序事件表。进程重开时，遗留 `running` 转为 `interrupted`，不自动重新提交；只有 `queued` 可领取。Generation Worker 当前支持本地文本及云端 Agnes 文本、图像、视频；成功终态要求任务专属结果文件落盘且可读，记录 SHA-256/大小，任务面板可读取文本或预览媒体并加入画布。项目备份清单包含已登记的成功结果，v3 升级先生成数据库回退副本。音频 Worker、Agent Tool Gateway/会话与 Agent 模型调用尚未接入。
 
 项目单写者进展（2026-09-23）：Electron Local Core 打开项目时持有 `.vibepaper/project.lock`，锁记录包含进程 PID、随机令牌和开始时间。其他进程遇到活锁时拒绝打开；仅在确认 PID 已退出且锁文件内容未变化后回收陈旧锁。项目切换、备份恢复和正常退出均释放锁，跨安装实例争用不会只依赖 Electron 单实例锁。锁文件不进入项目备份。
 
