@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施设计；阶段 1 的 Electron 宿主与空白本地项目切片已实现，其他阶段未落地且未做跨平台验收。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的首阶段项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施设计；阶段 1 宿主及阶段 2 的本地画布存储首个切片已实现，资产/任务/Agent 集成及其余阶段未落地，未做跨平台验收。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 ## 1. 已确定的产品决策
 
@@ -78,7 +78,7 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 - 本地通信优先验证受限 IPC 与现有 SSE 的兼容性；若使用 HTTP，仅监听 `127.0.0.1`/`::1` 随机端口，启动时生成秘密令牌，校验 Origin/调用者，不信任来自 Renderer 的用户或内部服务头。
 - 项目目录移动用 projectId 重新定位；运行中每项目互斥，SQLite 使用 WAL。备份包含一致性 SQLite 快照、JSONL、Markdown 与实际素材/输出文件，恢复后逐项校验引用。桌面项目未来升级按 `schemaVersion` 做备份后迁移；旧 Web 数据不导入。
 
-阶段 1 当前先以带 `schemaVersion` 的 `project.json`/`canvas.json` 创建可重开的空白项目；这只是 Electron 宿主切片。阶段 2 在启用素材与任务权威存储前，应将其画布数据迁移至 `project.sqlite`，并提供备份、失败回退和重复执行安全，不能让两套格式长期并列为权威。
+阶段 1 以带 `schemaVersion` 的 `project.json`/`canvas.json` 引导可重开的空白项目；阶段 2 首个切片已在 Electron utility process 内创建 `project.sqlite` 并把旧引导 JSON 导入 SQLite 事务。资产与任务权威存储接入前，仍需完成可重复的结构升级、完整备份和失败回退，不能让两套格式长期并列为权威。
 
 ## 5. 模型提供方与数据出境
 

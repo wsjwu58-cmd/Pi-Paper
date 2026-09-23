@@ -1,12 +1,51 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
+const { DatabaseSync } = require('node:sqlite')
 
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
+const PROJECT_DB_SCHEMA_VERSION = 1
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
 const MAX_CANVAS_BYTES = 32 * 1024 * 1024
+
+const PROJECT_DB_SCHEMA = `
+  CREATE TABLE project_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  ) STRICT;
+
+  CREATE TABLE canvases (
+    id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL CHECK (version >= 0),
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE TABLE nodes (
+    canvas_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    position_x REAL NOT NULL,
+    position_y REAL NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (canvas_id, id),
+    FOREIGN KEY (canvas_id) REFERENCES canvases(id) ON DELETE CASCADE
+  ) STRICT;
+
+  CREATE TABLE edges (
+    canvas_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    source_node_id TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (canvas_id, id),
+    FOREIGN KEY (canvas_id, source_node_id) REFERENCES nodes(canvas_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (canvas_id, target_node_id) REFERENCES nodes(canvas_id, id) ON DELETE CASCADE
+  ) STRICT;
+
+  CREATE INDEX edges_by_source ON edges(canvas_id, source_node_id);
+  CREATE INDEX edges_by_target ON edges(canvas_id, target_node_id);
+`
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -24,11 +63,11 @@ function validateProjectName(value) {
   return name
 }
 
-function publicProject(project) {
+function publicProject(metadata) {
   return {
-    projectId: project.projectId,
-    canvasId: project.canvasId,
-    name: project.name,
+    projectId: metadata.projectId,
+    canvasId: metadata.canvasId,
+    name: metadata.name,
   }
 }
 
@@ -87,44 +126,145 @@ function validateGraph(nodes, edges) {
   return graph
 }
 
-function validateProject(projectDirectory, metadata, canvas) {
+function validateMetadata(metadata) {
   if (!isRecord(metadata) || metadata.schemaVersion !== PROJECT_SCHEMA_VERSION
     || typeof metadata.projectId !== 'string' || !metadata.projectId
     || typeof metadata.canvasId !== 'string' || !metadata.canvasId
     || typeof metadata.name !== 'string') {
     throw new Error('所选文件夹的项目格式不受支持。')
   }
+}
+
+function validateLegacyCanvas(canvas, metadata) {
   if (!isRecord(canvas) || canvas.schemaVersion !== CANVAS_SCHEMA_VERSION
     || canvas.projectId !== metadata.projectId || canvas.canvasId !== metadata.canvasId
     || !Number.isSafeInteger(canvas.version) || canvas.version < 0) {
     throw new Error('项目画布文件损坏或版本不受支持。')
   }
   const graph = validateGraph(canvas.nodes, canvas.edges)
-  return {
-    directory: projectDirectory,
-    metadata,
-    canvas: { ...canvas, ...graph },
+  return { schemaVersion: CANVAS_SCHEMA_VERSION, ...canvas, ...graph }
+}
+
+function databaseVersion(database) {
+  const row = database.prepare('PRAGMA user_version').get()
+  return Number(row.user_version)
+}
+
+function setDatabaseMode(database) {
+  database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;')
+}
+
+function insertGraph(database, canvasId, graph) {
+  const insertNode = database.prepare(`
+    INSERT INTO nodes (canvas_id, id, position_x, position_y, payload_json)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  for (const node of graph.nodes) {
+    insertNode.run(canvasId, node.id, node.position.x, node.position.y, JSON.stringify(node))
+  }
+
+  const insertEdge = database.prepare(`
+    INSERT INTO edges (canvas_id, id, source_node_id, target_node_id, payload_json)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  for (const edge of graph.edges) {
+    insertEdge.run(canvasId, edge.id, edge.source, edge.target, JSON.stringify(edge))
   }
 }
 
-async function readProjectDirectory(projectDirectory) {
-  const root = path.resolve(projectDirectory)
-  let metadata
-  let canvas
+function initializeDatabase(database, metadata, canvas) {
+  database.exec('BEGIN IMMEDIATE')
   try {
-    metadata = await readJson(path.join(root, '.vibepaper', 'project.json'))
-    canvas = await readJson(path.join(root, '.vibepaper', 'canvas.json'))
+    database.exec(PROJECT_DB_SCHEMA)
+    const insertMetadata = database.prepare('INSERT INTO project_metadata (key, value) VALUES (?, ?)')
+    insertMetadata.run('projectId', metadata.projectId)
+    insertMetadata.run('canvasId', metadata.canvasId)
+    database.prepare('INSERT INTO canvases (id, version, updated_at) VALUES (?, ?, ?)')
+      .run(metadata.canvasId, canvas.version, new Date().toISOString())
+    insertGraph(database, metadata.canvasId, canvas)
+    database.exec(`PRAGMA user_version = ${PROJECT_DB_SCHEMA_VERSION}`)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+function readDatabaseCanvas(database, metadata) {
+  const projectId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('projectId')
+  const canvasId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('canvasId')
+  if (projectId?.value !== metadata.projectId || canvasId?.value !== metadata.canvasId) {
+    throw new Error('本地数据库与项目身份不匹配。')
+  }
+
+  const canvasRow = database.prepare('SELECT version FROM canvases WHERE id = ?').get(metadata.canvasId)
+  if (!canvasRow || !Number.isSafeInteger(canvasRow.version) || canvasRow.version < 0) {
+    throw new Error('本地数据库缺少有效画布记录。')
+  }
+  const nodes = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? ORDER BY rowid').all(metadata.canvasId)
+    .map((row) => JSON.parse(row.payload_json))
+  const edges = database.prepare('SELECT payload_json FROM edges WHERE canvas_id = ? ORDER BY rowid').all(metadata.canvasId)
+    .map((row) => JSON.parse(row.payload_json))
+  const graph = validateGraph(nodes, edges)
+  return {
+    schemaVersion: CANVAS_SCHEMA_VERSION,
+    projectId: metadata.projectId,
+    canvasId: metadata.canvasId,
+    version: canvasRow.version,
+    ...graph,
+  }
+}
+
+async function openProjectData(projectDirectory) {
+  const directory = path.resolve(projectDirectory)
+  let metadata
+  try {
+    metadata = await readJson(path.join(directory, '.vibepaper', 'project.json'))
   } catch (error) {
     if (error && (error.code === 'ENOENT' || error instanceof SyntaxError)) {
       throw new Error('所选文件夹不是可读取的 VibePaper 本地项目。')
     }
     throw error
   }
-  return validateProject(root, metadata, canvas)
+  validateMetadata(metadata)
+
+  const databasePath = path.join(directory, '.vibepaper', 'project.sqlite')
+  const database = new DatabaseSync(databasePath, { timeout: 5000 })
+  try {
+    setDatabaseMode(database)
+    const version = databaseVersion(database)
+    if (version === 0) {
+      let legacyCanvas
+      try {
+        legacyCanvas = validateLegacyCanvas(
+          await readJson(path.join(directory, '.vibepaper', 'canvas.json')),
+          metadata,
+        )
+      } catch (error) {
+        if (error && error.code === 'ENOENT') throw new Error('项目缺少画布数据库和可迁移的画布文件。')
+        throw error
+      }
+      initializeDatabase(database, metadata, legacyCanvas)
+    } else if (version !== PROJECT_DB_SCHEMA_VERSION) {
+      throw new Error(`本地项目数据库版本 ${version} 当前不受支持。`)
+    }
+    const canvas = readDatabaseCanvas(database, metadata)
+    return { directory, metadata, database, canvas }
+  } catch (error) {
+    database.close()
+    throw error
+  }
 }
 
-function createDesktopProjectStore({ app, dialog, getWindow }) {
-  const recentProjectPath = path.join(app.getPath('userData'), 'recent-project.json')
+function closeDatabase(database) {
+  try {
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  } finally {
+    database.close()
+  }
+}
+
+function createLocalProjectStore() {
   let active = null
   let serial = Promise.resolve()
 
@@ -134,41 +274,19 @@ function createDesktopProjectStore({ app, dialog, getWindow }) {
     return result
   }
 
-  async function persistRecentProject(projectDirectory) {
-    await writeJsonAtomically(recentProjectPath, { schemaVersion: 1, projectDirectory })
-  }
-
-  async function activate(project) {
+  async function openProject(projectDirectory) {
     return enqueue(async () => {
-      active = project
-      await persistRecentProject(project.directory)
-      return publicProject(project.metadata)
+      const next = await openProjectData(projectDirectory)
+      const previous = active
+      active = next
+      if (previous && previous.database !== next.database) closeDatabase(previous.database)
+      return { project: publicProject(next.metadata), directory: next.directory }
     })
   }
 
-  async function restoreRecentProject() {
-    try {
-      const recent = await readJson(recentProjectPath)
-      if (!isRecord(recent) || recent.schemaVersion !== 1 || typeof recent.projectDirectory !== 'string') return null
-      return await activate(await readProjectDirectory(recent.projectDirectory))
-    } catch (error) {
-      if (error && error.code !== 'ENOENT') {
-        await fs.rm(recentProjectPath, { force: true }).catch(() => undefined)
-      }
-      active = null
-      return null
-    }
-  }
-
-  async function createProject(nameValue) {
+  async function createProject(parentDirectory, nameValue) {
     const name = validateProjectName(nameValue)
-    const result = await dialog.showOpenDialog(getWindow(), {
-      title: '选择新项目的保存位置',
-      properties: ['openDirectory', 'createDirectory'],
-    })
-    if (result.canceled || result.filePaths.length === 0) return null
-
-    const parent = path.resolve(result.filePaths[0])
+    const parent = path.resolve(parentDirectory)
     const destination = path.join(parent, name)
     const staging = path.join(parent, `.vibepaper-create-${randomUUID()}`)
     if (path.dirname(destination) !== parent || path.dirname(staging) !== parent) throw new Error('所选项目路径无效。')
@@ -189,7 +307,7 @@ function createDesktopProjectStore({ app, dialog, getWindow }) {
         name,
         createdAt: new Date().toISOString(),
       }
-      const canvas = {
+      const initialCanvas = {
         schemaVersion: CANVAS_SCHEMA_VERSION,
         projectId: metadata.projectId,
         canvasId: metadata.canvasId,
@@ -198,7 +316,15 @@ function createDesktopProjectStore({ app, dialog, getWindow }) {
         edges: [],
       }
       await writeJsonAtomically(path.join(staging, 'project.json'), metadata)
-      await writeJsonAtomically(path.join(staging, 'canvas.json'), canvas)
+
+      const database = new DatabaseSync(path.join(staging, 'project.sqlite'), { timeout: 5000 })
+      try {
+        setDatabaseMode(database)
+        initializeDatabase(database, metadata, initialCanvas)
+      } finally {
+        closeDatabase(database)
+      }
+
       await fs.mkdir(destination)
       destinationCreated = true
       await fs.rename(staging, path.join(destination, '.vibepaper'))
@@ -213,16 +339,7 @@ function createDesktopProjectStore({ app, dialog, getWindow }) {
       throw error
     }
 
-    return activate(await readProjectDirectory(destination))
-  }
-
-  async function openProject() {
-    const result = await dialog.showOpenDialog(getWindow(), {
-      title: '打开 VibePaper 本地项目',
-      properties: ['openDirectory'],
-    })
-    if (result.canceled || result.filePaths.length === 0) return null
-    return activate(await readProjectDirectory(result.filePaths[0]))
+    return openProject(destination)
   }
 
   function getActiveProject() {
@@ -246,35 +363,54 @@ function createDesktopProjectStore({ app, dialog, getWindow }) {
         throw new Error('画布版本已变化，请重新打开项目后再保存。')
       }
 
-      const canvasPath = path.join(active.directory, '.vibepaper', 'canvas.json')
-      const diskCanvas = await readJson(canvasPath)
-      if (!isRecord(diskCanvas) || diskCanvas.version !== active.canvas.version
-        || diskCanvas.projectId !== active.metadata.projectId || diskCanvas.canvasId !== active.metadata.canvasId) {
-        throw new Error('项目文件已在其他位置更新，请重新打开项目后再保存。')
-      }
-
       const graph = validateGraph(input.nodes, input.edges)
-      const nextCanvas = {
-        schemaVersion: CANVAS_SCHEMA_VERSION,
-        projectId: active.metadata.projectId,
-        canvasId: active.metadata.canvasId,
-        version: active.canvas.version + 1,
-        ...graph,
+      const database = active.database
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const persistedVersion = database.prepare('SELECT version FROM canvases WHERE id = ?').get(active.metadata.canvasId)
+        if (!persistedVersion || persistedVersion.version !== input.expectedVersion) {
+          throw new Error('画布版本已被其他操作更新，请重新打开项目后再保存。')
+        }
+
+        database.prepare('DELETE FROM edges WHERE canvas_id = ?').run(active.metadata.canvasId)
+        database.prepare('DELETE FROM nodes WHERE canvas_id = ?').run(active.metadata.canvasId)
+        insertGraph(database, active.metadata.canvasId, graph)
+        const nextVersion = input.expectedVersion + 1
+        const update = database.prepare('UPDATE canvases SET version = ?, updated_at = ? WHERE id = ? AND version = ?')
+          .run(nextVersion, new Date().toISOString(), active.metadata.canvasId, input.expectedVersion)
+        if (update.changes !== 1) throw new Error('画布版本已被其他操作更新，请重新打开项目后再保存。')
+        database.exec('COMMIT')
+
+        active.canvas = {
+          schemaVersion: CANVAS_SCHEMA_VERSION,
+          projectId: active.metadata.projectId,
+          canvasId: active.metadata.canvasId,
+          version: nextVersion,
+          ...graph,
+        }
+        return { version: nextVersion }
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
       }
-      await writeJsonAtomically(canvasPath, nextCanvas)
-      active.canvas = nextCanvas
-      return { version: nextCanvas.version }
+    })
+  }
+
+  async function close() {
+    return enqueue(async () => {
+      if (active) closeDatabase(active.database)
+      active = null
     })
   }
 
   return {
+    close,
     createProject,
     getActiveProject,
     loadCanvas,
     openProject,
-    restoreRecentProject,
     saveCanvas,
   }
 }
 
-module.exports = { createDesktopProjectStore }
+module.exports = { createLocalProjectStore }

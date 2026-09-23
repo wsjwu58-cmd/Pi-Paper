@@ -1,5 +1,6 @@
 const path = require('node:path')
 const fs = require('node:fs/promises')
+const { randomUUID } = require('node:crypto')
 const { pathToFileURL } = require('node:url')
 const {
   app,
@@ -9,8 +10,8 @@ const {
   net,
   protocol,
   session,
+  utilityProcess,
 } = require('electron')
-const { createDesktopProjectStore } = require('./project-store.cjs')
 
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
@@ -20,7 +21,9 @@ protocol.registerSchemesAsPrivileged([{
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 let mainWindow = null
-let projectStore = null
+let localCore = null
+let recentProjectFile = null
+let quittingAfterCoreClose = false
 const desktopRoot = path.resolve(__dirname, '..')
 const webRoot = path.resolve(desktopRoot, '..', 'vibepaper-web')
 const rendererRoot = path.join(webRoot, 'dist')
@@ -42,6 +45,99 @@ function assertTrustedSender(event) {
   if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame
     || !isTrustedRendererUrl(event.senderFrame.url)) {
     throw new Error('此本地请求未通过桌面宿主校验。')
+  }
+}
+
+function startLocalCore() {
+  const child = utilityProcess.fork(path.join(__dirname, 'local-core.cjs'), [], {
+    serviceName: 'VibePaper Local Core',
+    stdio: 'ignore',
+  })
+  const pending = new Map()
+  let nextRequestId = 1
+  let exitError = null
+  let markStarted
+  const started = new Promise((resolve) => { markStarted = resolve })
+
+  child.once('spawn', markStarted)
+
+  child.on('message', (message) => {
+    if (!message || !Number.isSafeInteger(message.id)) return
+    const request = pending.get(message.id)
+    if (!request) return
+    clearTimeout(request.timer)
+    pending.delete(message.id)
+    if (message.ok) request.resolve(message.result)
+    else request.reject(new Error(typeof message.error === 'string' ? message.error : '本地项目操作失败。'))
+  })
+
+  child.on('exit', (code) => {
+    exitError = new Error(`本地核心进程已停止（${code}）。`)
+    markStarted()
+    for (const request of pending.values()) {
+      clearTimeout(request.timer)
+      request.reject(exitError)
+    }
+    pending.clear()
+    if (mainWindow && !quittingAfterCoreClose) {
+      void dialog.showErrorBox('本地核心已停止', '本地项目服务意外退出。请重新启动 VibePaper 后继续。')
+      app.quit()
+    }
+  })
+
+  return {
+    child,
+    async request(method, payload = {}, timeoutMs = 60_000) {
+      await started
+      if (exitError) throw exitError
+      const id = nextRequestId++
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id)
+          reject(new Error('本地核心响应超时。'))
+        }, timeoutMs)
+        pending.set(id, { resolve, reject, timer })
+        try {
+          child.postMessage({ id, method, payload })
+        } catch (error) {
+          clearTimeout(timer)
+          pending.delete(id)
+          reject(error)
+        }
+      })
+    },
+  }
+}
+
+async function writeRecentProjectDirectory(directory) {
+  if (!recentProjectFile) throw new Error('桌面设置尚未初始化。')
+  const temporaryPath = path.join(path.dirname(recentProjectFile), `.recent-project.${randomUUID()}.tmp`)
+  await fs.mkdir(path.dirname(recentProjectFile), { recursive: true })
+  let handle
+  try {
+    handle = await fs.open(temporaryPath, 'wx', 0o600)
+    await handle.writeFile(`${JSON.stringify({ schemaVersion: 1, projectDirectory: directory })}\n`, 'utf8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await fs.rename(temporaryPath, recentProjectFile)
+  } catch (error) {
+    if (handle) await handle.close().catch(() => undefined)
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
+async function restoreRecentProject() {
+  try {
+    const recent = JSON.parse(await fs.readFile(recentProjectFile, 'utf8'))
+    if (!recent || recent.schemaVersion !== 1 || typeof recent.projectDirectory !== 'string') return null
+    const opened = await localCore.request('project:open', { directory: recent.projectDirectory })
+    await writeRecentProjectDirectory(opened.directory)
+    return opened.project
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') await fs.rm(recentProjectFile, { force: true }).catch(() => undefined)
+    return null
   }
 }
 
@@ -94,23 +190,40 @@ function registerRendererProtocol() {
 function registerProjectIpc() {
   ipcMain.handle('desktop:project:get-active', (event) => {
     assertTrustedSender(event)
-    return projectStore.getActiveProject()
+    return localCore.request('project:get-active')
   })
-  ipcMain.handle('desktop:project:create', (event, name) => {
+  ipcMain.handle('desktop:project:create', async (event, name) => {
     assertTrustedSender(event)
-    return projectStore.createProject(name)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择新项目的保存位置',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const created = await localCore.request('project:create', {
+      parentDirectory: result.filePaths[0],
+      name,
+    })
+    await writeRecentProjectDirectory(created.directory)
+    return created.project
   })
-  ipcMain.handle('desktop:project:open', (event) => {
+  ipcMain.handle('desktop:project:open', async (event) => {
     assertTrustedSender(event)
-    return projectStore.openProject()
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '打开 VibePaper 本地项目',
+      properties: ['openDirectory'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const opened = await localCore.request('project:open', { directory: result.filePaths[0] })
+    await writeRecentProjectDirectory(opened.directory)
+    return opened.project
   })
   ipcMain.handle('desktop:canvas:load', (event, projectId, canvasId) => {
     assertTrustedSender(event)
-    return projectStore.loadCanvas(projectId, canvasId)
+    return localCore.request('canvas:load', { projectId, canvasId })
   })
   ipcMain.handle('desktop:canvas:save', (event, input) => {
     assertTrustedSender(event)
-    return projectStore.saveCanvas(input)
+    return localCore.request('canvas:save', input)
   })
 }
 
@@ -156,12 +269,9 @@ if (hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     if (!developmentUrl) await fs.access(rendererIndex)
-    projectStore = createDesktopProjectStore({
-      app,
-      dialog,
-      getWindow: () => mainWindow,
-    })
-    await projectStore.restoreRecentProject()
+    recentProjectFile = path.join(app.getPath('userData'), 'recent-project.json')
+    localCore = startLocalCore()
+    await restoreRecentProject()
     registerRendererProtocol()
     registerContentSecurityPolicy()
     registerProjectIpc()
@@ -178,6 +288,16 @@ if (hasSingleInstanceLock) {
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
+  })
+
+  app.on('before-quit', (event) => {
+    if (!localCore || quittingAfterCoreClose) return
+    event.preventDefault()
+    quittingAfterCoreClose = true
+    void localCore.request('core:close', {}, 5_000).catch(() => undefined).finally(() => {
+      localCore.child.kill()
+      app.quit()
+    })
   })
 } else {
   app.quit()
