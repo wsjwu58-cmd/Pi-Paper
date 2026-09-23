@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化、PNG/JPEG/GIF/WebP 素材导入与画布引用，以及当前项目格式下的带校验清单备份/恢复副本已实现。Pi JSONL 与 SQLite Agent 存储适配器原型已实现，但未接入桌面 Worker。TaskStore、Agent/生成集成、任务与会话备份、跨版本恢复验证、素材完整管理及其余阶段未落地，未做跨平台验收。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化、PNG/JPEG/GIF/WebP 素材导入与画布引用，以及当前项目格式下的带校验清单备份/恢复副本已实现。Pi JSONL 与 SQLite Agent 存储适配器原型已实现，但未接入桌面 Worker。TaskStore 已有任务记录面板与排队任务取消入口，但没有生成执行器；Agent/生成集成、任务与会话备份、跨版本恢复验证、素材完整管理及其余阶段未落地，未做跨平台验收。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 ## 1. 已确定的产品决策
 
@@ -104,7 +104,7 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 
 迁移实现进展（2026-09-23）：Agent 存储适配原型现位于 `pi-main/packages/vibepaper-agent-service/src/desktop/`，提供项目单写者锁、Pi JSONL 会话存储、SQLite Run/操作/outbox 存储，以及 outbox 补投 JSONL。SQLite 适配器通过 `SessionRunService` 可选原子接口将 Run 终态、事件和 outbox 一起提交。会话索引使用稳定 `projectId` 键支持项目目录搬迁。此原型尚未由桌面 Worker 装配，也未与本地 Canvas/Asset/Task Tool Gateway、确认/记忆端口和桌面备份链路连接，相关阶段验收仍待完成。
 
-本地任务存储进展（2026-09-23）：桌面 `project.sqlite` 已升级到 schema v3，新增带 `Idempotency-Key`、画布版本/节点关联、模态与提供方信息的 TaskStore，以及顺序事件表。进程重开时，遗留 `running` 任务转为 `interrupted`，不自动重新提交；只有 `queued` 可直接领取，运行中任务需要 Worker 协调取消。成功终态要求结果位于任务专属项目目录且文件可读，记录 SHA-256/大小；项目备份清单会包含已登记的成功结果，v3 升级先生成数据库回退副本。当前只接通本地核心存储接口，尚无模型目录、生成 Worker、任务 UI 或 Tool Gateway；云端任务在授权/数据告知链路接入前明确拒绝。
+本地任务存储进展（2026-09-23）：桌面 `project.sqlite` 已升级到 schema v3，新增带 `Idempotency-Key`、画布版本/节点关联、模态与提供方信息的 TaskStore，以及顺序事件表。进程重开时，遗留 `running` 任务转为 `interrupted`，不自动重新提交；只有 `queued` 可直接领取，运行中任务需要 Worker 协调取消。成功终态要求结果位于任务专属项目目录且文件可读，记录 SHA-256/大小；项目备份清单会包含已登记的成功结果，v3 升级先生成数据库回退副本。桌面任务面板已能读取本地历史并取消排队任务，明确标注当前生成执行能力未接通；尚无模型目录、生成 Worker 或 Tool Gateway。云端任务在授权/数据告知链路接入前明确拒绝。
 
 项目单写者进展（2026-09-23）：Electron Local Core 打开项目时持有 `.vibepaper/project.lock`，锁记录包含进程 PID、随机令牌和开始时间。其他进程遇到活锁时拒绝打开；仅在确认 PID 已退出且锁文件内容未变化后回收陈旧锁。项目切换、备份恢复和正常退出均释放锁，跨安装实例争用不会只依赖 Electron 单实例锁。锁文件不进入项目备份。
 

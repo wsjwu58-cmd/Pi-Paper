@@ -18,7 +18,7 @@ import {
   type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import type { DesktopAsset, DesktopCanvas, DesktopProject } from './desktop-bridge'
+import type { DesktopAsset, DesktopCanvas, DesktopProject, DesktopTask } from './desktop-bridge'
 
 const bridge = window.vibepaperDesktop
 
@@ -218,6 +218,10 @@ function LocalCanvas({
   const [backupMessage, setBackupMessage] = useState('')
   const [backupPending, setBackupPending] = useState(false)
   const [restorePending, setRestorePending] = useState(false)
+  const [tasksOpen, setTasksOpen] = useState(false)
+  const [tasks, setTasks] = useState<DesktopTask[]>([])
+  const [taskError, setTaskError] = useState('')
+  const [cancellingTask, setCancellingTask] = useState<string | null>(null)
   const version = useRef(initialCanvas.version)
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
@@ -236,6 +240,32 @@ function LocalCanvas({
     })
     return () => { cancelled = true }
   }, [project.projectId])
+  useEffect(() => {
+    if (!tasksOpen || !bridge) return
+    let cancelled = false
+    let loading = false
+    const refresh = async () => {
+      if (loading) return
+      loading = true
+      try {
+        const items = await bridge.listTasks(project.projectId, 100)
+        if (!cancelled) {
+          setTasks(items)
+          setTaskError('')
+        }
+      } catch (cause) {
+        if (!cancelled) setTaskError(cause instanceof Error ? cause.message : '无法读取本地任务记录。')
+      } finally {
+        loading = false
+      }
+    }
+    void refresh()
+    const interval = setInterval(() => { void refresh() }, 2500)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [project.projectId, tasksOpen])
 
   const persist = useCallback((nextNodes: Node[], nextEdges: Edge[]) => {
     if (!bridge) return
@@ -405,6 +435,21 @@ function LocalCanvas({
     }
   }
 
+  const cancelQueuedTask = async (task: DesktopTask) => {
+    if (task.status !== 'queued' || cancellingTask) return
+    setCancellingTask(task.taskId)
+    setTaskError('')
+    try {
+      await bridge?.cancelTask(project.projectId, task.taskId)
+      const items = await bridge?.listTasks(project.projectId, 100)
+      if (items) setTasks(items)
+    } catch (cause) {
+      setTaskError(cause instanceof Error ? cause.message : '无法取消此任务。')
+    } finally {
+      setCancellingTask(null)
+    }
+  }
+
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current)
   }, [])
@@ -423,6 +468,7 @@ function LocalCanvas({
           </span>
           <button onClick={() => void createBackup()} disabled={backupPending || restorePending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{backupPending ? '正在备份…' : '备份项目'}</button>
           <button onClick={() => void restoreBackup()} disabled={backupPending || restorePending || assetPending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{restorePending ? '正在恢复…' : '恢复备份副本'}</button>
+          <button onClick={() => setTasksOpen(true)} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">任务记录</button>
           <button onClick={addTextNode} className="rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">添加文本节点</button>
           <button onClick={() => void openOtherProject()} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">切换项目</button>
         </div>
@@ -466,6 +512,94 @@ function LocalCanvas({
           </div>
         )}
       </section>
+      {tasksOpen && (
+        <TaskHistoryPanel
+          tasks={tasks}
+          error={taskError}
+          cancellingTask={cancellingTask}
+          onCancel={(task) => void cancelQueuedTask(task)}
+          onClose={() => setTasksOpen(false)}
+        />
+      )}
     </main>
   )
+}
+
+function TaskHistoryPanel({
+  tasks,
+  error,
+  cancellingTask,
+  onCancel,
+  onClose,
+}: {
+  tasks: DesktopTask[]
+  error: string
+  cancellingTask: string | null
+  onCancel: (task: DesktopTask) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/25" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose()
+    }}>
+      <aside className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="desktop-task-history-title">
+        <header className="flex items-center justify-between border-b border-black/8 px-5 py-4">
+          <div>
+            <h2 id="desktop-task-history-title" className="text-base font-bold">本地任务记录</h2>
+            <p className="mt-1 text-xs text-[#777]">任务状态保存在当前项目中。</p>
+          </div>
+          <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">关闭</button>
+        </header>
+        <p className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-900">
+          当前尚未提供生成执行能力；本地任务状态会保留，排队任务可以取消。
+        </p>
+        {error && <p role="alert" className="border-b border-red-100 bg-red-50 px-5 py-3 text-xs text-red-700">{error}</p>}
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {tasks.length === 0
+            ? <p className="py-12 text-center text-sm text-[#888]">此项目还没有任务记录。</p>
+            : <ul className="space-y-2">{tasks.map((task) => (
+              <li key={task.taskId} className="rounded-xl border border-black/8 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">{taskModalityLabel(task.modality)} · {taskStatusLabel(task.status)}</p>
+                    <p className="mt-1 text-xs text-[#777]">{formatTaskDate(task.updatedAt)} · 尝试 {task.attemptCount} 次</p>
+                    {task.status === 'failed' && <p className="mt-2 text-xs text-red-700">任务未完成，请检查模型配置后重试。</p>}
+                    {task.status === 'interrupted' && <p className="mt-2 text-xs text-amber-800">应用关闭时任务仍在执行，系统没有自动重复提交。</p>}
+                  </div>
+                  {task.status === 'queued' && (
+                    <button
+                      onClick={() => onCancel(task)}
+                      disabled={cancellingTask !== null}
+                      className="shrink-0 rounded-lg border border-black/12 px-2.5 py-1.5 text-xs font-bold disabled:opacity-50"
+                    >
+                      {cancellingTask === task.taskId ? '正在取消…' : '取消'}
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}</ul>}
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+function taskModalityLabel(modality: DesktopTask['modality']) {
+  return ({ text: '文本', image: '图像', audio: '音频', video: '视频' })[modality]
+}
+
+function taskStatusLabel(status: DesktopTask['status']) {
+  return ({
+    queued: '排队中',
+    running: '执行中',
+    succeeded: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+    interrupted: '已中断',
+  })[status]
+}
+
+function formatTaskDate(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString()
 }

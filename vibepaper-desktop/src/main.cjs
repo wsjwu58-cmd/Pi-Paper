@@ -298,6 +298,14 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     return localCore.request('canvas:save', input)
   })
+  ipcMain.handle('desktop:task:list', (event, projectId, limit) => {
+    assertTrustedSender(event)
+    return localCore.request('task:list', { projectId, limit })
+  })
+  ipcMain.handle('desktop:task:cancel', (event, projectId, taskId) => {
+    assertTrustedSender(event)
+    return localCore.request('task:cancel', { projectId, taskId })
+  })
 }
 
 async function createWindow() {

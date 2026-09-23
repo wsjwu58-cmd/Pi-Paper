@@ -10,4 +10,6 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   listAssets: (projectId) => ipcRenderer.invoke('desktop:asset:list', projectId),
   loadCanvas: (projectId, canvasId) => ipcRenderer.invoke('desktop:canvas:load', projectId, canvasId),
   saveCanvas: (input) => ipcRenderer.invoke('desktop:canvas:save', input),
+  listTasks: (projectId, limit) => ipcRenderer.invoke('desktop:task:list', projectId, limit),
+  cancelTask: (projectId, taskId) => ipcRenderer.invoke('desktop:task:cancel', projectId, taskId),
 })

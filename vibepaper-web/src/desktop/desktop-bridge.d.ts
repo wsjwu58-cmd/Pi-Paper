@@ -23,6 +23,21 @@ export interface DesktopAsset {
   referenceCount: number
 }
 
+export type DesktopTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
+
+export interface DesktopTask {
+  taskId: string
+  modality: 'text' | 'image' | 'audio' | 'video'
+  providerType: 'local' | 'cloud'
+  status: DesktopTaskStatus
+  attemptCount: number
+  errorCode: string | null
+  createdAt: string
+  updatedAt: string
+  startedAt: string | null
+  completedAt: string | null
+}
+
 export interface DesktopBridge {
   getActiveProject(): Promise<DesktopProject | null>
   createProject(name: string): Promise<DesktopProject | null>
@@ -39,6 +54,8 @@ export interface DesktopBridge {
     nodes: Node[]
     edges: Edge[]
   }): Promise<{ version: number }>
+  listTasks(projectId: string, limit?: number): Promise<DesktopTask[]>
+  cancelTask(projectId: string, taskId: string): Promise<DesktopTask>
 }
 
 declare global {
