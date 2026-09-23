@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   createProject: (name) => ipcRenderer.invoke('desktop:project:create', name),
   openProject: () => ipcRenderer.invoke('desktop:project:open'),
   backupProject: (projectId) => ipcRenderer.invoke('desktop:project:backup', projectId),
+  restoreBackup: () => ipcRenderer.invoke('desktop:project:restore-backup'),
   importImage: (projectId) => ipcRenderer.invoke('desktop:asset:import-image', projectId),
   listAssets: (projectId) => ipcRenderer.invoke('desktop:asset:list', projectId),
   loadCanvas: (projectId, canvasId) => ipcRenderer.invoke('desktop:canvas:load', projectId, canvasId),

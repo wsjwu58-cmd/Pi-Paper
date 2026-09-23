@@ -88,6 +88,7 @@ export function DesktopWorkspace() {
         initialCanvas={canvas}
         error={error}
         onOpenProject={openProject}
+        onProjectRestored={activateProject}
       />
     </ReactFlowProvider>
   )
@@ -199,11 +200,13 @@ function LocalCanvas({
   initialCanvas,
   error,
   onOpenProject,
+  onProjectRestored,
 }: {
   project: DesktopProject
   initialCanvas: DesktopCanvas
   error: string
   onOpenProject: () => Promise<void>
+  onProjectRestored: (project: DesktopProject | null) => Promise<void>
 }) {
   const [nodes, setNodes] = useState<Node[]>(initialCanvas.nodes)
   const [edges, setEdges] = useState<Edge[]>(initialCanvas.edges)
@@ -214,6 +217,7 @@ function LocalCanvas({
   const [saveError, setSaveError] = useState('')
   const [backupMessage, setBackupMessage] = useState('')
   const [backupPending, setBackupPending] = useState(false)
+  const [restorePending, setRestorePending] = useState(false)
   const version = useRef(initialCanvas.version)
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
@@ -377,6 +381,30 @@ function LocalCanvas({
     }
   }
 
+  const restoreBackup = async () => {
+    if (restorePending || backupPending || assetPending) return
+    setRestorePending(true)
+    setBackupMessage('')
+    try {
+      if (timer.current) {
+        clearTimeout(timer.current)
+        timer.current = null
+        persist(nodesRef.current, edgesRef.current)
+      }
+      await saveQueue.current
+      if (saveFailure.current) {
+        setBackupMessage(saveFailure.current)
+        return
+      }
+      const restored = await bridge?.restoreBackup()
+      if (restored) await onProjectRestored(restored)
+    } catch (cause) {
+      setBackupMessage(cause instanceof Error ? cause.message : '恢复项目备份失败。')
+    } finally {
+      setRestorePending(false)
+    }
+  }
+
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current)
   }, [])
@@ -393,7 +421,8 @@ function LocalCanvas({
           <span className={`max-w-[360px] truncate text-xs ${saveState === 'error' ? 'text-red-600' : 'text-[#777]'}`} role={saveError ? 'alert' : undefined} title={saveError || undefined}>
             {saveState === 'saving' ? '保存中…' : saveState === 'error' ? saveError : '已保存'}
           </span>
-          <button onClick={() => void createBackup()} disabled={backupPending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{backupPending ? '正在备份…' : '备份项目'}</button>
+          <button onClick={() => void createBackup()} disabled={backupPending || restorePending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{backupPending ? '正在备份…' : '备份项目'}</button>
+          <button onClick={() => void restoreBackup()} disabled={backupPending || restorePending || assetPending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{restorePending ? '正在恢复…' : '恢复备份副本'}</button>
           <button onClick={addTextNode} className="rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">添加文本节点</button>
           <button onClick={() => void openOtherProject()} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">切换项目</button>
         </div>

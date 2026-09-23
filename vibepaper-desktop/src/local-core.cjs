@@ -20,6 +20,11 @@ async function dispatch(method, payload) {
         throw new Error('备份请求无效。')
       }
       return store.backupProject(payload.parentDirectory, payload.projectId)
+    case 'project:restore-backup':
+      if (!payload || typeof payload.sourceDirectory !== 'string' || typeof payload.parentDirectory !== 'string') {
+        throw new Error('项目恢复请求无效。')
+      }
+      return store.restoreBackup(payload.sourceDirectory, payload.parentDirectory)
     case 'asset:import':
       if (!payload || typeof payload.sourcePath !== 'string' || typeof payload.projectId !== 'string') {
         throw new Error('素材导入请求无效。')

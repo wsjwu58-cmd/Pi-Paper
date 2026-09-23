@@ -9,6 +9,7 @@ const { backup, DatabaseSync } = require('node:sqlite')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const PROJECT_DB_SCHEMA_VERSION = 2
+const PROJECT_BACKUP_SCHEMA_VERSION = 1
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
 const MAX_CANVAS_BYTES = 32 * 1024 * 1024
@@ -371,6 +372,163 @@ async function copyProjectAssets(database, sourceDataDirectory, targetDataDirect
   }
 }
 
+function projectBackupPaths(database) {
+  const assetRows = database.prepare('SELECT relative_path FROM assets ORDER BY relative_path').all()
+  const paths = ['project.json', 'project.sqlite']
+  for (const row of assetRows) {
+    if (typeof row.relative_path !== 'string'
+      || !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp)$/iu.test(row.relative_path)) {
+      throw new Error('项目素材清单包含无效路径，无法备份或恢复。')
+    }
+    paths.push(row.relative_path)
+  }
+  return paths
+}
+
+async function hashFile(filePath) {
+  const hash = createHash('sha256')
+  let sizeBytes = 0
+  for await (const chunk of nativeFs.createReadStream(filePath)) {
+    sizeBytes += chunk.length
+    hash.update(chunk)
+  }
+  return { sha256: hash.digest('hex'), sizeBytes }
+}
+
+async function safeBackupFilePath(dataDirectory, relativePath) {
+  if (relativePath !== 'project.json' && relativePath !== 'project.sqlite'
+    && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp)$/iu.test(relativePath)) {
+    throw new Error('备份包含无效文件路径。')
+  }
+  const rootInfo = await fs.lstat(dataDirectory).catch(() => null)
+  if (!rootInfo?.isDirectory() || rootInfo.isSymbolicLink()
+    || path.relative(dataDirectory, await fs.realpath(dataDirectory)) !== '') {
+    throw new Error('备份项目数据目录无效。')
+  }
+  const filePath = path.join(dataDirectory, relativePath)
+  if (relativePath.startsWith('assets/')) {
+    const assetsPath = path.join(dataDirectory, 'assets')
+    const hashPath = path.dirname(filePath)
+    const assetsInfo = await fs.lstat(assetsPath).catch(() => null)
+    const hashInfo = await fs.lstat(hashPath).catch(() => null)
+    if (!assetsInfo?.isDirectory() || assetsInfo.isSymbolicLink()
+      || !hashInfo?.isDirectory() || hashInfo.isSymbolicLink()
+      || path.relative(assetsPath, await fs.realpath(assetsPath)) !== ''
+      || path.relative(hashPath, await fs.realpath(hashPath)) !== '') {
+      throw new Error(`备份素材“${relativePath}”所在目录无效。`)
+    }
+  }
+  const fileInfo = await fs.lstat(filePath).catch(() => null)
+  if (!fileInfo?.isFile() || fileInfo.isSymbolicLink()) throw new Error(`备份文件“${relativePath}”缺失或路径无效。`)
+  return filePath
+}
+
+async function createBackupManifest(dataDirectory, metadata, database, createdAt = new Date().toISOString()) {
+  const files = []
+  for (const relativePath of projectBackupPaths(database)) {
+    const file = await hashFile(await safeBackupFilePath(dataDirectory, relativePath))
+    files.push({ path: relativePath, ...file })
+  }
+  return {
+    schemaVersion: PROJECT_BACKUP_SCHEMA_VERSION,
+    projectId: metadata.projectId,
+    createdAt,
+    files,
+  }
+}
+
+async function verifyBackupManifest(dataDirectory, metadata, database) {
+  const manifestPath = path.join(dataDirectory, 'backup-manifest.json')
+  let manifest
+  try {
+    const manifestInfo = await fs.lstat(manifestPath)
+    if (!manifestInfo.isFile() || manifestInfo.isSymbolicLink()) throw new Error('备份校验清单路径无效。')
+    manifest = await readJson(manifestPath)
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return
+    if (error instanceof Error && error.message === '备份校验清单路径无效。') throw error
+    throw new Error('备份校验清单无法读取。')
+  }
+  if (!isRecord(manifest) || manifest.schemaVersion !== PROJECT_BACKUP_SCHEMA_VERSION
+    || manifest.projectId !== metadata.projectId || typeof manifest.createdAt !== 'string'
+    || !Array.isArray(manifest.files) || manifest.files.some((file) => !isRecord(file))) {
+    throw new Error('备份校验清单格式无效。')
+  }
+
+  const expectedPaths = projectBackupPaths(database).sort()
+  const actualPaths = manifest.files.map((file) => file?.path)
+  if (actualPaths.some((filePath) => typeof filePath !== 'string')
+    || new Set(actualPaths).size !== actualPaths.length
+    || JSON.stringify([...actualPaths].sort()) !== JSON.stringify(expectedPaths)) {
+    throw new Error('备份文件清单与项目数据库不一致。')
+  }
+
+  for (const entry of manifest.files) {
+    if (!/^[a-f0-9]{64}$/u.test(entry.sha256)
+      || !Number.isSafeInteger(entry.sizeBytes) || entry.sizeBytes < 0) {
+      throw new Error('备份文件校验信息无效。')
+    }
+    const actual = await hashFile(await safeBackupFilePath(dataDirectory, entry.path))
+    if (actual.sha256 !== entry.sha256 || actual.sizeBytes !== entry.sizeBytes) {
+      throw new Error(`备份文件“${entry.path}”校验失败。`)
+    }
+  }
+}
+
+async function invalidateBackupManifest(dataDirectory) {
+  await fs.rm(path.join(dataDirectory, 'backup-manifest.json'), { force: true })
+}
+
+async function validateRestorableProject(projectDirectory) {
+  const directory = path.resolve(projectDirectory)
+  const dataDirectory = path.join(directory, '.vibepaper')
+  const dataInfo = await fs.lstat(dataDirectory).catch(() => null)
+  if (!dataInfo?.isDirectory() || dataInfo.isSymbolicLink()) {
+    throw new Error('所选文件夹不是有效的 VibePaper 项目备份。')
+  }
+  const realDataDirectory = await fs.realpath(dataDirectory)
+  if (path.relative(dataDirectory, realDataDirectory) !== '') throw new Error('备份项目数据目录无效。')
+
+  const metadataPath = path.join(dataDirectory, 'project.json')
+  const metadataInfo = await fs.lstat(metadataPath).catch(() => null)
+  if (!metadataInfo?.isFile() || metadataInfo.isSymbolicLink()) throw new Error('备份项目元数据缺失或路径无效。')
+  let metadata
+  try {
+    metadata = await readJson(metadataPath)
+  } catch {
+    throw new Error('备份项目缺少有效的项目元数据。')
+  }
+  validateMetadata(metadata)
+
+  const databasePath = path.join(dataDirectory, 'project.sqlite')
+  const databaseInfo = await fs.lstat(databasePath).catch(() => null)
+  if (!databaseInfo?.isFile() || databaseInfo.isSymbolicLink()) throw new Error('备份项目数据库缺失或路径无效。')
+  const database = new DatabaseSync(databasePath, { timeout: 5000 })
+  try {
+    if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
+      throw new Error('该备份的项目数据库版本当前不支持恢复。')
+    }
+    const integrity = database.prepare('PRAGMA integrity_check').all()
+    if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
+      throw new Error('备份项目数据库完整性校验失败。')
+    }
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('备份项目数据库存在无效引用。')
+    }
+    readDatabaseCanvas(database, metadata)
+    await verifyBackupManifest(dataDirectory, metadata, database)
+    return { directory, dataDirectory, metadata, database }
+  } catch (error) {
+    database.close()
+    throw error
+  }
+}
+
+function restoredProjectName(originalName) {
+  const timestamp = new Date().toISOString().replace(/[:.]/gu, '-').slice(0, 19)
+  return validateProjectName(`${originalName.slice(0, 24)} Restored ${timestamp} ${randomUUID().slice(0, 6)}`)
+}
+
 async function detectImageMimeType(filePath) {
   const handle = await fs.open(filePath, 'r')
   const header = Buffer.alloc(16)
@@ -547,13 +705,15 @@ function createLocalProjectStore() {
       }
 
       const parent = path.resolve(parentDirectory)
-      const relativeToProject = path.relative(active.directory, parent)
+      const parentInfo = await fs.stat(parent).catch(() => null)
+      if (!parentInfo?.isDirectory()) throw new Error('备份位置不可用。')
+      const realProjectDirectory = await fs.realpath(active.directory)
+      const realParentDirectory = await fs.realpath(parent)
+      const relativeToProject = path.relative(realProjectDirectory, realParentDirectory)
       if (relativeToProject === '' || (!path.isAbsolute(relativeToProject)
         && relativeToProject !== '..' && !relativeToProject.startsWith(`..${path.sep}`))) {
         throw new Error('请选择当前项目文件夹之外的备份位置。')
       }
-      const parentInfo = await fs.stat(parent).catch(() => null)
-      if (!parentInfo?.isDirectory()) throw new Error('备份位置不可用。')
 
       const timestamp = new Date().toISOString().replace(/[:.]/gu, '-')
       const backupName = `${active.metadata.name} Backup ${timestamp} ${randomUUID().slice(0, 8)}`
@@ -566,12 +726,82 @@ function createLocalProjectStore() {
         await writeJsonAtomically(path.join(stagingData, 'project.json'), active.metadata)
         await copyProjectAssets(active.database, path.join(active.directory, '.vibepaper'), stagingData)
         await backup(active.database, path.join(stagingData, 'project.sqlite'))
+        const manifest = await createBackupManifest(stagingData, active.metadata, active.database)
+        await writeJsonAtomically(path.join(stagingData, 'backup-manifest.json'), manifest)
         await fs.rename(staging, destination)
       } catch (error) {
         await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined)
         throw error
       }
       return { directory: destination, name: backupName }
+    })
+  }
+
+  function restoreBackup(sourceDirectory, parentDirectory) {
+    return enqueue(async () => {
+      const source = await validateRestorableProject(sourceDirectory)
+      let staging = null
+      let published = false
+      try {
+        const parent = path.resolve(parentDirectory)
+        const parentInfo = await fs.stat(parent).catch(() => null)
+        if (!parentInfo?.isDirectory()) throw new Error('恢复位置不可用。')
+        const realSourceDirectory = await fs.realpath(source.directory)
+        const realParentDirectory = await fs.realpath(parent)
+        const relativeToSource = path.relative(realSourceDirectory, realParentDirectory)
+        if (relativeToSource === '' || (!path.isAbsolute(relativeToSource)
+          && relativeToSource !== '..' && !relativeToSource.startsWith(`..${path.sep}`))) {
+          throw new Error('恢复位置不能位于备份项目目录内。')
+        }
+
+        const name = restoredProjectName(source.metadata.name)
+        const destination = path.join(parent, name)
+        staging = path.join(parent, `.vibepaper-restore-${randomUUID()}`)
+        await fs.mkdir(staging)
+        const stagingData = path.join(staging, '.vibepaper')
+        await fs.mkdir(stagingData)
+        const restoredMetadata = {
+          ...source.metadata,
+          projectId: randomUUID(),
+          name,
+        }
+        await writeJsonAtomically(path.join(stagingData, 'project.json'), restoredMetadata)
+        await backup(source.database, path.join(stagingData, 'project.sqlite'))
+        await copyProjectAssets(source.database, source.dataDirectory, stagingData)
+
+        const restoredDatabase = new DatabaseSync(path.join(stagingData, 'project.sqlite'), { timeout: 5000 })
+        try {
+          setDatabaseMode(restoredDatabase)
+          restoredDatabase.exec('BEGIN IMMEDIATE')
+          try {
+            const updated = restoredDatabase.prepare('UPDATE project_metadata SET value = ? WHERE key = ?')
+              .run(restoredMetadata.projectId, 'projectId')
+            if (updated.changes !== 1) throw new Error('备份项目身份无法更新。')
+            restoredDatabase.exec('COMMIT')
+          } catch (error) {
+            restoredDatabase.exec('ROLLBACK')
+            throw error
+          }
+        } finally {
+          closeDatabase(restoredDatabase)
+        }
+
+        const stagedProject = await openProjectData(staging)
+        closeDatabase(stagedProject.database)
+        await fs.rename(staging, destination)
+        published = true
+
+        const next = await openProjectData(destination)
+        const previous = active
+        active = next
+        if (previous && previous.database !== next.database) closeDatabase(previous.database)
+        return { project: publicProject(next.metadata), directory: next.directory }
+      } catch (error) {
+        if (staging && !published) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined)
+        throw error
+      } finally {
+        source.database.close()
+      }
     })
   }
 
@@ -605,6 +835,7 @@ function createLocalProjectStore() {
           throw new Error('项目素材内容目录不能是符号链接。')
         }
         const destination = path.join(assetDirectory, `${assetId}.${extension}`)
+        await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
         await fs.rename(temporaryPath, destination)
 
         const rawName = path.basename(path.resolve(sourcePath))
@@ -691,6 +922,7 @@ function createLocalProjectStore() {
 
       const graph = validateGraph(input.nodes, input.edges)
       const database = active.database
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
       database.exec('BEGIN IMMEDIATE')
       try {
         const persistedVersion = database.prepare('SELECT version FROM canvases WHERE id = ?').get(active.metadata.canvasId)
@@ -740,6 +972,7 @@ function createLocalProjectStore() {
     loadCanvas,
     openProject,
     resolveAsset,
+    restoreBackup,
     saveCanvas,
   }
 }

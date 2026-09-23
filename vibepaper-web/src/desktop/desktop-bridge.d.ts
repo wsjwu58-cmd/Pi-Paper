@@ -28,6 +28,7 @@ export interface DesktopBridge {
   createProject(name: string): Promise<DesktopProject | null>
   openProject(): Promise<DesktopProject | null>
   backupProject(projectId: string): Promise<{ name: string } | null>
+  restoreBackup(): Promise<DesktopProject | null>
   importImage(projectId: string): Promise<DesktopAsset | null>
   listAssets(projectId: string): Promise<DesktopAsset[]>
   loadCanvas(projectId: string, canvasId: string): Promise<DesktopCanvas>

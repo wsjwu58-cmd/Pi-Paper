@@ -250,6 +250,32 @@ function registerProjectIpc() {
     })
     return { name: backup.name }
   })
+  ipcMain.handle('desktop:project:restore-backup', async (event) => {
+    assertTrustedSender(event)
+    const sourceResult = await dialog.showOpenDialog(mainWindow, {
+      title: '选择要恢复的 VibePaper 项目备份',
+      properties: ['openDirectory'],
+    })
+    if (sourceResult.canceled || sourceResult.filePaths.length === 0) return null
+    const destinationResult = await dialog.showOpenDialog(mainWindow, {
+      title: '选择恢复副本的保存位置',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (destinationResult.canceled || destinationResult.filePaths.length === 0) return null
+
+    const restored = await localCore.request('project:restore-backup', {
+      sourceDirectory: sourceResult.filePaths[0],
+      parentDirectory: destinationResult.filePaths[0],
+    }, 30 * 60 * 1000)
+    await writeRecentProjectDirectory(restored.directory)
+    await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '备份恢复完成',
+      message: '已创建并打开恢复副本。',
+      detail: `${restored.project.name}\n${restored.directory}`,
+    })
+    return restored.project
+  })
   ipcMain.handle('desktop:asset:import-image', async (event, projectId) => {
     assertTrustedSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
