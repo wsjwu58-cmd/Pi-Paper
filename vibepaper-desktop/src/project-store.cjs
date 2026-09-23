@@ -426,6 +426,132 @@ function recoverInterruptedTasks(database) {
   }
 }
 
+function nodeErrorCode(error) {
+  return isRecord(error) && typeof error.code === 'string' ? error.code : undefined
+}
+
+function processIsRunning(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return nodeErrorCode(error) !== 'ESRCH'
+  }
+}
+
+async function acquireProjectWriterLock(dataDirectory) {
+  const lockPath = path.join(dataDirectory, 'project.lock')
+  const recoveryLockPath = path.join(dataDirectory, 'project.lock.recovery')
+
+  async function withRecoveryLock(operation) {
+    const recoveryLock = { pid: process.pid, token: randomUUID(), startedAt: new Date().toISOString() }
+    let handle
+    try {
+      handle = await fs.open(recoveryLockPath, 'wx', 0o600)
+    } catch (error) {
+      if (nodeErrorCode(error) === 'EEXIST') {
+        throw new Error('项目写入锁正在由另一个进程恢复，请稍后重试。')
+      }
+      throw error
+    }
+    let ready = false
+    try {
+      await handle.writeFile(`${JSON.stringify(recoveryLock)}\n`, 'utf8')
+      await handle.sync()
+      ready = true
+      return await operation()
+    } finally {
+      try {
+        await handle.close()
+      } finally {
+        if (!ready) {
+          await fs.rm(recoveryLockPath, { force: true })
+        } else {
+          const info = await fs.lstat(recoveryLockPath).catch(() => null)
+          if (info?.isFile() && !info.isSymbolicLink()) {
+            let current
+            try {
+              current = JSON.parse(await fs.readFile(recoveryLockPath, 'utf8'))
+            } catch {
+              current = null
+            }
+            if (isRecord(current) && current.token === recoveryLock.token) {
+              await fs.rm(recoveryLockPath, { force: true })
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const lock = { pid: process.pid, token: randomUUID(), startedAt: new Date().toISOString() }
+    let handle
+    try {
+      handle = await fs.open(lockPath, 'wx', 0o600)
+      await handle.writeFile(`${JSON.stringify(lock)}\n`, 'utf8')
+      await handle.sync()
+      let released = false
+      return async () => {
+        if (released) return
+        released = true
+        await handle.close()
+        const info = await fs.lstat(lockPath).catch(() => null)
+        if (!info?.isFile() || info.isSymbolicLink()) return
+        let current
+        try {
+          current = JSON.parse(await fs.readFile(lockPath, 'utf8'))
+        } catch {
+          return
+        }
+        if (isRecord(current) && current.token === lock.token) await fs.rm(lockPath, { force: true })
+      }
+    } catch (error) {
+      await handle?.close().catch(() => undefined)
+      if (nodeErrorCode(error) !== 'EEXIST') {
+        if (handle) await fs.rm(lockPath, { force: true }).catch(() => undefined)
+        throw error
+      }
+    }
+
+    const info = await fs.lstat(lockPath).catch((error) => {
+      if (nodeErrorCode(error) === 'ENOENT') return null
+      throw error
+    })
+    if (!info) continue
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error('项目写入锁文件无效。请检查项目后再重试。')
+    const currentText = await fs.readFile(lockPath, 'utf8')
+    let current
+    try {
+      current = JSON.parse(currentText)
+    } catch {
+      throw new Error('项目写入锁文件不完整。请关闭 VibePaper 并检查项目后再重试。')
+    }
+    if (!isRecord(current) || !Number.isSafeInteger(current.pid) || current.pid < 1
+      || typeof current.token !== 'string' || current.token.length < 16
+      || typeof current.startedAt !== 'string') {
+      throw new Error('项目写入锁文件格式无效。请关闭 VibePaper 并检查项目后再重试。')
+    }
+    if (processIsRunning(current.pid)) throw new Error('该项目已在另一个 VibePaper 实例中打开。')
+    const recovered = await withRecoveryLock(async () => {
+      const latestInfo = await fs.lstat(lockPath).catch((error) => {
+        if (nodeErrorCode(error) === 'ENOENT') return null
+        throw error
+      })
+      if (!latestInfo) return true
+      if (!latestInfo.isFile() || latestInfo.isSymbolicLink()) {
+        throw new Error('项目写入锁文件无效。请检查项目后再重试。')
+      }
+      if ((await fs.readFile(lockPath, 'utf8')) !== currentText) return false
+      if (processIsRunning(current.pid)) throw new Error('该项目已在另一个 VibePaper 实例中打开。')
+      await fs.rm(lockPath, { force: true })
+      return true
+    })
+    if (!recovered) continue
+  }
+  throw new Error('无法取得项目写入锁，请关闭其他 VibePaper 实例后重试。')
+}
+
 function setDatabaseMode(database) {
   database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;')
 }
@@ -865,7 +991,7 @@ async function projectAssetsDirectory(projectDirectory) {
 }
 
 async function openProjectData(projectDirectory) {
-  const directory = path.resolve(projectDirectory)
+  const directory = await fs.realpath(path.resolve(projectDirectory))
   const dataDirectory = path.join(directory, '.vibepaper')
   const dataDirectoryInfo = await fs.lstat(dataDirectory).catch(() => null)
   if (!dataDirectoryInfo?.isDirectory() || dataDirectoryInfo.isSymbolicLink()) {
@@ -882,13 +1008,15 @@ async function openProjectData(projectDirectory) {
   }
   validateMetadata(metadata)
 
-  const databasePath = path.join(dataDirectory, 'project.sqlite')
-  const databaseInfo = await fs.lstat(databasePath).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
-  if (databaseInfo?.isSymbolicLink() || (databaseInfo && !databaseInfo.isFile())) {
-    throw new Error('项目数据库不能是符号链接或非普通文件。')
-  }
-  const database = new DatabaseSync(databasePath, { timeout: 5000 })
+  const releaseWriterLock = await acquireProjectWriterLock(dataDirectory)
+  let database
   try {
+    const databasePath = path.join(dataDirectory, 'project.sqlite')
+    const databaseInfo = await fs.lstat(databasePath).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
+    if (databaseInfo?.isSymbolicLink() || (databaseInfo && !databaseInfo.isFile())) {
+      throw new Error('项目数据库不能是符号链接或非普通文件。')
+    }
+    database = new DatabaseSync(databasePath, { timeout: 5000 })
     setDatabaseMode(database)
     const version = databaseVersion(database)
     if (version > 0 && version < PROJECT_DB_SCHEMA_VERSION) {
@@ -920,9 +1048,13 @@ async function openProjectData(projectDirectory) {
       recoverInterruptedTasks(database)
     }
     const canvas = readDatabaseCanvas(database, metadata)
-    return { directory, metadata, database, canvas }
+    return { directory, metadata, database, canvas, releaseWriterLock }
   } catch (error) {
-    database.close()
+    try {
+      database?.close()
+    } finally {
+      await releaseWriterLock()
+    }
     throw error
   }
 }
@@ -932,6 +1064,14 @@ function closeDatabase(database) {
     database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
   } finally {
     database.close()
+  }
+}
+
+async function closeProjectData(project) {
+  try {
+    closeDatabase(project.database)
+  } finally {
+    await project.releaseWriterLock()
   }
 }
 
@@ -947,10 +1087,14 @@ function createLocalProjectStore() {
 
   async function openProject(projectDirectory) {
     return enqueue(async () => {
-      const next = await openProjectData(projectDirectory)
+      const directory = await fs.realpath(path.resolve(projectDirectory))
+      if (active?.directory === directory) {
+        return { project: publicProject(active.metadata), directory: active.directory }
+      }
+      const next = await openProjectData(directory)
       const previous = active
       active = next
-      if (previous && previous.database !== next.database) closeDatabase(previous.database)
+      if (previous && previous.database !== next.database) await closeProjectData(previous)
       return { project: publicProject(next.metadata), directory: next.directory }
     })
   }
@@ -1104,14 +1248,14 @@ function createLocalProjectStore() {
         }
 
         const stagedProject = await openProjectData(staging)
-        closeDatabase(stagedProject.database)
+        await closeProjectData(stagedProject)
         await fs.rename(staging, destination)
         published = true
 
         const next = await openProjectData(destination)
         const previous = active
         active = next
-        if (previous && previous.database !== next.database) closeDatabase(previous.database)
+        if (previous && previous.database !== next.database) await closeProjectData(previous)
         return { project: publicProject(next.metadata), directory: next.directory }
       } catch (error) {
         if (staging && !published) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined)
@@ -1515,8 +1659,9 @@ function createLocalProjectStore() {
 
   async function close() {
     return enqueue(async () => {
-      if (active) closeDatabase(active.database)
+      const current = active
       active = null
+      if (current) await closeProjectData(current)
     })
   }
 
