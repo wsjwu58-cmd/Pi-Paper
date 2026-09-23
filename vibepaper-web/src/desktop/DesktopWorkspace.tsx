@@ -95,19 +95,28 @@ export function DesktopWorkspace() {
 }
 
 function TextNode({ id, data }: NodeProps<Node<{ label?: string }>>) {
-  const updateText = useContext(TextNodeContext)
+  const actions = useContext(TextNodeContext)
   const label = typeof data.label === 'string' ? data.label : ''
   return (
     <div className="relative min-w-[240px] overflow-visible rounded-2xl border border-black/12 bg-white shadow-[0_6px_20px_rgba(0,0,0,0.08)]">
-      <div className="border-b border-black/8 px-3 py-2 text-[11px] font-bold text-[#777]">文本</div>
+      <div className="flex items-center justify-between border-b border-black/8 px-3 py-2">
+        <span className="text-[11px] font-bold text-[#777]">文本</span>
+        <button
+          className="nodrag rounded-md bg-[#eeeafc] px-2 py-1 text-[10px] font-bold text-[#6d55c9] disabled:opacity-50"
+          disabled={actions.pendingNodeId === id || (actions.modelAvailable && !label.trim())}
+          onClick={() => actions.generateText(id, label)}
+        >
+          {actions.pendingNodeId === id ? '正在提交…' : actions.modelAvailable ? '生成文本' : '配置模型'}
+        </button>
+      </div>
       <textarea
         aria-label="文本节点内容"
         className="nodrag nowheel block min-h-24 w-full resize-y bg-transparent px-3 py-2 text-sm leading-6 text-[#222] outline-none"
         value={label}
         maxLength={20_000}
         placeholder="输入文本内容…"
-        onChange={(event) => updateText(id, event.target.value)}
-        onBlur={(event) => updateText(id, event.currentTarget.value, true)}
+        onChange={(event) => actions.updateText(id, event.target.value)}
+        onBlur={(event) => actions.updateText(id, event.currentTarget.value, true)}
       />
       <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-[#8a72e8]" />
       <Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-[#8a72e8]" />
@@ -130,7 +139,19 @@ function ImageNode({ data }: NodeProps<Node<{ assetId?: string; name?: string }>
   )
 }
 
-const TextNodeContext = createContext<(id: string, label: string, immediate?: boolean) => void>(() => {})
+interface TextNodeContextValue {
+  updateText: (id: string, label: string, immediate?: boolean) => void
+  generateText: (id: string, prompt: string) => void
+  pendingNodeId: string | null
+  modelAvailable: boolean
+}
+
+const TextNodeContext = createContext<TextNodeContextValue>({
+  updateText: () => {},
+  generateText: () => {},
+  pendingNodeId: null,
+  modelAvailable: false,
+})
 const nodeTypes = { text: TextNode, image: ImageNode }
 
 function LoadingScreen() {
@@ -222,6 +243,7 @@ function LocalCanvas({
   const [tasks, setTasks] = useState<DesktopTask[]>([])
   const [taskError, setTaskError] = useState('')
   const [cancellingTask, setCancellingTask] = useState<string | null>(null)
+  const [submittingNode, setSubmittingNode] = useState<string | null>(null)
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
   const [localTextModel, setLocalTextModel] = useState<DesktopLocalTextModel | null>(null)
   const [modelLoadError, setModelLoadError] = useState('')
@@ -266,7 +288,6 @@ function LocalCanvas({
         const items = await bridge.listTasks(project.projectId, 100)
         if (!cancelled) {
           setTasks(items)
-          setTaskError('')
         }
       } catch (cause) {
         if (!cancelled) setTaskError(cause instanceof Error ? cause.message : '无法读取本地任务记录。')
@@ -353,16 +374,56 @@ function LocalCanvas({
     schedulePersist(nodesRef.current, next, true)
   }, [schedulePersist])
 
-  const addTextNode = () => {
+  const insertTextNode = (label: string) => {
+    if (label.length > 20_000) {
+      setTaskError('生成结果超过单个文本节点的长度上限。')
+      setTasksOpen(true)
+      return
+    }
     const next = [...nodesRef.current, {
       id: crypto.randomUUID(),
       type: 'text',
       position: { x: 160 + nodesRef.current.length * 24, y: 120 + nodesRef.current.length * 24 },
-      data: { label: '' },
+      data: { label },
     }]
     nodesRef.current = next
     setNodes(next)
     schedulePersist(next, edgesRef.current, true)
+  }
+
+  const addTextNode = () => insertTextNode('')
+
+  const generateText = async (nodeId: string, prompt: string) => {
+    if (!localTextModel) {
+      setModelSettingsOpen(true)
+      return
+    }
+    if (!bridge || submittingNode || !prompt.trim()) return
+    setSubmittingNode(nodeId)
+    setTaskError('')
+    try {
+      if (timer.current) {
+        clearTimeout(timer.current)
+        timer.current = null
+        schedulePersist(nodesRef.current, edgesRef.current, true)
+      }
+      await saveQueue.current
+      if (saveFailure.current) throw new Error(saveFailure.current)
+      await bridge.createTextTask({
+        projectId: project.projectId,
+        canvasId: project.canvasId,
+        canvasVersion: version.current,
+        nodeId,
+        prompt,
+        idempotencyKey: crypto.randomUUID(),
+      })
+      setTasksOpen(true)
+    } catch (cause) {
+      setTaskError(cause instanceof Error ? cause.message : '无法提交本地文本任务。')
+      setTasksOpen(true)
+    } finally {
+      setSubmittingNode(null)
+    }
   }
 
   const addImageNode = (asset: DesktopAsset) => {
@@ -483,7 +544,7 @@ function LocalCanvas({
           </span>
           <button onClick={() => void createBackup()} disabled={backupPending || restorePending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{backupPending ? '正在备份…' : '备份项目'}</button>
           <button onClick={() => void restoreBackup()} disabled={backupPending || restorePending || assetPending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{restorePending ? '正在恢复…' : '恢复备份副本'}</button>
-          <button onClick={() => setTasksOpen(true)} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">任务记录</button>
+          <button onClick={() => { setTaskError(''); setTasksOpen(true) }} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">任务记录</button>
           <button onClick={() => setModelSettingsOpen(true)} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">
             {localTextModel ? '本地文本模型已配置' : '配置本地文本模型'}
           </button>
@@ -507,7 +568,12 @@ function LocalCanvas({
       </div>
       {error && <p role="alert" className="shrink-0 border-b border-red-100 bg-red-50 px-5 py-2 text-xs text-red-700">{error}</p>}
       <section className="relative min-h-0 flex-1">
-        <TextNodeContext.Provider value={updateText}>
+        <TextNodeContext.Provider value={{
+          updateText,
+          generateText: (nodeId, prompt) => { void generateText(nodeId, prompt) },
+          pendingNodeId: submittingNode,
+          modelAvailable: localTextModel !== null,
+        }}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -536,6 +602,8 @@ function LocalCanvas({
           error={taskError}
           cancellingTask={cancellingTask}
           onCancel={(task) => void cancelQueuedTask(task)}
+          onReadOutput={(taskId) => bridge?.readTaskOutput(project.projectId, taskId) ?? Promise.reject(new Error('桌面任务接口不可用。'))}
+          onInsertOutput={(text) => insertTextNode(text)}
           onClose={() => setTasksOpen(false)}
         />
       )}
@@ -564,14 +632,42 @@ function TaskHistoryPanel({
   error,
   cancellingTask,
   onCancel,
+  onReadOutput,
+  onInsertOutput,
   onClose,
 }: {
   tasks: DesktopTask[]
   error: string
   cancellingTask: string | null
   onCancel: (task: DesktopTask) => void
+  onReadOutput: (taskId: string) => Promise<string>
+  onInsertOutput: (text: string) => void
   onClose: () => void
 }) {
+  const [outputTaskId, setOutputTaskId] = useState<string | null>(null)
+  const [outputs, setOutputs] = useState<Record<string, string>>({})
+  const [readingTaskId, setReadingTaskId] = useState<string | null>(null)
+  const [outputError, setOutputError] = useState('')
+
+  const toggleOutput = async (taskId: string) => {
+    if (outputTaskId === taskId) {
+      setOutputTaskId(null)
+      return
+    }
+    setOutputTaskId(taskId)
+    setOutputError('')
+    if (outputs[taskId] !== undefined) return
+    setReadingTaskId(taskId)
+    try {
+      const text = await onReadOutput(taskId)
+      setOutputs((current) => ({ ...current, [taskId]: text }))
+    } catch (cause) {
+      setOutputError(cause instanceof Error ? cause.message : '无法读取本地任务结果。')
+    } finally {
+      setReadingTaskId(null)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/25" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
@@ -585,9 +681,10 @@ function TaskHistoryPanel({
           <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">关闭</button>
         </header>
         <p className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-900">
-          当前尚未提供生成执行能力；本地任务状态会保留，排队任务可以取消。
+          已接入本地文本生成；图像、音频和视频生成尚未接入。任务仅发送到已配置的本机模型服务。
         </p>
         {error && <p role="alert" className="border-b border-red-100 bg-red-50 px-5 py-3 text-xs text-red-700">{error}</p>}
+        {outputError && <p role="alert" className="border-b border-red-100 bg-red-50 px-5 py-3 text-xs text-red-700">{outputError}</p>}
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {tasks.length === 0
             ? <p className="py-12 text-center text-sm text-[#888]">此项目还没有任务记录。</p>
@@ -597,7 +694,7 @@ function TaskHistoryPanel({
                   <div>
                     <p className="text-sm font-semibold">{taskModalityLabel(task.modality)} · {taskStatusLabel(task.status)}</p>
                     <p className="mt-1 text-xs text-[#777]">{formatTaskDate(task.updatedAt)} · 尝试 {task.attemptCount} 次</p>
-                    {task.status === 'failed' && <p className="mt-2 text-xs text-red-700">任务未完成，请检查模型配置后重试。</p>}
+                    {task.status === 'failed' && <p className="mt-2 text-xs text-red-700">{taskFailureLabel(task.errorCode)}</p>}
                     {task.status === 'interrupted' && <p className="mt-2 text-xs text-amber-800">应用关闭时任务仍在执行，系统没有自动重复提交。</p>}
                   </div>
                   {task.status === 'queued' && (
@@ -610,6 +707,19 @@ function TaskHistoryPanel({
                     </button>
                   )}
                 </div>
+                {task.status === 'succeeded' && task.modality === 'text' && (
+                  <div className="mt-3 border-t border-black/8 pt-3">
+                    <button onClick={() => void toggleOutput(task.taskId)} className="rounded-lg border border-black/12 px-2.5 py-1.5 text-xs font-bold">
+                      {readingTaskId === task.taskId ? '正在读取…' : outputTaskId === task.taskId ? '收起结果' : '查看文本结果'}
+                    </button>
+                    {outputTaskId === task.taskId && outputs[task.taskId] !== undefined && (
+                      <>
+                        <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#f7f7f8] p-3 text-xs leading-5">{outputs[task.taskId]}</pre>
+                        <button onClick={() => onInsertOutput(outputs[task.taskId])} className="mt-2 rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">加入画布新文本节点</button>
+                      </>
+                    )}
+                  </div>
+                )}
               </li>
             ))}</ul>}
         </div>
@@ -631,6 +741,20 @@ function taskStatusLabel(status: DesktopTask['status']) {
     cancelled: '已取消',
     interrupted: '已中断',
   })[status]
+}
+
+function taskFailureLabel(errorCode: string | null) {
+  return ({
+    CLOUD_TASK_DISABLED: '云端任务未获启用，本机不会自动转发此请求。',
+    UNSUPPORTED_MODALITY: '此生成类型尚未接入本地执行器。',
+    LOCAL_MODEL_CONFIGURATION_CHANGED: '模型配置已变化，请使用当前配置重新提交。',
+    LOCAL_MODEL_CONFIGURATION_INVALID: '本地模型配置无效，请重新配置。',
+    LOCAL_MODEL_UNAVAILABLE: '无法连接本地模型服务，请确认服务已启动。',
+    LOCAL_MODEL_REQUEST_FAILED: '本地模型请求失败，请检查模型服务。',
+    LOCAL_MODEL_INVALID_RESPONSE: '本地模型没有返回可用的文本结果。',
+    LOCAL_MODEL_OUTPUT_INVALID: '本地模型结果无法安全保存。',
+    LOCAL_MODEL_EXECUTION_FAILED: '本地文本生成失败。',
+  } as Record<string, string>)[errorCode ?? ''] ?? '本地任务未完成。'
 }
 
 function formatTaskDate(value: string) {

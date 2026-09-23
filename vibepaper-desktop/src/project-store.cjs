@@ -373,6 +373,22 @@ async function resolveTaskOutputFile(dataDirectory, taskId, modality, relativePa
   return { filePath: actualPath, ...digest }
 }
 
+async function ensureTaskOutputDirectory(dataDirectory, taskId) {
+  const generatedDirectory = path.join(dataDirectory, 'generated')
+  const taskDirectory = path.join(generatedDirectory, taskId)
+  for (const directory of [generatedDirectory, taskDirectory]) {
+    await fs.mkdir(directory).catch((error) => {
+      if (error?.code !== 'EEXIST') throw error
+    })
+    const info = await fs.lstat(directory).catch(() => null)
+    if (!info?.isDirectory() || info.isSymbolicLink()
+      || path.relative(directory, await fs.realpath(directory)) !== '') {
+      throw new Error('任务结果目录缺失或路径无效。')
+    }
+  }
+  return taskDirectory
+}
+
 async function copyProjectTaskOutputs(database, sourceDataDirectory, targetDataDirectory) {
   if (databaseVersion(database) < 3) return
   const tasks = database.prepare(`
@@ -1456,6 +1472,36 @@ function createLocalProjectStore() {
     })
   }
 
+  function readTaskOutputText(projectId, taskId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务结果。')
+      if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
+      const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (!row || row.status !== 'succeeded' || row.modality !== 'text') {
+        throw new Error('此任务没有可读取的文本结果。')
+      }
+      if (!Number.isSafeInteger(row.output_size_bytes) || row.output_size_bytes <= 0
+        || row.output_size_bytes > 1024 * 1024) {
+        throw new Error('任务结果大小无效。')
+      }
+      const output = await resolveTaskOutputFile(
+        path.join(active.directory, '.vibepaper'),
+        row.task_id,
+        row.modality,
+        row.output_path,
+      )
+      if (output.sha256 !== row.output_sha256 || output.sizeBytes !== row.output_size_bytes) {
+        throw new Error('任务结果校验失败。')
+      }
+      const contents = await fs.readFile(output.filePath)
+      if (contents.length !== row.output_size_bytes
+        || createHash('sha256').update(contents).digest('hex') !== row.output_sha256) {
+        throw new Error('读取任务结果时校验失败。')
+      }
+      return contents.toString('utf8')
+    })
+  }
+
   function listTaskEvents(projectId, taskId, afterSeq = 0) {
     return enqueue(() => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务记录。')
@@ -1483,6 +1529,10 @@ function createLocalProjectStore() {
         .get()
       if (!candidate) return null
       const taskId = candidate.task_id
+      const outputDirectory = await ensureTaskOutputDirectory(
+        path.join(active.directory, '.vibepaper'),
+        taskId,
+      )
       const now = new Date().toISOString()
       await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
       active.database.exec('BEGIN IMMEDIATE')
@@ -1496,7 +1546,7 @@ function createLocalProjectStore() {
         const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
         appendTaskEvent(active.database, taskId, 'running', { attemptCount: row.attempt_count }, now)
         active.database.exec('COMMIT')
-        return { task: taskFromRow(row), parameters: JSON.parse(row.input_json) }
+        return { task: taskFromRow(row), parameters: JSON.parse(row.input_json), outputDirectory }
       } catch (error) {
         active.database.exec('ROLLBACK')
         throw error
@@ -1679,6 +1729,7 @@ function createLocalProjectStore() {
     listAssets,
     listTaskEvents,
     listTasks,
+    readTaskOutputText,
     loadCanvas,
     openProject,
     recordTaskFailed,

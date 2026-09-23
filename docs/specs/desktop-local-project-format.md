@@ -1,6 +1,6 @@
 # 桌面本地数据格式（项目与模型设置）
 
-状态：Electron 项目引导、本地画布存储、首批图片素材导入/引用、任务状态存储及当前格式下的画布/素材/成功任务输出备份恢复切片已实现。恢复会创建新身份的副本，不覆盖原项目。Agent 会话、凭据、跨版本恢复与完整项目升级流程尚未实现。
+状态：Electron 项目引导、本地画布存储、首批图片素材导入/引用、任务状态存储与本地文本任务执行，以及当前格式下的画布/素材/成功任务输出备份恢复切片已实现。恢复会创建新身份的副本，不覆盖原项目。Agent 会话、云端凭据、跨版本恢复与完整项目升级流程尚未实现。
 
 ## 项目目录
 
@@ -27,7 +27,7 @@
 | `modalities`、`inputModes` | 固定为 `['text']` | 当前只声明文本输入/输出 |
 | `toolCalling`、`streaming`、`cancellation` | 固定为 `false` | 未接入对应执行能力，不向调用方虚报支持 |
 
-Renderer 只能通过 Main 暴露的配置、发现和保存方法访问此目录项。应用不会自动探测服务；用户点击“读取模型”后，Main 才向 loopback 地址的 `/models` 发起无凭据请求。此设置不进入项目目录或项目备份，也不包含 API Key。当前 Provider 目录尚未连接生成执行器。
+Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访问此目录项。应用不会自动探测服务；用户点击“读取模型”后，Main 才向 loopback 地址的 `/models` 发起无凭据请求。此设置不进入项目目录或项目备份，也不包含 API Key。文本节点的生成操作会用该目录项创建本地 TaskStore 任务，由独立 Generation Worker 访问 `/chat/completions`；当前仅声明文本能力，不支持工具调用、流式或运行中取消。
 
 ## `project.json`
 
@@ -56,6 +56,8 @@ Renderer 只能通过 Main 暴露的配置、发现和保存方法访问此目�
 
 Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写入须同时匹配项目/画布身份和 `expectedVersion`；Local Core 校验连线引用及载荷大小，再在一个 SQLite 事务中替换节点/连线并递增画布版本。若数据库版本已被其他写者更新，事务回滚并要求重新打开画布。
 
+文本节点可将当前内容作为提示词提交本地文本任务。任务输入使用 `Idempotency-Key` 和画布版本；Worker 输出固定写入该任务目录的 `result.txt`，Local Core 校验文件类型、路径、可读性、SHA-256 与大小后才提交 `succeeded`。面板可读取已校验的文本结果，并由用户操作将结果作为新文本节点追加，不覆盖提示节点。
+
 ## 素材首个切片
 
 通过系统文件选择器导入 PNG、JPEG、GIF 或 WebP 图片（每个文件不超过 200 MB）。Local Core 以实际文件签名识别 MIME、流式计算 SHA-256 并复制到 `.vibepaper/assets/<sha256>/<assetId>.<ext>`；相同内容只登记一条素材记录。画布中的图片节点保存稳定 `assetId`，保存画布时素材存在性检查与引用更新位于同一 SQLite 事务。Renderer 只使用受限的 `vibe://app/assets/<assetId>` 资源 URL，Main 通过 Local Core 查到项目内文件后提供只读图片响应。
@@ -68,7 +70,7 @@ Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写�
 
 “恢复备份副本”从用户选择的项目备份生成新的项目目录，不覆盖已有内容。Local Core 核验 SQLite `integrity_check`、外键、项目/画布关系、素材引用与素材实际字节；存在清单时还逐项核验 SHA-256 和大小。旧格式备份没有清单时仍执行数据库及素材校验。恢复副本获得新的 `projectId`，保留 `canvasId`、节点和连线身份，完成后打开副本。打开备份后若对画布或素材作出修改，Local Core 会移除旧备份清单，避免清单与已修改内容不符。
 
-当前备份清单只覆盖项目元数据、SQLite 与登记的图片素材。任务、Agent 会话、凭据、诊断日志和跨版本升级回退仍需后续纳入完整备份与恢复流程。
+当前备份清单覆盖项目元数据、SQLite、登记的图片素材及已成功任务的校验结果文件。Agent 会话/控制库、凭据、诊断日志和跨版本升级回退仍需后续纳入完整备份与恢复流程；凭据不应进入项目备份。
 
 首个 JSON 引导版本使用 `.vibepaper/canvas.json`。打开该版本项目且数据库尚不存在时，Local Core 校验 JSON 后在 SQLite 事务中导入；原文件保留为迁移来源，导入成功后 `project.sqlite` 是唯一画布权威。新项目直接创建 SQLite 数据库。
 

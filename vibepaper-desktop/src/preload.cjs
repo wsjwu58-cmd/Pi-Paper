@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   saveCanvas: (input) => ipcRenderer.invoke('desktop:canvas:save', input),
   listTasks: (projectId, limit) => ipcRenderer.invoke('desktop:task:list', projectId, limit),
   cancelTask: (projectId, taskId) => ipcRenderer.invoke('desktop:task:cancel', projectId, taskId),
+  createTextTask: (input) => ipcRenderer.invoke('desktop:task:create-text', input),
+  readTaskOutput: (projectId, taskId) => ipcRenderer.invoke('desktop:task:read-output', projectId, taskId),
   getLocalTextModel: () => ipcRenderer.invoke('desktop:model:get-local-text'),
   discoverLocalModels: (endpoint) => ipcRenderer.invoke('desktop:model:discover-local', endpoint),
   saveLocalTextModel: (config) => ipcRenderer.invoke('desktop:model:save-local-text', config),

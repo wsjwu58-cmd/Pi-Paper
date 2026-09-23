@@ -29,6 +29,13 @@ let localCore = null
 let recentProjectFile = null
 let desktopSettingsFile = null
 let quittingAfterCoreClose = false
+let stopping = false
+let generationWorker = null
+let taskPumpPromise = null
+let taskPumpRequestedProjectId = null
+let pendingTaskCreations = 0
+let projectTransitionCount = 0
+const taskCreationWaiters = []
 const desktopRoot = path.resolve(__dirname, '..')
 const webRoot = path.resolve(desktopRoot, '..', 'vibepaper-web')
 const rendererRoot = path.join(webRoot, 'dist')
@@ -114,6 +121,182 @@ function startLocalCore() {
   }
 }
 
+function codedError(code) {
+  const error = new Error(code)
+  error.code = code
+  return error
+}
+
+function startGenerationWorker() {
+  if (generationWorker) return generationWorker
+  const child = utilityProcess.fork(path.join(__dirname, 'generation-worker.cjs'), [], {
+    serviceName: 'VibePaper Local Generation Worker',
+    stdio: 'ignore',
+  })
+  const pending = new Map()
+  let nextRequestId = 1
+  let exitError = null
+  let markStarted
+  let markExited
+  let exitedSettled = false
+  const started = new Promise((resolve) => { markStarted = resolve })
+  const exited = new Promise((resolve) => { markExited = resolve })
+
+  const worker = {
+    child,
+    async request(method, payload) {
+      await started
+      if (exitError) throw exitError
+      const id = nextRequestId++
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id)
+          child.kill()
+          reject(codedError('LOCAL_MODEL_UNAVAILABLE'))
+        }, 4 * 60 * 1000)
+        pending.set(id, { resolve, reject, timer })
+        try {
+          child.postMessage({ id, method, payload })
+        } catch {
+          clearTimeout(timer)
+          pending.delete(id)
+          reject(codedError('LOCAL_MODEL_UNAVAILABLE'))
+        }
+      })
+    },
+    async stop() {
+      child.kill()
+      await exited
+    },
+  }
+
+  const failWorker = (error) => {
+    exitError = error
+    markStarted()
+    for (const request of pending.values()) {
+      clearTimeout(request.timer)
+      request.reject(exitError)
+    }
+    pending.clear()
+    if (!exitedSettled) {
+      exitedSettled = true
+      markExited()
+    }
+    if (generationWorker === worker) generationWorker = null
+  }
+
+  child.once('spawn', markStarted)
+  child.on('message', (message) => {
+    if (!message || !Number.isSafeInteger(message.id)) return
+    const request = pending.get(message.id)
+    if (!request) return
+    clearTimeout(request.timer)
+    pending.delete(message.id)
+    if (message.ok) request.resolve(message.result)
+    else request.reject(codedError(typeof message.errorCode === 'string' ? message.errorCode : 'LOCAL_MODEL_EXECUTION_FAILED'))
+  })
+  child.on('error', () => {
+    failWorker(codedError('LOCAL_MODEL_UNAVAILABLE'))
+  })
+  child.on('exit', () => {
+    failWorker(codedError('LOCAL_MODEL_UNAVAILABLE'))
+  })
+
+  generationWorker = worker
+  return worker
+}
+
+async function drainTaskQueue(projectId) {
+  if (stopping || !localCore) return
+  const model = await getLocalTextModelConfig()
+  if (!model) return
+
+  while (!stopping) {
+    const claimed = await localCore.request('task:claim-next', { projectId })
+    if (!claimed) return
+    if (stopping) return
+    const { task, parameters, outputDirectory } = claimed
+    try {
+      if (task.providerType !== 'local') throw codedError('CLOUD_TASK_DISABLED')
+      if (task.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
+      if (task.providerId !== model.providerId || task.modelId !== model.modelId) {
+        throw codedError('LOCAL_MODEL_CONFIGURATION_CHANGED')
+      }
+      const worker = startGenerationWorker()
+      const result = await worker.request('generate:text', {
+        taskId: task.taskId,
+        prompt: parameters?.prompt,
+        endpoint: model.endpoint,
+        modelId: model.modelId,
+        outputDirectory,
+      })
+      if (stopping) return
+      await localCore.request('task:succeeded', {
+        projectId,
+        taskId: task.taskId,
+        outputPath: result?.outputPath,
+      })
+    } catch (error) {
+      if (stopping) return
+      const errorCode = typeof error?.code === 'string' && /^[A-Z0-9_]{1,120}$/u.test(error.code)
+        ? error.code
+        : 'LOCAL_MODEL_EXECUTION_FAILED'
+      try {
+        await localCore.request('task:failed', { projectId, taskId: task.taskId, errorCode })
+      } catch {
+        return
+      }
+    }
+  }
+}
+
+function scheduleTaskPump(projectId) {
+  if (stopping || typeof projectId !== 'string' || !projectId) return Promise.resolve()
+  taskPumpRequestedProjectId = projectId
+  if (taskPumpPromise) return taskPumpPromise
+
+  const pump = (async () => {
+    while (!stopping && taskPumpRequestedProjectId) {
+      const nextProjectId = taskPumpRequestedProjectId
+      taskPumpRequestedProjectId = null
+      await drainTaskQueue(nextProjectId)
+    }
+  })()
+  taskPumpPromise = pump.catch(() => undefined).finally(() => {
+    taskPumpPromise = null
+    if (!stopping && taskPumpRequestedProjectId) void scheduleTaskPump(taskPumpRequestedProjectId)
+  })
+  return taskPumpPromise
+}
+
+function beginTaskCreation() {
+  pendingTaskCreations += 1
+}
+
+function finishTaskCreation() {
+  pendingTaskCreations -= 1
+  if (pendingTaskCreations === 0) {
+    for (const resolve of taskCreationWaiters.splice(0)) resolve()
+  }
+}
+
+async function waitForTaskCreations() {
+  while (pendingTaskCreations > 0) {
+    await new Promise((resolve) => taskCreationWaiters.push(resolve))
+  }
+}
+
+async function runProjectTransition(operation) {
+  projectTransitionCount += 1
+  try {
+    await waitForTaskCreations()
+    if (taskPumpPromise) await taskPumpPromise
+    return await operation()
+  } finally {
+    projectTransitionCount -= 1
+  }
+}
+
 async function writeRecentProjectDirectory(directory) {
   if (!recentProjectFile) throw new Error('桌面设置尚未初始化。')
   const temporaryPath = path.join(path.dirname(recentProjectFile), `.recent-project.${randomUUID()}.tmp`)
@@ -185,6 +368,13 @@ async function clearLocalTextModelConfig() {
   const settings = await readDesktopSettings()
   if (settings.localTextModel !== undefined) await writeDesktopSettings({ schemaVersion: 1 })
   return null
+}
+
+async function stopGenerationWorker() {
+  const worker = generationWorker
+  if (!worker) return
+  generationWorker = null
+  await worker.stop()
 }
 
 async function restoreRecentProject() {
@@ -272,10 +462,10 @@ function registerProjectIpc() {
       properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    const created = await localCore.request('project:create', {
+    const created = await runProjectTransition(() => localCore.request('project:create', {
       parentDirectory: result.filePaths[0],
       name,
-    })
+    }))
     await writeRecentProjectDirectory(created.directory)
     return created.project
   })
@@ -286,8 +476,9 @@ function registerProjectIpc() {
       properties: ['openDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    const opened = await localCore.request('project:open', { directory: result.filePaths[0] })
+    const opened = await runProjectTransition(() => localCore.request('project:open', { directory: result.filePaths[0] }))
     await writeRecentProjectDirectory(opened.directory)
+    void scheduleTaskPump(opened.project.projectId)
     return opened.project
   })
   ipcMain.handle('desktop:project:backup', async (event, projectId) => {
@@ -322,11 +513,12 @@ function registerProjectIpc() {
     })
     if (destinationResult.canceled || destinationResult.filePaths.length === 0) return null
 
-    const restored = await localCore.request('project:restore-backup', {
+    const restored = await runProjectTransition(() => localCore.request('project:restore-backup', {
       sourceDirectory: sourceResult.filePaths[0],
       parentDirectory: destinationResult.filePaths[0],
-    }, 30 * 60 * 1000)
+    }, 30 * 60 * 1000))
     await writeRecentProjectDirectory(restored.directory)
+    void scheduleTaskPump(restored.project.projectId)
     await dialog.showMessageBox(mainWindow, {
       type: 'info',
       title: '备份恢复完成',
@@ -365,6 +557,42 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     return localCore.request('task:cancel', { projectId, taskId })
   })
+  ipcMain.handle('desktop:task:create-text', async (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    beginTaskCreation()
+    try {
+      if (!input || typeof input !== 'object' || Array.isArray(input)
+        || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
+        || !Number.isSafeInteger(input.canvasVersion) || typeof input.nodeId !== 'string'
+        || typeof input.prompt !== 'string' || input.prompt.trim().length === 0
+        || input.prompt.length > 200_000 || typeof input.idempotencyKey !== 'string') {
+        throw new Error('文本生成请求无效。')
+      }
+      const model = await getLocalTextModelConfig()
+      if (!model) throw new Error('请先配置本地文本模型。')
+      const task = await localCore.request('task:create', {
+        projectId: input.projectId,
+        canvasId: input.canvasId,
+        canvasVersion: input.canvasVersion,
+        nodeId: input.nodeId,
+        modality: 'text',
+        providerType: 'local',
+        providerId: model.providerId,
+        modelId: model.modelId,
+        idempotencyKey: input.idempotencyKey,
+        parameters: { prompt: input.prompt },
+      })
+      void scheduleTaskPump(input.projectId)
+      return task
+    } finally {
+      finishTaskCreation()
+    }
+  })
+  ipcMain.handle('desktop:task:read-output', (event, projectId, taskId) => {
+    assertTrustedSender(event)
+    return localCore.request('task:read-output', { projectId, taskId })
+  })
   ipcMain.handle('desktop:model:get-local-text', (event) => {
     assertTrustedSender(event)
     return getLocalTextModelConfig()
@@ -375,7 +603,13 @@ function registerProjectIpc() {
   })
   ipcMain.handle('desktop:model:save-local-text', (event, config) => {
     assertTrustedSender(event)
-    return saveLocalTextModelConfig(config)
+    return saveLocalTextModelConfig(config).then(async (model) => {
+      if (!projectTransitionCount) {
+        const active = await localCore.request('project:get-active')
+        if (active) void scheduleTaskPump(active.projectId)
+      }
+      return model
+    })
   })
   ipcMain.handle('desktop:model:clear-local-text', (event) => {
     assertTrustedSender(event)
@@ -428,7 +662,8 @@ if (hasSingleInstanceLock) {
     recentProjectFile = path.join(app.getPath('userData'), 'recent-project.json')
     desktopSettingsFile = path.join(app.getPath('userData'), 'settings.json')
     localCore = startLocalCore()
-    await restoreRecentProject()
+    const restoredProject = await restoreRecentProject()
+    if (restoredProject) void scheduleTaskPump(restoredProject.projectId)
     registerRendererProtocol()
     registerContentSecurityPolicy()
     registerProjectIpc()
@@ -451,10 +686,16 @@ if (hasSingleInstanceLock) {
     if (!localCore || quittingAfterCoreClose) return
     event.preventDefault()
     quittingAfterCoreClose = true
-    void localCore.request('core:close', {}, 5_000).catch(() => undefined).finally(() => {
+    stopping = true
+    taskPumpRequestedProjectId = null
+    void (async () => {
+      await waitForTaskCreations()
+      await stopGenerationWorker().catch(() => undefined)
+      await taskPumpPromise?.catch(() => undefined)
+      await localCore.request('core:close', {}, 5_000).catch(() => undefined)
       localCore.child.kill()
       app.quit()
-    })
+    })()
   })
 } else {
   app.quit()

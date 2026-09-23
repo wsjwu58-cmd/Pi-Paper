@@ -38,6 +38,15 @@ export interface DesktopTask {
   completedAt: string | null
 }
 
+export interface DesktopCreateTextTaskInput {
+  projectId: string
+  canvasId: string
+  canvasVersion: number
+  nodeId: string
+  prompt: string
+  idempotencyKey: string
+}
+
 export interface DesktopLocalTextModel {
   providerId: 'local-openai-compatible'
   providerType: 'local'
@@ -68,6 +77,8 @@ export interface DesktopBridge {
   }): Promise<{ version: number }>
   listTasks(projectId: string, limit?: number): Promise<DesktopTask[]>
   cancelTask(projectId: string, taskId: string): Promise<DesktopTask>
+  createTextTask(input: DesktopCreateTextTaskInput): Promise<DesktopTask>
+  readTaskOutput(projectId: string, taskId: string): Promise<string>
   getLocalTextModel(): Promise<DesktopLocalTextModel | null>
   discoverLocalModels(endpoint: string): Promise<string[]>
   saveLocalTextModel(config: Pick<DesktopLocalTextModel, 'endpoint' | 'modelId'>): Promise<DesktopLocalTextModel>
