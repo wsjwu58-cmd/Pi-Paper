@@ -20,6 +20,15 @@ async function dispatch(method, payload) {
         throw new Error('备份请求无效。')
       }
       return store.backupProject(payload.parentDirectory, payload.projectId)
+    case 'asset:import':
+      if (!payload || typeof payload.sourcePath !== 'string' || typeof payload.projectId !== 'string') {
+        throw new Error('素材导入请求无效。')
+      }
+      return store.importAsset(payload.sourcePath, payload.projectId)
+    case 'asset:list':
+      return store.listAssets(payload?.projectId)
+    case 'asset:resolve':
+      return store.resolveAsset(payload?.assetId)
     case 'canvas:load':
       return store.loadCanvas(payload?.projectId, payload?.canvasId)
     case 'canvas:save':

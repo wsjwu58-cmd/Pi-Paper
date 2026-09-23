@@ -172,6 +172,20 @@ function registerRendererProtocol() {
     } catch {
       return new Response('Bad path', { status: 400, headers: { 'content-type': 'text/plain' } })
     }
+    const assetMatch = /^\/assets\/([a-f0-9-]{36})$/iu.exec(requestedPath)
+    if (assetMatch && !url.search && !url.hash) {
+      try {
+        const asset = await localCore.request('asset:resolve', { assetId: assetMatch[1] })
+        const fileResponse = await net.fetch(pathToFileURL(asset.filePath).toString())
+        const headers = new Headers(fileResponse.headers)
+        headers.set('content-type', asset.mimeType)
+        headers.set('x-content-type-options', 'nosniff')
+        headers.set('cache-control', 'private, max-age=3600, immutable')
+        return new Response(fileResponse.body, { status: 200, headers })
+      } catch {
+        return new Response('Asset not found', { status: 404, headers: { 'content-type': 'text/plain' } })
+      }
+    }
     const relativePath = requestedPath === '/' ? 'index.html' : requestedPath.replace(/^\/+/, '')
     const targetPath = path.resolve(rendererRoot, relativePath)
     const relativeToRoot = path.relative(rendererRoot, targetPath)
@@ -235,6 +249,20 @@ function registerProjectIpc() {
       detail: backup.directory,
     })
     return { name: backup.name }
+  })
+  ipcMain.handle('desktop:asset:import-image', async (event, projectId) => {
+    assertTrustedSender(event)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '导入本地图片素材',
+      properties: ['openFile'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return localCore.request('asset:import', { sourcePath: result.filePaths[0], projectId })
+  })
+  ipcMain.handle('desktop:asset:list', (event, projectId) => {
+    assertTrustedSender(event)
+    return localCore.request('asset:list', { projectId })
   })
   ipcMain.handle('desktop:canvas:load', (event, projectId, canvasId) => {
     assertTrustedSender(event)

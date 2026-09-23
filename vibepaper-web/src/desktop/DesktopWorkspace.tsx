@@ -18,7 +18,7 @@ import {
   type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import type { DesktopCanvas, DesktopProject } from './desktop-bridge'
+import type { DesktopAsset, DesktopCanvas, DesktopProject } from './desktop-bridge'
 
 const bridge = window.vibepaperDesktop
 
@@ -114,8 +114,23 @@ function TextNode({ id, data }: NodeProps<Node<{ label?: string }>>) {
   )
 }
 
+function ImageNode({ data }: NodeProps<Node<{ assetId?: string; name?: string }>>) {
+  const [imageUnavailable, setImageUnavailable] = useState(false)
+  const assetId = typeof data.assetId === 'string' ? data.assetId : ''
+  return (
+    <div className="relative w-[260px] overflow-visible rounded-2xl border border-black/12 bg-white p-2 shadow-[0_6px_20px_rgba(0,0,0,0.08)]">
+      {assetId && !imageUnavailable
+        ? <img className="pointer-events-none max-h-[220px] w-full rounded-xl object-contain" src={`vibe://app/assets/${assetId}`} alt={typeof data.name === 'string' ? data.name : '本地图片素材'} draggable={false} onError={() => setImageUnavailable(true)} />
+        : <div className="flex h-32 items-center justify-center text-xs text-[#888]">素材不可用</div>}
+      <p className="mt-2 truncate px-1 text-[11px] text-[#777]">{typeof data.name === 'string' ? data.name : '图片素材'}</p>
+      <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-[#8a72e8]" />
+      <Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-[#8a72e8]" />
+    </div>
+  )
+}
+
 const TextNodeContext = createContext<(id: string, label: string, immediate?: boolean) => void>(() => {})
-const nodeTypes = { text: TextNode }
+const nodeTypes = { text: TextNode, image: ImageNode }
 
 function LoadingScreen() {
   return <div className="flex min-h-screen items-center justify-center bg-[#f7f7f8] text-sm text-[#666]">正在打开本地项目…</div>
@@ -192,6 +207,9 @@ function LocalCanvas({
 }) {
   const [nodes, setNodes] = useState<Node[]>(initialCanvas.nodes)
   const [edges, setEdges] = useState<Edge[]>(initialCanvas.edges)
+  const [assets, setAssets] = useState<DesktopAsset[]>([])
+  const [assetError, setAssetError] = useState('')
+  const [assetPending, setAssetPending] = useState(false)
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved')
   const [saveError, setSaveError] = useState('')
   const [backupMessage, setBackupMessage] = useState('')
@@ -205,6 +223,15 @@ function LocalCanvas({
 
   useEffect(() => { nodesRef.current = nodes }, [nodes])
   useEffect(() => { edgesRef.current = edges }, [edges])
+  useEffect(() => {
+    let cancelled = false
+    void bridge?.listAssets(project.projectId).then((items) => {
+      if (!cancelled) setAssets(items)
+    }).catch((cause: unknown) => {
+      if (!cancelled) setAssetError(cause instanceof Error ? cause.message : '无法读取本地素材。')
+    })
+    return () => { cancelled = true }
+  }, [project.projectId])
 
   const persist = useCallback((nextNodes: Node[], nextEdges: Edge[]) => {
     if (!bridge) return
@@ -289,6 +316,32 @@ function LocalCanvas({
     schedulePersist(next, edgesRef.current, true)
   }
 
+  const addImageNode = (asset: DesktopAsset) => {
+    const next = [...nodesRef.current, {
+      id: crypto.randomUUID(),
+      type: 'image',
+      position: { x: 160 + nodesRef.current.length * 24, y: 120 + nodesRef.current.length * 24 },
+      data: { assetId: asset.assetId, name: asset.name },
+    }]
+    nodesRef.current = next
+    setNodes(next)
+    schedulePersist(next, edgesRef.current, true)
+  }
+
+  const importImage = async () => {
+    if (assetPending) return
+    setAssetPending(true)
+    setAssetError('')
+    try {
+      const imported = await bridge?.importImage(project.projectId)
+      if (imported) setAssets((current) => [imported, ...current.filter((asset) => asset.assetId !== imported.assetId)])
+    } catch (cause) {
+      setAssetError(cause instanceof Error ? cause.message : '导入本地图片失败。')
+    } finally {
+      setAssetPending(false)
+    }
+  }
+
   const openOtherProject = async () => {
     if (timer.current) {
       clearTimeout(timer.current)
@@ -345,6 +398,20 @@ function LocalCanvas({
           <button onClick={() => void openOtherProject()} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">切换项目</button>
         </div>
       </header>
+      <div className="flex min-h-16 shrink-0 items-center gap-3 overflow-x-auto border-b border-black/8 bg-white px-5 py-2">
+        <button onClick={() => void importImage()} disabled={assetPending} className="shrink-0 rounded-lg bg-[#eeeafc] px-3 py-2 text-xs font-bold text-[#6d55c9] disabled:opacity-50">
+          {assetPending ? '正在导入…' : '导入图片'}
+        </button>
+        {assets.length === 0
+          ? <span className="whitespace-nowrap text-xs text-[#888]">图片素材会复制到当前本地项目。</span>
+          : assets.map((asset) => (
+            <button key={asset.assetId} onClick={() => addImageNode(asset)} title={`${asset.name} · ${asset.referenceCount} 个引用`} className="flex h-12 shrink-0 items-center gap-2 rounded-lg border border-black/8 px-2 hover:bg-[#f7f7f8]">
+              <img src={`vibe://app/assets/${asset.assetId}`} alt="" className="h-8 w-8 rounded object-cover" />
+              <span className="max-w-32 truncate text-xs">{asset.name}</span>
+            </button>
+          ))}
+        {assetError && <span role="alert" className="max-w-72 truncate text-xs text-red-600" title={assetError}>{assetError}</span>}
+      </div>
       {error && <p role="alert" className="shrink-0 border-b border-red-100 bg-red-50 px-5 py-2 text-xs text-red-700">{error}</p>}
       <section className="relative min-h-0 flex-1">
         <TextNodeContext.Provider value={updateText}>
