@@ -8,12 +8,14 @@ const { backup, DatabaseSync } = require('node:sqlite')
 
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
-const PROJECT_DB_SCHEMA_VERSION = 2
+const PROJECT_DB_SCHEMA_VERSION = 3
 const PROJECT_BACKUP_SCHEMA_VERSION = 1
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
 const MAX_CANVAS_BYTES = 32 * 1024 * 1024
 const MAX_ASSET_BYTES = 200 * 1024 * 1024
+const MAX_TASK_INPUT_BYTES = 1024 * 1024
+const MAX_TASK_OUTPUT_BYTES = 4 * 1024 * 1024 * 1024
 
 const ASSET_DB_SCHEMA = `
   CREATE TABLE assets (
@@ -36,6 +38,49 @@ const ASSET_DB_SCHEMA = `
   ) STRICT;
 
   CREATE INDEX asset_references_by_asset ON asset_references(asset_id);
+`
+
+const TASK_DB_SCHEMA = `
+  CREATE TABLE tasks (
+    task_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 255),
+    input_hash TEXT NOT NULL CHECK (length(input_hash) = 64),
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
+    node_id TEXT,
+    modality TEXT NOT NULL CHECK (modality IN ('text', 'image', 'audio', 'video')),
+    provider_type TEXT NOT NULL CHECK (provider_type IN ('local', 'cloud')),
+    provider_id TEXT NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 160),
+    model_id TEXT NOT NULL CHECK (length(model_id) BETWEEN 1 AND 200),
+    input_json TEXT NOT NULL CHECK (json_valid(input_json)),
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    output_path TEXT,
+    output_sha256 TEXT CHECK (output_sha256 IS NULL OR length(output_sha256) = 64),
+    output_size_bytes INTEGER CHECK (output_size_bytes IS NULL OR output_size_bytes > 0),
+    error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 120),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    CHECK (
+      (status = 'succeeded' AND output_path IS NOT NULL AND output_sha256 IS NOT NULL AND output_size_bytes IS NOT NULL)
+      OR (status <> 'succeeded' AND output_path IS NULL AND output_sha256 IS NULL AND output_size_bytes IS NULL)
+    )
+  ) STRICT;
+
+  CREATE INDEX tasks_by_status ON tasks(status, created_at);
+  CREATE INDEX tasks_by_canvas ON tasks(canvas_id, created_at);
+
+  CREATE TABLE task_events (
+    event_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    event_seq INTEGER NOT NULL CHECK (event_seq > 0),
+    type TEXT NOT NULL CHECK (type IN ('created', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+    data_json TEXT NOT NULL CHECK (json_valid(data_json)),
+    created_at TEXT NOT NULL,
+    UNIQUE (task_id, event_seq)
+  ) STRICT;
 `
 
 const PROJECT_DB_SCHEMA = `
@@ -74,6 +119,7 @@ const PROJECT_DB_SCHEMA = `
   CREATE INDEX edges_by_source ON edges(canvas_id, source_node_id);
   CREATE INDEX edges_by_target ON edges(canvas_id, target_node_id);
   ${ASSET_DB_SCHEMA}
+  ${TASK_DB_SCHEMA}
 `
 
 function isRecord(value) {
@@ -179,6 +225,207 @@ function databaseVersion(database) {
   return Number(row.user_version)
 }
 
+function taskFromRow(row) {
+  return {
+    taskId: row.task_id,
+    idempotencyKey: row.idempotency_key,
+    inputHash: row.input_hash,
+    canvasId: row.canvas_id,
+    canvasVersion: row.canvas_version,
+    nodeId: row.node_id,
+    modality: row.modality,
+    providerType: row.provider_type,
+    providerId: row.provider_id,
+    modelId: row.model_id,
+    status: row.status,
+    attemptCount: row.attempt_count,
+    outputPath: row.output_path,
+    outputSha256: row.output_sha256,
+    outputSizeBytes: row.output_size_bytes,
+    errorCode: row.error_code,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  }
+}
+
+function appendTaskEvent(database, taskId, type, data, createdAt = new Date().toISOString()) {
+  const sequence = database.prepare('SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq FROM task_events WHERE task_id = ?')
+    .get(taskId).next_seq
+  database.prepare(`
+    INSERT INTO task_events (event_id, task_id, event_seq, type, data_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(randomUUID(), taskId, sequence, type, JSON.stringify(data), createdAt)
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson)
+  if (isRecord(value)) {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJson(value[key])]))
+  }
+  return value
+}
+
+function assertNoCredentialFields(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) assertNoCredentialFields(item)
+    return
+  }
+  if (!isRecord(value)) return
+  for (const [key, child] of Object.entries(value)) {
+    if (/^(?:api[_-]?key|password|secret|access[_-]?token|refresh[_-]?token)$/iu.test(key)) {
+      throw new Error('密钥和凭据不能写入本地生成任务。')
+    }
+    assertNoCredentialFields(child)
+  }
+}
+
+function normalizeTaskInput(input) {
+  const modalities = ['text', 'image', 'audio', 'video']
+  const providerTypes = ['local', 'cloud']
+  if (!isRecord(input)
+    || typeof input.projectId !== 'string' || !input.projectId
+    || typeof input.canvasId !== 'string' || !input.canvasId
+    || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
+    || (input.nodeId !== undefined && input.nodeId !== null && (typeof input.nodeId !== 'string' || !input.nodeId))
+    || !modalities.includes(input.modality)
+    || !providerTypes.includes(input.providerType)
+    || typeof input.providerId !== 'string' || !input.providerId.trim() || input.providerId.length > 160
+    || typeof input.modelId !== 'string' || !input.modelId.trim() || input.modelId.length > 200
+    || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
+    || (input.parameters !== undefined && !isRecord(input.parameters))) {
+    throw new Error('本地生成任务参数无效。')
+  }
+  const parametersJson = JSON.stringify(input.parameters ?? {})
+  if (Buffer.byteLength(parametersJson, 'utf8') > MAX_TASK_INPUT_BYTES) {
+    throw new Error('生成任务输入超过本地保存上限。')
+  }
+  assertNoCredentialFields(JSON.parse(parametersJson))
+  const canonicalInput = JSON.stringify(canonicalJson({
+    canvasId: input.canvasId,
+    canvasVersion: input.canvasVersion,
+    nodeId: input.nodeId ?? null,
+    modality: input.modality,
+    providerType: input.providerType,
+    providerId: input.providerId.trim(),
+    modelId: input.modelId.trim(),
+    parameters: JSON.parse(parametersJson),
+  }))
+  return {
+    ...input,
+    nodeId: input.nodeId ?? null,
+    providerId: input.providerId.trim(),
+    modelId: input.modelId.trim(),
+    parametersJson,
+    inputHash: createHash('sha256').update(canonicalInput).digest('hex'),
+  }
+}
+
+function validateTaskOutputRelativePath(taskId, modality, relativePath) {
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(taskId)) {
+    throw new Error('任务结果标识无效。')
+  }
+  const prefix = `generated/${taskId}/`
+  if (typeof relativePath !== 'string' || !relativePath.startsWith(prefix)) {
+    throw new Error('生成结果路径必须位于该任务的本地结果目录。')
+  }
+  const fileName = relativePath.slice(prefix.length)
+  if (!/^[a-z0-9][a-z0-9._-]{0,126}$/iu.test(fileName) || fileName.includes('..')) {
+    throw new Error('生成结果文件名无效。')
+  }
+  const extension = path.extname(fileName).toLowerCase()
+  const allowed = {
+    text: ['.txt', '.md', '.json'],
+    image: ['.png', '.jpg', '.jpeg', '.webp'],
+    audio: ['.mp3', '.wav', '.ogg', '.m4a'],
+    video: ['.mp4', '.webm', '.mov'],
+  }[modality]
+  if (!allowed?.includes(extension)) throw new Error('生成结果文件格式与任务模态不匹配。')
+  return relativePath
+}
+
+async function resolveTaskOutputFile(dataDirectory, taskId, modality, relativePath) {
+  validateTaskOutputRelativePath(taskId, modality, relativePath)
+  const generatedDirectory = path.join(dataDirectory, 'generated')
+  const taskDirectory = path.join(generatedDirectory, taskId)
+  for (const [directory, label] of [[generatedDirectory, '生成结果目录'], [taskDirectory, '任务结果目录']]) {
+    const info = await fs.lstat(directory).catch(() => null)
+    if (!info?.isDirectory() || info.isSymbolicLink() || path.relative(directory, await fs.realpath(directory)) !== '') {
+      throw new Error(`${label}缺失或路径无效。`)
+    }
+  }
+  const filePath = path.resolve(dataDirectory, ...relativePath.split('/'))
+  const relativeToData = path.relative(dataDirectory, filePath)
+  if (!relativeToData || relativeToData.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToData)) {
+    throw new Error('生成结果路径越界。')
+  }
+  const info = await fs.lstat(filePath).catch(() => null)
+  if (!info?.isFile() || info.isSymbolicLink() || info.size <= 0 || info.size > MAX_TASK_OUTPUT_BYTES) {
+    throw new Error('生成结果文件缺失、不可读或超过本地结果上限。')
+  }
+  const actualPath = await fs.realpath(filePath)
+  if (path.relative(filePath, actualPath) !== '') throw new Error('生成结果不能是符号链接。')
+  const digest = await hashFile(actualPath)
+  if (digest.sizeBytes <= 0 || digest.sizeBytes > MAX_TASK_OUTPUT_BYTES) {
+    throw new Error('生成结果文件超过本地结果上限。')
+  }
+  return { filePath: actualPath, ...digest }
+}
+
+async function copyProjectTaskOutputs(database, sourceDataDirectory, targetDataDirectory) {
+  if (databaseVersion(database) < 3) return
+  const tasks = database.prepare(`
+    SELECT task_id, modality, output_path, output_sha256, output_size_bytes
+    FROM tasks WHERE status = 'succeeded' ORDER BY task_id
+  `).all()
+  for (const task of tasks) {
+    const source = await resolveTaskOutputFile(sourceDataDirectory, task.task_id, task.modality, task.output_path)
+    if (source.sha256 !== task.output_sha256 || source.sizeBytes !== task.output_size_bytes) {
+      throw new Error(`生成任务“${task.task_id}”的结果校验失败，项目备份未完成。`)
+    }
+    const targetPath = path.resolve(targetDataDirectory, ...task.output_path.split('/'))
+    const relativeToTarget = path.relative(targetDataDirectory, targetPath)
+    if (!relativeToTarget || relativeToTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToTarget)) {
+      throw new Error('生成任务结果路径越界，无法备份。')
+    }
+    const targetTaskDirectory = path.dirname(targetPath)
+    await fs.mkdir(targetTaskDirectory, { recursive: true })
+    const targetDirectoryInfo = await fs.lstat(targetTaskDirectory)
+    if (!targetDirectoryInfo.isDirectory() || targetDirectoryInfo.isSymbolicLink()
+      || path.relative(targetTaskDirectory, await fs.realpath(targetTaskDirectory)) !== '') {
+      throw new Error('项目备份中的任务结果目录无效。')
+    }
+    await fs.copyFile(source.filePath, targetPath)
+    const copied = await resolveTaskOutputFile(targetDataDirectory, task.task_id, task.modality, task.output_path)
+    if (copied.sha256 !== task.output_sha256 || copied.sizeBytes !== task.output_size_bytes) {
+      await fs.rm(targetPath, { force: true }).catch(() => undefined)
+      throw new Error(`生成任务“${task.task_id}”的结果复制校验失败，项目备份未完成。`)
+    }
+  }
+}
+
+function recoverInterruptedTasks(database) {
+  const tasks = database.prepare("SELECT task_id FROM tasks WHERE status = 'running' ORDER BY created_at").all()
+  if (tasks.length === 0) return 0
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    const now = new Date().toISOString()
+    for (const task of tasks) {
+      const update = database.prepare(`
+        UPDATE tasks SET status = 'interrupted', error_code = 'PROCESS_INTERRUPTED', updated_at = ?
+        WHERE task_id = ? AND status = 'running'
+      `).run(now, task.task_id)
+      if (update.changes === 1) appendTaskEvent(database, task.task_id, 'interrupted', { reason: 'PROCESS_RESTART' }, now)
+    }
+    database.exec('COMMIT')
+    return tasks.length
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
 function setDatabaseMode(database) {
   database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;')
 }
@@ -263,6 +510,30 @@ async function migrateDatabaseV1ToV2(database, dataDirectory) {
   try {
     database.exec(ASSET_DB_SCHEMA)
     database.exec('PRAGMA user_version = 2')
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+async function migrateDatabaseV2ToV3(database, dataDirectory) {
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v2-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec(TASK_DB_SCHEMA)
+    database.exec('PRAGMA user_version = 3')
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
@@ -382,6 +653,20 @@ function projectBackupPaths(database) {
     }
     paths.push(row.relative_path)
   }
+  if (databaseVersion(database) >= 3) {
+    const taskRows = database.prepare(`
+      SELECT task_id, modality, output_path, output_sha256, output_size_bytes
+      FROM tasks WHERE status = 'succeeded' ORDER BY task_id
+    `).all()
+    for (const task of taskRows) {
+      validateTaskOutputRelativePath(task.task_id, task.modality, task.output_path)
+      if (!/^[a-f0-9]{64}$/u.test(task.output_sha256)
+        || !Number.isSafeInteger(task.output_size_bytes) || task.output_size_bytes <= 0) {
+        throw new Error(`生成任务“${task.task_id}”的结果索引无效，无法备份或恢复。`)
+      }
+      paths.push(task.output_path)
+    }
+  }
   return paths
 }
 
@@ -396,8 +681,13 @@ async function hashFile(filePath) {
 }
 
 async function safeBackupFilePath(dataDirectory, relativePath) {
+  const taskOutputMatch = /^generated\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/([a-z0-9][a-z0-9._-]{0,126})$/iu.exec(relativePath)
+  const taskOutputExtensions = ['.txt', '.md', '.json', '.png', '.jpg', '.jpeg', '.webp', '.mp3', '.wav', '.ogg', '.m4a', '.mp4', '.webm', '.mov']
+  const isTaskOutput = taskOutputMatch && !taskOutputMatch[2].includes('..')
+    && taskOutputExtensions.includes(path.extname(taskOutputMatch[2]).toLowerCase())
   if (relativePath !== 'project.json' && relativePath !== 'project.sqlite'
-    && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp)$/iu.test(relativePath)) {
+    && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp)$/iu.test(relativePath)
+    && !isTaskOutput) {
     throw new Error('备份包含无效文件路径。')
   }
   const rootInfo = await fs.lstat(dataDirectory).catch(() => null)
@@ -417,9 +707,22 @@ async function safeBackupFilePath(dataDirectory, relativePath) {
       || path.relative(hashPath, await fs.realpath(hashPath)) !== '') {
       throw new Error(`备份素材“${relativePath}”所在目录无效。`)
     }
+  } else if (isTaskOutput) {
+    const generatedPath = path.join(dataDirectory, 'generated')
+    const taskPath = path.join(generatedPath, taskOutputMatch[1])
+    for (const directory of [generatedPath, taskPath]) {
+      const info = await fs.lstat(directory).catch(() => null)
+      if (!info?.isDirectory() || info.isSymbolicLink()
+        || path.relative(directory, await fs.realpath(directory)) !== '') {
+        throw new Error(`备份任务结果目录“${relativePath}”无效。`)
+      }
+    }
   }
   const fileInfo = await fs.lstat(filePath).catch(() => null)
   if (!fileInfo?.isFile() || fileInfo.isSymbolicLink()) throw new Error(`备份文件“${relativePath}”缺失或路径无效。`)
+  if (isTaskOutput && (fileInfo.size <= 0 || fileInfo.size > MAX_TASK_OUTPUT_BYTES)) {
+    throw new Error(`备份任务结果“${relativePath}”为空或超过本地结果上限。`)
+  }
   return filePath
 }
 
@@ -505,7 +808,8 @@ async function validateRestorableProject(projectDirectory) {
   if (!databaseInfo?.isFile() || databaseInfo.isSymbolicLink()) throw new Error('备份项目数据库缺失或路径无效。')
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
-    if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
+    const schemaVersion = databaseVersion(database)
+    if (schemaVersion !== 2 && schemaVersion !== PROJECT_DB_SCHEMA_VERSION) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -587,6 +891,9 @@ async function openProjectData(projectDirectory) {
   try {
     setDatabaseMode(database)
     const version = databaseVersion(database)
+    if (version > 0 && version < PROJECT_DB_SCHEMA_VERSION) {
+      await invalidateBackupManifest(dataDirectory)
+    }
     if (version === 0) {
       let legacyCanvas
       try {
@@ -599,10 +906,18 @@ async function openProjectData(projectDirectory) {
         throw error
       }
       initializeDatabase(database, metadata, legacyCanvas)
-    } else if (version === 1) {
-      await migrateDatabaseV1ToV2(database, dataDirectory)
-    } else if (version !== PROJECT_DB_SCHEMA_VERSION) {
-      throw new Error(`本地项目数据库版本 ${version} 当前不受支持。`)
+    } else {
+      if (version === 1) await migrateDatabaseV1ToV2(database, dataDirectory)
+      const migratedVersion = databaseVersion(database)
+      if (migratedVersion === 2) await migrateDatabaseV2ToV3(database, dataDirectory)
+      if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
+        throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
+      }
+    }
+    const interruptedTaskCount = database.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status = 'running'").get().count
+    if (interruptedTaskCount > 0) {
+      await invalidateBackupManifest(dataDirectory)
+      recoverInterruptedTasks(database)
     }
     const canvas = readDatabaseCanvas(database, metadata)
     return { directory, metadata, database, canvas }
@@ -725,6 +1040,7 @@ function createLocalProjectStore() {
         await fs.mkdir(stagingData)
         await writeJsonAtomically(path.join(stagingData, 'project.json'), active.metadata)
         await copyProjectAssets(active.database, path.join(active.directory, '.vibepaper'), stagingData)
+        await copyProjectTaskOutputs(active.database, path.join(active.directory, '.vibepaper'), stagingData)
         await backup(active.database, path.join(stagingData, 'project.sqlite'))
         const manifest = await createBackupManifest(stagingData, active.metadata, active.database)
         await writeJsonAtomically(path.join(stagingData, 'backup-manifest.json'), manifest)
@@ -768,6 +1084,7 @@ function createLocalProjectStore() {
         await writeJsonAtomically(path.join(stagingData, 'project.json'), restoredMetadata)
         await backup(source.database, path.join(stagingData, 'project.sqlite'))
         await copyProjectAssets(source.database, source.dataDirectory, stagingData)
+        await copyProjectTaskOutputs(source.database, source.dataDirectory, stagingData)
 
         const restoredDatabase = new DatabaseSync(path.join(stagingData, 'project.sqlite'), { timeout: 5000 })
         try {
@@ -899,6 +1216,247 @@ function createLocalProjectStore() {
     })
   }
 
+  function createTask(input) {
+    return enqueue(async () => {
+      if (!active) throw new Error('没有打开的本地项目。')
+      const normalized = normalizeTaskInput(input)
+      if (normalized.projectId !== active.metadata.projectId || normalized.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，无法创建生成任务。')
+      }
+      if (normalized.providerType === 'cloud') {
+        throw new Error('云端任务尚未配置桌面版数据发送说明与用户授权。')
+      }
+
+      const existing = active.database.prepare('SELECT * FROM tasks WHERE idempotency_key = ?')
+        .get(normalized.idempotencyKey)
+      if (existing) {
+        if (existing.input_hash !== normalized.inputHash) throw new Error('TASK_IDEMPOTENCY_CONFLICT')
+        return taskFromRow(existing)
+      }
+      if (normalized.canvasVersion !== active.canvas.version) throw new Error('画布版本已变化，请重新读取后再提交任务。')
+      if (normalized.nodeId && !active.database.prepare('SELECT 1 FROM nodes WHERE canvas_id = ? AND id = ?')
+        .get(normalized.canvasId, normalized.nodeId)) {
+        throw new Error('生成任务关联的节点已不存在。')
+      }
+
+      const now = new Date().toISOString()
+      const taskId = randomUUID()
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      active.database.exec('BEGIN IMMEDIATE')
+      try {
+        const persistedCanvas = active.database.prepare('SELECT version FROM canvases WHERE id = ?').get(normalized.canvasId)
+        if (!persistedCanvas || persistedCanvas.version !== normalized.canvasVersion) {
+          throw new Error('画布版本已变化，请重新读取后再提交任务。')
+        }
+        active.database.prepare(`
+          INSERT INTO tasks (
+            task_id, idempotency_key, input_hash, canvas_id, canvas_version, node_id,
+            modality, provider_type, provider_id, model_id, input_json, status,
+            attempt_count, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)
+        `).run(
+          taskId,
+          normalized.idempotencyKey,
+          normalized.inputHash,
+          normalized.canvasId,
+          normalized.canvasVersion,
+          normalized.nodeId,
+          normalized.modality,
+          normalized.providerType,
+          normalized.providerId,
+          normalized.modelId,
+          normalized.parametersJson,
+          now,
+          now,
+        )
+        appendTaskEvent(active.database, taskId, 'created', {
+          modality: normalized.modality,
+          providerType: normalized.providerType,
+          providerId: normalized.providerId,
+          modelId: normalized.modelId,
+          canvasVersion: normalized.canvasVersion,
+        }, now)
+        active.database.exec('COMMIT')
+        return taskFromRow(active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId))
+      } catch (error) {
+        active.database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function listTasks(projectId, limit = 100) {
+    return enqueue(() => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务。')
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error('任务列表上限无效。')
+      return active.database.prepare('SELECT * FROM tasks ORDER BY created_at DESC, task_id LIMIT ?')
+        .all(limit).map(taskFromRow)
+    })
+  }
+
+  function getTask(projectId, taskId) {
+    return enqueue(() => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务。')
+      if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
+      const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      return row ? taskFromRow(row) : null
+    })
+  }
+
+  function getTaskInput(projectId, taskId) {
+    return enqueue(() => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务输入。')
+      if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
+      const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      return row ? { task: taskFromRow(row), parameters: JSON.parse(row.input_json) } : null
+    })
+  }
+
+  function listTaskEvents(projectId, taskId, afterSeq = 0) {
+    return enqueue(() => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务记录。')
+      if (typeof taskId !== 'string' || !taskId || !Number.isSafeInteger(afterSeq) || afterSeq < 0) {
+        throw new Error('任务记录查询参数无效。')
+      }
+      return active.database.prepare(`
+        SELECT event_id AS eventId, task_id AS taskId, event_seq AS eventSeq, type, data_json AS dataJson, created_at AS createdAt
+        FROM task_events WHERE task_id = ? AND event_seq > ? ORDER BY event_seq
+      `).all(taskId, afterSeq).map((event) => ({
+        eventId: event.eventId,
+        taskId: event.taskId,
+        eventSeq: event.eventSeq,
+        type: event.type,
+        data: JSON.parse(event.dataJson),
+        createdAt: event.createdAt,
+      }))
+    })
+  }
+
+  function claimNextTask(projectId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法领取任务。')
+      const candidate = active.database.prepare("SELECT task_id FROM tasks WHERE status = 'queued' ORDER BY created_at, task_id LIMIT 1")
+        .get()
+      if (!candidate) return null
+      const taskId = candidate.task_id
+      const now = new Date().toISOString()
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      active.database.exec('BEGIN IMMEDIATE')
+      try {
+        const update = active.database.prepare(`
+          UPDATE tasks SET status = 'running', attempt_count = attempt_count + 1,
+            started_at = ?, updated_at = ?, error_code = NULL
+          WHERE task_id = ? AND status = 'queued'
+        `).run(now, now, taskId)
+        if (update.changes !== 1) throw new Error('TASK_STATE_CONFLICT')
+        const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+        appendTaskEvent(active.database, taskId, 'running', { attemptCount: row.attempt_count }, now)
+        active.database.exec('COMMIT')
+        return { task: taskFromRow(row), parameters: JSON.parse(row.input_json) }
+      } catch (error) {
+        active.database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function recordTaskSucceeded(projectId, taskId, outputPath) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法完成任务。')
+      if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
+      const current = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (!current) throw new Error('TASK_NOT_FOUND')
+      const output = await resolveTaskOutputFile(
+        path.join(active.directory, '.vibepaper'),
+        current.task_id,
+        current.modality,
+        outputPath,
+      )
+      if (current.status === 'succeeded') {
+        if (current.output_path !== outputPath || current.output_sha256 !== output.sha256
+          || current.output_size_bytes !== output.sizeBytes) throw new Error('TASK_RESULT_CONFLICT')
+        return taskFromRow(current)
+      }
+      if (current.status !== 'running') throw new Error('TASK_STATE_CONFLICT')
+      const now = new Date().toISOString()
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      active.database.exec('BEGIN IMMEDIATE')
+      try {
+        const update = active.database.prepare(`
+          UPDATE tasks SET status = 'succeeded', output_path = ?, output_sha256 = ?, output_size_bytes = ?,
+            error_code = NULL, updated_at = ?, completed_at = ?
+          WHERE task_id = ? AND status = 'running'
+        `).run(outputPath, output.sha256, output.sizeBytes, now, now, taskId)
+        if (update.changes !== 1) throw new Error('TASK_STATE_CONFLICT')
+        appendTaskEvent(active.database, taskId, 'succeeded', {
+          outputPath,
+          outputSha256: output.sha256,
+          outputSizeBytes: output.sizeBytes,
+        }, now)
+        active.database.exec('COMMIT')
+        return taskFromRow(active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId))
+      } catch (error) {
+        active.database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function recordTaskFailed(projectId, taskId, errorCode) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法更新任务。')
+      if (typeof taskId !== 'string' || !taskId || typeof errorCode !== 'string'
+        || !/^[A-Z0-9_]{1,120}$/u.test(errorCode)) throw new Error('任务失败信息无效。')
+      const current = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (!current) throw new Error('TASK_NOT_FOUND')
+      if (current.status === 'failed' && current.error_code === errorCode) return taskFromRow(current)
+      if (current.status !== 'running') throw new Error('TASK_STATE_CONFLICT')
+      const now = new Date().toISOString()
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      active.database.exec('BEGIN IMMEDIATE')
+      try {
+        const update = active.database.prepare(`
+          UPDATE tasks SET status = 'failed', error_code = ?, updated_at = ?, completed_at = ?
+          WHERE task_id = ? AND status = 'running'
+        `).run(errorCode, now, now, taskId)
+        if (update.changes !== 1) throw new Error('TASK_STATE_CONFLICT')
+        appendTaskEvent(active.database, taskId, 'failed', { errorCode }, now)
+        active.database.exec('COMMIT')
+        return taskFromRow(active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId))
+      } catch (error) {
+        active.database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function cancelTask(projectId, taskId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法取消任务。')
+      if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
+      const current = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (!current) throw new Error('TASK_NOT_FOUND')
+      if (current.status === 'cancelled') return taskFromRow(current)
+      if (current.status !== 'queued') throw new Error('TASK_CANCELLATION_REQUIRES_WORKER')
+      const now = new Date().toISOString()
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      active.database.exec('BEGIN IMMEDIATE')
+      try {
+        const update = active.database.prepare(`
+          UPDATE tasks SET status = 'cancelled', error_code = NULL, updated_at = ?, completed_at = ?
+          WHERE task_id = ? AND status = 'queued'
+        `).run(now, now, taskId)
+        if (update.changes !== 1) throw new Error('TASK_STATE_CONFLICT')
+        appendTaskEvent(active.database, taskId, 'cancelled', {}, now)
+        active.database.exec('COMMIT')
+        return taskFromRow(active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId))
+      } catch (error) {
+        active.database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
   function getActiveProject() {
     return active ? publicProject(active.metadata) : null
   }
@@ -964,13 +1522,22 @@ function createLocalProjectStore() {
 
   return {
     backupProject,
+    cancelTask,
+    claimNextTask,
     close,
     createProject,
+    createTask,
     getActiveProject,
+    getTask,
+    getTaskInput,
     importAsset,
     listAssets,
+    listTaskEvents,
+    listTasks,
     loadCanvas,
     openProject,
+    recordTaskFailed,
+    recordTaskSucceeded,
     resolveAsset,
     restoreBackup,
     saveCanvas,

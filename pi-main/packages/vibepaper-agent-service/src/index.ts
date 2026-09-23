@@ -1,6 +1,7 @@
 export * from "./api/app.ts";
 export * from "./application/agent-runtime.ts";
 export * from "./config.ts";
+export * from "./desktop/index.ts";
 export * from "./domain/drama-state.ts";
 export * from "./infrastructure/database.ts";
 export * from "./infrastructure/nacos.ts";

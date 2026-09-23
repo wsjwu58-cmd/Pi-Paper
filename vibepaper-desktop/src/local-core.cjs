@@ -38,6 +38,24 @@ async function dispatch(method, payload) {
       return store.loadCanvas(payload?.projectId, payload?.canvasId)
     case 'canvas:save':
       return store.saveCanvas(payload)
+    case 'task:create':
+      return store.createTask(payload)
+    case 'task:cancel':
+      return store.cancelTask(payload?.projectId, payload?.taskId)
+    case 'task:list':
+      return store.listTasks(payload?.projectId, payload?.limit)
+    case 'task:get':
+      return store.getTask(payload?.projectId, payload?.taskId)
+    case 'task:get-input':
+      return store.getTaskInput(payload?.projectId, payload?.taskId)
+    case 'task:events':
+      return store.listTaskEvents(payload?.projectId, payload?.taskId, payload?.afterSeq)
+    case 'task:claim-next':
+      return store.claimNextTask(payload?.projectId)
+    case 'task:succeeded':
+      return store.recordTaskSucceeded(payload?.projectId, payload?.taskId, payload?.outputPath)
+    case 'task:failed':
+      return store.recordTaskFailed(payload?.projectId, payload?.taskId, payload?.errorCode)
     case 'core:close':
       await store.close()
       return null

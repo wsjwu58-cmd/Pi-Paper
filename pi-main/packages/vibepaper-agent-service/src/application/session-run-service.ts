@@ -27,7 +27,13 @@ export interface RunRepository {
 		type: AgentRunEventType;
 		data: Record<string, unknown>;
 	}) => AgentRunEvent | Promise<AgentRunEvent>;
+	setStatusAtomic?: (input: {
+		runId: string;
+		status: AgentRunStatus;
+		terminalEvent?: { type: AgentRunEventType; data: Record<string, unknown> };
+	}) => void | Promise<void>;
 	cancelIfActive?: (runId: string) => boolean | Promise<boolean>;
+	cancelIfActiveAtomic?: (runId: string) => boolean | Promise<boolean>;
 }
 
 export class RunConflictError extends Error {
@@ -78,8 +84,23 @@ export class SessionRunService {
 	}
 
 	async setStatus(runId: string, status: AgentRunStatus, data: Record<string, unknown> = {}): Promise<void> {
+		const terminalType =
+			status === "completed"
+				? "run_completed"
+				: status === "failed"
+					? "run_failed"
+					: status === "aborted"
+						? "run_aborted"
+						: undefined;
+		if (this.repository.setStatusAtomic) {
+			await this.repository.setStatusAtomic({
+				runId,
+				status,
+				...(terminalType ? { terminalEvent: { type: terminalType, data } } : {}),
+			});
+			return;
+		}
 		const run = await this.requireRun(runId);
-		const terminalType = status === "completed" ? "run_completed" : status === "failed" ? "run_failed" : undefined;
 		const existingTerminal = terminalType
 			? (await this.repository.listEvents(runId)).some((event) => event.type === terminalType)
 			: false;
@@ -93,6 +114,7 @@ export class SessionRunService {
 	}
 
 	async cancelRun(runId: string): Promise<boolean> {
+		if (this.repository.cancelIfActiveAtomic) return await this.repository.cancelIfActiveAtomic(runId);
 		if (this.repository.cancelIfActive) {
 			const canceled = await this.repository.cancelIfActive(runId);
 			if (!canceled) return false;
