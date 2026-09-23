@@ -12,7 +12,7 @@ const queryClient = new QueryClient({
 function Bootstrap() {
   const load = useAuth((s) => s.load)
   useEffect(() => {
-    void load()
+    if (!window.vibepaperDesktop) void load()
   }, [load])
   return <AppRouter />
 }

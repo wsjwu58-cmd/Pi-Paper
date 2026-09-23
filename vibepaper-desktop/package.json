@@ -1,0 +1,14 @@
+{
+  "name": "vibepaper-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron host for the VibePaper local desktop app",
+  "main": "src/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.cjs",
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "44.4.4"
+  }
+}

@@ -1,192 +1,62 @@
-# VibePaper — Agent 开发规范
+# VibePaper — 桌面版 Agent 开发规范
 
-> 本文件是 Cursor / 自动化 Agent 的工程契约入口。  
-> 权威文档：`docs/VibePaper产品需求文档新版.md`（产品契约）· `docs/技术概要设计方案.md`（技术架构）· `docs/VibePaper 产品功能清单(1).md`（功能枚举）  
-> Spec 与排期：`docs/specs/V1.0-engineering-spec.md` · `docs/plans/execution-plan.md`  
-> **冲突裁决**：范围与优先级以执行计划 / PRD §4.3 为准；架构与技术选型以技术概要为准；契约细节（状态机/权限/埋点）以 PRD 为准。
+> 本文件是当前桌面版开发的工程契约入口。全服务方案见 `docs/plans/2026-09-23-desktop-full-service-local-migration-plan.md`；Agent 细节见 `docs/plans/2026-09-23-local-agent-migration-design.md` 与 `docs/specs/desktop-agent-functional-spec.md`。
+> 旧 PRD、技术概要、V1.0 Spec 和执行计划描述 Web 多用户版。开发桌面版时，以本文件和桌面版方案为准；维护旧 Web 路径时仍按旧契约执行。目标方案有冲突时先更新契约再改行为。
 
----
+## 1. 产品与范围
 
-## 1. 产品一句话
+VibePaper 桌面版是单用户、本地项目文件优先的 AI 节点化画布创作工具。首期覆盖 Windows、macOS、Linux；画布、节点、连线、素材、生成结果、任务、Agent 会话、Skill、记忆与设置均保存在本机。用户可配置自己的云端模型 API Key，也可连接本机模型服务；云端调用只发送用户当前选择的请求所需内容，结果仍保存在本地。不得因本地模型不可用而静默切换到云端。
 
-VibePaper 是 AI 原生**节点化无限画布**创作平台：文本/图片/视频/音频以节点表达，连线建立引用，Agent 驱动编排，点数计费闭环支撑个人与企业。
+- 桌面版不要求平台注册、登录、企业身份、平台点数、冻结/结算、充值、套餐、签到、邀请返利、公告活动或运营后台。
+- 创意广场与公开发布暂不进入桌面版导航和运行链路；相关旧源码可以保留，不得为清理范围而删除用户数据。
+- **不迁移旧 Web 服务的业务数据。** 桌面版从全新本地项目开始；旧 PostgreSQL 导入不是交付前置。桌面版本身创建的数据必须支持版本升级、备份与恢复。
+- 不把“本地保存”描述成“云端模型调用时数据不离开本机”。配置云端提供方时须说明发送的数据类型、供应商和可能由供应商收取的费用；不得恢复平台点数机制。
 
-目标：复刻 vibepaper-ai.com 的已确认功能与关键交互（不含商标、受版权素材、私有算法）。
+## 2. 术语与数据边界
 
----
+统一使用「画布 Canvas」「节点 Node」「连线 Edge」「任务 Task」「素材 Asset」「会话 Session」「Skill」。管理空间仅指画布导航区域，不与画布混用；Token 专指模型用量，不称点数。项目、画布、节点、连线与任务 ID 在本地稳定，项目目录移动不改变身份。
 
-## 2. 术语（强制唯一）
+- 本机项目目录是画布、素材和生成结果的权威来源；配置与密钥分别存于操作系统用户数据目录及系统凭据能力。
+- Pi Agent Core 继续以 Node.js + TypeScript 运行。完整 Pi 会话与工具调用/结果使用本地 JSONL；Run、确认、幂等、任务关联等控制状态使用本地 SQLite。Markdown 记忆与 Skill 可编辑；压缩检查点可重建。
+- Agent 不直接改画布文件、SQLite 表或素材文件；业务副作用只能经 Tool Gateway 调用本地 Canvas/Asset/Task 能力。会话摘要和记忆不能代替画布、素材或任务的权威状态。
+- 首版单用户、单项目单写者；画布版本仍用乐观锁。SQLite、项目文件、JSONL 的跨存储一致性须有恢复策略，不能靠内存状态宣称任务完成。
 
-| 标准术语 | 英文 | 禁止混用 |
-|---------|------|----------|
-| 画布 | Canvas | 工作区、白板、项目、空间 |
-| 节点 | Node | 模块、组件（UI 可称「卡片」，接口一律「节点」） |
-| 连线 | Edge | 连接、箭头、管道 |
-| 任务 | Task | 作业、请求（「生成」是动作，「任务」是实体） |
-| 点数 | Points | 积分、代币、Token（Token 专指 LLM） |
-| 冻结点数 | Frozen Points | 预扣、锁定、占用 |
-| 素材 | Asset | 资源、文件、媒体 |
-| 会话 | Session | 聊天（UI 可称「对话」） |
-| Skill | Skill | 技能包、提示词模板 |
-| 企业 | Enterprise | 团队、组织、公司 |
-| 管理空间 | Workspace Hub | 不得与「画布」混用 |
+## 3. 目标运行架构
 
-完整定义见 PRD §1。
+- `vibepaper-web` 复用 React + TypeScript + Vite + `@xyflow/react`、Zustand 画布状态；由 Electron Renderer 展示，不持有任意磁盘权限或 API Key。
+- Electron Main 管生命周期、项目选择、受限 IPC、系统凭据、备份和子进程。Agent 在独立 Node worker/进程运行；生成适配器可在受控 Python 子进程运行。
+- 本地核心负责画布、素材、任务、模型目录与设置。桌面版正常创作不依赖 Java 微服务、网关、PostgreSQL、Redis、Nacos、RocketMQ、MinIO、XXL-JOB、Docker 或旧平台服务。旧源码可保留供对照，但不进入最终桌面运行依赖。
+- 优先保留现有 `/api/v1` DTO 与 SSE 语义以减少前端改动；本地通信可用受限 IPC 或仅绑定 loopback 的随机端口与启动令牌。不得信任 Renderer 自报的 `X-User-Id`、角色或内部服务头。
 
----
+## 4. 任务、模型与 Agent 安全
 
-## 3. 技术栈硬约束
+- `POST /api/v1/tasks` 由本地 TaskStore 创建持久化任务并处理 `Idempotency-Key`，不得再经 `billing-service` 冻结点数。任务至少支持 `queued → running → succeeded | failed | cancelled`；中断后的恢复状态和重试资格须显式定义。成功以结果文件已落盘且可读取为准。
+- 模型提供方必须显式标记 `local` 或 `cloud`，声明模态、输入模式、工具调用、取消能力和可用状态。无模型、无 Key 或能力不匹配时返回可见错误，不得静默 mock 成功或自动联网。
+- 云端 API Key 只在受控进程使用，存系统凭据库，不写普通设置、日志、会话 JSONL 或项目导出。联网模式需用户主动配置与选择；本地模式不得产生外部模型请求。
+- Agent 工具实行白名单。写画布前校验节点能力、引用关系、顺序和画布版本；有指定参考节点时，先建立正确连线再生成。自然语言回复不得暴露内部工具名、节点 ID、任务 ID 或模型内部标识。
+- 删除/覆盖不可撤销内容、清空画布、批量创建超过 20 个节点以及其他高风险操作，须提供可撤销机制或预览确认；云端发送项目内容须有用户事先授权。确认令牌绑定项目/画布/版本、操作哈希和过期时间；画布版本变化令其失效。创建、连线、布局等低风险本地写入可直接执行并回显。
+- Agent 与任务重启恢复必须先查询本地权威状态和幂等账本，不得盲重放写工具或已提交的生成任务。
 
-### 3.1 架构形态
+## 5. 编码与文档
 
-- **微服务**：业务模块 Java；生成模块 Python；Agent 模块 Node.js + TypeScript（基于 Pi Agent Core）。
-- **禁止**跨服务直连对方数据库；只能经 REST / RocketMQ。
-- **禁止**服务间循环依赖。
-- 各服务独立 PostgreSQL 库；全局 ID 使用 **Snowflake**（若与 PRD UUIDv4 冲突，以本规范 + 技术概要为准，并回写 PRD）。
+1. 先读当前入口、调用方、状态机和桌面版契约再改代码；改任务/计费链路时参照旧 PRD §5.3 与技术概要 §9 理解原依赖，改画布时参照旧 PRD §6.1 与前端性能策略，但桌面行为以本文件为准。
+2. 以可运行的纵向链路逐步迁移；旧 Web 路径保留期间，不用桌面条件分支悄悄改变旧版契约。新增本地字段同步更新桌面规格、数据字典和接口类型。
+3. 保存项目文件使用明确的 `schemaVersion` 和原子写入；每次版本升级有可重复的迁移及备份回退。旧 Web 数据导入不在本轮范围。
+4. 任务路径记录 `task_id`、画布/节点关联、模型/提供方、状态、错误码和时间；日志不得记录密钥或不必要的提示词/素材正文。
+5. 保留画布性能基线：300–500ms 增量防抖、最终操作立即落盘；大画布重型媒体按视口处理，自动布局放到 Worker。跨平台路径不得硬编码当前工作区盘符。
 
-### 3.2 服务与语言
+## 6. 验收门槛
 
-| 服务 | 语言 | 职责摘要 |
-|------|------|----------|
-| `identity-service` | Java 21 + Spring Boot 3.x | 注册登录 JWT 会话偏好 |
-| `canvas-service` | Java | 画布/节点/连线/DSL |
-| `asset-service` | Java | 素材元数据、预签名、引用 |
-| `billing-service` | Java | 账户冻结结算充值流水 |
-| `enterprise-service` | Java | 企业成员邀请分配 |
-| `gallery-service` | Java | 发布审核搜索克隆 |
-| `admin-service` | Java | 运营后台审计 |
-| `generation-service` | Python 3.12 + FastAPI | 模型目录、任务状态机、ComfyUI/供应商 |
-| `agent-service` | Node.js 22.19+ + TypeScript + Fastify + Pi Agent Core | Agent 会话、Pi 编排、工具、记忆 |
-| `vibepaper-gateway` | Java + Spring Cloud Gateway | 路由鉴权限流 CORS |
-| `vibepaper-web` | React + TS + Vite + pnpm | 单前端应用 |
+- 在 Windows、macOS、Linux 各自的安装包中，从空白本地项目启动、创作、关闭并重启；无 Docker、PostgreSQL、Redis、Nacos 或平台账户也能打开画布、素材、历史会话。
+- 手工及 Agent 自然语言创建节点和连线、提交文/图/音/视频任务、保存输出到本地；本地模型和用户配置的云端 API 路径分别验收，供应商不支持的模态须明确显示不可用。
+- 对 Agent 会话与生成任务做中断恢复和幂等测试；确认成功后才回显成功。三个参考与三个目标的一对一编排不能误连成笛卡尔积。
+- 画布与素材导入/导出、项目目录移动、备份/恢复、两个实例争用项目、断网、无本地模型、云端 Key 无效都要有明确结果。验证本地模式无外部请求。
+- 桌面 UI 和 Agent 回复不出现平台点数、余额、充值、签到、套餐、企业配额或创意广场入口；相关旧代码保留不等于桌面版功能已启用。
+- Agent 工程能力仍按 `docs/plans/2026-08-29-pi-agent-full-chain-validation-plan.md` 的 A–D 场景选取适用用例，验收记录尽量包含对话和画布产出的截图。向 Agent 发送的测试请求只用用户自然语言，不注入内部工具名、ID 或模型内部信息。
 
-基础设施：Nacos · RocketMQ · Redis 7 · MinIO · PostgreSQL · XXL-JOB ·（Seata 仅备选）。
+## 7. 关键文档
 
-### 3.3 前端强制选型
-
-React + TypeScript · Vite · `@xyflow/react` · Zustand（画布本地）· TanStack Query（服务端）· Tailwind · Radix · Lucide · React Router · React Hook Form + Zod。
-
-目录约定：`src/app` · `src/features/{canvas,nodes,agent,assets,...}` · `src/api/generated`（OpenAPI 生成）。
-
-### 3.4 后端分层
-
-**Java**：`controller → service → mapper`；Controller 只接 DTO/返 VO；`@Transactional` 仅 Service；事务内禁止 Feign/发 MQ（用 Outbox）。
-
-**Python（generation-service）**：`router → application → domain → infrastructure`；Pydantic Schema 与 ORM 分离；domain 不依赖 FastAPI/SQLAlchemy/Celery。
-
-**Node（agent-service）**：`server → application → domain → pi/tools/infrastructure`；Pi 与 domain 不依赖 Fastify、数据库、MQ 或供应商 SDK；副作用只能通过受控 Tool Gateway 触发。
-
----
-
-## 4. API 与数据契约
-
-- 前缀：`/api/v1`；资源复数名词。
-- 写接口（任务提交、充值回调、点数操作）强制 `Idempotency-Key`。
-- 错误体：`{ code, message, details, request_id, retryable }`。
-- 时间 ISO 8601 UTC；**点数一律 int**，禁止小数。
-- OpenAPI：Java SpringDoc / Python FastAPI → `openapi-typescript` → 前端类型。
-- 网关透传：`X-User-Id` · `X-User-Role` · `X-Enterprise-Id`。
-
-稳定错误码（节选）：`INSUFFICIENT_POINTS` · `MODEL_TIMEOUT` · `MODEL_UNAVAILABLE` · `CONTENT_BLOCKED` · `INVALID_INPUT` · `FREEZE_EXPIRED` · `VERSION_CONFLICT` · `PERMISSION_DENIED`。
-
----
-
-## 5. 计费硬规则（资金安全）
-
-实现时必须对齐 PRD §5.3 / BILL-01~07：
-
-1. `available_points = balance - frozen_points`。
-2. 提交时 `available_points ≥ estimated_cost` 才冻结并建 `queued` 任务。
-3. **5 分钟**内未进入 `running` → `expired` + 全额解冻。
-4. 成功按 `actual_cost` 结算（V1.0 默认 `actual_cost = estimated_cost`）；失败/无效 → 全额解冻不扣费。
-5. `point_ledgers` **只追加**；`UNIQUE(task_id, ledger_type)`。
-6. 账户扣费：`SELECT ... FOR UPDATE` + 幂等键；跨服务优先 RocketMQ 事务消息 + Outbox。
-7. 企业成员：默认不自动借企业池（除非开启共享池）。
-
-任务状态机：`idle → queued → running → succeeded | failed | cancelled | expired`（另有 `settlement_error`）。
-
----
-
-## 6. Agent 安全规则
-
-- 只能调用**工具白名单**，禁止生成 SQL / 直连 Repository / 直接改画布 JSON。
-- 高风险操作须**确认令牌**（绑定 `user_id` + `canvas_id` + `canvas_version` + 操作摘要哈希 + 过期）；画布版本变化则令牌失效。
-- 确认阈值（PRD §5.2.1）：`estimated_cost ≥ 1`（提交生成）、参数变化 ≥30%、切换模型、批量创建 >20、覆盖已有输出 → 必须确认。写画布（创建/连线/布局/改配置/删除节点）免确认，执行后回显。
-- 只读工具可直出；低风险写操作可直接执行并回显。
-
----
-
-## 7. 画布与并发
-
-- 画布保存：`canvas.version` **乐观锁**；冲突拒绝覆盖，提示刷新。
-- V1.0 **不支持**多人实时编辑同一画布；不做 WebSocket 协作。
-- 增量补丁防抖 300–500ms；最终操作立即落盘。
-- 导入/导出 JSON 必须带 `schema_version`；不兼容则拒绝。
-
----
-
-## 8. 优先级与范围
-
-| 优先级 | 交付焦点 |
-|--------|----------|
-| **P0 / MVP** | 认证、画布 CRUD、节点/连线、文/图/音/视频生成、素材库基础、Agent 对话与确认、计费冻结结算、订阅/点数菜单、任务历史、个人中心（**不含**运营后台） |
-| **P1** | 编组/堆叠、图/视频加工与 Seedance、合成/导演台、Skill/会话史、分享、签到/邀请/公告、创意广场、企业中心、运营后台 |
-| **P2** | 记忆系统（短+长）、后台会员体系 |
-
-浏览器：Chrome/Edge 100+ 全功能；Safari 16+ 基础创作；Firefox / 移动端 `<768px` **不在 V1.0**。桌面 ≥1280px。
-
----
-
-## 9. 编码与提交流程
-
-### 9.1 分支
-
-Git Flow：`main` · `dev` · `feature/*`；PR 尽量 < 400 行。
-
-### 9.2 规范工具
-
-| 端 | 工具 |
-|----|------|
-| Java | Checkstyle + SpotBugs · Maven · Flyway |
-| Python | Ruff + mypy · uv · Alembic |
-| 前端 | ESLint + Prettier · Vitest + Playwright |
-
-### 9.3 CI 门禁顺序
-
-规范检查 → 单元测试（计费核心分支覆盖 ≥90%）→ 迁移测试 → OpenAPI 破坏性变更检测 → 集成测试 → E2E Smoke → 构建镜像。
-
-### 9.4 DoD（单项需求完成定义）
-
-规则/权限/异常已确认 · 接口与数据字典对齐 · 正常/边界/失败用例通过 · 对应 AC 通过 · 日志/埋点/审计已接 · 无阻塞缺陷 · 文档已更新。
-
----
-
-## 10. Agent 改代码时的行为准则
-
-1. **先读后写**：改计费/任务前必读 PRD §5.3 与技术概要 §9；改画布前读 §6.1 与前端性能策略。
-2. **最小改动**：不做无关重构；不擅自扩 P1/P2 范围进 P0 分支。
-3. **契约优先**：新增字段必须能在数据字典 / OpenAPI 找到依据；点数、状态枚举不得自创同义词。
-4. **安全默认**：权限未列出的操作默认拒绝；敏感操作二次确认；密钥不进普通日志。
-5. **可观测**：涉及任务/点数的路径必须带 `task_id` / `user_id` / `error_code` / 费用字段。
-6. **文档同步**：行为变更时同步更新 Spec / PRD 待确认项，禁止静默改契约。
-
----
-
-## 11. 关键路径速查
-
-```
-docs/VibePaper产品需求文档新版.md     # PRD 工程契约
-docs/技术概要设计方案.md               # 微服务与技术栈
-docs/VibePaper 产品功能清单(1).md     # 功能枚举
-docs/specs/V1.0-engineering-spec.md   # 本轮工程 Spec
-docs/plans/execution-plan.md          # 分阶段执行计划
-```
-
-## 12. Agent工程能力测试
-
-- 测试首先要将项目前后端启动，新建画布进行测试，测试不符合预期的话就排查问题进行修改直到得到正确的产出
-
-- 按照E:\VibePaperProject\docs\plans\2026-08-29-pi-agent-full-chain-validation-plan.md文档中的A-D对Agent功能模块进行测试，保证其工程能力
-- 可以根据用户的要求进行操作，验收结果最好要有截图（包括Agent的对话记录以及正确执行操作以后画布上的具体产出，图，视频，文本等的节点以及编排,短剧工作流）
-- 向Agent发送要求的自然语言不要出现内部工具名以及内部节点的ID模型信息这些，这些都是Agent自行调用工具获取的，Agent返回的信息中不要包含节点内部信息，ID这些
-- 如果有指定节点作为参考时，需要把指定节点和目标节点连线进行生成，文生图，图生图，图生视频这些以及短剧创作都需要明确连线关系
+- `docs/plans/2026-09-23-desktop-full-service-local-migration-plan.md`：全服务本地迁移与阶段验收。
+- `docs/plans/2026-09-23-local-agent-migration-design.md`：Agent 会话、记忆、压缩和恢复设计。
+- `docs/specs/desktop-agent-functional-spec.md`：桌面版 Agent 功能契约。
+- 旧 PRD、技术概要、V1.0 Spec、执行计划：旧 Web 实现事实与迁移对照，不覆盖桌面版目标。
