@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施设计；阶段 1 宿主及阶段 2 的本地画布存储首个切片已实现，资产/任务/Agent 集成及其余阶段未落地，未做跨平台验收。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化与可重开项目备份首个切片已实现。资产/任务/Agent 集成、完整备份与恢复验证、项目锁及其余阶段未落地，未做跨平台验收。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 ## 1. 已确定的产品决策
 

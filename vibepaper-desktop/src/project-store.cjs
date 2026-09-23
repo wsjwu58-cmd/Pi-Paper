@@ -1,7 +1,7 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
-const { DatabaseSync } = require('node:sqlite')
+const { backup, DatabaseSync } = require('node:sqlite')
 
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
@@ -342,6 +342,40 @@ function createLocalProjectStore() {
     return openProject(destination)
   }
 
+  function backupProject(parentDirectory, projectId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) {
+        throw new Error('当前项目已更改，无法创建备份。')
+      }
+
+      const parent = path.resolve(parentDirectory)
+      const relativeToProject = path.relative(active.directory, parent)
+      if (relativeToProject === '' || (!path.isAbsolute(relativeToProject)
+        && relativeToProject !== '..' && !relativeToProject.startsWith(`..${path.sep}`))) {
+        throw new Error('请选择当前项目文件夹之外的备份位置。')
+      }
+      const parentInfo = await fs.stat(parent).catch(() => null)
+      if (!parentInfo?.isDirectory()) throw new Error('备份位置不可用。')
+
+      const timestamp = new Date().toISOString().replace(/[:.]/gu, '-')
+      const backupName = `${active.metadata.name} Backup ${timestamp} ${randomUUID().slice(0, 8)}`
+      const destination = path.join(parent, backupName)
+      const staging = path.join(parent, `.vibepaper-backup-${randomUUID()}`)
+      const stagingData = path.join(staging, '.vibepaper')
+      try {
+        await fs.mkdir(staging)
+        await fs.mkdir(stagingData)
+        await writeJsonAtomically(path.join(stagingData, 'project.json'), active.metadata)
+        await backup(active.database, path.join(stagingData, 'project.sqlite'))
+        await fs.rename(staging, destination)
+      } catch (error) {
+        await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined)
+        throw error
+      }
+      return { directory: destination, name: backupName }
+    })
+  }
+
   function getActiveProject() {
     return active ? publicProject(active.metadata) : null
   }
@@ -404,6 +438,7 @@ function createLocalProjectStore() {
   }
 
   return {
+    backupProject,
     close,
     createProject,
     getActiveProject,

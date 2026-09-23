@@ -217,6 +217,25 @@ function registerProjectIpc() {
     await writeRecentProjectDirectory(opened.directory)
     return opened.project
   })
+  ipcMain.handle('desktop:project:backup', async (event, projectId) => {
+    assertTrustedSender(event)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择项目备份保存位置',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const backup = await localCore.request('project:backup', {
+      parentDirectory: result.filePaths[0],
+      projectId,
+    })
+    await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '项目备份完成',
+      message: '本地项目备份已创建。',
+      detail: backup.directory,
+    })
+    return { name: backup.name }
+  })
   ipcMain.handle('desktop:canvas:load', (event, projectId, canvasId) => {
     assertTrustedSender(event)
     return localCore.request('canvas:load', { projectId, canvasId })

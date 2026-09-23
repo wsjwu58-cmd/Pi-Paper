@@ -1,6 +1,6 @@
 # 桌面本地项目格式（阶段 1–2）
 
-状态：Electron 项目引导和 `project.sqlite` 画布存储首个切片已实现。此格式目前只覆盖空白项目和画布；素材、任务、Agent 会话、凭据、备份和项目升级仍未实现。
+状态：Electron 项目引导、`project.sqlite` 画布存储和当前画布的本地备份首个切片已实现。备份现可作为项目重新打开，但目前仅包含项目元数据与 SQLite 画布，不含尚未实现的素材、任务、Agent 会话、凭据和完整项目升级流程。
 
 ## 项目目录
 
@@ -35,6 +35,10 @@
 | `edges` | 画布 ID、连线 ID、来源/目标及完整连线 JSON；外键要求两端节点存在 |
 
 Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写入须同时匹配项目/画布身份和 `expectedVersion`；Local Core 校验连线引用及载荷大小，再在一个 SQLite 事务中替换节点/连线并递增画布版本。若数据库版本已被其他写者更新，事务回滚并要求重新打开画布。
+
+## 本地备份首个切片
+
+画布界面的“备份项目”会先提交待保存的画布改动，再由 Local Core 将 `project.json` 和在线 SQLite 一致性快照写入新目录的 `.vibepaper/`，最后原子改名发布备份目录。SQLite 通过 `node:sqlite` 的在线 backup API 生成快照，不直接复制可能仍处于 WAL 状态的数据库主文件。备份目录可用“打开已有项目”重新打开；目前桌面项目尚无素材、任务或 Agent 文件需要纳入，因此这不是完整项目备份。
 
 首个 JSON 引导版本使用 `.vibepaper/canvas.json`。打开该版本项目且数据库尚不存在时，Local Core 校验 JSON 后在 SQLite 事务中导入；原文件保留为迁移来源，导入成功后 `project.sqlite` 是唯一画布权威。新项目直接创建 SQLite 数据库。
 

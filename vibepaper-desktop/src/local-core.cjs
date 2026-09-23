@@ -15,6 +15,11 @@ async function dispatch(method, payload) {
     case 'project:open':
       if (!payload || typeof payload.directory !== 'string') throw new Error('项目目录无效。')
       return store.openProject(payload.directory)
+    case 'project:backup':
+      if (!payload || typeof payload.parentDirectory !== 'string' || typeof payload.projectId !== 'string') {
+        throw new Error('备份请求无效。')
+      }
+      return store.backupProject(payload.parentDirectory, payload.projectId)
     case 'canvas:load':
       return store.loadCanvas(payload?.projectId, payload?.canvasId)
     case 'canvas:save':

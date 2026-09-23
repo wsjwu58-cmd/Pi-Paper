@@ -1,17 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
   Background,
   Controls,
+  Handle,
   MiniMap,
   ReactFlow,
+  ReactFlowProvider,
+  Position,
   type Connection,
   type Edge,
   type EdgeChange,
   type Node,
   type NodeChange,
+  type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { DesktopCanvas, DesktopProject } from './desktop-bridge'
@@ -77,15 +81,41 @@ export function DesktopWorkspace() {
     return <ProjectPicker error={error} onCreate={createProject} onOpen={openProject} />
   }
   return (
-    <LocalCanvas
-      key={project.projectId}
-      project={project}
-      initialCanvas={canvas}
-      error={error}
-      onOpenProject={openProject}
-    />
+    <ReactFlowProvider>
+      <LocalCanvas
+        key={project.projectId}
+        project={project}
+        initialCanvas={canvas}
+        error={error}
+        onOpenProject={openProject}
+      />
+    </ReactFlowProvider>
   )
 }
+
+function TextNode({ id, data }: NodeProps<Node<{ label?: string }>>) {
+  const updateText = useContext(TextNodeContext)
+  const label = typeof data.label === 'string' ? data.label : ''
+  return (
+    <div className="relative min-w-[240px] overflow-visible rounded-2xl border border-black/12 bg-white shadow-[0_6px_20px_rgba(0,0,0,0.08)]">
+      <div className="border-b border-black/8 px-3 py-2 text-[11px] font-bold text-[#777]">文本</div>
+      <textarea
+        aria-label="文本节点内容"
+        className="nodrag nowheel block min-h-24 w-full resize-y bg-transparent px-3 py-2 text-sm leading-6 text-[#222] outline-none"
+        value={label}
+        maxLength={20_000}
+        placeholder="输入文本内容…"
+        onChange={(event) => updateText(id, event.target.value)}
+        onBlur={(event) => updateText(id, event.currentTarget.value, true)}
+      />
+      <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-[#8a72e8]" />
+      <Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !border-2 !border-white !bg-[#8a72e8]" />
+    </div>
+  )
+}
+
+const TextNodeContext = createContext<(id: string, label: string, immediate?: boolean) => void>(() => {})
+const nodeTypes = { text: TextNode }
 
 function LoadingScreen() {
   return <div className="flex min-h-screen items-center justify-center bg-[#f7f7f8] text-sm text-[#666]">正在打开本地项目…</div>
@@ -164,6 +194,8 @@ function LocalCanvas({
   const [edges, setEdges] = useState<Edge[]>(initialCanvas.edges)
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved')
   const [saveError, setSaveError] = useState('')
+  const [backupMessage, setBackupMessage] = useState('')
+  const [backupPending, setBackupPending] = useState(false)
   const version = useRef(initialCanvas.version)
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
@@ -215,9 +247,18 @@ function LocalCanvas({
     const next = applyNodeChanges(changes, nodesRef.current)
     nodesRef.current = next
     setNodes(next)
-    if (changes.some((change) => change.type === 'position' || change.type === 'remove' || change.type === 'add')) {
+    if (changes.some((change) => change.type === 'position' || change.type === 'remove' || change.type === 'add' || change.type === 'replace')) {
       schedulePersist(next, edgesRef.current)
     }
+  }, [schedulePersist])
+
+  const updateText = useCallback((id: string, label: string, immediate = false) => {
+    const next = nodesRef.current.map((node) => node.id === id
+      ? { ...node, data: { ...node.data, label } }
+      : node)
+    nodesRef.current = next
+    setNodes(next)
+    schedulePersist(next, edgesRef.current, immediate)
   }, [schedulePersist])
 
   const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
@@ -239,9 +280,9 @@ function LocalCanvas({
   const addTextNode = () => {
     const next = [...nodesRef.current, {
       id: crypto.randomUUID(),
-      type: 'default',
+      type: 'text',
       position: { x: 160 + nodesRef.current.length * 24, y: 120 + nodesRef.current.length * 24 },
-      data: { label: '文本节点' },
+      data: { label: '' },
     }]
     nodesRef.current = next
     setNodes(next)
@@ -259,6 +300,30 @@ function LocalCanvas({
     await onOpenProject()
   }
 
+  const createBackup = async () => {
+    if (backupPending) return
+    setBackupPending(true)
+    setBackupMessage('')
+    try {
+      if (timer.current) {
+        clearTimeout(timer.current)
+        timer.current = null
+        persist(nodesRef.current, edgesRef.current)
+      }
+      await saveQueue.current
+      if (saveFailure.current) {
+        setBackupMessage(saveFailure.current)
+        return
+      }
+      const backup = await bridge?.backupProject(project.projectId)
+      if (backup) setBackupMessage(`备份完成：${backup.name}`)
+    } catch (cause) {
+      setBackupMessage(cause instanceof Error ? cause.message : '创建项目备份失败。')
+    } finally {
+      setBackupPending(false)
+    }
+  }
+
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current)
   }, [])
@@ -271,29 +336,34 @@ function LocalCanvas({
           <p className="text-[11px] text-[#888]">本地项目</p>
         </div>
         <div className="flex items-center gap-3">
+          {backupMessage && <span className="max-w-[360px] truncate text-xs text-[#777]" role="status" title={backupMessage}>{backupMessage}</span>}
           <span className={`max-w-[360px] truncate text-xs ${saveState === 'error' ? 'text-red-600' : 'text-[#777]'}`} role={saveError ? 'alert' : undefined} title={saveError || undefined}>
             {saveState === 'saving' ? '保存中…' : saveState === 'error' ? saveError : '已保存'}
           </span>
+          <button onClick={() => void createBackup()} disabled={backupPending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{backupPending ? '正在备份…' : '备份项目'}</button>
           <button onClick={addTextNode} className="rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">添加文本节点</button>
           <button onClick={() => void openOtherProject()} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">切换项目</button>
         </div>
       </header>
       {error && <p role="alert" className="shrink-0 border-b border-red-100 bg-red-50 px-5 py-2 text-xs text-red-700">{error}</p>}
       <section className="relative min-h-0 flex-1">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={handleNodesChange}
-          onEdgesChange={handleEdgesChange}
-          onConnect={handleConnect}
-          onNodeDragStop={() => schedulePersist(nodesRef.current, edgesRef.current, true)}
-          fitView
-          deleteKeyCode={['Backspace', 'Delete']}
-        >
-          <Background color="#d8d8dd" gap={22} />
-          <Controls />
-          <MiniMap pannable zoomable />
-        </ReactFlow>
+        <TextNodeContext.Provider value={updateText}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={handleEdgesChange}
+            onConnect={handleConnect}
+            onNodeDragStop={() => schedulePersist(nodesRef.current, edgesRef.current, true)}
+            fitView
+            deleteKeyCode={['Backspace', 'Delete']}
+          >
+            <Background color="#d8d8dd" gap={22} />
+            <Controls />
+            <MiniMap pannable zoomable />
+          </ReactFlow>
+        </TextNodeContext.Provider>
         {nodes.length === 0 && (
           <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 text-center text-sm text-[#888]">
             画布已保存在本地。添加一个文本节点开始创作。
