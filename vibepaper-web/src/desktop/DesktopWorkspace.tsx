@@ -18,7 +18,7 @@ import {
   type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import type { DesktopAsset, DesktopCanvas, DesktopProject, DesktopTask } from './desktop-bridge'
+import type { DesktopAsset, DesktopCanvas, DesktopLocalTextModel, DesktopProject, DesktopTask } from './desktop-bridge'
 
 const bridge = window.vibepaperDesktop
 
@@ -222,6 +222,9 @@ function LocalCanvas({
   const [tasks, setTasks] = useState<DesktopTask[]>([])
   const [taskError, setTaskError] = useState('')
   const [cancellingTask, setCancellingTask] = useState<string | null>(null)
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
+  const [localTextModel, setLocalTextModel] = useState<DesktopLocalTextModel | null>(null)
+  const [modelLoadError, setModelLoadError] = useState('')
   const version = useRef(initialCanvas.version)
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
@@ -240,6 +243,18 @@ function LocalCanvas({
     })
     return () => { cancelled = true }
   }, [project.projectId])
+  useEffect(() => {
+    let cancelled = false
+    void bridge?.getLocalTextModel().then((config) => {
+      if (!cancelled) {
+        setLocalTextModel(config)
+        setModelLoadError('')
+      }
+    }).catch((cause: unknown) => {
+      if (!cancelled) setModelLoadError(cause instanceof Error ? cause.message : '无法读取本地模型配置。')
+    })
+    return () => { cancelled = true }
+  }, [])
   useEffect(() => {
     if (!tasksOpen || !bridge) return
     let cancelled = false
@@ -469,6 +484,9 @@ function LocalCanvas({
           <button onClick={() => void createBackup()} disabled={backupPending || restorePending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{backupPending ? '正在备份…' : '备份项目'}</button>
           <button onClick={() => void restoreBackup()} disabled={backupPending || restorePending || assetPending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{restorePending ? '正在恢复…' : '恢复备份副本'}</button>
           <button onClick={() => setTasksOpen(true)} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">任务记录</button>
+          <button onClick={() => setModelSettingsOpen(true)} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">
+            {localTextModel ? '本地文本模型已配置' : '配置本地文本模型'}
+          </button>
           <button onClick={addTextNode} className="rounded-lg bg-[#171717] px-3 py-2 text-xs font-bold text-white">添加文本节点</button>
           <button onClick={() => void openOtherProject()} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">切换项目</button>
         </div>
@@ -519,6 +537,22 @@ function LocalCanvas({
           cancellingTask={cancellingTask}
           onCancel={(task) => void cancelQueuedTask(task)}
           onClose={() => setTasksOpen(false)}
+        />
+      )}
+      {modelSettingsOpen && (
+        <LocalTextModelSettings
+          initialConfig={localTextModel}
+          loadError={modelLoadError}
+          onSaved={(config) => {
+            setLocalTextModel(config)
+            setModelLoadError('')
+            setModelSettingsOpen(false)
+          }}
+          onCleared={() => {
+            setLocalTextModel(null)
+            setModelSettingsOpen(false)
+          }}
+          onClose={() => setModelSettingsOpen(false)}
         />
       )}
     </main>
@@ -602,4 +636,122 @@ function taskStatusLabel(status: DesktopTask['status']) {
 function formatTaskDate(value: string) {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString()
+}
+
+function LocalTextModelSettings({
+  initialConfig,
+  loadError,
+  onSaved,
+  onCleared,
+  onClose,
+}: {
+  initialConfig: DesktopLocalTextModel | null
+  loadError: string
+  onSaved: (config: DesktopLocalTextModel) => void
+  onCleared: () => void
+  onClose: () => void
+}) {
+  const [endpoint, setEndpoint] = useState(initialConfig?.endpoint ?? 'http://127.0.0.1:1234/v1')
+  const [modelId, setModelId] = useState(initialConfig?.modelId ?? '')
+  const [models, setModels] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(loadError)
+  const [message, setMessage] = useState('')
+
+  const discover = async () => {
+    if (!bridge || busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const discovered = await bridge.discoverLocalModels(endpoint)
+      setModels(discovered)
+      if (discovered.length === 0) setMessage('服务可连接，但没有公布可选模型。')
+      else {
+        if (!discovered.includes(modelId)) setModelId(discovered[0])
+        setMessage(`找到 ${discovered.length} 个文本模型。`)
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法读取本地模型列表。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const save = async () => {
+    if (!bridge || busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      onSaved(await bridge.saveLocalTextModel({ endpoint, modelId }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '保存本地模型配置失败。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const clear = async () => {
+    if (!bridge || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      await bridge.clearLocalTextModel()
+      onCleared()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '移除本地模型配置失败。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-5" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose()
+    }}>
+      <section className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="local-model-settings-title">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 id="local-model-settings-title" className="text-lg font-bold">本地文本模型</h2>
+            <p className="mt-1 text-xs leading-5 text-[#777]">只连接本机服务，不会自动切换到云端，也不需要在此输入 API Key。</p>
+          </div>
+          <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">关闭</button>
+        </div>
+        <label htmlFor="local-model-endpoint" className="mt-6 block text-sm font-semibold">OpenAI 兼容服务地址</label>
+        <input
+          id="local-model-endpoint"
+          value={endpoint}
+          onChange={(event) => setEndpoint(event.target.value)}
+          maxLength={500}
+          placeholder="http://127.0.0.1:1234/v1"
+          className="mt-2 h-11 w-full rounded-xl border border-black/12 px-3 text-sm outline-none focus:border-[#8a72e8]"
+        />
+        <p className="mt-2 text-xs leading-5 text-[#888]">地址必须使用 localhost、127.0.0.1 或 ::1。点击“读取模型”时会向该服务的 /models 路径发起本地请求。</p>
+        <button onClick={() => void discover()} disabled={busy || !endpoint.trim()} className="mt-4 rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">
+          {busy ? '请稍候…' : '读取模型'}
+        </button>
+        <label htmlFor="local-model-id" className="mt-4 block text-sm font-semibold">模型</label>
+        {models.length > 0
+          ? <select id="local-model-id" value={modelId} onChange={(event) => setModelId(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-black/12 bg-white px-3 text-sm outline-none focus:border-[#8a72e8]">
+            {models.map((model) => <option key={model} value={model}>{model}</option>)}
+          </select>
+          : <input
+            id="local-model-id"
+            value={modelId}
+            onChange={(event) => setModelId(event.target.value)}
+            maxLength={200}
+            placeholder="先读取模型，或输入服务提供的模型 ID"
+            className="mt-2 h-11 w-full rounded-xl border border-black/12 px-3 text-sm outline-none focus:border-[#8a72e8]"
+          />}
+        {message && <p role="status" className="mt-3 text-xs text-[#666]">{message}</p>}
+        {(error || loadError) && <p role="alert" className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error || loadError}</p>}
+        <div className="mt-6 flex justify-end gap-2">
+          {initialConfig && <button onClick={() => void clear()} disabled={busy} className="mr-auto rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">移除配置</button>}
+          <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">取消</button>
+          <button onClick={() => void save()} disabled={busy || !modelId.trim()} className="rounded-lg bg-[#171717] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">保存配置</button>
+        </div>
+      </section>
+    </div>
+  )
 }

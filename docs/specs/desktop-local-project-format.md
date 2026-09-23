@@ -1,6 +1,6 @@
-# 桌面本地项目格式（阶段 1–2）
+# 桌面本地数据格式（项目与模型设置）
 
-状态：Electron 项目引导、本地画布存储、首批图片素材导入/引用及当前格式下的画布/素材备份恢复切片已实现。恢复会创建新身份的副本，不覆盖原项目。任务、Agent 会话、凭据、跨版本恢复与完整项目升级流程尚未实现。
+状态：Electron 项目引导、本地画布存储、首批图片素材导入/引用、任务状态存储及当前格式下的画布/素材/成功任务输出备份恢复切片已实现。恢复会创建新身份的副本，不覆盖原项目。Agent 会话、凭据、跨版本恢复与完整项目升级流程尚未实现。
 
 ## 项目目录
 
@@ -12,7 +12,22 @@
     assets/<sha256>/<assetId>.<ext>
 ```
 
-不把当前绝对路径写入项目身份。项目搬迁后，用户打开新位置即可通过 `projectId`、`canvasId` 恢复相同项目身份。操作系统用户数据目录目前只保存最近打开目录索引，不保存 API Key。
+不把当前绝对路径写入项目身份。项目搬迁后，用户打开新位置即可通过 `projectId`、`canvasId` 恢复相同项目身份。操作系统用户数据目录保存 `recent-project.json` 和非密钥 `settings.json`；凭据仍不进入普通设置文件。
+
+## 本地文本模型设置
+
+用户数据目录的 `settings.json` 使用 `schemaVersion: 1`。当前可选 `localTextModel` 字段保存一台用户主动配置的 OpenAI 兼容本地文本服务：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `providerId` | 固定字符串 `local-openai-compatible` | 本地目录项标识 |
+| `providerType` | 固定字符串 `local` | 阻止本地选择被解释成云端提供方 |
+| `endpoint` | URL 字符串 | 仅允许 `localhost`、`127.0.0.1` 或 `::1`，路径仅支持 `/`、`/v1`、`/api/v1` |
+| `modelId` | 字符串，最多 200 字符 | 由用户输入或显式读取 `/models` 后选择 |
+| `modalities`、`inputModes` | 固定为 `['text']` | 当前只声明文本输入/输出 |
+| `toolCalling`、`streaming`、`cancellation` | 固定为 `false` | 未接入对应执行能力，不向调用方虚报支持 |
+
+Renderer 只能通过 Main 暴露的配置、发现和保存方法访问此目录项。应用不会自动探测服务；用户点击“读取模型”后，Main 才向 loopback 地址的 `/models` 发起无凭据请求。此设置不进入项目目录或项目备份，也不包含 API Key。当前 Provider 目录尚未连接生成执行器。
 
 ## `project.json`
 
@@ -26,7 +41,7 @@
 
 ## `project.sqlite`
 
-数据库使用 `PRAGMA user_version = 2` 标记存储结构版本，并以 WAL、外键和 `synchronous=FULL` 运行。主要表为：
+数据库使用 `PRAGMA user_version = 3` 标记存储结构版本，并以 WAL、外键和 `synchronous=FULL` 运行。主要表为：
 
 | 表 | 内容 |
 | --- | --- |
@@ -36,6 +51,8 @@
 | `edges` | 画布 ID、连线 ID、来源/目标及完整连线 JSON；外键要求两端节点存在 |
 | `assets` | 素材 ID、SHA-256、显示名、图片 MIME、大小和项目内相对路径 |
 | `asset_references` | 画布图片节点与本地素材的关系；删除节点时级联清除引用 |
+| `tasks` | 本地生成任务输入哈希、Idempotency-Key、画布版本、提供方/模型标识、状态、结果路径与哈希、错误码和时间 |
+| `task_events` | 任务状态事件的单调序号、类型、JSON 数据和时间 |
 
 Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写入须同时匹配项目/画布身份和 `expectedVersion`；Local Core 校验连线引用及载荷大小，再在一个 SQLite 事务中替换节点/连线并递增画布版本。若数据库版本已被其他写者更新，事务回滚并要求重新打开画布。
 
@@ -43,7 +60,7 @@ Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写�
 
 通过系统文件选择器导入 PNG、JPEG、GIF 或 WebP 图片（每个文件不超过 200 MB）。Local Core 以实际文件签名识别 MIME、流式计算 SHA-256 并复制到 `.vibepaper/assets/<sha256>/<assetId>.<ext>`；相同内容只登记一条素材记录。画布中的图片节点保存稳定 `assetId`，保存画布时素材存在性检查与引用更新位于同一 SQLite 事务。Renderer 只使用受限的 `vibe://app/assets/<assetId>` 资源 URL，Main 通过 Local Core 查到项目内文件后提供只读图片响应。
 
-`user_version = 1` 升级到版本 2 前，会先在 `.vibepaper/backups/` 创建 SQLite 在线快照，再用事务创建素材表和引用表。迁移失败时 SQLite 事务回滚，快照保留供恢复。
+`user_version = 1` 升级到版本 2 前，会先在 `.vibepaper/backups/` 创建 SQLite 在线快照，再用事务创建素材表和引用表。`user_version = 2` 升级到版本 3 前同样创建回退副本，再用事务增加任务表和事件表。迁移失败时 SQLite 事务回滚，快照保留供恢复。
 
 ## 本地备份与恢复首个切片
 

@@ -3,6 +3,10 @@ const fs = require('node:fs/promises')
 const { randomUUID } = require('node:crypto')
 const { pathToFileURL } = require('node:url')
 const {
+  discoverLocalModels,
+  normalizeLocalTextModelConfig,
+} = require('./local-model-catalog.cjs')
+const {
   app,
   BrowserWindow,
   dialog,
@@ -23,6 +27,7 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock()
 let mainWindow = null
 let localCore = null
 let recentProjectFile = null
+let desktopSettingsFile = null
 let quittingAfterCoreClose = false
 const desktopRoot = path.resolve(__dirname, '..')
 const webRoot = path.resolve(desktopRoot, '..', 'vibepaper-web')
@@ -126,6 +131,60 @@ async function writeRecentProjectDirectory(directory) {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
     throw error
   }
+}
+
+async function readDesktopSettings() {
+  let settings
+  try {
+    settings = JSON.parse(await fs.readFile(desktopSettingsFile, 'utf8'))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { schemaVersion: 1 }
+    throw error
+  }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings) || settings.schemaVersion !== 1) {
+    throw new Error('桌面设置文件格式无效。')
+  }
+  if (Object.keys(settings).some((key) => !['schemaVersion', 'localTextModel'].includes(key))) {
+    throw new Error('桌面设置文件包含当前版本不支持的字段。')
+  }
+  return settings
+}
+
+async function writeDesktopSettings(settings) {
+  const temporaryPath = path.join(path.dirname(desktopSettingsFile), `.settings.${randomUUID()}.tmp`)
+  let handle
+  try {
+    await fs.mkdir(path.dirname(desktopSettingsFile), { recursive: true })
+    handle = await fs.open(temporaryPath, 'wx', 0o600)
+    await handle.writeFile(`${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await fs.rename(temporaryPath, desktopSettingsFile)
+  } catch (error) {
+    if (handle) await handle.close().catch(() => undefined)
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
+async function getLocalTextModelConfig() {
+  const settings = await readDesktopSettings()
+  if (settings.localTextModel === undefined || settings.localTextModel === null) return null
+  return normalizeLocalTextModelConfig(settings.localTextModel)
+}
+
+async function saveLocalTextModelConfig(input) {
+  const config = normalizeLocalTextModelConfig(input)
+  const settings = await readDesktopSettings()
+  await writeDesktopSettings({ ...settings, schemaVersion: 1, localTextModel: config })
+  return config
+}
+
+async function clearLocalTextModelConfig() {
+  const settings = await readDesktopSettings()
+  if (settings.localTextModel !== undefined) await writeDesktopSettings({ schemaVersion: 1 })
+  return null
 }
 
 async function restoreRecentProject() {
@@ -306,6 +365,22 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     return localCore.request('task:cancel', { projectId, taskId })
   })
+  ipcMain.handle('desktop:model:get-local-text', (event) => {
+    assertTrustedSender(event)
+    return getLocalTextModelConfig()
+  })
+  ipcMain.handle('desktop:model:discover-local', (event, endpoint) => {
+    assertTrustedSender(event)
+    return discoverLocalModels(endpoint)
+  })
+  ipcMain.handle('desktop:model:save-local-text', (event, config) => {
+    assertTrustedSender(event)
+    return saveLocalTextModelConfig(config)
+  })
+  ipcMain.handle('desktop:model:clear-local-text', (event) => {
+    assertTrustedSender(event)
+    return clearLocalTextModelConfig()
+  })
 }
 
 async function createWindow() {
@@ -351,6 +426,7 @@ if (hasSingleInstanceLock) {
   app.whenReady().then(async () => {
     if (!developmentUrl) await fs.access(rendererIndex)
     recentProjectFile = path.join(app.getPath('userData'), 'recent-project.json')
+    desktopSettingsFile = path.join(app.getPath('userData'), 'settings.json')
     localCore = startLocalCore()
     await restoreRecentProject()
     registerRendererProtocol()
