@@ -18,7 +18,9 @@ import {
   type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import type { DesktopAgnesModelCatalog, DesktopAsset, DesktopCanvas, DesktopLocalTextModel, DesktopProject, DesktopTask } from './desktop-bridge'
+import { CanvasWelcome } from '@/features/canvas/CanvasWelcome'
+import { DesktopAgentPanel, DesktopCanvasChrome } from './DesktopCanvasChrome'
+import type { DesktopAgnesModelCatalog, DesktopAgentSession, DesktopAsset, DesktopCanvas, DesktopLocalTextModel, DesktopProject, DesktopTask } from './desktop-bridge'
 
 const bridge = window.vibepaperDesktop
 
@@ -264,6 +266,9 @@ function LocalCanvas({
   const [nodes, setNodes] = useState<Node[]>(initialCanvas.nodes)
   const [edges, setEdges] = useState<Edge[]>(initialCanvas.edges)
   const [assets, setAssets] = useState<DesktopAsset[]>([])
+  const [assetsOpen, setAssetsOpen] = useState(false)
+  const [agentOpen, setAgentOpen] = useState(true)
+  const [mode, setMode] = useState<'select' | 'pan'>('select')
   const [assetError, setAssetError] = useState('')
   const [assetPending, setAssetPending] = useState(false)
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved')
@@ -272,6 +277,12 @@ function LocalCanvas({
   const [backupPending, setBackupPending] = useState(false)
   const [restorePending, setRestorePending] = useState(false)
   const [tasksOpen, setTasksOpen] = useState(false)
+  const [agentSessionsOpen, setAgentSessionsOpen] = useState(false)
+  const [agentSessions, setAgentSessions] = useState<DesktopAgentSession[]>([])
+  const [activeAgentSessionId, setActiveAgentSessionId] = useState<string | null>(null)
+  const [agentSessionsLoading, setAgentSessionsLoading] = useState(false)
+  const [agentSessionCreating, setAgentSessionCreating] = useState(false)
+  const [agentSessionError, setAgentSessionError] = useState('')
   const [tasks, setTasks] = useState<DesktopTask[]>([])
   const [taskError, setTaskError] = useState('')
   const [cancellingTask, setCancellingTask] = useState<string | null>(null)
@@ -286,6 +297,23 @@ function LocalCanvas({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveQueue = useRef<Promise<void>>(Promise.resolve())
   const saveFailure = useRef<string | null>(null)
+
+  const refreshAgentSessions = useCallback(async () => {
+    if (!bridge) return
+    setAgentSessionsLoading(true)
+    setAgentSessionError('')
+    try {
+      const sessions = await bridge.listAgentSessions(project.projectId)
+      setAgentSessions(sessions)
+      setActiveAgentSessionId((current) => current && sessions.some((session) => session.sessionId === current)
+        ? current
+        : sessions[0]?.sessionId ?? null)
+    } catch (cause) {
+      setAgentSessionError(cause instanceof Error ? cause.message : '无法读取本地 Agent 会话。')
+    } finally {
+      setAgentSessionsLoading(false)
+    }
+  }, [project.projectId])
 
   useEffect(() => { nodesRef.current = nodes }, [nodes])
   useEffect(() => { edgesRef.current = edges }, [edges])
@@ -314,6 +342,10 @@ function LocalCanvas({
     })
     return () => { cancelled = true }
   }, [])
+  useEffect(() => {
+    if (agentSessionsOpen) void refreshAgentSessions()
+  }, [agentSessionsOpen, refreshAgentSessions])
+  useEffect(() => { void refreshAgentSessions() }, [refreshAgentSessions])
   useEffect(() => {
     if (!tasksOpen || !bridge) return
     let cancelled = false
@@ -429,6 +461,21 @@ function LocalCanvas({
   }
 
   const addTextNode = () => insertTextNode('')
+
+  const createAgentSession = async () => {
+    if (!bridge || agentSessionCreating) return
+    setAgentSessionCreating(true)
+    setAgentSessionError('')
+    try {
+      const created = await bridge.createAgentSession(project.projectId, '新对话')
+      setActiveAgentSessionId(created.sessionId)
+      await refreshAgentSessions()
+    } catch (cause) {
+      setAgentSessionError(cause instanceof Error ? cause.message : '无法创建本地 Agent 会话。')
+    } finally {
+      setAgentSessionCreating(false)
+    }
+  }
 
   const insertTaskMediaNode = (task: DesktopTask) => {
     if (task.modality !== 'image' && task.modality !== 'video') return
@@ -605,6 +652,7 @@ function LocalCanvas({
           <button onClick={() => void createBackup()} disabled={backupPending || restorePending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{backupPending ? '正在备份…' : '备份项目'}</button>
           <button onClick={() => void restoreBackup()} disabled={backupPending || restorePending || assetPending} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold disabled:opacity-50">{restorePending ? '正在恢复…' : '恢复备份副本'}</button>
           <button onClick={() => { setTaskError(''); setTasksOpen(true) }} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">任务记录</button>
+          <button onClick={() => { setTasksOpen(false); setAgentSessionsOpen(true) }} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">Agent 会话</button>
           <button onClick={() => setModelSettingsOpen(true)} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">
             {agnesModels?.apiKeyConfigured ? 'Agnes 云端模型已配置' : localTextModel ? '本地模型已配置' : '模型与 API Key'}
           </button>
@@ -669,6 +717,19 @@ function LocalCanvas({
           onClose={() => setTasksOpen(false)}
         />
       )}
+      {agentSessionsOpen && (
+        <AgentSessionPanel
+          sessions={agentSessions}
+          activeSessionId={activeAgentSessionId}
+          loading={agentSessionsLoading}
+          creating={agentSessionCreating}
+          error={agentSessionError}
+          onRefresh={() => void refreshAgentSessions()}
+          onCreate={() => void createAgentSession()}
+          onSelect={setActiveAgentSessionId}
+          onClose={() => setAgentSessionsOpen(false)}
+        />
+      )}
       {modelSettingsOpen && (
         <DesktopModelSettings
           initialConfig={localTextModel}
@@ -688,6 +749,82 @@ function LocalCanvas({
       )}
     </main>
   )
+}
+
+function AgentSessionPanel({
+  sessions,
+  activeSessionId,
+  loading,
+  creating,
+  error,
+  onRefresh,
+  onCreate,
+  onSelect,
+  onClose,
+}: {
+  sessions: DesktopAgentSession[]
+  activeSessionId: string | null
+  loading: boolean
+  creating: boolean
+  error: string
+  onRefresh: () => void
+  onCreate: () => void
+  onSelect: (sessionId: string) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/25" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose()
+    }}>
+      <aside className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="desktop-agent-sessions-title">
+        <header className="flex items-center justify-between border-b border-black/8 px-5 py-4">
+          <div>
+            <h2 id="desktop-agent-sessions-title" className="text-base font-bold">本地 Agent 会话</h2>
+            <p className="mt-1 text-xs text-[#777]">会话记录保存在当前项目中。</p>
+          </div>
+          <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">关闭</button>
+        </header>
+        <div className="flex gap-2 border-b border-black/8 p-4">
+          <button onClick={onCreate} disabled={creating} className="flex-1 rounded-lg bg-[#171717] px-3 py-2.5 text-xs font-bold text-white disabled:opacity-50">
+            {creating ? '正在创建…' : '新建会话'}
+          </button>
+          <button onClick={onRefresh} disabled={loading} className="rounded-lg border border-black/12 px-3 py-2.5 text-xs font-bold disabled:opacity-50">
+            {loading ? '正在读取…' : '刷新'}
+          </button>
+        </div>
+        <p className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-900">
+          当前可管理本地会话。消息恢复与模型对话尚未接入，发送内容暂不可用。
+        </p>
+        {error && <p role="alert" className="border-b border-red-100 bg-red-50 px-5 py-3 text-xs text-red-700">{error}</p>}
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {sessions.length === 0
+            ? <p className="py-12 text-center text-sm text-[#888]">{loading ? '正在读取会话…' : '此项目还没有 Agent 会话。'}</p>
+            : <ul className="space-y-2">{sessions.map((session) => {
+              const active = session.sessionId === activeSessionId
+              return (
+                <li key={session.sessionId}>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(session.sessionId)}
+                    aria-current={active ? 'true' : undefined}
+                    className={`w-full rounded-xl border px-3 py-3 text-left ${active ? 'border-[#8a72e8] bg-[#f6f3ff]' : 'border-black/8 hover:bg-[#f7f7f8]'}`}
+                  >
+                    <p className="text-sm font-semibold">{active ? '当前会话' : '本地会话'}</p>
+                    <p className="mt-1 text-xs text-[#777]">创建于 {formatAgentSessionDate(session.createdAt)}</p>
+                    <p className="mt-0.5 text-[11px] text-[#999]">最近更新 {formatAgentSessionDate(session.modifiedAt)}</p>
+                  </button>
+                </li>
+              )
+            })}</ul>}
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+function formatAgentSessionDate(timestamp: number) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '时间未知'
+  return new Date(timestamp).toLocaleString()
 }
 
 function TaskHistoryPanel({
