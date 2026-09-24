@@ -40,8 +40,15 @@ export interface DesktopTask {
 
 export interface DesktopAgentSession {
   sessionId: string
+  title: string
   createdAt: number
   modifiedAt: number
+}
+
+export interface DesktopAgentMessage {
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: number
 }
 
 export interface DesktopCreateGenerationTaskInput {
@@ -110,6 +117,8 @@ export interface DesktopBridge {
   clearLocalTextModel(): Promise<null>
   listAgentSessions(projectId: string): Promise<DesktopAgentSession[]>
   createAgentSession(projectId: string, title?: string): Promise<Pick<DesktopAgentSession, 'sessionId' | 'createdAt'>>
+  getAgentMessages(projectId: string, sessionId: string): Promise<DesktopAgentMessage[]>
+  sendAgentMessage(projectId: string, sessionId: string, content: string): Promise<{ assistantText: string }>
 }
 
 declare global {

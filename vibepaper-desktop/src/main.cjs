@@ -254,7 +254,7 @@ function createAgentWorker() {
       })
     },
     async stop() {
-      await worker.request('agent:close', {}, 5_000).catch(() => undefined)
+      await worker.request('agent:close', {}, 275_000).catch(() => undefined)
       if (!exitedSettled) child.kill()
       await exited
     },
@@ -948,6 +948,38 @@ function registerAgentIpc() {
     assertTrustedSender(event)
     const worker = await getAgentWorker(projectId)
     return worker.request('agent:create-session', { projectId, title })
+  })
+  ipcMain.handle('desktop:agent:get-messages', async (event, projectId, sessionId) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:get-messages', { projectId, sessionId })
+  })
+  ipcMain.handle('desktop:agent:send-message', async (event, projectId, sessionId, content) => {
+    assertTrustedSender(event)
+    if (typeof content !== 'string' || !content.trim() || content.length > 20_000) {
+      throw codedError('AGENT_MESSAGE_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    const apiKey = await getAgnesApiKey()
+    if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: '发送文本到 Agnes',
+      message: '这条 Agent 消息将发送给 Agnes（agnes-2.5-flash）。',
+      detail: `仅发送本条文本和当前会话历史，不会发送画布文件或素材文件。Agnes 可能收费。\n\n${content.trim().slice(0, 1200)}${content.trim().length > 1200 ? '…' : ''}`,
+      buttons: ['发送到 Agnes', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    })
+    if (confirmation.response !== 0) throw codedError('CLOUD_SEND_CANCELLED')
+    return worker.request('agent:send-message', {
+      projectId,
+      sessionId,
+      content,
+      apiKey,
+      idempotencyKey: randomUUID(),
+    }, 270_000)
   })
 }
 

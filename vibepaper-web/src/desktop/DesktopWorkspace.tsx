@@ -20,7 +20,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { CanvasWelcome } from '@/features/canvas/CanvasWelcome'
 import { DesktopAgentPanel, DesktopCanvasChrome } from './DesktopCanvasChrome'
-import type { DesktopAgnesModelCatalog, DesktopAgentSession, DesktopAsset, DesktopCanvas, DesktopLocalTextModel, DesktopProject, DesktopTask } from './desktop-bridge'
+import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentSession, DesktopAsset, DesktopCanvas, DesktopLocalTextModel, DesktopProject, DesktopTask } from './desktop-bridge'
 
 const bridge = window.vibepaperDesktop
 
@@ -280,8 +280,11 @@ function LocalCanvas({
   const [agentSessionsOpen, setAgentSessionsOpen] = useState(false)
   const [agentSessions, setAgentSessions] = useState<DesktopAgentSession[]>([])
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string | null>(null)
+  const [agentMessages, setAgentMessages] = useState<DesktopAgentMessage[]>([])
+  const [agentDraft, setAgentDraft] = useState('')
   const [agentSessionsLoading, setAgentSessionsLoading] = useState(false)
   const [agentSessionCreating, setAgentSessionCreating] = useState(false)
+  const [agentReplyPending, setAgentReplyPending] = useState(false)
   const [agentSessionError, setAgentSessionError] = useState('')
   const [tasks, setTasks] = useState<DesktopTask[]>([])
   const [taskError, setTaskError] = useState('')
@@ -297,21 +300,35 @@ function LocalCanvas({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveQueue = useRef<Promise<void>>(Promise.resolve())
   const saveFailure = useRef<string | null>(null)
+  const agentReplyPendingRef = useRef(false)
 
-  const refreshAgentSessions = useCallback(async () => {
+  const refreshAgentSessions = useCallback(async (preferredSessionId?: string) => {
     if (!bridge) return
     setAgentSessionsLoading(true)
     setAgentSessionError('')
     try {
       const sessions = await bridge.listAgentSessions(project.projectId)
       setAgentSessions(sessions)
-      setActiveAgentSessionId((current) => current && sessions.some((session) => session.sessionId === current)
-        ? current
-        : sessions[0]?.sessionId ?? null)
+      const sessionId = preferredSessionId && sessions.some((session) => session.sessionId === preferredSessionId)
+        ? preferredSessionId
+        : sessions[0]?.sessionId ?? null
+      setActiveAgentSessionId(sessionId)
+      setAgentMessages(sessionId ? await bridge.getAgentMessages(project.projectId, sessionId) : [])
     } catch (cause) {
       setAgentSessionError(cause instanceof Error ? cause.message : '无法读取本地 Agent 会话。')
     } finally {
       setAgentSessionsLoading(false)
+    }
+  }, [project.projectId])
+
+  const loadAgentSession = useCallback(async (sessionId: string) => {
+    if (!bridge) return
+    setActiveAgentSessionId(sessionId)
+    setAgentSessionError('')
+    try {
+      setAgentMessages(await bridge.getAgentMessages(project.projectId, sessionId))
+    } catch (cause) {
+      setAgentSessionError(cause instanceof Error ? cause.message : '无法读取此会话的消息。')
     }
   }, [project.projectId])
 
@@ -468,12 +485,34 @@ function LocalCanvas({
     setAgentSessionError('')
     try {
       const created = await bridge.createAgentSession(project.projectId, '新对话')
-      setActiveAgentSessionId(created.sessionId)
-      await refreshAgentSessions()
+      await refreshAgentSessions(created.sessionId)
     } catch (cause) {
       setAgentSessionError(cause instanceof Error ? cause.message : '无法创建本地 Agent 会话。')
     } finally {
       setAgentSessionCreating(false)
+    }
+  }
+
+  const sendAgentMessage = async () => {
+    const content = agentDraft.trim()
+    const sessionId = activeAgentSessionId
+    if (!bridge || !sessionId || !content || agentReplyPendingRef.current) return
+    agentReplyPendingRef.current = true
+    setAgentReplyPending(true)
+    setAgentSessionError('')
+    try {
+      await bridge.sendAgentMessage(project.projectId, sessionId, content)
+      setAgentDraft('')
+      await refreshAgentSessions(sessionId)
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Agent 回复失败。'
+      if (!message.includes('CLOUD_SEND_CANCELLED')) {
+        await refreshAgentSessions(sessionId)
+        setAgentSessionError(agentSendErrorLabel(message))
+      }
+    } finally {
+      agentReplyPendingRef.current = false
+      setAgentReplyPending(false)
     }
   }
 
@@ -721,12 +760,19 @@ function LocalCanvas({
         <AgentSessionPanel
           sessions={agentSessions}
           activeSessionId={activeAgentSessionId}
+          messages={agentMessages}
+          draft={agentDraft}
           loading={agentSessionsLoading}
           creating={agentSessionCreating}
+          sending={agentReplyPending}
+          agnesConfigured={agnesModels?.apiKeyConfigured === true}
           error={agentSessionError}
+          onDraftChange={setAgentDraft}
           onRefresh={() => void refreshAgentSessions()}
           onCreate={() => void createAgentSession()}
-          onSelect={setActiveAgentSessionId}
+          onSelect={(sessionId) => void loadAgentSession(sessionId)}
+          onSend={() => void sendAgentMessage()}
+          onConfigure={() => { setAgentSessionsOpen(false); setModelSettingsOpen(true) }}
           onClose={() => setAgentSessionsOpen(false)}
         />
       )}
@@ -754,22 +800,36 @@ function LocalCanvas({
 function AgentSessionPanel({
   sessions,
   activeSessionId,
+  messages,
+  draft,
   loading,
   creating,
+  sending,
+  agnesConfigured,
   error,
+  onDraftChange,
   onRefresh,
   onCreate,
   onSelect,
+  onSend,
+  onConfigure,
   onClose,
 }: {
   sessions: DesktopAgentSession[]
   activeSessionId: string | null
+  messages: DesktopAgentMessage[]
+  draft: string
   loading: boolean
   creating: boolean
+  sending: boolean
+  agnesConfigured: boolean
   error: string
+  onDraftChange: (value: string) => void
   onRefresh: () => void
   onCreate: () => void
   onSelect: (sessionId: string) => void
+  onSend: () => void
+  onConfigure: () => void
   onClose: () => void
 }) {
   return (
@@ -793,12 +853,12 @@ function AgentSessionPanel({
           </button>
         </div>
         <p className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-900">
-          当前可管理本地会话。消息恢复与模型对话尚未接入，发送内容暂不可用。
+          每条消息发送前都会确认将文本和当前会话历史发送给 Agnes；不会发送画布或素材文件，供应商可能收费。
         </p>
         {error && <p role="alert" className="border-b border-red-100 bg-red-50 px-5 py-3 text-xs text-red-700">{error}</p>}
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div className="max-h-[32%] shrink-0 overflow-y-auto border-b border-black/8 p-3">
           {sessions.length === 0
-            ? <p className="py-12 text-center text-sm text-[#888]">{loading ? '正在读取会话…' : '此项目还没有 Agent 会话。'}</p>
+            ? <p className="py-3 text-center text-sm text-[#888]">{loading ? '正在读取会话…' : '此项目还没有 Agent 会话。'}</p>
             : <ul className="space-y-2">{sessions.map((session) => {
               const active = session.sessionId === activeSessionId
               return (
@@ -809,7 +869,7 @@ function AgentSessionPanel({
                     aria-current={active ? 'true' : undefined}
                     className={`w-full rounded-xl border px-3 py-3 text-left ${active ? 'border-[#8a72e8] bg-[#f6f3ff]' : 'border-black/8 hover:bg-[#f7f7f8]'}`}
                   >
-                    <p className="text-sm font-semibold">{active ? '当前会话' : '本地会话'}</p>
+                    <p className="truncate text-sm font-semibold">{session.title || (active ? '当前会话' : '本地会话')}</p>
                     <p className="mt-1 text-xs text-[#777]">创建于 {formatAgentSessionDate(session.createdAt)}</p>
                     <p className="mt-0.5 text-[11px] text-[#999]">最近更新 {formatAgentSessionDate(session.modifiedAt)}</p>
                   </button>
@@ -817,6 +877,40 @@ function AgentSessionPanel({
               )
             })}</ul>}
         </div>
+        {activeSessionId
+          ? <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite">
+              {messages.length === 0 && !sending
+                ? <p className="py-8 text-center text-sm text-[#888]">发送第一条消息开始对话。</p>
+                : messages.map((message, index) => (
+                  <article key={`${message.createdAt}-${index}`} className={`rounded-xl px-3 py-2.5 ${message.role === 'user' ? 'ml-8 bg-[#f1eefb]' : 'mr-4 bg-[#f7f7f8]'}`}>
+                    <p className="mb-1 text-[10px] font-bold text-[#888]">{message.role === 'user' ? '你' : 'Paper Agent'}</p>
+                    <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[#333]">{message.content}</p>
+                  </article>
+                ))}
+              {sending && <p className="text-xs text-[#777]" role="status">Agnes 正在回复…</p>}
+            </div>
+            <form className="shrink-0 border-t border-black/8 p-3" onSubmit={(event) => { event.preventDefault(); onSend() }}>
+              <textarea
+                aria-label="发送给 Agent 的消息"
+                value={draft}
+                onChange={(event) => onDraftChange(event.target.value)}
+                maxLength={20_000}
+                rows={3}
+                placeholder="写下你想讨论的内容…"
+                className="w-full resize-y rounded-xl border border-black/10 px-3 py-2 text-sm leading-6 outline-none focus:border-[#8a72e8]"
+              />
+              <div className="mt-2 flex items-center justify-between">
+                <span className="text-[10px] text-[#999]">{agnesConfigured ? '将发送到 Agnes · 每次发送前确认' : '先配置 Agnes API Key'}</span>
+                {agnesConfigured
+                  ? <button type="submit" disabled={sending || !draft.trim()} className="rounded-lg bg-[#171717] px-4 py-2 text-xs font-bold text-white disabled:opacity-45">
+                    {sending ? '等待回复…' : '发送'}
+                  </button>
+                  : <button type="button" onClick={onConfigure} className="rounded-lg bg-[#6d55c9] px-3 py-2 text-xs font-bold text-white">配置 Key</button>}
+              </div>
+            </form>
+          </div>
+          : <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-sm text-[#888]">新建或选择一个会话开始。</div>}
       </aside>
     </div>
   )
@@ -825,6 +919,14 @@ function AgentSessionPanel({
 function formatAgentSessionDate(timestamp: number) {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '时间未知'
   return new Date(timestamp).toLocaleString()
+}
+
+function agentSendErrorLabel(message: string) {
+  if (message.includes('CLOUD_CREDENTIAL_MISSING')) return '先在“模型与 API Key”中安全保存 Agnes API Key。'
+  if (message.includes('AGENT_MODEL_TIMEOUT')) return 'Agnes 响应超时。用户消息已保存在本地会话中。'
+  if (message.includes('AGENT_RUN_ALREADY_PROCESSED')) return '这条消息已处理过，请检查会话记录后再继续。'
+  if (message.includes('AGENT_MESSAGE_INVALID')) return '消息不能为空，且不能超过 20,000 个字符。'
+  return '发送失败。请检查 Agnes Key 和网络连接；用户消息已保存在本地会话中。'
 }
 
 function TaskHistoryPanel({
@@ -1070,7 +1172,7 @@ function DesktopModelSettings({
     try {
       onSavedAgnes(await bridge.saveAgnesApiKey(apiKey))
       setApiKey('')
-      setMessage('Agnes API Key 已由系统凭据能力加密保存；模型可在云端任务提交前选择。')
+      setMessage('Agnes API Key 已由系统凭据能力加密保存，可用于云端生成和 Agent 对话；每次发送仍需确认。')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '保存 Agnes API Key 失败。')
     } finally {
@@ -1102,7 +1204,7 @@ function DesktopModelSettings({
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 id="local-model-settings-title" className="text-lg font-bold">本地与 Agnes 模型</h2>
-            <p className="mt-1 text-xs leading-5 text-[#777]">本地模型请求不联网。Agnes 仅在你发起云端任务并确认发送时调用。</p>
+            <p className="mt-1 text-xs leading-5 text-[#777]">本地模型请求不联网。Agnes 仅在你发起云端生成或 Agent 对话并确认发送时调用。</p>
           </div>
           <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">关闭</button>
         </div>
@@ -1114,7 +1216,7 @@ function DesktopModelSettings({
             <li>图像：agnes-image-2.5-flash</li>
             <li>视频：agnes-video-2.5-flash</li>
           </ul>
-          <p className="mt-2 text-xs leading-5 text-amber-800">云端调用会发送当前提示词，数据由 Agnes 处理，供应商可能收费。每个云端任务提交前都会再次显示发送确认。</p>
+          <p className="mt-2 text-xs leading-5 text-amber-800">云端生成会发送当前提示词；Agent 对话会发送当前消息和当前会话历史。数据由 Agnes 处理，供应商可能收费；每次发送前都会再次显示确认。</p>
           <label htmlFor="agnes-api-key" className="mt-4 block text-xs font-semibold">Agnes API Key</label>
           <input
             id="agnes-api-key"

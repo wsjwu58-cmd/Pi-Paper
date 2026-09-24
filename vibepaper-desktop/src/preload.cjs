@@ -23,4 +23,6 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   clearLocalTextModel: () => ipcRenderer.invoke('desktop:model:clear-local-text'),
   listAgentSessions: (projectId) => ipcRenderer.invoke('desktop:agent:list-sessions', projectId),
   createAgentSession: (projectId, title) => ipcRenderer.invoke('desktop:agent:create-session', projectId, title),
+  getAgentMessages: (projectId, sessionId) => ipcRenderer.invoke('desktop:agent:get-messages', projectId, sessionId),
+  sendAgentMessage: (projectId, sessionId, content) => ipcRenderer.invoke('desktop:agent:send-message', projectId, sessionId, content),
 })

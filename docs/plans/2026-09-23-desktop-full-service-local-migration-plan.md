@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化、PNG/JPEG/GIF/WebP 素材导入与画布引用，以及当前项目格式下的带校验清单备份/恢复副本已实现。文本任务支持用户配置的 loopback 模型，也支持 Agnes 云端模型；图像与视频任务接入 Agnes 2.5 Flash。三类任务经本地 TaskStore 和隔离 Worker 执行，结果写入项目并可加入画布。云端任务逐项显示数据范围、供应商和可能费用后再请求确认；Agnes Key 通过 Electron `safeStorage` 使用系统密钥能力加密，独立于普通设置和项目数据。Agent JSONL/SQLite/Markdown 已纳入新版项目备份，恢复会重新绑定项目身份并使待确认操作失效；Main 会在本应用备份时先停止 Agent Worker，其他进程持有 Agent 写锁时备份明确失败。独立 Agent Worker 已接入项目打开/切换/退出生命周期，桌面会话面板支持本地会话列表、创建和选择，但还不读取消息，也没有模型回合、Tool Gateway、记忆/压缩或端到端验证。音频生成、其余 Agent 能力、跨版本恢复验证、素材完整管理及其他阶段未落地，未做跨平台验收。日期：2026-09-24。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化、PNG/JPEG/GIF/WebP 素材导入与画布引用，以及当前项目格式下的带校验清单备份/恢复副本已实现。文本任务支持用户配置的 loopback 模型，也支持 Agnes 云端模型；图像与视频任务接入 Agnes 2.5 Flash。三类任务经本地 TaskStore 和隔离 Worker 执行，结果写入项目并可加入画布。云端生成任务逐项显示数据范围、供应商和可能费用后再请求确认；Agnes Key 通过 Electron `safeStorage` 使用系统密钥能力加密，独立于普通设置和项目数据。Agent JSONL/SQLite/Markdown 已纳入新版项目备份，恢复会重新绑定项目身份并使待确认操作失效；Main 会在本应用备份时先停止 Agent Worker，其他进程持有 Agent 写锁时备份明确失败。独立 Agent Worker 已接入项目打开/切换/退出生命周期，桌面会话面板支持历史消息查看与新建/选择；Agnes 文本回合使用 Pi Agent Core，逐条经系统确认后发送当前文本和会话历史，消息与 Run/幂等状态写入本地 JSONL/SQLite。Agent 目前没有画布/素材/任务工具、Tool Gateway、本地模型对话、记忆/压缩；Electron 安装器下载受阻，云端回合尚未实测。音频生成、其余 Agent 能力、跨版本恢复验证、素材完整管理及其他阶段未落地，未做跨平台验收。日期：2026-09-24。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 ## 1. 已确定的产品决策
 
