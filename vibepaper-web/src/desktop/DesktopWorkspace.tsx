@@ -853,7 +853,7 @@ function AgentSessionPanel({
           </button>
         </div>
         <p className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs leading-5 text-amber-900">
-          每条消息发送前都会确认将文本和当前会话历史发送给 Agnes；不会发送画布或素材文件，供应商可能收费。
+          每条消息发送前都会确认将文本、当前会话历史和画布只读摘要发送给 Agnes；不上传图片/视频文件，供应商可能收费。
         </p>
         {error && <p role="alert" className="border-b border-red-100 bg-red-50 px-5 py-3 text-xs text-red-700">{error}</p>}
         <div className="max-h-[32%] shrink-0 overflow-y-auto border-b border-black/8 p-3">
@@ -1216,7 +1216,7 @@ function DesktopModelSettings({
             <li>图像：agnes-image-2.5-flash</li>
             <li>视频：agnes-video-2.5-flash</li>
           </ul>
-          <p className="mt-2 text-xs leading-5 text-amber-800">云端生成会发送当前提示词；Agent 对话会发送当前消息和当前会话历史。数据由 Agnes 处理，供应商可能收费；每次发送前都会再次显示确认。</p>
+          <p className="mt-2 text-xs leading-5 text-amber-800">云端生成会发送当前提示词；Agent 对话会发送当前消息、当前会话历史和当前画布只读摘要。数据由 Agnes 处理，供应商可能收费；每次发送前都会再次显示确认。</p>
           <label htmlFor="agnes-api-key" className="mt-4 block text-xs font-semibold">Agnes API Key</label>
           <input
             id="agnes-api-key"
