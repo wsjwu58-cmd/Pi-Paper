@@ -648,7 +648,7 @@ function registerProjectIpc() {
     await dialog.showMessageBox(mainWindow, {
       type: 'info',
       title: '项目备份完成',
-      message: '本地项目备份已创建。',
+      message: '本地项目备份已创建，包含支持的 Agent 会话与记忆文件。',
       detail: backup.directory,
     })
     return { name: backup.name }

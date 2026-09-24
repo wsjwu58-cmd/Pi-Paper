@@ -1,6 +1,6 @@
 # 桌面本地数据格式（项目与模型设置）
 
-状态：Electron 项目引导、本地画布存储、首批图片素材导入/引用、任务状态存储、本地文本执行、Agnes 文本/图像/视频云端任务，以及当前格式下的画布/素材/成功任务输出备份恢复切片已实现。恢复会创建新身份的副本，不覆盖原项目。Agent 会话/控制库备份、跨版本恢复与完整项目升级流程尚未实现。
+状态：Electron 项目引导、本地画布存储、首批图片素材导入/引用、任务状态存储、本地文本执行、Agnes 文本/图像/视频云端任务，以及当前格式下的画布/素材/成功任务输出和 Agent 数据备份恢复切片已实现。恢复会创建新身份的副本，不覆盖原项目。Agent Worker 接入、跨版本恢复与完整项目升级流程尚未实现。
 
 ## 项目目录
 
@@ -10,6 +10,12 @@
     project.json
     project.sqlite
     assets/<sha256>/<assetId>.<ext>
+    agent/
+      control.sqlite
+      sessions/<cwd-key>/*.jsonl
+      memory/**/*.md
+      skills/**/*.md
+      session-memory/**/*.md
 ```
 
 不把当前绝对路径写入项目身份。项目搬迁后，用户打开新位置即可通过 `projectId`、`canvasId` 恢复相同项目身份。操作系统用户数据目录保存 `recent-project.json` 和非密钥 `settings.json`。Agnes API Key 经 Electron `safeStorage` 使用 OS 密钥能力加密后，单独保存为 `credentials/agnes-api-key.bin`；Linux 未提供 Secret Service/KWallet/Secret Portal 时拒绝保存。凭据不进入普通设置文件、项目目录或项目备份。
@@ -72,11 +78,11 @@ Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写�
 
 ## 本地备份与恢复首个切片
 
-画布界面的“备份项目”会先提交待保存的画布改动，再由 Local Core 将 `project.json`、数据库登记且校验通过的素材和 SQLite 在线一致性快照写入新目录的 `.vibepaper/`，生成 `backup-manifest.json`（文件相对路径、字节数和 SHA-256），最后原子改名发布备份目录。SQLite 通过 `node:sqlite` 的在线 backup API 生成快照，不直接复制可能仍处于 WAL 状态的数据库主文件。
+画布界面的“备份项目”会先提交待保存的画布改动，再由 Local Core 将 `project.json`、数据库登记且校验通过的素材、Agent 会话/记忆/Skill 文件和 SQLite 在线一致性快照写入新目录的 `.vibepaper/`，生成 `backup-manifest.json`（文件相对路径、字节数和 SHA-256），最后原子改名发布备份目录。SQLite 通过 `node:sqlite` 的在线 backup API 生成快照，不直接复制可能仍处于 WAL 状态的数据库主文件。Agent 数据复制期间由 `.vibepaper/agent/writer.lock` 阻止并发写入；锁已存在或状态不明确时，本次备份失败并提示关闭 Agent 后重试。
 
-“恢复备份副本”从用户选择的项目备份生成新的项目目录，不覆盖已有内容。Local Core 核验 SQLite `integrity_check`、外键、项目/画布关系、素材引用与素材实际字节；存在清单时还逐项核验 SHA-256 和大小。旧格式备份没有清单时仍执行数据库及素材校验。恢复副本获得新的 `projectId`，保留 `canvasId`、节点和连线身份，完成后打开副本。打开备份后若对画布或素材作出修改，Local Core 会移除旧备份清单，避免清单与已修改内容不符。
+“恢复备份副本”从用户选择的项目备份生成新的项目目录，不覆盖已有内容。Local Core 核验 SQLite `integrity_check`、外键、项目/画布关系、素材引用与素材实际字节；存在清单时还逐项核验 SHA-256 和大小。旧格式备份没有清单时仍执行数据库及素材校验。恢复副本获得新的 `projectId`，保留 `canvasId`、节点和连线身份，完成后打开副本。Agent JSONL 首行中的项目身份和会话目录会一并重绑；控制库中的待处理确认置为失效，未完成 Run 标记为中止。打开备份后若对画布或素材作出修改，Local Core 会移除旧备份清单，避免清单与已修改内容不符。
 
-当前备份清单覆盖项目元数据、SQLite、登记的图片素材及已成功任务的校验结果文件。Agent 会话/控制库、凭据、诊断日志和跨版本升级回退仍需后续纳入完整备份与恢复流程；凭据不应进入项目备份。
+备份清单 schema v2 覆盖项目元数据、项目 SQLite、登记的图片素材、已成功任务结果，以及 `agent/control.sqlite`、Pi JSONL 和受支持的 Markdown/JSON/压缩结果文件；schema v1 备份仍可恢复。Agent 数据总量上限为 4 GiB，符号链接和未识别文件类型会使备份失败。凭据、诊断日志不进入项目备份；Agent schema 升级回退和完整跨版本恢复仍待实现。
 
 首个 JSON 引导版本使用 `.vibepaper/canvas.json`。打开该版本项目且数据库尚不存在时，Local Core 校验 JSON 后在 SQLite 事务中导入；原文件保留为迁移来源，导入成功后 `project.sqlite` 是唯一画布权威。新项目直接创建 SQLite 数据库。
 

@@ -2,20 +2,25 @@ const nativeFs = require('node:fs')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { createHash, randomUUID } = require('node:crypto')
-const { Transform } = require('node:stream')
+const { Readable, Transform } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 const { backup, DatabaseSync } = require('node:sqlite')
 
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const PROJECT_DB_SCHEMA_VERSION = 3
-const PROJECT_BACKUP_SCHEMA_VERSION = 1
+const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
 const MAX_CANVAS_BYTES = 32 * 1024 * 1024
 const MAX_ASSET_BYTES = 200 * 1024 * 1024
 const MAX_TASK_INPUT_BYTES = 1024 * 1024
 const MAX_TASK_OUTPUT_BYTES = 4 * 1024 * 1024 * 1024
+const MAX_AGENT_BACKUP_BYTES = 4 * 1024 * 1024 * 1024
+const MAX_AGENT_BACKUP_FILES = 100_000
+const MAX_AGENT_SESSION_HEADER_BYTES = 1024 * 1024
+const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'session-memory'])
+const AGENT_BACKUP_EXTENSIONS = new Set(['.jsonl', '.json', '.md', '.zst'])
 
 const ASSET_DB_SCHEMA = `
   CREATE TABLE assets (
@@ -792,7 +797,81 @@ async function copyProjectAssets(database, sourceDataDirectory, targetDataDirect
   }
 }
 
-function projectBackupPaths(database) {
+async function listAgentBackupFiles(dataDirectory) {
+  const agentDirectory = path.join(dataDirectory, 'agent')
+  const agentInfo = await fs.lstat(agentDirectory).catch((error) => {
+    if (nodeErrorCode(error) === 'ENOENT') return null
+    throw error
+  })
+  if (!agentInfo) return []
+  if (!agentInfo.isDirectory() || agentInfo.isSymbolicLink()
+    || path.relative(agentDirectory, await fs.realpath(agentDirectory)) !== '') {
+    throw new Error('Agent 数据目录无效，无法备份或恢复。')
+  }
+
+  const files = []
+  let totalBytes = 0
+  const visit = async (directory, relativeDirectory, depth) => {
+    if (depth > 24) throw new Error('Agent 数据目录层级超过安全上限。')
+    const entries = await fs.readdir(directory, { withFileTypes: true })
+    for (const entry of entries) {
+      if (relativeDirectory === '' && ['writer.lock', 'writer.lock.recovery', 'control.sqlite-wal', 'control.sqlite-shm'].includes(entry.name)) {
+        continue
+      }
+      const absolutePath = path.join(directory, entry.name)
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name
+      const info = await fs.lstat(absolutePath)
+      if (info.isSymbolicLink()) throw new Error(`Agent 备份路径“${relativePath}”不能是符号链接。`)
+      if (info.isDirectory()) {
+        if (path.relative(absolutePath, await fs.realpath(absolutePath)) !== '') {
+          throw new Error(`Agent 备份目录“${relativePath}”不能指向目录之外。`)
+        }
+        if (relativeDirectory === '' && !AGENT_BACKUP_DIRECTORIES.has(entry.name)) {
+          throw new Error(`Agent 数据目录“${entry.name}”当前不支持备份。`)
+        }
+        await visit(absolutePath, relativePath, depth + 1)
+        continue
+      }
+      if (!info.isFile()) throw new Error(`Agent 备份路径“${relativePath}”不是普通文件。`)
+      if (relativeDirectory === '' && entry.name === 'control.sqlite') {
+        files.push({ relativePath: 'agent/control.sqlite', absolutePath, sizeBytes: info.size })
+      } else {
+        const extension = path.extname(entry.name).toLowerCase()
+        if (!AGENT_BACKUP_EXTENSIONS.has(extension)) {
+          throw new Error(`Agent 文件“${relativePath}”当前不支持备份。`)
+        }
+        files.push({ relativePath: `agent/${relativePath}`, absolutePath, sizeBytes: info.size })
+      }
+      totalBytes += info.size
+      if (files.length > MAX_AGENT_BACKUP_FILES || totalBytes > MAX_AGENT_BACKUP_BYTES) {
+        throw new Error('Agent 数据超过项目备份容量上限。')
+      }
+    }
+  }
+
+  for (const entry of await fs.readdir(agentDirectory, { withFileTypes: true })) {
+    if (['writer.lock', 'writer.lock.recovery', 'control.sqlite-wal', 'control.sqlite-shm'].includes(entry.name)) continue
+    const absolutePath = path.join(agentDirectory, entry.name)
+    const info = await fs.lstat(absolutePath)
+    if (info.isSymbolicLink()) throw new Error(`Agent 备份路径“${entry.name}”不能是符号链接。`)
+    if (entry.name === 'control.sqlite') {
+      if (!info.isFile()) throw new Error('Agent 控制数据库路径无效。')
+      files.push({ relativePath: 'agent/control.sqlite', absolutePath, sizeBytes: info.size })
+      totalBytes += info.size
+      continue
+    }
+    if (!info.isDirectory() || !AGENT_BACKUP_DIRECTORIES.has(entry.name)) {
+      throw new Error(`Agent 数据目录“${entry.name}”当前不支持备份。`)
+    }
+    await visit(absolutePath, entry.name, 1)
+  }
+  if (files.length > MAX_AGENT_BACKUP_FILES || totalBytes > MAX_AGENT_BACKUP_BYTES) {
+    throw new Error('Agent 数据超过项目备份容量上限。')
+  }
+  return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath))
+}
+
+async function projectBackupPaths(database, dataDirectory, includeAgent = true) {
   const assetRows = database.prepare('SELECT relative_path FROM assets ORDER BY relative_path').all()
   const paths = ['project.json', 'project.sqlite']
   for (const row of assetRows) {
@@ -816,7 +895,265 @@ function projectBackupPaths(database) {
       paths.push(task.output_path)
     }
   }
+  if (includeAgent) {
+    for (const file of await listAgentBackupFiles(dataDirectory)) paths.push(file.relativePath)
+  }
   return paths
+}
+
+async function withAgentBackupLock(dataDirectory, operation) {
+  const agentDirectory = path.join(dataDirectory, 'agent')
+  await fs.mkdir(agentDirectory, { recursive: true, mode: 0o700 })
+  const info = await fs.lstat(agentDirectory)
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Agent 数据目录无效，无法创建项目备份。')
+  if (path.relative(agentDirectory, await fs.realpath(agentDirectory)) !== '') {
+    throw new Error('Agent 数据目录不能指向目录之外。')
+  }
+  const recoveryLockPath = path.join(agentDirectory, 'writer.lock.recovery')
+  const recoveryLockInfo = await fs.lstat(recoveryLockPath).catch((error) => {
+    if (nodeErrorCode(error) === 'ENOENT') return null
+    throw error
+  })
+  if (recoveryLockInfo) throw new Error('Agent 正在恢复写入锁，请稍后再备份。')
+  const lockPath = path.join(agentDirectory, 'writer.lock')
+  const lock = { pid: process.pid, token: randomUUID(), startedAt: new Date().toISOString() }
+  let handle
+  try {
+    handle = await fs.open(lockPath, 'wx', 0o600)
+  } catch (error) {
+    if (nodeErrorCode(error) === 'EEXIST') {
+      throw new Error('Agent 正在写入会话，或写入锁状态不明确；请关闭 Agent 后重试备份。')
+    }
+    throw error
+  }
+  let ready = false
+  try {
+    await handle.writeFile(`${JSON.stringify(lock)}\n`, 'utf8')
+    await handle.sync()
+    ready = true
+    return await operation()
+  } finally {
+    await handle.close().catch(() => undefined)
+    const currentInfo = await fs.lstat(lockPath).catch(() => null)
+    if (currentInfo?.isFile() && !currentInfo.isSymbolicLink()) {
+      let current
+      try {
+        current = JSON.parse(await fs.readFile(lockPath, 'utf8'))
+      } catch {
+        current = null
+      }
+      if (isRecord(current) && current.token === lock.token) await fs.rm(lockPath, { force: true }).catch(() => undefined)
+    }
+    if (!ready) await fs.rm(lockPath, { force: true }).catch(() => undefined)
+  }
+}
+
+async function copyAgentData(sourceDataDirectory, targetDataDirectory, options = {}) {
+  const files = await listAgentBackupFiles(sourceDataDirectory)
+  if (files.length === 0) return false
+  const sourceControl = files.find((file) => file.relativePath === 'agent/control.sqlite')
+  if (sourceControl) {
+    await validateAgentControlDatabase(sourceControl.absolutePath)
+    const sourceDatabase = new DatabaseSync(sourceControl.absolutePath, { timeout: 5000 })
+    try {
+      const targetControl = path.join(targetDataDirectory, 'agent', 'control.sqlite')
+      await fs.mkdir(path.dirname(targetControl), { recursive: true, mode: 0o700 })
+      await backup(sourceDatabase, targetControl)
+      await validateAgentControlDatabase(targetControl, true)
+      await fs.chmod(targetControl, 0o600).catch(() => undefined)
+    } finally {
+      sourceDatabase.close()
+    }
+    await fs.rm(`${targetControl}-wal`, { force: true })
+    await fs.rm(`${targetControl}-shm`, { force: true })
+  }
+  for (const file of files) {
+    if (file.relativePath === 'agent/control.sqlite') continue
+    const sourceInfo = await fs.lstat(file.absolutePath)
+    if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new Error(`Agent 文件“${file.relativePath}”已发生变化。`)
+    const targetPath = path.join(targetDataDirectory, ...file.relativePath.split('/'))
+    await fs.mkdir(path.dirname(targetPath), { recursive: true, mode: 0o700 })
+    await fs.copyFile(file.absolutePath, targetPath, nativeFs.constants.COPYFILE_EXCL)
+    await fs.chmod(targetPath, 0o600).catch(() => undefined)
+  }
+  if (options.expectedProjectId) {
+    await validateAgentSessionHeaders(targetDataDirectory, options.expectedProjectId)
+  }
+  if (options.rebaseProjectId) {
+    await rebaseAgentProjectIdentity(targetDataDirectory, options.rebaseProjectId.from, options.rebaseProjectId.to)
+  }
+  return true
+}
+
+async function validateAgentSessionHeaders(dataDirectory, projectId) {
+  const expectedCwd = `vibepaper-project-${projectId}`
+  const files = await listAgentBackupFiles(dataDirectory)
+  for (const file of files.filter((candidate) => candidate.relativePath.startsWith('agent/sessions/')
+    && candidate.relativePath.endsWith('.jsonl'))) {
+    let header
+    try {
+      header = (await readAgentSessionHeader(file.absolutePath)).header
+    } catch {
+      throw new Error(`Agent 会话“${path.basename(file.absolutePath)}”头部格式无效。`)
+    }
+    if (!isRecord(header) || header.kind !== 'header' || header.version !== 4 || header.cwd !== expectedCwd
+      || !isRecord(header.metadata) || header.metadata.projectId !== projectId) {
+      throw new Error(`Agent 会话“${path.basename(file.absolutePath)}”与备份项目身份不匹配。`)
+    }
+  }
+}
+
+async function readAgentSessionHeader(filePath) {
+  const handle = await fs.open(filePath, 'r')
+  try {
+    const chunks = []
+    let position = 0
+    while (position <= MAX_AGENT_SESSION_HEADER_BYTES) {
+      const chunk = Buffer.allocUnsafe(64 * 1024)
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, position)
+      if (bytesRead === 0) throw new Error('Agent 会话缺少换行结尾的头部。')
+      const bytes = chunk.subarray(0, bytesRead)
+      const newlineIndex = bytes.indexOf(0x0a)
+      if (newlineIndex >= 0) {
+        if (position + newlineIndex > MAX_AGENT_SESSION_HEADER_BYTES) {
+          throw new Error('Agent 会话头部超过本地上限。')
+        }
+        chunks.push(Buffer.from(bytes.subarray(0, newlineIndex)))
+        const headerBytes = Buffer.concat(chunks)
+        let header
+        try {
+          header = JSON.parse(headerBytes.toString('utf8').replace(/\r$/u, ''))
+        } catch {
+          throw new Error('Agent 会话头部 JSON 无效。')
+        }
+        return {
+          header,
+          lineEnding: headerBytes.at(-1) === 0x0d ? '\r\n' : '\n',
+          nextByteOffset: position + newlineIndex + 1,
+        }
+      }
+      chunks.push(Buffer.from(bytes))
+      position += bytesRead
+    }
+    throw new Error('Agent 会话头部超过本地上限。')
+  } finally {
+    await handle.close()
+  }
+}
+
+async function writeAgentSessionHeaderAtomically(filePath, header, lineEnding, nextByteOffset) {
+  const temporaryPath = `${filePath}.${randomUUID()}.tmp`
+  try {
+    const originalTail = nativeFs.createReadStream(filePath, { start: nextByteOffset })
+    async function* updatedContents() {
+      yield Buffer.from(`${JSON.stringify(header)}${lineEnding}`, 'utf8')
+      for await (const chunk of originalTail) yield chunk
+    }
+    await pipeline(
+      Readable.from(updatedContents()),
+      nativeFs.createWriteStream(temporaryPath, { flags: 'wx', mode: 0o600 }),
+    )
+    const handle = await fs.open(temporaryPath, 'r+')
+    try {
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await fs.rename(temporaryPath, filePath)
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
+async function rebaseAgentProjectIdentity(dataDirectory, previousProjectId, nextProjectId) {
+  const agentDirectory = path.join(dataDirectory, 'agent')
+  const files = await listAgentBackupFiles(dataDirectory)
+  const oldCwd = `vibepaper-project-${previousProjectId}`
+  const newCwd = `vibepaper-project-${nextProjectId}`
+  for (const file of files.filter((candidate) => candidate.relativePath.startsWith('agent/sessions/')
+    && candidate.relativePath.endsWith('.jsonl'))) {
+    const { header, lineEnding, nextByteOffset } = await readAgentSessionHeader(file.absolutePath)
+    if (!isRecord(header) || header.kind !== 'header' || header.version !== 4 || header.cwd !== oldCwd
+      || !isRecord(header.metadata) || header.metadata.projectId !== previousProjectId) {
+      throw new Error(`Agent 会话“${path.basename(file.absolutePath)}”与备份项目身份不匹配。`)
+    }
+    header.cwd = newCwd
+    header.metadata = { ...header.metadata, projectId: nextProjectId }
+    await writeAgentSessionHeaderAtomically(file.absolutePath, header, lineEnding, nextByteOffset)
+  }
+
+  const oldSessionDirectory = path.join(agentDirectory, 'sessions', `--${oldCwd}--`)
+  const newSessionDirectory = path.join(agentDirectory, 'sessions', `--${newCwd}--`)
+  const oldDirectoryInfo = await fs.lstat(oldSessionDirectory).catch((error) => {
+    if (nodeErrorCode(error) === 'ENOENT') return null
+    throw error
+  })
+  if (oldDirectoryInfo) {
+    if (!oldDirectoryInfo.isDirectory() || oldDirectoryInfo.isSymbolicLink()) throw new Error('Agent 会话目录无效。')
+    const newDirectoryInfo = await fs.lstat(newSessionDirectory).catch(() => null)
+    if (newDirectoryInfo) throw new Error('恢复副本中已存在相同的 Agent 会话目录。')
+    await fs.rename(oldSessionDirectory, newSessionDirectory)
+  }
+
+  const controlPath = path.join(agentDirectory, 'control.sqlite')
+  const controlInfo = await fs.lstat(controlPath).catch((error) => {
+    if (nodeErrorCode(error) === 'ENOENT') return null
+    throw error
+  })
+  if (!controlInfo) return
+  if (!controlInfo.isFile() || controlInfo.isSymbolicLink()) throw new Error('Agent 控制数据库路径无效。')
+  const control = new DatabaseSync(controlPath, { timeout: 5000 })
+  try {
+    const version = Number(control.prepare('PRAGMA user_version').get().user_version)
+    if (version !== 1) throw new Error('Agent 控制数据库版本当前不支持恢复。')
+    const integrity = control.prepare('PRAGMA integrity_check').all()
+    if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
+      || control.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('Agent 控制数据库完整性校验失败。')
+    }
+    const now = new Date().toISOString()
+    control.exec('BEGIN IMMEDIATE')
+    try {
+      control.prepare(`UPDATE approvals SET project_id = ?, status = CASE WHEN status = 'pending' THEN 'invalidated' ELSE status END, updated_at = ?`)
+        .run(nextProjectId, now)
+      const activeRuns = control.prepare(`SELECT id, session_id FROM agent_runs
+        WHERE status IN ('queued', 'running', 'waiting_confirmation', 'waiting_task')`).all()
+      for (const run of activeRuns) {
+        const eventSeq = Number(control.prepare('SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq FROM run_events WHERE session_id = ?')
+          .get(run.session_id).next_seq)
+        const eventId = randomUUID()
+        const outboxId = randomUUID()
+        const data = { reason: 'PROJECT_RESTORED' }
+        const event = {
+          eventId,
+          sessionId: run.session_id,
+          runId: run.id,
+          eventSeq,
+          type: 'run_aborted',
+          runtime: 'pi',
+          runtimeVersion: 'desktop-restore',
+          data,
+          createdAt: now,
+        }
+        control.prepare("UPDATE agent_runs SET status = 'aborted', updated_at = ? WHERE id = ?").run(now, run.id)
+        control.prepare(`INSERT INTO run_events
+          (event_id, session_id, run_id, event_seq, type, runtime, runtime_version, data_json, created_at)
+          VALUES (?, ?, ?, ?, 'run_aborted', 'pi', 'desktop-restore', ?, ?)`)
+          .run(eventId, run.session_id, run.id, eventSeq, JSON.stringify(data), now)
+        control.prepare(`INSERT INTO outbox
+          (outbox_id, session_id, run_id, event_seq, payload_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(outboxId, run.session_id, run.id, eventSeq, JSON.stringify(event), now)
+      }
+      control.exec('COMMIT')
+    } catch (error) {
+      control.exec('ROLLBACK')
+      throw error
+    }
+  } finally {
+    closeDatabase(control)
+  }
 }
 
 async function hashFile(filePath) {
@@ -829,14 +1166,41 @@ async function hashFile(filePath) {
   return { sha256: hash.digest('hex'), sizeBytes }
 }
 
+async function validateAgentControlDatabase(filePath, checkpointOnClose = false) {
+  const database = new DatabaseSync(filePath, { timeout: 5000 })
+  try {
+    const version = Number(database.prepare('PRAGMA user_version').get().user_version)
+    const integrity = database.prepare('PRAGMA integrity_check').all()
+    if (version !== 1 || integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
+      || database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('Agent 控制数据库版本或完整性校验失败。')
+    }
+  } finally {
+    if (checkpointOnClose) closeDatabase(database)
+    else database.close()
+  }
+}
+
+function isValidAgentBackupRelativePath(relativePath) {
+  if (relativePath === 'agent/control.sqlite') return true
+  if (typeof relativePath !== 'string' || !relativePath.startsWith('agent/')) return false
+  const segments = relativePath.split('/')
+  return segments.length >= 3
+    && segments.every((segment) => segment && segment !== '.' && segment !== '..'
+      && /^[A-Za-z0-9._-]+$/u.test(segment))
+    && AGENT_BACKUP_DIRECTORIES.has(segments[1])
+    && AGENT_BACKUP_EXTENSIONS.has(path.extname(segments.at(-1)).toLowerCase())
+}
+
 async function safeBackupFilePath(dataDirectory, relativePath) {
   const taskOutputMatch = /^generated\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/([a-z0-9][a-z0-9._-]{0,126})$/iu.exec(relativePath)
   const taskOutputExtensions = ['.txt', '.md', '.json', '.png', '.jpg', '.jpeg', '.webp', '.mp3', '.wav', '.ogg', '.m4a', '.mp4', '.webm', '.mov']
   const isTaskOutput = taskOutputMatch && !taskOutputMatch[2].includes('..')
     && taskOutputExtensions.includes(path.extname(taskOutputMatch[2]).toLowerCase())
+  const isAgentFile = isValidAgentBackupRelativePath(relativePath)
   if (relativePath !== 'project.json' && relativePath !== 'project.sqlite'
     && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp)$/iu.test(relativePath)
-    && !isTaskOutput) {
+    && !isTaskOutput && !isAgentFile) {
     throw new Error('备份包含无效文件路径。')
   }
   const rootInfo = await fs.lstat(dataDirectory).catch(() => null)
@@ -866,18 +1230,30 @@ async function safeBackupFilePath(dataDirectory, relativePath) {
         throw new Error(`备份任务结果目录“${relativePath}”无效。`)
       }
     }
+  } else if (isAgentFile) {
+    const segments = relativePath.split('/').slice(0, -1)
+    let currentDirectory = dataDirectory
+    for (const segment of segments) {
+      currentDirectory = path.join(currentDirectory, segment)
+      const directoryInfo = await fs.lstat(currentDirectory).catch(() => null)
+      if (!directoryInfo?.isDirectory() || directoryInfo.isSymbolicLink()
+        || path.relative(currentDirectory, await fs.realpath(currentDirectory)) !== '') {
+        throw new Error(`Agent 备份目录“${relativePath}”无效。`)
+      }
+    }
   }
   const fileInfo = await fs.lstat(filePath).catch(() => null)
   if (!fileInfo?.isFile() || fileInfo.isSymbolicLink()) throw new Error(`备份文件“${relativePath}”缺失或路径无效。`)
   if (isTaskOutput && (fileInfo.size <= 0 || fileInfo.size > MAX_TASK_OUTPUT_BYTES)) {
     throw new Error(`备份任务结果“${relativePath}”为空或超过本地结果上限。`)
   }
+  if (isAgentFile && fileInfo.size > MAX_AGENT_BACKUP_BYTES) throw new Error(`Agent 文件“${relativePath}”超过本地备份上限。`)
   return filePath
 }
 
 async function createBackupManifest(dataDirectory, metadata, database, createdAt = new Date().toISOString()) {
   const files = []
-  for (const relativePath of projectBackupPaths(database)) {
+  for (const relativePath of await projectBackupPaths(database, dataDirectory)) {
     const file = await hashFile(await safeBackupFilePath(dataDirectory, relativePath))
     files.push({ path: relativePath, ...file })
   }
@@ -901,13 +1277,13 @@ async function verifyBackupManifest(dataDirectory, metadata, database) {
     if (error instanceof Error && error.message === '备份校验清单路径无效。') throw error
     throw new Error('备份校验清单无法读取。')
   }
-  if (!isRecord(manifest) || manifest.schemaVersion !== PROJECT_BACKUP_SCHEMA_VERSION
+  if (!isRecord(manifest) || ![1, PROJECT_BACKUP_SCHEMA_VERSION].includes(manifest.schemaVersion)
     || manifest.projectId !== metadata.projectId || typeof manifest.createdAt !== 'string'
     || !Array.isArray(manifest.files) || manifest.files.some((file) => !isRecord(file))) {
     throw new Error('备份校验清单格式无效。')
   }
 
-  const expectedPaths = projectBackupPaths(database).sort()
+  const expectedPaths = (await projectBackupPaths(database, dataDirectory, manifest.schemaVersion >= 2)).sort()
   const actualPaths = manifest.files.map((file) => file?.path)
   if (actualPaths.some((filePath) => typeof filePath !== 'string')
     || new Set(actualPaths).size !== actualPaths.length
@@ -924,7 +1300,10 @@ async function verifyBackupManifest(dataDirectory, metadata, database) {
     if (actual.sha256 !== entry.sha256 || actual.sizeBytes !== entry.sizeBytes) {
       throw new Error(`备份文件“${entry.path}”校验失败。`)
     }
+    if (entry.path === 'agent/control.sqlite') await validateAgentControlDatabase(await safeBackupFilePath(dataDirectory, entry.path))
   }
+  if (manifest.schemaVersion >= 2) await validateAgentSessionHeaders(dataDirectory, metadata.projectId)
+  return manifest.schemaVersion
 }
 
 async function invalidateBackupManifest(dataDirectory) {
@@ -969,8 +1348,8 @@ async function validateRestorableProject(projectDirectory) {
       throw new Error('备份项目数据库存在无效引用。')
     }
     readDatabaseCanvas(database, metadata)
-    await verifyBackupManifest(dataDirectory, metadata, database)
-    return { directory, dataDirectory, metadata, database }
+    const backupSchemaVersion = await verifyBackupManifest(dataDirectory, metadata, database)
+    return { directory, dataDirectory, metadata, database, backupSchemaVersion }
   } catch (error) {
     database.close()
     throw error
@@ -1208,9 +1587,13 @@ function createLocalProjectStore() {
         await fs.mkdir(staging)
         await fs.mkdir(stagingData)
         await writeJsonAtomically(path.join(stagingData, 'project.json'), active.metadata)
-        await copyProjectAssets(active.database, path.join(active.directory, '.vibepaper'), stagingData)
+        const sourceDataDirectory = path.join(active.directory, '.vibepaper')
+        await copyProjectAssets(active.database, sourceDataDirectory, stagingData)
         await copyProjectTaskOutputs(active.database, path.join(active.directory, '.vibepaper'), stagingData)
         await backup(active.database, path.join(stagingData, 'project.sqlite'))
+        await withAgentBackupLock(sourceDataDirectory, () => copyAgentData(sourceDataDirectory, stagingData, {
+          expectedProjectId: active.metadata.projectId,
+        }))
         const manifest = await createBackupManifest(stagingData, active.metadata, active.database)
         await writeJsonAtomically(path.join(stagingData, 'backup-manifest.json'), manifest)
         await fs.rename(staging, destination)
@@ -1254,6 +1637,11 @@ function createLocalProjectStore() {
         await backup(source.database, path.join(stagingData, 'project.sqlite'))
         await copyProjectAssets(source.database, source.dataDirectory, stagingData)
         await copyProjectTaskOutputs(source.database, source.dataDirectory, stagingData)
+        if (source.backupSchemaVersion >= 2) {
+          await copyAgentData(source.dataDirectory, stagingData, {
+            rebaseProjectId: { from: source.metadata.projectId, to: restoredMetadata.projectId },
+          })
+        }
 
         const restoredDatabase = new DatabaseSync(path.join(stagingData, 'project.sqlite'), { timeout: 5000 })
         try {

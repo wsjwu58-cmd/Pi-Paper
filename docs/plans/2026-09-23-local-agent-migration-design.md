@@ -1,8 +1,8 @@
 # VibePaper Agent 本地化迁移与记忆/压缩设计
 
-> 状态：Agent 本地存储首个代码原型已实现：Pi JSONL 会话仓库适配、SQLite Run/事件/操作账本、跨存储 outbox 及项目级 Agent 写入锁。尚未接入 Electron Agent Worker、模型提供方、Local Tool Gateway、现有 Agent 会话 UI、长期记忆与压缩，也未做端到端验证；此原型不代表桌面 Agent 可运行。日期：2026-09-23。配套功能契约见 [桌面版 Agent 功能规格](../specs/desktop-agent-functional-spec.md)，全服务实施顺序见 [桌面本地化方案](2026-09-23-desktop-full-service-local-migration-plan.md)。目标是单用户、项目数据与 Agent 数据均由本机文件持有，正常创作不依赖云端账户、平台点数、签到、套餐或企业服务。桌面版以根目录 `AGENTS.md` 为工程契约；旧 PRD 和 V1.0 Spec 仍描述 Web 多用户架构。
+> 状态：Agent 本地存储首个代码原型已实现：Pi JSONL 会话仓库适配、SQLite Run/事件/操作账本、跨存储 outbox 及项目级 Agent 写入锁。项目备份现纳入这些 Agent 文件，恢复时会映射新项目身份并作废待处理确认。尚未接入 Electron Agent Worker、模型提供方、Local Tool Gateway、现有 Agent 会话 UI、长期记忆与压缩，也未做端到端验证；此存储与备份基础不代表桌面 Agent 可运行。活动 Agent Worker 持有写入锁时，当前备份会拒绝运行，尚未由 Main 自动暂停/恢复 Worker。日期：2026-09-23。配套功能契约见 [桌面版 Agent 功能规格](../specs/desktop-agent-functional-spec.md)，全服务实施顺序见 [桌面本地化方案](2026-09-23-desktop-full-service-local-migration-plan.md)。目标是单用户、项目数据与 Agent 数据均由本机文件持有，正常创作不依赖云端账户、平台点数、签到、套餐或企业服务。桌面版以根目录 `AGENTS.md` 为工程契约；旧 PRD 和 V1.0 Spec 仍描述 Web 多用户架构。
 
-当前原型位于 `pi-main/packages/vibepaper-agent-service/src/desktop/`。`openDesktopAgentStores(projectDirectory)` 校验项目目录并取得单写者锁；会话适配器使用 Pi `JsonlSessionRepo` 写入完整消息并从分支/压缩记录恢复上下文；控制库实现现有 `RunRepository` 接口、单会话活动 Run 唯一约束、事件序号、写操作意图/结果状态，以及可按 outbox ID 在 JSONL 中去重补投的事件镜像。SQLite 控制库当前 `user_version = 1`；Agent 数据尚未纳入 Electron 项目备份，也没有升级回退路径，后续集成前必须补齐。
+当前原型位于 `pi-main/packages/vibepaper-agent-service/src/desktop/`。`openDesktopAgentStores(projectDirectory)` 校验项目目录并取得单写者锁；会话适配器使用 Pi `JsonlSessionRepo` 写入完整消息并从分支/压缩记录恢复上下文；控制库实现现有 `RunRepository` 接口、单会话活动 Run 唯一约束、事件序号、写操作意图/结果状态，以及可按 outbox ID 在 JSONL 中去重补投的事件镜像。SQLite 控制库当前 `user_version = 1`。Electron 项目备份清单 schema v2 已包含 JSONL、控制数据库、Markdown、检查点和压缩工具结果；恢复前验证内容哈希，恢复副本会生成新 `projectId`、更新会话头部与目录、终止未完成 Run 并失效待处理确认。Agent 存储 schema 自身的升级回退仍需补齐。
 
 ## 1. 结论和边界
 

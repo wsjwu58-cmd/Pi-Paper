@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化、PNG/JPEG/GIF/WebP 素材导入与画布引用，以及当前项目格式下的带校验清单备份/恢复副本已实现。文本任务支持用户配置的 loopback 模型，也支持 Agnes 云端模型；图像与视频任务接入 Agnes 2.5 Flash。三类任务经本地 TaskStore 和隔离 Worker 执行，结果写入项目并可加入画布。云端任务逐项显示数据范围、供应商和可能费用后再请求确认；Agnes Key 通过 Electron `safeStorage` 使用系统密钥能力加密，独立于普通设置和项目数据。音频生成、Agent Worker/Tool Gateway、Agent 云端对话、任务与会话备份、跨版本恢复验证、素材完整管理及其余阶段未落地，未做跨平台验收。Pi JSONL 与 SQLite Agent 存储适配器原型已实现，但未接入桌面 Worker。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化、PNG/JPEG/GIF/WebP 素材导入与画布引用，以及当前项目格式下的带校验清单备份/恢复副本已实现。文本任务支持用户配置的 loopback 模型，也支持 Agnes 云端模型；图像与视频任务接入 Agnes 2.5 Flash。三类任务经本地 TaskStore 和隔离 Worker 执行，结果写入项目并可加入画布。云端任务逐项显示数据范围、供应商和可能费用后再请求确认；Agnes Key 通过 Electron `safeStorage` 使用系统密钥能力加密，独立于普通设置和项目数据。Agent JSONL/SQLite/Markdown 已纳入新版项目备份，恢复会重新绑定项目身份并使待确认操作失效；活动 Agent 写锁存在时备份会明确拒绝。音频生成、Agent Worker/Tool Gateway、Agent 云端对话、跨版本恢复验证、素材完整管理及其余阶段未落地，未做跨平台验收。Pi Agent 存储适配器仍未接入桌面 Worker。日期：2026-09-23。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 ## 1. 已确定的产品决策
 
@@ -107,6 +107,8 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 迁移实现进展（2026-09-23）：Agent 存储适配原型现位于 `pi-main/packages/vibepaper-agent-service/src/desktop/`，提供项目单写者锁、Pi JSONL 会话存储、SQLite Run/操作/outbox 存储，以及 outbox 补投 JSONL。SQLite 适配器通过 `SessionRunService` 可选原子接口将 Run 终态、事件和 outbox 一起提交。会话索引使用稳定 `projectId` 键支持项目目录搬迁。此原型尚未由桌面 Worker 装配，也未与本地 Canvas/Asset/Task Tool Gateway、确认/记忆端口和桌面备份链路连接，相关阶段验收仍待完成。
 
 本地任务存储进展（2026-09-23）：桌面 `project.sqlite` schema v3 记录带 `Idempotency-Key`、画布版本/节点关联、模态与提供方信息的 TaskStore，以及顺序事件表。进程重开时，遗留 `running` 转为 `interrupted`，不自动重新提交；只有 `queued` 可领取。Generation Worker 当前支持本地文本及云端 Agnes 文本、图像、视频；成功终态要求任务专属结果文件落盘且可读，记录 SHA-256/大小，任务面板可读取文本或预览媒体并加入画布。项目备份清单包含已登记的成功结果，v3 升级先生成数据库回退副本。音频 Worker、Agent Tool Gateway/会话与 Agent 模型调用尚未接入。
+
+Agent 数据备份进展（2026-09-23）：项目备份清单 schema v2 纳入 `agent/control.sqlite`、Pi JSONL 会话及支持的 Markdown/检查点/压缩结果文件；控制 SQLite 经在线备份 API 获取一致性快照，Agent 写入锁防止同时复制。恢复副本将 JSONL 头部和会话目录映射到新 `projectId`，把活动 Run 标记为中止、待处理确认置为失效。schema v1 备份仍可恢复；运行中的 Agent Worker 当前不会由 Electron 自动暂停，所以存在 `writer.lock` 时备份明确失败，待 Worker 生命周期集成后再改为自动静默点。
 
 项目单写者进展（2026-09-23）：Electron Local Core 打开项目时持有 `.vibepaper/project.lock`，锁记录包含进程 PID、随机令牌和开始时间。其他进程遇到活锁时拒绝打开；仅在确认 PID 已退出且锁文件内容未变化后回收陈旧锁。项目切换、备份恢复和正常退出均释放锁，跨安装实例争用不会只依赖 Electron 单实例锁。锁文件不进入项目备份。
 
