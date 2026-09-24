@@ -20,6 +20,7 @@ const {
   utilityProcess,
 } = require('electron')
 const { AGNES_MODELS, AGNES_PROVIDER_ID, getAgnesModelCatalog } = require('./agnes-model-catalog.cjs')
+const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
@@ -962,21 +963,33 @@ function registerAgentIpc() {
     const worker = await getAgentWorker(projectId)
     const apiKey = await getAgnesApiKey()
     if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
+    const active = await localCore.request('project:get-active')
+    if (!active || active.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
+    const canvas = await localCore.request('canvas:load', { projectId, canvasId: active.canvasId })
+    const canvasContext = buildAgentCanvasContext(canvas)
     const confirmation = await dialog.showMessageBox(mainWindow, {
       type: 'warning',
-      title: '发送文本到 Agnes',
-      message: '这条 Agent 消息将发送给 Agnes（agnes-2.5-flash）。',
-      detail: `仅发送本条文本和当前会话历史，不会发送画布文件或素材文件。Agnes 可能收费。\n\n${content.trim().slice(0, 1200)}${content.trim().length > 1200 ? '…' : ''}`,
+      title: '发送文本与画布摘要到 Agnes',
+      message: '这轮 Agent 对话将发送到 Agnes（agnes-2.5-flash）。',
+      detail: `会发送本条文本、当前会话历史，以及下面列出的当前画布只读摘要。Agnes 可能收费；请求会离开本机并由供应商处理。应用不会附带项目目录、素材路径或图片/视频文件。\n\n本条文本：\n${content.trim().slice(0, 1200)}${content.trim().length > 1200 ? '…' : ''}\n\n本次附带的画布摘要：\n${canvasContext}`,
       buttons: ['发送到 Agnes', '取消'],
       defaultId: 1,
       cancelId: 1,
       noLink: true,
     })
     if (confirmation.response !== 0) throw codedError('CLOUD_SEND_CANCELLED')
+    const latestWorker = await getAgentWorker(projectId)
+    const latestProject = await localCore.request('project:get-active')
+    if (latestWorker !== worker || !latestProject || latestProject.projectId !== projectId) {
+      throw codedError('AGENT_PROJECT_CHANGED')
+    }
+    const latestCanvas = await localCore.request('canvas:load', { projectId, canvasId: latestProject.canvasId })
+    if (latestCanvas.version !== canvas.version) throw codedError('AGENT_CANVAS_CHANGED')
     return worker.request('agent:send-message', {
       projectId,
       sessionId,
       content,
+      canvasContext,
       apiKey,
       idempotencyKey: randomUUID(),
     }, 270_000)
