@@ -1,6 +1,6 @@
 # VibePaper 桌面本地版 Agent 功能规格（提案）
 
-> 日期：2026-09-23。状态：产品方向已明确，功能与验收契约提案；尚未修改代码。范围仅为 Agent 对话、工具编排、会话、Skill、记忆及其本地数据边界。对应技术方案见 [Agent 本地化迁移设计](../plans/2026-09-23-local-agent-migration-design.md)，全服务范围见 [桌面本地化方案](../plans/2026-09-23-desktop-full-service-local-migration-plan.md)。根目录 `AGENTS.md` 是桌面版工程契约；旧 Web PRD 与 V1.0 Spec 仅供迁移对照。
+> 日期：2026-09-24。状态：桌面 Agent 功能与验收契约；实现进行中。本地存储、备份/恢复和 Worker 生命周期及会话列表/新建 IPC 已有原型；会话 UI、模型回合、工具调用、记忆/压缩和端到端验收仍待实现。本文规定目标行为，不代表所有条目已交付。对应技术方案见 [Agent 本地化迁移设计](../plans/2026-09-23-local-agent-migration-design.md)，全服务范围见 [桌面本地化方案](../plans/2026-09-23-desktop-full-service-local-migration-plan.md)。根目录 `AGENTS.md` 是桌面版工程契约；旧 Web PRD 与 V1.0 Spec 仅供迁移对照。
 
 ## 1. 产品边界
 

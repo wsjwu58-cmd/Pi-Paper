@@ -36,6 +36,9 @@ let agnesCredentialFile = null
 let quittingAfterCoreClose = false
 let stopping = false
 let generationWorker = null
+let agentWorker = null
+let agentProjectId = null
+let activeProjectDirectory = null
 let taskPumpPromise = null
 let taskPumpRequestedProjectId = null
 let pendingTaskCreations = 0
@@ -215,6 +218,104 @@ function startGenerationWorker() {
   return worker
 }
 
+function createAgentWorker() {
+  const child = utilityProcess.fork(path.join(desktopRoot, 'dist', 'agent-worker.cjs'), [], {
+    serviceName: 'VibePaper Agent Worker',
+    stdio: 'ignore',
+  })
+  const pending = new Map()
+  let nextRequestId = 1
+  let exitError = null
+  let markStarted
+  let markExited
+  let exitedSettled = false
+  const started = new Promise((resolve) => { markStarted = resolve })
+  const exited = new Promise((resolve) => { markExited = resolve })
+
+  const worker = {
+    child,
+    async request(method, payload, timeoutMs = 30_000) {
+      await started
+      if (exitError) throw exitError
+      const id = nextRequestId++
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id)
+          reject(codedError('AGENT_WORKER_TIMEOUT'))
+        }, timeoutMs)
+        pending.set(id, { resolve, reject, timer })
+        try {
+          child.postMessage({ id, method, payload })
+        } catch {
+          clearTimeout(timer)
+          pending.delete(id)
+          reject(codedError('AGENT_WORKER_UNAVAILABLE'))
+        }
+      })
+    },
+    async stop() {
+      await worker.request('agent:close', {}, 5_000).catch(() => undefined)
+      if (!exitedSettled) child.kill()
+      await exited
+    },
+  }
+
+  const failWorker = (error) => {
+    exitError = error
+    markStarted()
+    for (const request of pending.values()) {
+      clearTimeout(request.timer)
+      request.reject(error)
+    }
+    pending.clear()
+    if (!exitedSettled) {
+      exitedSettled = true
+      markExited()
+    }
+    if (agentWorker === worker) {
+      agentWorker = null
+      agentProjectId = null
+    }
+  }
+
+  child.once('spawn', markStarted)
+  child.on('message', (message) => {
+    if (!message || !Number.isSafeInteger(message.id)) return
+    const request = pending.get(message.id)
+    if (!request) return
+    clearTimeout(request.timer)
+    pending.delete(message.id)
+    if (message.ok) request.resolve(message.result)
+    else request.reject(new Error(typeof message.error === 'string' ? message.error : 'Agent 本地会话操作失败。'))
+  })
+  child.on('error', () => failWorker(codedError('AGENT_WORKER_UNAVAILABLE')))
+  child.on('exit', () => failWorker(codedError('AGENT_WORKER_UNAVAILABLE')))
+  return worker
+}
+
+async function startAgentWorker(projectDirectory) {
+  await stopAgentWorker()
+  const worker = createAgentWorker()
+  agentWorker = worker
+  try {
+    const opened = await worker.request('agent:open', { projectDirectory })
+    agentProjectId = opened.projectId
+    activeProjectDirectory = projectDirectory
+    return opened
+  } catch (error) {
+    await worker.stop()
+    throw error
+  }
+}
+
+async function stopAgentWorker() {
+  const worker = agentWorker
+  if (!worker) return
+  agentWorker = null
+  agentProjectId = null
+  await worker.stop()
+}
+
 async function drainTaskQueue(projectId) {
   if (stopping || !localCore) return
 
@@ -319,10 +420,24 @@ async function waitForTaskCreations() {
 
 async function runProjectTransition(operation) {
   projectTransitionCount += 1
+  const previousDirectory = activeProjectDirectory
+  let projectSwitched = false
   try {
     await waitForTaskCreations()
     if (taskPumpPromise) await taskPumpPromise
-    return await operation()
+    await stopAgentWorker()
+    const result = await operation()
+    if (result?.project && typeof result.directory === 'string') {
+      activeProjectDirectory = result.directory
+      projectSwitched = true
+      await startAgentWorker(result.directory)
+    } else if (previousDirectory) {
+      await startAgentWorker(previousDirectory)
+    }
+    return result
+  } catch (error) {
+    if (!projectSwitched && previousDirectory) await startAgentWorker(previousDirectory).catch(() => undefined)
+    throw error
   } finally {
     projectTransitionCount -= 1
   }
@@ -487,6 +602,7 @@ async function restoreRecentProject() {
     if (!recent || recent.schemaVersion !== 1 || typeof recent.projectDirectory !== 'string') return null
     const opened = await localCore.request('project:open', { directory: recent.projectDirectory })
     await writeRecentProjectDirectory(opened.directory)
+    await startAgentWorker(opened.directory)
     return opened.project
   } catch (error) {
     if (!error || error.code !== 'ENOENT') await fs.rm(recentProjectFile, { force: true }).catch(() => undefined)
@@ -502,7 +618,7 @@ function registerContentSecurityPolicy() {
     }
 
     const policy = developmentUrl
-      ? "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'"
+      ? "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'"
       : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'"
     const responseHeaders = Object.fromEntries(
       Object.entries(details.responseHeaders ?? {}).filter(([name]) => name.toLowerCase() !== 'content-security-policy'),
@@ -641,10 +757,10 @@ function registerProjectIpc() {
       properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    const backup = await localCore.request('project:backup', {
+    const backup = await runProjectTransition(() => localCore.request('project:backup', {
       parentDirectory: result.filePaths[0],
       projectId,
-    })
+    }))
     await dialog.showMessageBox(mainWindow, {
       type: 'info',
       title: '项目备份完成',
@@ -810,6 +926,31 @@ function registerProjectIpc() {
   })
 }
 
+function registerAgentIpc() {
+  async function getAgentWorker(projectId) {
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    const active = await localCore.request('project:get-active')
+    if (!active || active.projectId !== projectId || !agentWorker || agentProjectId !== projectId) {
+      throw new Error('当前项目的本地 Agent 会话不可用。')
+    }
+    if (projectTransitionCount > 0 || agentProjectId !== projectId) {
+      throw new Error('项目正在切换，请稍后重试。')
+    }
+    return agentWorker
+  }
+
+  ipcMain.handle('desktop:agent:list-sessions', async (event, projectId) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:list-sessions', { projectId })
+  })
+  ipcMain.handle('desktop:agent:create-session', async (event, projectId, title) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:create-session', { projectId, title })
+  })
+}
+
 async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -861,6 +1002,7 @@ if (hasSingleInstanceLock) {
     registerRendererProtocol()
     registerContentSecurityPolicy()
     registerProjectIpc()
+    registerAgentIpc()
     await createWindow()
 
     app.on('activate', () => {
@@ -880,11 +1022,12 @@ if (hasSingleInstanceLock) {
     if (!localCore || quittingAfterCoreClose) return
     event.preventDefault()
     quittingAfterCoreClose = true
-    stopping = true
-    taskPumpRequestedProjectId = null
-    void (async () => {
-      await waitForTaskCreations()
-      await stopGenerationWorker().catch(() => undefined)
+      stopping = true
+      taskPumpRequestedProjectId = null
+      void (async () => {
+        await waitForTaskCreations()
+        await stopAgentWorker().catch(() => undefined)
+        await stopGenerationWorker().catch(() => undefined)
       await taskPumpPromise?.catch(() => undefined)
       await localCore.request('core:close', {}, 5_000).catch(() => undefined)
       localCore.child.kill()

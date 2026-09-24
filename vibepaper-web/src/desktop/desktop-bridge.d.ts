@@ -38,6 +38,12 @@ export interface DesktopTask {
   completedAt: string | null
 }
 
+export interface DesktopAgentSession {
+  sessionId: string
+  createdAt: number
+  modifiedAt: number
+}
+
 export interface DesktopCreateGenerationTaskInput {
   projectId: string
   canvasId: string
@@ -102,6 +108,8 @@ export interface DesktopBridge {
   discoverLocalModels(endpoint: string): Promise<string[]>
   saveLocalTextModel(config: Pick<DesktopLocalTextModel, 'endpoint' | 'modelId'>): Promise<DesktopLocalTextModel>
   clearLocalTextModel(): Promise<null>
+  listAgentSessions(projectId: string): Promise<DesktopAgentSession[]>
+  createAgentSession(projectId: string, title?: string): Promise<Pick<DesktopAgentSession, 'sessionId' | 'createdAt'>>
 }
 
 declare global {

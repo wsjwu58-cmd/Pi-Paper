@@ -5,10 +5,14 @@
   "description": "Electron host for the VibePaper local desktop app",
   "main": "src/main.cjs",
   "scripts": {
+    "build:agent": "node scripts/build-agent-worker.cjs",
+    "predev": "npm run build:agent",
     "dev": "node scripts/dev.cjs",
+    "prestart": "npm run build:agent",
     "start": "electron ."
   },
   "devDependencies": {
-    "electron": "44.4.4"
+    "electron": "44.4.4",
+    "esbuild": "0.28.1"
   }
 }
