@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施中；阶段 1 宿主、阶段 2 的本地画布创建/编辑/持久化、PNG/JPEG/GIF/WebP 素材导入与画布引用，以及当前项目格式下的带校验清单备份/恢复副本已实现。文本任务支持用户配置的 loopback 模型，也支持 Agnes 云端模型；图像与视频任务接入 Agnes 2.5 Flash。三类任务经本地 TaskStore 和隔离 Worker 执行，结果写入项目并可加入画布。云端生成任务逐项显示数据范围、供应商和可能费用后再请求确认；Agnes Key 通过 Electron `safeStorage` 使用系统密钥能力加密，独立于普通设置和项目数据。Agent JSONL/SQLite/Markdown 已纳入新版项目备份，恢复会重新绑定项目身份并使待确认操作失效；Main 会在本应用备份时先停止 Agent Worker，其他进程持有 Agent 写锁时备份明确失败。独立 Agent Worker 已接入项目打开/切换/退出生命周期，桌面会话面板支持历史消息查看与新建/选择；Agnes 文本回合使用 Pi Agent Core，逐条经系统确认后发送当前文本、会话历史及当前画布只读摘要，确认框展示摘要的实际内容，且在画布版本变化时中止发送。摘要限长，只含文本节点正文、图片/视频节点名称与连线，不附加媒体文件、应用存储的项目路径或内部标识；Agent 仍无画布/素材/任务写工具或完整 Tool Gateway，也无本地模型对话、记忆/压缩。开发版 Electron 已在当前 Windows 环境启动，多平台安装包和云端 Agent 连通性仍待验收。音频生成、其余 Agent 能力、跨版本恢复验证、素材完整管理及其他阶段未落地，未做跨平台验收。日期：2026-09-24。当前桌面版契约以仓库根目录 `AGENTS.md` 为准；Agent 会话与恢复的细节见 `2026-09-23-local-agent-migration-design.md`。已实现的项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施中（2026-09-24）。桌面宿主、本地项目、画布持久化、图片导入、备份恢复和本地 TaskStore 已有可运行纵向链路；文本可调用用户配置的 loopback 模型或 Agnes，图像/视频当前接入 Agnes。普通云端调用不再逐次弹确认，配置页披露供应商、发送范围和可能费用；密钥由 Electron `safeStorage` 加密保存。画布核心已接节点创建/编辑/删除与连线创建/删除，分组堆叠完成 Store 和 SQLite v5 迁移，UI/IPC 仍在迁移。Agent Worker 保留小P角色、会话 JSONL/SQLite 与项目备份；受限 Tool Gateway 已接画布/节点/任务/模型读取及 `create_nodes`、`connect_nodes` 两项本地写入，真实 Agnes `tool_calls` 端到端尚未实测。Agent 其余工具、Skill、上下文压缩与记忆、本地模型对话，以及音频、合成、导演台、完整素材管理、原版 UI 与后端 1:1 验收和多平台安装包均未完成。当前契约以根目录 `AGENTS.md` 为准；项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 ## 1. 已确定的产品决策
 
@@ -9,6 +9,7 @@
 3. 移除桌面运行链路中的注册登录、点数/充值/订阅、签到/邀请奖励、企业、运营后台、公告活动。创意广场与公开发布暂不展示，旧源码保留。
 4. **不迁移旧 Web 服务的数据。** 桌面版新建空白项目，不提供旧 PostgreSQL 导入脚本；不能因此省去桌面版自身的 schema 升级、项目备份和恢复。
 5. 保留现有 Node.js + TypeScript + Pi Agent Core 的 Agent，完整会话落本地 JSONL；控制状态使用本地 SQLite。Python 仅承担生成提供方适配与媒体处理，不恢复旧 Python Agent。
+6. 所有模块的前后端功能、业务规则、UI 和交互均以原项目 1:1 迁移为基线。Agent 面板和工具能力保持原版，只在运行层增加上下文压缩、短期记忆和长期记忆优化；本地化替换数据与运行依赖，不删减 Canvas/Asset/Generation/Agent 的领域能力。明确移除的平台业务功能按本方案处理；不另造独立任务抽屉或逐次云端发送确认。可见界面对照见 [桌面 UI 保真清单](../specs/desktop-ui-parity.md)，后端按 [后端能力迁移对照](../specs/desktop-backend-parity.md) 逐项验收。
 
 ## 2. 现状与迁移目标
 
@@ -36,7 +37,7 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 
 | 现有单元 | 桌面版处理 | 主要实施点 |
 | --- | --- | --- |
-| `vibepaper-web` | 复用 UI，放进 Electron Renderer | 移除 JWT 页面守卫与云端账户请求；保留画布交互、SSE/任务历史语义；隐藏创意广场等旧入口；提供本地项目与模型设置 |
+| `vibepaper-web` | 以原页面/组件源码直接迁移，改造后运行于 Electron Renderer | 在 `CanvasPage`、节点组件、编辑器和 `AgentPanel` 原源码上接入本地状态/API/事件适配；移除 JWT 页面守卫与云端账户请求；保留画布交互、SSE/任务历史语义；隐藏创意广场等旧入口；提供本地项目与模型设置。Electron 壳与 IPC 可独立实现，但不得以平行 `Desktop*` 页面替代原 UI；Web 默认路径保持原契约 |
 | `vibepaper-gateway` | 桌面运行时退出 | Local Core 提供兼容 `/api/v1` 路由或窄 IPC；不再透传用户/企业头，不允许 Renderer 任意调用内部端口 |
 | `identity-service` | 桌面运行时退出 | 本地配置负责昵称、界面与默认模型偏好；无注册、JWT、刷新令牌、签到与邀请；保留稳定本地 profileId 供新项目关联 |
 | `canvas-service` | 将必需领域能力移入 Local Core | 画布 CRUD、节点/连线、GraphService 的能力/依赖校验、分组堆叠、短剧素材、导入导出和 version 乐观锁；保留现有语义测试作为迁移对照 |
@@ -83,12 +84,15 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 ## 5. 模型提供方与数据出境
 
 - 建立一个显式 Provider Registry：`providerId`、`local/cloud`、endpoint、模型名、模态（文/图/音/视频）、输入模式、参考素材类型与数量、工具调用能力、流式/取消能力、可用性。Agent 与生成模块共用能力契约，不用点数定价判断模型可用性。
+- Agnes 只是当前联调样例，不是云端模型范围。目标接入 OpenAI、Anthropic Claude、Google Gemini、DeepSeek、阿里云百炼/Qwen 等主流提供方，并保留其他兼容接口、Ollama/LM Studio 等本机服务的扩展位。具体模型名与能力由注册表或服务发现提供，不在 UI 或任务状态机中固定写死；每家分别验证鉴权、工具调用、流式、上下文窗口、模态和取消能力，不能仅换 URL 冒充兼容。产品不承诺某家所有模态都可用，不支持的组合应明确禁用。参考各家官方文档：[OpenAI](https://platform.openai.com/docs/api-reference/introduction)、[Claude](https://platform.claude.com/docs/en/api/overview)、[Gemini](https://ai.google.dev/api)、[DeepSeek](https://api-docs.deepseek.com/)、[阿里云百炼](https://docs.modelstudio.console.alibabacloud.com/en/model-studio/text-generation)。
 - Agent 当前 `agnesModel` 固定 `provider: "agnes"`，且无 Key 就拒绝运行；桌面版改为按本机设置选择云端或本地 provider。文本可先适配 OpenAI 兼容接口，但本地模型的工具调用、上下文窗口和多模态能力必须逐个检测，不能仅换 base URL。
 - 生成服务现有文本适配、云端图/视频适配可抽取复用；`ComfyUIProvider` 目前只有连通探测、未提交 workflow，因此本地图/视频需单列实现任务，音频同理。某模态缺少可用提供方时展示“未配置/不支持”，不得静默走 mock 或云端。
-- 云端模式先在设置中配置供应商、API Key 和允许发送的数据类型；任务界面显示当前为联网调用，参考素材发送前展示范围。API Key 通过 OS 凭据能力保存；日志、Agent JSONL、项目导出均不包含明文密钥。供应商费用由供应商承担计费，UI 可显示 Token/时长但不显示平台点数。
+- 云端模式先在设置中配置供应商、API Key 和允许发送的数据类型；原版节点/Agent 入口显示当前为联网调用。用户主动选择云端模型并点击生成或发送后直接调用，不增加每次 API 请求的系统确认框。参考素材等新数据类型在首次启用前另行披露并授权。API Key 通过 OS 凭据能力保存；日志、Agent JSONL、项目导出均不包含明文密钥。供应商费用由供应商承担计费，UI 可显示 Token/时长但不显示平台点数。
 - 本地模式做网络出口验收；本地模型未安装、内存不足或服务退出时明确失败/等待，不自动切云。用户明确选择云端时，断网或 Key 无效也明确报错，不自动换另一个供应商。
 
-模型与任务进展（2026-09-23）：本地文本目录仍只接受 `localhost`、`127.0.0.1`、`::1` 和有限 API 路径，不含凭据，且只在用户点击后发现。Agnes 目录固定为文本 `agnes-2.5-flash`、图像 `agnes-image-2.5-flash`、视频 `agnes-video-2.5-flash`，地址固定为 `https://apihub.agnes-ai.com/v1`。Key 经 Renderer 密码框传给 Electron Main 后，由 `safeStorage` 使用 OS 密钥能力加密保存为独立凭据文件；它不进入 `settings.json`、项目、SQLite、日志或 Worker 请求记录。用户从文本节点选择云端模态时，Main 先显示提示词数据范围、供应商和可能费用的确认框；确认后任务写入本地 TaskStore，独立 Worker 才调用 Agnes。媒体输出下载到任务目录并由 Local Core 校验后登记成功。项目恢复仅领取 `queued`，进程退出时遗留 `running` 转为 `interrupted`，不盲重放。图像/视频当前只发送提示词和参数，不传本地参考素材；视频调用使用 720P、4–12 秒文本生成。音频、工具调用、Agent 云端对话、流式/运行中取消尚未接入。
+提供方覆盖范围、当前实现状态与逐家验收项见 [桌面模型提供方接入契约](../specs/desktop-provider-registry.md)。当前 Agnes 联调结果不能替代其他提供方验收。
+
+模型与任务进展（2026-09-24）：本地文本目录仍只接受 `localhost`、`127.0.0.1`、`::1` 和有限 API 路径，不含凭据，且只在用户点击后发现。Agnes 目录固定为文本 `agnes-2.5-flash`、图像 `agnes-image-2.5-flash`、视频 `agnes-video-2.5-flash`，地址固定为 `https://apihub.agnes-ai.com/v1`。Key 经 Renderer 密码框传给 Electron Main 后，由 `safeStorage` 使用 OS 密钥能力加密保存为独立凭据文件；它不进入 `settings.json`、项目、SQLite、日志或 Worker 请求记录。用户从节点选择云端模态时，配置页预先披露提示词数据范围、供应商和可能费用；手工点击节点生成后任务写入本地 TaskStore，独立 Worker 调用 Agnes，不再弹逐次数据发送确认。Agent 发起的生成任务仍需沿用原版系统生成确认，确认后才写入 TaskStore，桌面版不显示点数与冻结。媒体输出下载到任务目录并由 Local Core 校验后登记成功。项目恢复仅领取 `queued`，进程退出时遗留 `running` 转为 `interrupted`，不盲重放。图像/视频当前只发送提示词和参数，不传本地参考素材；视频调用使用 720P、4–12 秒文本生成。Agent 已有 Agnes 文本对话原型，但完整工具链仍在迁移；音频、生成任务流式输出和运行中取消尚未接入。
 
 ## 6. 实施顺序与每阶段完成条件
 
@@ -99,14 +103,14 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 | 2. 本地核心 | 实现 CanvasStore、AssetStore 与 `/api/v1` 兼容层；迁移 Java 领域校验和画布版本规则；本地 profile/preferences | 新建、保存、关闭重开、导入导出、引用素材和删除影响测试通过；Agent 可读本地画布摘要 |
 | 3. 本地任务与模型 | TaskStore、持久事件流、Worker 协议、模型目录和云端/本地 provider；先打通一种文本与一种图像能力，再逐步验音/视频 | 手工节点生成、取消、重试、断点恢复通过；无 billing/Redis/MQ/PG；未支持模态可见不可用 |
 | 4. Agent 本地化 | 按 Agent 专项方案接入 Pi JSONL、SQLite 控制账本与 Local Tool Gateway；去掉按点数确认，保留风险确认；实现本地/云端模型选择 | 同一纵向用例由自然语言完成；重启不重放写工具，跨 50+ 消息与压缩仍能正确读取画布；无 Agent PG/Redis/Nacos |
-| 5. UI 与范围收敛 | 去掉桌面路由中的登录、点数、套餐、签到、邀请、企业、运营、公告、创意广场；替换账户为本地设置与任务/Token 信息 | 桌面安装包无旧服务调用和相关入口；旧 gallery 源码保留；云端发送范围提示可见 |
+| 5. 原前端源码桌面迁移与范围收敛 | 直接改造 `vibepaper-web/src` 原页面、节点、编辑器、Agent 面板和状态/事件逻辑，以本地适配替换旧 API、账户与存储依赖；去掉桌面路径中的登录、点数、套餐、签到、邀请、企业、运营、公告、创意广场 | Electron Renderer 运行原迁移页面与组件；不靠平行 `Desktop*` 页面交差；Web 默认路径契约不变；桌面安装包无旧服务调用和相关入口；旧 gallery 源码保留；云端发送范围提示可见 |
 | 6. 交付 | 项目备份/恢复、升级迁移、日志、崩溃恢复、三平台签名/安装包、真机 E2E | Windows、macOS、Linux 各自安装包从空项目完成画布+Agent+任务+素材闭环；无 Docker 与平台账户 |
 
 阶段 2–4 的实施应按纵向切片反复穿透，不等所有模块整体重写才测试。各阶段用现有 API 行为与画布验收用例对照；旧数据迁移、旧账本兼容、公开画廊不构成门禁。
 
 迁移实现进展（2026-09-23）：Agent 存储适配原型现位于 `pi-main/packages/vibepaper-agent-service/src/desktop/`，提供项目单写者锁、Pi JSONL 会话存储、SQLite Run/操作/outbox 存储，以及 outbox 补投 JSONL。SQLite 适配器通过 `SessionRunService` 可选原子接口将 Run 终态、事件和 outbox 一起提交。会话索引使用稳定 `projectId` 键支持项目目录搬迁。此原型尚未由桌面 Worker 装配，也未与本地 Canvas/Asset/Task Tool Gateway、确认/记忆端口和桌面备份链路连接，相关阶段验收仍待完成。
 
-本地任务存储进展（2026-09-23）：桌面 `project.sqlite` schema v3 记录带 `Idempotency-Key`、画布版本/节点关联、模态与提供方信息的 TaskStore，以及顺序事件表。进程重开时，遗留 `running` 转为 `interrupted`，不自动重新提交；只有 `queued` 可领取。Generation Worker 当前支持本地文本及云端 Agnes 文本、图像、视频；成功终态要求任务专属结果文件落盘且可读，记录 SHA-256/大小，任务面板可读取文本或预览媒体并加入画布。项目备份清单包含已登记的成功结果，v3 升级先生成数据库回退副本。音频 Worker、Agent Tool Gateway/会话与 Agent 模型调用尚未接入。
+本地任务存储进展（2026-09-24）：桌面 `project.sqlite` schema v4 记录带 `Idempotency-Key`、画布版本/节点关联、模态与提供方信息的 TaskStore、顺序事件表，以及画布增量命令账本。进程重开时，遗留 `running` 转为 `interrupted`，不自动重新提交；只有 `queued` 可领取。Generation Worker 当前支持本地文本及云端 Agnes 文本、图像、视频；成功终态要求任务专属结果文件落盘且可读，记录 SHA-256/大小，任务结果和状态回写对应画布节点；TaskStore 保留内部恢复与幂等能力，不新增独立任务抽屉。项目备份清单包含已登记的成功结果，v3→v4 升级前生成数据库回退副本。Agent 会话和云端文本回合已有原型，只读 Tool Gateway 已接入部分原版工具；完整 Tool Gateway 与音频 Worker 尚未接入。
 
 Agent 数据备份进展（2026-09-23）：项目备份清单 schema v2 纳入 `agent/control.sqlite`、Pi JSONL 会话及支持的 Markdown/检查点/压缩结果文件；控制 SQLite 经在线备份 API 获取一致性快照，Agent 写入锁防止同时复制。恢复副本将 JSONL 头部和会话目录映射到新 `projectId`，把活动 Run 标记为中止、待处理确认置为失效。schema v1 备份仍可恢复；运行中的 Agent Worker 当前不会由 Electron 自动暂停，所以存在 `writer.lock` 时备份明确失败，待 Worker 生命周期集成后再改为自动静默点。
 

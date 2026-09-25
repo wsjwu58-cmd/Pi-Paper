@@ -1,6 +1,6 @@
 # VibePaper Agent 本地化迁移与记忆/压缩设计
 
-> 状态：Agent 本地 JSONL/SQLite/Markdown 存储与项目备份/恢复原型已实现。Electron Main 为活动项目启动独立 Agent Worker，切换项目、备份和退出前关闭该 Worker；桌面会话面板支持会话列表、新建、选择、查看历史消息与 Agnes 文本对话。每条消息发送前通过系统确认显示发送范围和供应商费用提示；Key 只从 OS 凭据加密文件解密并经受限 IPC 传给 Worker。Pi Agent 回合使用单写者 Run/幂等账本并把完整消息写入 JSONL，重启会把未完成 Run 标为中断。当前没有本地模型 Agent 回合、Tool Gateway、画布/素材/任务工具、长期记忆检索或压缩；由于桌面运行环境仍未能安装 Electron，云端回合和端到端链路尚未实测。备份会先停掉本应用 Worker；若其他进程持有项目写锁，备份明确失败。日期：2026-09-24。配套功能契约见 [桌面版 Agent 功能规格](../specs/desktop-agent-functional-spec.md)，全服务实施顺序见 [桌面本地化方案](2026-09-23-desktop-full-service-local-migration-plan.md)。目标是单用户、项目数据与 Agent 数据均由本机文件持有，正常创作不依赖云端账户、平台点数、签到、套餐或企业服务。桌面版以根目录 `AGENTS.md` 为工程契约；旧 PRD 和 V1.0 Spec 仍描述 Web 多用户架构。
+> 状态：Agent 本地 JSONL/SQLite/Markdown 存储与项目备份/恢复原型已实现。Electron Main 为活动项目启动独立 Agent Worker，切换项目、备份和退出前关闭该 Worker；桌面会话面板支持会话列表、新建、选择、查看历史消息与 Agnes 文本对话。模型配置页披露发送范围和供应商费用，用户主动点击发送后直接调用，不再逐条弹系统确认；Key 只从 OS 凭据加密文件解密并经受限 IPC 传给 Worker。Pi Agent 回合使用单写者 Run/幂等账本并把完整消息写入 JSONL，重启会把未完成 Run 标为中断。当前没有本地模型 Agent 回合、Tool Gateway、画布/素材/任务工具、长期记忆检索或压缩；开发版 Electron 已能在当前 Windows 环境启动；云端回合的端到端验收仍需补齐。备份会先停掉本应用 Worker；若其他进程持有项目写锁，备份明确失败。日期：2026-09-24。配套功能契约见 [桌面版 Agent 功能规格](../specs/desktop-agent-functional-spec.md)，全服务实施顺序见 [桌面本地化方案](2026-09-23-desktop-full-service-local-migration-plan.md)。目标是单用户、项目数据与 Agent 数据均由本机文件持有，正常创作不依赖云端账户、平台点数、签到、套餐或企业服务。桌面版以根目录 `AGENTS.md` 为工程契约；旧 PRD 和 V1.0 Spec 仍描述 Web 多用户架构。
 
 当前原型位于 `pi-main/packages/vibepaper-agent-service/src/desktop/`。`openDesktopAgentStores(projectDirectory)` 校验项目目录并取得单写者锁；会话适配器使用 Pi `JsonlSessionRepo` 写入完整消息并从分支/压缩记录恢复上下文；控制库实现现有 `RunRepository` 接口、单会话活动 Run 唯一约束、事件序号、写操作意图/结果状态，以及可按 outbox ID 在 JSONL 中去重补投的事件镜像。SQLite 控制库当前 `user_version = 1`。Electron 项目备份清单 schema v2 已包含 JSONL、控制数据库、Markdown、检查点和压缩工具结果；恢复前验证内容哈希，恢复副本会生成新 `projectId`、更新会话头部与目录、终止未完成 Run 并失效待处理确认。Agent 存储 schema 自身的升级回退仍需补齐。
 
@@ -8,7 +8,11 @@
 
 采用 **Pi Agent Core 内存运行态 + 本地 JSONL 完整会话 + 本地 SQLite 控制账本 + 可编辑 Markdown 长期记忆 + 可重建压缩检查点**。不用 Redis、Nacos、Agent 专用 PostgreSQL。内存是加速层，不是恢复依据；JSONL 保留完整消息与工具调用/结果，压缩只改变下一次发给模型的上下文视图。
 
-本方案不允许 Agent 直接修改画布文件，也不让会话摘要代表画布或生成任务的真实状态。Tool Gateway 仍是唯一副作用入口，画布、素材和任务的权威存储也必须在本地。首版同时支持本地模型与用户配置 API Key 的云端模型，默认本地模式不发外部模型请求；云端模式须由用户显式配置和选择，清楚展示将发送的文本/图片/视频、供应商和可能产生的供应商费用，不得把云端调用表述为“所有数据只在本地处理”。联网模式也不得恢复平台点数、充值、套餐或云端会话存储。
+Agent 的可见面板、消息布局、模型选择、会话和画布协作交互按旧 Web 1:1 迁移；以前端实现而言，直接以原 `vibepaper-web/src/features/canvas/AgentPanel.tsx` 及其消息/事件展示组件为迁移源码，在原代码中接本地适配，不另建平行桌面 Agent 面板。桌面 IPC/Worker 可独立提供受限传输边界，Web 默认路径须保持原契约。本专项的新增范围是上下文压缩、短期记忆、长期记忆与本地恢复，而非重设计对话流程。Agent 提交生成仍走原版系统确认，去掉点数和冻结；普通云端对话在设置处披露发送范围和费用后，由用户选择云端模型并点击发送直接执行，不逐条弹数据发送确认。删除/覆盖等高风险写操作仍沿用风险确认。界面对照见 [桌面 UI 保真清单](../specs/desktop-ui-parity.md)。
+
+实现以 `pi-main/packages/vibepaper-agent-service` 的原 TypeScript 模块为共同源代码：`agent-runtime.ts`、`profile-agents.ts`、`runtime-tools.ts`、`CanvasCommandService`、Skill 和上下文服务继续承载原有 Agent 行为。桌面路径在这些模块上增加显式本地策略及本地 Tool Gateway 适配器，替换原 HTTP、PostgreSQL/Redis 与平台计费依赖；Electron Worker 负责进程通信和本地会话生命周期。不得长期维护第二套 CJS 工具 schema、提示词或命令语义。旧 Web 启动路径仍保留其原有业务契约。
+
+本方案不允许 Agent 直接修改画布文件，也不让会话摘要代表画布或生成任务的真实状态。Tool Gateway 仍是唯一副作用入口，画布、素材和任务的权威存储也必须在本地。首版同时支持本地模型与用户配置 API Key 的云端模型，默认本地模式不发外部模型请求；云端模式须由用户显式配置和选择，清楚展示将发送的文本/图片/视频、供应商和可能产生的供应商费用，不得把云端调用表述为“所有数据只在本地处理”。Agnes 仅作当前联调提供方，Agent 模型装配应从可扩展 Provider Registry 读取，不把 Agnes 模型 ID、endpoint 和协议固定为最终架构。联网模式也不得恢复平台点数、充值、套餐或云端会话存储。
 
 ## 2. 当前基线与需修的问题
 
@@ -27,7 +31,7 @@
 | 现有 Agent 关联能力 | 桌面版目标 | 当前主要落点 |
 | --- | --- | --- |
 | `user_id`、企业头、租户记忆与管理员权限 | 单机项目/画布身份；不提供企业作用域或云端角色授权 | `src/api/app.ts` 的会话/记忆路由 |
-| `points_used_total`、`estimatedCost`、`INSUFFICIENT_POINTS` 与按点数确认 | 不进入桌面版运行契约；保留 Token/运行时长统计，确认只依据操作风险与显式联网授权 | `src/api/app.ts`、`src/application/approval-service.ts`、`src/tools/runtime-tools.ts` |
+| `points_used_total`、`estimatedCost`、`INSUFFICIENT_POINTS` 与按点数确认 | 去掉点数、冻结和结算；保留原版 Agent 单个/批量生成确认链路，确认后才提交本地任务；Token/运行时长仅供查看 | `src/api/app.ts`、`src/application/approval-service.ts`、`src/tools/runtime-tools.ts` |
 | `billingBaseUrl`、`identityBaseUrl`、Nacos、Redis 队列 | 桌面 bootstrap 不注入这些服务；旧版 server bootstrap 在迁移期保留，不能作为桌面版必需依赖 | `src/config.ts`、`src/server.ts` |
 | 远程模型目录、远程生成任务关联 | 本地 TaskStore 和统一模型能力目录；首版支持本机模型及用户显式配置的云端 API，缺少本地模型时报告不可用，不静默联网 | Agent Tool Gateway、后续本地生成模块 |
 | `enterprise` 记忆与共享 Skill | 仅全局本机、项目/画布、会话作用域；Skill 为本地文件 | `src/application/memory-service.ts`、Skill 装配入口 |
