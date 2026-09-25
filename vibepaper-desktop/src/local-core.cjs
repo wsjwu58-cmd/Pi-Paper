@@ -143,7 +143,7 @@ async function dispatch(method, payload) {
     case 'task:claim-next':
       return store.claimNextTask(payload?.projectId)
     case 'task:succeeded':
-      return store.recordTaskSucceeded(payload?.projectId, payload?.taskId, payload?.outputPath)
+      return store.recordTaskSucceeded(payload?.projectId, payload?.taskId, payload?.outputPath, payload?.outputMeta)
     case 'task:failed':
       return store.recordTaskFailed(payload?.projectId, payload?.taskId, payload?.errorCode)
     case 'core:close':

@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施中（2026-09-24）。桌面宿主、本地项目、画布持久化、图片导入、备份恢复和本地 TaskStore 已有可运行纵向链路；文本可调用用户配置的 loopback 模型或 Agnes，图像/视频当前接入 Agnes。普通云端调用不再逐次弹确认，配置页披露供应商、发送范围和可能费用；密钥由 Electron `safeStorage` 加密保存。画布核心已接节点创建/编辑/删除与连线创建/删除，分组堆叠完成 Store 和 SQLite v5 迁移，UI/IPC 仍在迁移。Agent Worker 保留小P角色、会话 JSONL/SQLite 与项目备份；受限 Tool Gateway 已接画布/节点/任务/模型读取及 `create_nodes`、`connect_nodes` 两项本地写入，真实 Agnes `tool_calls` 端到端尚未实测。Agent 其余工具、Skill、上下文压缩与记忆、本地模型对话，以及音频、合成、导演台、完整素材管理、原版 UI 与后端 1:1 验收和多平台安装包均未完成。当前契约以根目录 `AGENTS.md` 为准；项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施中（2026-09-25）。桌面壳、本地项目、画布与任务持久化、图片素材、备份恢复已有纵向链路；Renderer 已直接接入原 `WorkspacePage`、`HistoryPage`、`CanvasPage`、原节点和 `AgentPanel`。文本可调用本地 loopback 模型或 Agnes，图像/视频接 Agnes，原合成节点接本地 FFmpeg，原音频节点接 Windows SAPI 本地语音。普通云端调用不逐次弹确认，配置页披露供应商、发送范围和可能费用；Agent 生成动作保留原确认。Agent Worker 运行原 TypeScript 服务代码和“小P”角色，工具经本地网关访问画布/任务，具备本地会话、Skill、压缩与记忆链路。参考媒体输入、完整音视频素材、部分后处理、动态 Skill、多提供方、端到端同状态比对、原后端全部规则和多平台安装包仍有缺口，不能宣称 1:1 完成。当前契约以根目录 `AGENTS.md` 为准；项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 ## 1. 已确定的产品决策
 

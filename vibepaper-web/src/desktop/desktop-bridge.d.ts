@@ -212,6 +212,20 @@ export interface DesktopTask {
   completedAt: string | null
   outputPath?: string | null
   outputSizeBytes?: number | null
+  outputMeta?: DesktopAudioOutputMeta
+}
+
+export interface DesktopAudioOutputMeta {
+  index: 0
+  outputType: 'audio'
+  voiceId: string
+  language: string
+  rate: number
+  toneApplied: boolean
+  textHash: string
+  durationMs: number
+  sampleRate: number
+  provider: 'local-sapi-tts'
 }
 
 export interface DesktopTaskInputSnapshot {
@@ -294,7 +308,7 @@ export interface DesktopCreateGenerationTaskInput {
   prompt: string
   idempotencyKey: string
   providerType: 'local' | 'cloud'
-  modality: 'text' | 'image' | 'video'
+  modality: 'text' | 'image' | 'audio' | 'video'
   parameters?: Record<string, unknown>
 }
 
@@ -318,6 +332,18 @@ export interface DesktopLocalTextModel {
   toolCalling: false
   streaming: false
   cancellation: false
+}
+
+export interface DesktopLocalAudioModel {
+  providerId: 'local-sapi-tts'
+  providerType: 'local'
+  modelId: 'local-sapi-tts'
+  modalities: ['audio']
+  inputModes: ['text']
+  toolCalling: false
+  cancellation: false
+  available: boolean
+  unavailableReason: string | null
 }
 
 export interface DesktopAgnesModelCatalog {
@@ -397,6 +423,7 @@ export interface DesktopBridge {
   saveAgnesApiKey(apiKey: string): Promise<DesktopAgnesModelCatalog>
   clearAgnesApiKey(): Promise<DesktopAgnesModelCatalog>
   getLocalTextModel(): Promise<DesktopLocalTextModel | null>
+  getLocalAudioModel(): Promise<DesktopLocalAudioModel>
   discoverLocalModels(endpoint: string): Promise<string[]>
   saveLocalTextModel(config: Pick<DesktopLocalTextModel, 'endpoint' | 'modelId'>): Promise<DesktopLocalTextModel>
   clearLocalTextModel(): Promise<null>

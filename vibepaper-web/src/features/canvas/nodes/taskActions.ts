@@ -42,8 +42,20 @@ export async function submitNodeTask(
     if (!activeProject) throw new Error('没有打开的本地项目，无法创建生成任务。')
     const node = useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node
     const modality = node?.type
-    if (modality !== 'text' && modality !== 'image' && modality !== 'video') {
-      throw new Error('桌面本地生成目前支持文本、图片和视频；此节点类型尚未接入。')
+    if (modality !== 'text' && modality !== 'image' && modality !== 'video' && modality !== 'audio') {
+      throw new Error('此节点类型尚未接入桌面本地生成。')
+    }
+    if (modality === 'audio') {
+      if (desktopOptions?.providerType !== 'local' || modelType !== 'local-sapi-tts') {
+        throw new Error('桌面音频生成仅支持 Windows SAPI 本地语音模型。')
+      }
+      if (typeof bridge.getLocalAudioModel !== 'function') {
+        throw new Error('桌面本地语音服务尚未接入。')
+      }
+      const audioModel = await bridge.getLocalAudioModel()
+      if (!audioModel?.available || audioModel.modelId !== 'local-sapi-tts') {
+        throw new Error('Windows SAPI 本地语音模型在当前平台不可用。')
+      }
     }
     const prompt = typeof modelParams.prompt === 'string' ? modelParams.prompt.trim() : ''
     if (!prompt) throw new Error('请先填写生成提示词。')

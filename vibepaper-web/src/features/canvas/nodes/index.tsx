@@ -133,6 +133,14 @@ async function loadDesktopTask(
     if (task.modality === 'text') {
       const text = await bridge.readTaskOutput(projectId, task.taskId).catch(() => '')
       outputs = [{ id: task.taskId, outputType: 'text', meta: { text } }]
+    } else if (task.modality === 'audio') {
+      outputs = [{
+        id: task.taskId,
+        outputType: 'audio',
+        contentType: 'audio/wav',
+        url: `vibe://app/tasks/${task.taskId}/output`,
+        meta: { ...task.outputMeta, outputType: 'audio' },
+      }]
     } else if (task.modality === 'image' || task.modality === 'video' || task.modality === 'compose') {
       outputs = [{
         id: task.taskId,
@@ -785,8 +793,10 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
               <div className="mt-2 flex justify-end">
                 <button
                   type="button"
+                  disabled={isDesktopRuntime()}
+                  title={isDesktopRuntime() ? '桌面本地暂未接通保存生成结果到素材库' : '存入素材库'}
                   onClick={() => void saveOutputToLibrary(latest.taskId, out.url)}
-                  className="rounded-lg bg-black/5 px-2.5 py-1.5 text-[11px] font-bold text-[#333] hover:bg-black/10"
+                  className="rounded-lg bg-black/5 px-2.5 py-1.5 text-[11px] font-bold text-[#333] hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   存入素材库
                 </button>

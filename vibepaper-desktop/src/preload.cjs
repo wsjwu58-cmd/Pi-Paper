@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   discoverLocalModels: (endpoint) => ipcRenderer.invoke('desktop:model:discover-local', endpoint),
   saveLocalTextModel: (config) => ipcRenderer.invoke('desktop:model:save-local-text', config),
   clearLocalTextModel: () => ipcRenderer.invoke('desktop:model:clear-local-text'),
+  getLocalAudioModel: () => ipcRenderer.invoke('desktop:model:get-local-audio'),
   listAgentSessions: (projectId) => ipcRenderer.invoke('desktop:agent:list-sessions', projectId),
   listAgentSkills: (projectId, sessionId, keyword) => ipcRenderer.invoke('desktop:agent:list-skills', projectId, sessionId, keyword),
   createAgentSession: (projectId, title) => ipcRenderer.invoke('desktop:agent:create-session', projectId, title),

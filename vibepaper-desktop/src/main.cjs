@@ -21,6 +21,7 @@ const {
 } = require('electron')
 const { AGNES_MODELS, AGNES_PROVIDER_ID, getAgnesModelCatalog } = require('./agnes-model-catalog.cjs')
 const { COMPOSE_MODEL_ID, COMPOSE_PROVIDER_ID } = require('./compose-provider.cjs')
+const { MODEL_ID: SAPI_MODEL_ID, PROVIDER_ID: SAPI_PROVIDER_ID } = require('./sapi-tts.cjs')
 const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildDesktopAgentModelDirectory } = require('./agent-model-directory.cjs')
 const { ALLOWED_AGENT_CORE_METHODS } = require('./agent-local-tools.cjs')
@@ -502,6 +503,15 @@ async function drainTaskQueue(projectId) {
           providerType: 'local',
           modelId: COMPOSE_MODEL_ID,
         }
+      } else if (task.providerType === 'local' && task.modality === 'audio') {
+        if (task.providerId !== SAPI_PROVIDER_ID || task.modelId !== SAPI_MODEL_ID) {
+          throw codedError('MODEL_UNAVAILABLE')
+        }
+        model = {
+          providerId: SAPI_PROVIDER_ID,
+          providerType: 'local',
+          modelId: SAPI_MODEL_ID,
+        }
       } else if (task.providerType === 'local') {
         model = await getLocalTextModelConfig()
         if (!model) throw codedError('LOCAL_MODEL_CONFIGURATION_MISSING')
@@ -544,6 +554,7 @@ async function drainTaskQueue(projectId) {
         projectId,
         taskId: task.taskId,
         outputPath: result?.outputPath,
+        outputMeta: result?.outputMeta,
       })
     } catch (error) {
       if (stopping) return
@@ -737,6 +748,21 @@ async function getLocalTextModelConfig() {
   const settings = await readDesktopSettings()
   if (settings.localTextModel === undefined || settings.localTextModel === null) return null
   return normalizeLocalTextModelConfig(settings.localTextModel)
+}
+
+function getLocalAudioModel() {
+  const available = process.platform === 'win32'
+  return {
+    providerId: SAPI_PROVIDER_ID,
+    providerType: 'local',
+    modelId: SAPI_MODEL_ID,
+    modalities: ['audio'],
+    inputModes: ['text'],
+    toolCalling: false,
+    cancellation: false,
+    available,
+    unavailableReason: available ? null : 'local-sapi-tts 仅支持 Windows。',
+  }
 }
 
 async function saveLocalTextModelConfig(input) {
@@ -1289,6 +1315,7 @@ function registerProjectIpc() {
         updatedAt: task.updatedAt,
         startedAt: task.startedAt,
         completedAt: task.completedAt,
+        ...(task.outputMeta ? { outputMeta: task.outputMeta } : {}),
       })),
       total: result.total,
       page: result.page,
@@ -1317,6 +1344,7 @@ function registerProjectIpc() {
       updatedAt: task.updatedAt,
       startedAt: task.startedAt,
       completedAt: task.completedAt,
+      ...(task.outputMeta ? { outputMeta: task.outputMeta } : {}),
     }
   })
   ipcMain.handle('desktop:task:get-input', async (event, projectId, taskId) => {
@@ -1357,11 +1385,11 @@ function registerProjectIpc() {
     if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
     beginTaskCreation()
     try {
-      const modalities = ['text', 'image', 'video']
+      const modalities = ['text', 'image', 'audio', 'video']
       if (!input || typeof input !== 'object' || Array.isArray(input)
         || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
         || !Number.isSafeInteger(input.canvasVersion) || typeof input.nodeId !== 'string'
-        || typeof input.prompt !== 'string' || input.prompt.trim().length === 0
+        || typeof input.prompt !== 'string' || (input.modality !== 'audio' && input.prompt.trim().length === 0)
         || input.prompt.length > 200_000 || typeof input.idempotencyKey !== 'string'
         || !modalities.includes(input.modality)
         || !['local', 'cloud'].includes(input.providerType)
@@ -1371,16 +1399,26 @@ function registerProjectIpc() {
       let providerId
       let modelId
       if (input.providerType === 'local') {
-        if (input.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
-        const model = await getLocalTextModelConfig()
-        if (!model) throw new Error('请先配置本地文本模型。')
-        providerId = model.providerId
-        modelId = model.modelId
+        if (input.modality === 'audio') {
+          providerId = SAPI_PROVIDER_ID
+          modelId = SAPI_MODEL_ID
+        } else {
+          if (input.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
+          const model = await getLocalTextModelConfig()
+          if (!model) throw new Error('请先配置本地文本模型。')
+          providerId = model.providerId
+          modelId = model.modelId
+        }
       } else {
+        if (input.modality === 'audio') throw codedError('MODEL_UNAVAILABLE')
         const catalog = await getAgnesModelSettings()
         if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING')
         modelId = AGNES_MODELS[input.modality]
         providerId = AGNES_PROVIDER_ID
+      }
+      const parameters = { ...(input.parameters ?? {}) }
+      if (input.modality !== 'audio' || input.prompt.trim() || !String(parameters.prompt ?? '').trim()) {
+        parameters.prompt = input.prompt
       }
       const task = await localCore.request('task:create', {
         projectId: input.projectId,
@@ -1392,7 +1430,7 @@ function registerProjectIpc() {
         providerId,
         modelId,
         idempotencyKey: input.idempotencyKey,
-        parameters: { ...(input.parameters ?? {}), prompt: input.prompt },
+        parameters,
       })
       void scheduleTaskPump(input.projectId)
       return task
@@ -1453,6 +1491,10 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:model:get-local-text', (event) => {
     assertTrustedSender(event)
     return getLocalTextModelConfig()
+  })
+  ipcMain.handle('desktop:model:get-local-audio', (event) => {
+    assertTrustedSender(event)
+    return getLocalAudioModel()
   })
   ipcMain.handle('desktop:model:discover-local', (event, endpoint) => {
     assertTrustedSender(event)

@@ -372,6 +372,41 @@ function taskFromRow(row) {
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+    ...(typeof row.output_metadata === 'string' ? { outputMeta: JSON.parse(row.output_metadata) } : {}),
+  }
+}
+
+const TASKS_WITH_OUTPUT_METADATA = `
+  SELECT tasks.*,
+    (SELECT json_extract(events.data_json, '$.outputMeta')
+      FROM task_events AS events
+      WHERE events.task_id = tasks.task_id AND events.type = 'succeeded'
+      ORDER BY events.event_seq DESC LIMIT 1) AS output_metadata
+  FROM tasks
+`
+
+function normalizeAudioOutputMeta(value) {
+  if (!isRecord(value) || value.index !== 0 || value.outputType !== 'audio'
+    || typeof value.voiceId !== 'string' || value.voiceId.length > 256
+    || typeof value.language !== 'string' || value.language.length > 100
+    || !Number.isSafeInteger(value.rate) || value.rate < -10 || value.rate > 10
+    || typeof value.toneApplied !== 'boolean'
+    || typeof value.textHash !== 'string' || !/^[a-f0-9]{64}$/iu.test(value.textHash)
+    || !Number.isSafeInteger(value.durationMs) || value.durationMs < 0
+    || !Number.isSafeInteger(value.sampleRate) || value.sampleRate < 8_000 || value.sampleRate > 384_000
+    || value.providerId !== undefined && value.providerId !== 'local-sapi-tts'
+    || value.provider !== undefined && value.provider !== 'local-sapi-tts') return null
+  return {
+    index: 0,
+    outputType: 'audio',
+    voiceId: value.voiceId,
+    language: value.language,
+    rate: value.rate,
+    toneApplied: value.toneApplied,
+    textHash: value.textHash,
+    durationMs: value.durationMs,
+    sampleRate: value.sampleRate,
+    provider: 'local-sapi-tts',
   }
 }
 
@@ -3066,7 +3101,7 @@ function createLocalProjectStore() {
     return enqueue(() => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务。')
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error('任务列表上限无效。')
-      return active.database.prepare('SELECT * FROM tasks ORDER BY created_at DESC, task_id LIMIT ?')
+      return active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} ORDER BY tasks.created_at DESC, tasks.task_id LIMIT ?`)
         .all(limit).map(taskFromRow)
     })
   }
@@ -3114,8 +3149,8 @@ function createLocalProjectStore() {
         .get(...values).total)
       const offset = (normalized.page - 1) * normalized.pageSize
       const items = active.database.prepare(`
-        SELECT * FROM tasks ${where}
-        ORDER BY created_at DESC, task_id
+        ${TASKS_WITH_OUTPUT_METADATA} ${where}
+        ORDER BY tasks.created_at DESC, tasks.task_id
         LIMIT ? OFFSET ?
       `).all(...values, normalized.pageSize, offset).map(taskFromRow)
       return { items, total, page: normalized.page, pageSize: normalized.pageSize }
@@ -3126,7 +3161,7 @@ function createLocalProjectStore() {
     return enqueue(() => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务。')
       if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
-      const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      const row = active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId)
       return row ? taskFromRow(row) : null
     })
   }
@@ -3135,7 +3170,7 @@ function createLocalProjectStore() {
     return enqueue(() => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务输入。')
       if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
-      const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      const row = active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId)
       return row ? { task: taskFromRow(row), parameters: JSON.parse(row.input_json) } : null
     })
   }
@@ -3175,7 +3210,7 @@ function createLocalProjectStore() {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务结果。')
       if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
       const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
-      if (!row || row.status !== 'succeeded' || !['image', 'video', 'compose'].includes(row.modality)) {
+      if (!row || row.status !== 'succeeded' || !['image', 'audio', 'video', 'compose'].includes(row.modality)) {
         throw new Error('此任务没有可预览的媒体结果。')
       }
       const cacheKey = `${projectId}:${taskId}`
@@ -3201,10 +3236,15 @@ function createLocalProjectStore() {
         '.jpg': 'image/jpeg',
         '.jpeg': 'image/jpeg',
         '.webp': 'image/webp',
+        '.wav': 'audio/wav',
+        '.mp3': 'audio/mpeg',
+        '.ogg': 'audio/ogg',
+        '.m4a': 'audio/mp4',
         '.mp4': 'video/mp4',
         '.webm': 'video/webm',
       }[extension]
       if (!mimeType || (row.modality === 'image' && !mimeType.startsWith('image/'))
+        || (row.modality === 'audio' && !mimeType.startsWith('audio/'))
         || (['video', 'compose'].includes(row.modality) && !mimeType.startsWith('video/'))) {
         throw new Error('任务结果格式与模态不匹配。')
       }
@@ -3264,7 +3304,7 @@ function createLocalProjectStore() {
     })
   }
 
-  function recordTaskSucceeded(projectId, taskId, outputPath) {
+  function recordTaskSucceeded(projectId, taskId, outputPath, rawOutputMeta = null) {
     return enqueue(async () => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法完成任务。')
       if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
@@ -3279,9 +3319,26 @@ function createLocalProjectStore() {
       if (current.status === 'succeeded') {
         if (current.output_path !== outputPath || current.output_sha256 !== output.sha256
           || current.output_size_bytes !== output.sizeBytes) throw new Error('TASK_RESULT_CONFLICT')
-        return taskFromRow(current)
+        const row = active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId)
+        const succeeded = taskFromRow(row)
+        if (current.modality === 'audio' && current.provider_type === 'local'
+          && current.provider_id === 'local-sapi-tts'
+          && rawOutputMeta !== null && rawOutputMeta !== undefined) {
+          const retryMeta = normalizeAudioOutputMeta(rawOutputMeta)
+          if (!retryMeta || JSON.stringify(retryMeta) !== JSON.stringify(succeeded.outputMeta)) {
+            throw new Error('TASK_RESULT_CONFLICT')
+          }
+        }
+        return succeeded
       }
       if (current.status !== 'running') throw new Error('TASK_STATE_CONFLICT')
+      const outputMeta = current.modality === 'audio' && current.provider_type === 'local'
+        && current.provider_id === 'local-sapi-tts'
+        ? normalizeAudioOutputMeta(rawOutputMeta) : null
+      if (current.modality === 'audio' && current.provider_type === 'local'
+        && current.provider_id === 'local-sapi-tts' && !outputMeta) {
+        throw new Error('AUDIO_OUTPUT_METADATA_INVALID')
+      }
       const now = new Date().toISOString()
       await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
       active.database.exec('BEGIN IMMEDIATE')
@@ -3296,9 +3353,11 @@ function createLocalProjectStore() {
           outputPath,
           outputSha256: output.sha256,
           outputSizeBytes: output.sizeBytes,
+          ...(outputMeta ? { outputMeta } : {}),
         }, now)
         active.database.exec('COMMIT')
-        return taskFromRow(active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId))
+        const row = active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId)
+        return taskFromRow(row)
       } catch (error) {
         active.database.exec('ROLLBACK')
         throw error

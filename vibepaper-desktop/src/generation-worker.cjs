@@ -5,6 +5,7 @@ const parentPort = process.parentPort
 const { normalizeLocalTextModelConfig } = require('./local-model-catalog.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
 const { composeVideos: runComposeVideos, ComposeFailure } = require('./compose-provider.cjs')
+const { MODEL_ID: SAPI_MODEL_ID, PROVIDER_ID: SAPI_PROVIDER_ID, runWindowsSapiTts, SapiFailure } = require('./sapi-tts.cjs')
 
 if (!parentPort) throw new Error('Generation Worker must run as an Electron utility process.')
 
@@ -432,6 +433,14 @@ async function runVideoTask(job) {
   throw new WorkerFailure('CLOUD_REQUEST_TIMEOUT', `Agnes 视频任务超时（最后状态：${lastStatus || '未知'}）。`)
 }
 
+async function runAudioTask(job) {
+  assertTaskOutputTarget(job)
+  if (job?.providerType !== 'local' || job?.providerId !== SAPI_PROVIDER_ID || job?.modelId !== SAPI_MODEL_ID) {
+    throw new WorkerFailure('MODEL_UNAVAILABLE', '当前本地音频模型不可用。')
+  }
+  return runWindowsSapiTts(job)
+}
+
 function assertTaskOutputTarget(job) {
   if (typeof job?.taskId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(job.taskId)
     || typeof job?.outputDirectory !== 'string') {
@@ -443,7 +452,7 @@ let running = false
 parentPort.on('message', async (event) => {
   const request = event?.data ?? event
   if (!request || !Number.isSafeInteger(request.id)
-    || !['generate:text', 'generate:image', 'generate:video', 'generate:compose'].includes(request.method)) return
+    || !['generate:text', 'generate:image', 'generate:audio', 'generate:video', 'generate:compose'].includes(request.method)) return
   if (running) {
     parentPort.postMessage({ id: request.id, ok: false, errorCode: 'WORKER_BUSY' })
     return
@@ -452,6 +461,7 @@ parentPort.on('message', async (event) => {
   try {
     const result = request.method === 'generate:text' ? await runTextTask(request.payload)
       : request.method === 'generate:image' ? await runImageTask(request.payload)
+        : request.method === 'generate:audio' ? await runAudioTask(request.payload)
         : request.method === 'generate:video' ? await runVideoTask(request.payload)
           : await runComposeVideos(request.payload)
     parentPort.postMessage({ id: request.id, ok: true, result })
@@ -459,7 +469,7 @@ parentPort.on('message', async (event) => {
     parentPort.postMessage({
       id: request.id,
       ok: false,
-      errorCode: error instanceof WorkerFailure || error instanceof ComposeFailure
+      errorCode: error instanceof WorkerFailure || error instanceof ComposeFailure || error instanceof SapiFailure
         ? error.code : 'LOCAL_MODEL_EXECUTION_FAILED',
     })
   } finally {

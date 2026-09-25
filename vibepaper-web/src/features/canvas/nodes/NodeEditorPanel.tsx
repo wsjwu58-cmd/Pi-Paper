@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ArrowLeftRight,
   ArrowUpFromLine,
@@ -20,6 +21,7 @@ import { uploadAsset } from '@/lib/api'
 import { resolveMediaUrl, useAuthedMediaUrl } from '@/lib/media'
 import { sid } from '@/lib/ids'
 import type { GenerationTask, Id, ModelInfo, NodePayload } from '@/lib/types'
+import type { DesktopLocalAudioModel } from '@/desktop/desktop-bridge'
 import { ModelPicker } from '@/components/ui/ModelPicker'
 import { useCanvasStore, type FlowNode } from '../canvasStore'
 import { isDesktopRuntime } from '../canvasPort'
@@ -453,6 +455,43 @@ function SplitFooterSelect({
 
 type LocalRef = UpstreamRef & { local?: boolean }
 
+function DesktopTextReferencePrompt({ onCancel, onSubmit }: {
+  onCancel: () => void
+  onSubmit: (text: string) => void
+}) {
+  const [text, setText] = useState('')
+  return createPortal(
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/30" onMouseDown={onCancel}>
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-label="输入参考文本"
+        className="w-[min(420px,calc(100vw-32px))] rounded-xl border border-black/10 bg-white p-5 shadow-2xl"
+        onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => { if (event.key === 'Escape') onCancel() }}
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (text.trim()) onSubmit(text)
+        }}
+      >
+        <label htmlFor="desktop-reference-text" className="mb-3 block text-sm font-semibold text-[#222]">输入参考文本</label>
+        <textarea
+          id="desktop-reference-text"
+          autoFocus
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          className="min-h-24 w-full resize-y rounded-lg border border-black/15 p-2 text-sm outline-none focus:border-[#7c6ce7]"
+        />
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="rounded-lg px-3 py-1.5 text-sm text-[#555] hover:bg-black/5">取消</button>
+          <button type="submit" disabled={!text.trim()} className="rounded-lg bg-[#111] px-3 py-1.5 text-sm text-white disabled:opacity-40">确定</button>
+        </div>
+      </form>
+    </div>,
+    document.body,
+  )
+}
+
 /** 选中编辑对话框：参考区 + 提示词 + 底栏生成 */
 export function NodeEditorDialog({
   node,
@@ -470,16 +509,17 @@ export function NodeEditorDialog({
 }) {
   const nodeId = sid(node.id)
   const desktopMode = Boolean(window.vibepaperDesktop)
-  const { data: desktopModels = [], isFetched: desktopModelsFetched } = useQuery({
+  const { data: desktopCatalog = { models: [] as ModelInfo[], localAudio: null as DesktopLocalAudioModel | null }, isFetched: desktopModelsFetched } = useQuery({
     queryKey: ['desktop-node-models'],
     enabled: desktopMode,
     staleTime: 5_000,
-    queryFn: async (): Promise<ModelInfo[]> => {
+    queryFn: async (): Promise<{ models: ModelInfo[]; localAudio: DesktopLocalAudioModel | null }> => {
       const bridge = window.vibepaperDesktop
-      if (!bridge) return []
-      const [agnesResult, localResult] = await Promise.allSettled([
+      if (!bridge) return { models: [], localAudio: null }
+      const [agnesResult, localResult, localAudioResult] = await Promise.allSettled([
         bridge.getAgnesModels(),
         bridge.getLocalTextModel(),
+        typeof bridge.getLocalAudioModel === 'function' ? bridge.getLocalAudioModel() : Promise.resolve(null),
       ])
       const available: ModelInfo[] = []
       if (agnesResult.status === 'fulfilled') {
@@ -513,15 +553,30 @@ export function NodeEditorDialog({
           basePrice: null as unknown as number,
         })
       }
-      return available
+      const localAudio = localAudioResult.status === 'fulfilled' ? localAudioResult.value : null
+      if (localAudio?.available && localAudio.modelId === 'local-sapi-tts') {
+        available.push({
+          id: localAudio.modelId,
+          name: localAudio.modelId,
+          modelType: 'audio',
+          displayName: '本地 · Windows SAPI 离线语音',
+          description: 'Windows SAPI 离线语音合成；输入和结果保存在本机。',
+          provider: 'local',
+          enabled: true,
+          basePrice: null as unknown as number,
+        })
+      }
+      return { models: available, localAudio }
     },
   })
+  const desktopModels = desktopCatalog.models
   const upstream = useUpstreamRefs(nodeId)
   const excludedIds = useMemo(
     () => new Set(((node.params.excludedRefIds as string[]) ?? []).map(String)),
     [node.params.excludedRefIds],
   )
   const [localRefs, setLocalRefs] = useState<LocalRef[]>([])
+  const [desktopReferencePromptOpen, setDesktopReferencePromptOpen] = useState(false)
   const [frameOrder, setFrameOrder] = useState<'asc' | 'swap'>('asc')
   const [prompt, setPrompt] = useState(stripLegacyReferenceFidelity((node.params.prompt as string) ?? ''))
   const [model, setModel] = useState((node.params.model as string) ?? '')
@@ -544,6 +599,7 @@ export function NodeEditorDialog({
   )
   const preferred =
     (desktopMode && node.type === 'text' ? typeModels.find((m) => m.provider === 'local')?.name : undefined) ??
+    (desktopMode && node.type === 'audio' ? typeModels.find((m) => m.name === 'local-sapi-tts')?.name : undefined) ??
     typeModels.find((m) => /agnes-image|agnes-video/i.test(m.name))?.name ??
     typeModels.find((m) => /agnes|seedream|seedance/i.test(m.name))?.name ??
     typeModels[0]?.name
@@ -674,6 +730,14 @@ export function NodeEditorDialog({
         throw new Error('桌面本地生成尚未接入图片、视频或音频参考输入。请移除媒体参考后重试。')
       }
       const selectedModel = typeModels.find((item) => item.name === (model || preferred))
+      const audioParams = desktopMode && node.type === 'audio'
+        ? {
+            ...(typeof node.params.voice === 'string' && node.params.voice ? { voice: node.params.voice } : {}),
+            ...(typeof node.params.language === 'string' && node.params.language ? { language: node.params.language } : {}),
+            ...(typeof node.params.speed === 'number' ? { speed: node.params.speed } : {}),
+            ...(typeof node.params.tone === 'string' && node.params.tone ? { tone: node.params.tone } : {}),
+          }
+        : {}
       await submitNodeTask(
         node.id,
         model || preferred || node.type,
@@ -693,6 +757,7 @@ export function NodeEditorDialog({
           lastFrameUrl: lastFrame?.url,
           imageUrl: firstFrame?.kind === 'image' ? firstFrame.url : undefined,
           upstreamNodeIds: refsForUi.map((r) => r.sourceNodeId).filter(Boolean),
+          ...audioParams,
         },
         10,
         { providerType: selectedModel?.provider === 'local' ? 'local' : 'cloud' },
@@ -708,6 +773,7 @@ export function NodeEditorDialog({
           resKey,
           style,
           camera,
+          ...audioParams,
         },
       })
       toastSuccess('生成任务已提交')
@@ -732,6 +798,31 @@ export function NodeEditorDialog({
         : node.type === 'audio'
           ? '描述你要生成的音频内容…'
           : '墨痕未落纸上，山水已在眼前'
+
+  const addTextReference = (text: string) => {
+    if (!text.trim()) return
+    setLocalRefs((prev) => [
+      ...prev,
+      {
+        id: `local-text-${crypto.randomUUID()}`,
+        sourceNodeId: '',
+        kind: 'text',
+        label: '文本',
+        text,
+        local: true,
+      },
+    ])
+  }
+
+  const desktopReferencePrompt = desktopReferencePromptOpen && (
+    <DesktopTextReferencePrompt
+      onCancel={() => setDesktopReferencePromptOpen(false)}
+      onSubmit={(text) => {
+        addTextReference(text)
+        setDesktopReferencePromptOpen(false)
+      }}
+    />
+  )
 
   const refSection = (
     <>
@@ -760,19 +851,13 @@ export function NodeEditorDialog({
             type="button"
             title="添加文本参考"
             onClick={() => {
+              if (desktopMode) {
+                setDesktopReferencePromptOpen(true)
+                return
+              }
               const t = window.prompt('输入参考文本')
               if (!t) return
-              setLocalRefs((prev) => [
-                ...prev,
-                {
-                  id: `local-text-${Date.now()}`,
-                  sourceNodeId: '',
-                  kind: 'text',
-                  label: '文本',
-                  text: t,
-                  local: true,
-                },
-              ])
+              addTextReference(t)
             }}
             className="flex h-14 w-14 flex-col items-center justify-center rounded-xl bg-[#f0f0f2] text-[#888] ring-1 ring-black/6 hover:bg-[#e8e8ec]"
           >
@@ -893,7 +978,11 @@ export function NodeEditorDialog({
       {desktopMode && (
         <span className={`max-w-[210px] text-[9px] leading-tight ${isSplitLayout ? 'text-white/50' : 'text-[#999]'}`}>
           {node.type === 'audio'
-            ? '桌面端暂无可用音频模型提供方，暂不可生成。'
+            ? !desktopModelsFetched
+              ? '正在检查本地语音模型…'
+              : typeModels.some((item) => item.name === 'local-sapi-tts')
+              ? 'Windows SAPI 离线语音；输入和结果保存在本机。'
+              : desktopCatalog.localAudio?.unavailableReason || 'Windows SAPI 本地语音模型在当前平台不可用。'
             : !desktopModels.length && desktopModelsFetched
               ? '未配置可用模型。请在桌面模型设置中配置本地文本模型或 Agnes API Key。'
               : model || preferred
@@ -991,7 +1080,7 @@ export function NodeEditorDialog({
         )}
         <button
           type="button"
-          disabled={busy || !(model || preferred) || (desktopMode && node.type === 'audio')}
+          disabled={busy || !(model || preferred) || (desktopMode && node.type === 'audio' && !typeModels.some((item) => item.name === 'local-sapi-tts'))}
           onClick={() => void doSubmit()}
           className={`flex h-9 w-9 items-center justify-center rounded-full hover:opacity-90 disabled:opacity-40 ${
             isSplitLayout ? 'bg-white/20 text-white' : 'bg-[#111] text-white'
@@ -1006,29 +1095,35 @@ export function NodeEditorDialog({
 
   if (isSplitLayout) {
     return (
-      <div className="nodrag nowheel flex flex-col rounded-[20px]" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="flex flex-col gap-3 p-4">
-          {refSection}
-          {promptField}
+      <>
+        <div className="nodrag nowheel flex flex-col rounded-[20px]" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="flex flex-col gap-3 p-4">
+            {refSection}
+            {promptField}
+          </div>
+          {footerBar}
         </div>
-        {footerBar}
-      </div>
+        {desktopReferencePrompt}
+      </>
     )
   }
 
   return (
-    <div className="nodrag nowheel flex flex-col gap-3" onMouseDown={(e) => e.stopPropagation()}>
-      {/* 参考区：与提示词框分开的独立展示框 */}
-      <div className="rounded-xl border border-black/10 bg-white p-2.5">{refSection}</div>
+    <>
+      <div className="nodrag nowheel flex flex-col gap-3" onMouseDown={(e) => e.stopPropagation()}>
+        {/* 参考区：与提示词框分开的独立展示框 */}
+        <div className="rounded-xl border border-black/10 bg-white p-2.5">{refSection}</div>
 
-      {/* 提示词框：与参考区视觉上分离 */}
-      <div className="rounded-xl border border-black/10 bg-white p-2.5">
-        <p className="mb-1.5 text-[12px] font-bold text-[#333]">提示词</p>
-        {promptField}
+        {/* 提示词框：与参考区视觉上分离 */}
+        <div className="rounded-xl border border-black/10 bg-white p-2.5">
+          <p className="mb-1.5 text-[12px] font-bold text-[#333]">提示词</p>
+          {promptField}
+        </div>
+
+        {footerBar}
       </div>
-
-      {footerBar}
-    </div>
+      {desktopReferencePrompt}
+    </>
   )
 }
 
