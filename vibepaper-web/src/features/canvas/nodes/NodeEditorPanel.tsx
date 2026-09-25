@@ -893,7 +893,7 @@ export function NodeEditorDialog({
       {desktopMode && (
         <span className={`max-w-[210px] text-[9px] leading-tight ${isSplitLayout ? 'text-white/50' : 'text-[#999]'}`}>
           {node.type === 'audio'
-            ? '桌面本地未接入音频生成。'
+            ? '桌面端暂无可用音频模型提供方，暂不可生成。'
             : !desktopModels.length && desktopModelsFetched
               ? '未配置可用模型。请在桌面模型设置中配置本地文本模型或 Agnes API Key。'
               : model || preferred

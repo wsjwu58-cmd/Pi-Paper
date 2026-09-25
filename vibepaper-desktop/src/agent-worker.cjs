@@ -9,14 +9,17 @@ const {
   createDesktopAgentSkillContext,
   listDesktopAgentSkills,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/skill-context.ts')
-const { runDramaTurn } = require('../../pi-main/packages/vibepaper-agent-service/src/application/agent-runtime.ts')
+const {
+  runDramaTurn,
+  sanitizeAgentReply,
+  sanitizeAssistantMessage,
+} = require('../../pi-main/packages/vibepaper-agent-service/src/application/agent-runtime.ts')
 const { DesktopLocalToolGateway } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/local-tool-gateway.ts')
 const {
   createRuntimeTools,
   desktopGenerationConfirmationItems,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/tools/runtime-tools.ts')
 const { AGNES_MODELS } = require('./agnes-model-catalog.cjs')
-const { sanitizeAgentReply, sanitizeAssistantMessage } = require('./xiaop-agent-contract.cjs')
 const { createAgentLocalToolClient } = require('./agent-local-tools.cjs')
 
 const parentPort = process.parentPort

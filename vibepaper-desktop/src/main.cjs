@@ -20,6 +20,7 @@ const {
   utilityProcess,
 } = require('electron')
 const { AGNES_MODELS, AGNES_PROVIDER_ID, getAgnesModelCatalog } = require('./agnes-model-catalog.cjs')
+const { COMPOSE_MODEL_ID, COMPOSE_PROVIDER_ID } = require('./compose-provider.cjs')
 const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildDesktopAgentModelDirectory } = require('./agent-model-directory.cjs')
 const { ALLOWED_AGENT_CORE_METHODS } = require('./agent-local-tools.cjs')
@@ -202,7 +203,11 @@ function startGenerationWorker() {
       if (exitError) throw exitError
       const id = nextRequestId++
       return new Promise((resolve, reject) => {
-        const timeout = payload?.modality === 'video' ? 17 * 60 * 1000
+        const composeInputCount = payload?.modality === 'compose' && Array.isArray(payload?.parameters?.inputNodeIds)
+          ? payload.parameters.inputNodeIds.length : 0
+        const timeout = payload?.modality === 'compose'
+          ? Math.min(24 * 60 * 60 * 1000, composeInputCount * 4 * 60 * 1000 + 8 * 60 * 1000)
+          : payload?.modality === 'video' ? 17 * 60 * 1000
           : payload?.providerType === 'cloud' && payload?.modality === 'image' ? 10 * 60 * 1000
             : payload?.providerType === 'cloud' ? 8 * 60 * 1000
             : 4 * 60 * 1000
@@ -484,7 +489,20 @@ async function drainTaskQueue(projectId) {
     const { task, parameters, outputDirectory } = claimed
     try {
       let model
-      if (task.providerType === 'local') {
+      let inputPaths
+      if (task.modality === 'compose') {
+        if (task.providerType !== 'local' || task.providerId !== COMPOSE_PROVIDER_ID
+          || task.modelId !== COMPOSE_MODEL_ID) throw codedError('MODEL_UNAVAILABLE')
+        inputPaths = await localCore.request('task:resolve-compose-inputs', {
+          projectId,
+          taskId: task.taskId,
+        })
+        model = {
+          providerId: COMPOSE_PROVIDER_ID,
+          providerType: 'local',
+          modelId: COMPOSE_MODEL_ID,
+        }
+      } else if (task.providerType === 'local') {
         model = await getLocalTextModelConfig()
         if (!model) throw codedError('LOCAL_MODEL_CONFIGURATION_MISSING')
         if (task.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
@@ -518,6 +536,7 @@ async function drainTaskQueue(projectId) {
         modelId: model.modelId,
         apiKey: model.apiKey,
         parameters,
+        ...(inputPaths ? { inputPaths } : {}),
         outputDirectory,
       })
       if (stopping) return
@@ -1238,7 +1257,7 @@ function registerProjectIpc() {
       }
     }
     if (query.modality !== undefined && query.modality !== null && query.modality !== ''
-      && !['text', 'image', 'audio', 'video'].includes(query.modality)) {
+      && !['text', 'image', 'audio', 'video', 'compose'].includes(query.modality)) {
       throw new Error('任务模态筛选无效。')
     }
     if (query.status !== undefined && query.status !== null && query.status !== ''
@@ -1374,6 +1393,40 @@ function registerProjectIpc() {
         modelId,
         idempotencyKey: input.idempotencyKey,
         parameters: { ...(input.parameters ?? {}), prompt: input.prompt },
+      })
+      void scheduleTaskPump(input.projectId)
+      return task
+    } finally {
+      finishTaskCreation()
+    }
+  })
+  ipcMain.handle('desktop:task:compose', async (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).some((key) => !['projectId', 'canvasId', 'canvasVersion', 'nodeId', 'idempotencyKey', 'inputNodeIds'].includes(key))
+      || typeof input.projectId !== 'string' || !input.projectId
+      || typeof input.canvasId !== 'string' || !input.canvasId
+      || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
+      || typeof input.nodeId !== 'string' || !input.nodeId
+      || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
+      || !Array.isArray(input.inputNodeIds) || input.inputNodeIds.length < 2 || input.inputNodeIds.length > 10_000
+      || input.inputNodeIds.some((nodeId) => typeof nodeId !== 'string' || !nodeId.trim() || nodeId.length > 256)) {
+      throw codedError('INVALID_INPUT')
+    }
+    beginTaskCreation()
+    try {
+      const task = await localCore.request('task:create', {
+        projectId: input.projectId,
+        canvasId: input.canvasId,
+        canvasVersion: input.canvasVersion,
+        nodeId: input.nodeId,
+        modality: 'compose',
+        providerType: 'local',
+        providerId: COMPOSE_PROVIDER_ID,
+        modelId: COMPOSE_MODEL_ID,
+        idempotencyKey: input.idempotencyKey,
+        parameters: { operation: 'compose', inputNodeIds: input.inputNodeIds, count: 1 },
       })
       void scheduleTaskPump(input.projectId)
       return task

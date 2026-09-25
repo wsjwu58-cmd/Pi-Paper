@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   getTaskInput: (projectId, taskId) => ipcRenderer.invoke('desktop:task:get-input', projectId, taskId),
   cancelTask: (projectId, taskId) => ipcRenderer.invoke('desktop:task:cancel', projectId, taskId),
   createGenerationTask: (input) => ipcRenderer.invoke('desktop:task:create-generation', input),
+  composeVideos: (input) => ipcRenderer.invoke('desktop:task:compose', input),
   readTaskOutput: (projectId, taskId) => ipcRenderer.invoke('desktop:task:read-output', projectId, taskId),
   getAgnesModels: () => ipcRenderer.invoke('desktop:model:get-agnes'),
   saveAgnesApiKey: (apiKey) => ipcRenderer.invoke('desktop:model:save-agnes-key', apiKey),

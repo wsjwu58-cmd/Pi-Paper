@@ -128,7 +128,7 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 6)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 7)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const columns = migratedDatabase.prepare('PRAGMA table_info(assets)').all().map((row) => row.name)
     assert.ok(columns.includes('updated_at'))

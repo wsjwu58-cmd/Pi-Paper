@@ -1,6 +1,6 @@
 # 桌面本地数据格式（项目与模型设置）
 
-状态：Electron 项目引导、本地画布存储、六类节点及连线领域命令、分组/堆叠 Store 命令、只读画布 JSON Store 导出、首批图片素材导入/引用、任务状态存储、本地文本执行、Agnes 文本/图像/视频云端任务，以及当前格式下的画布/素材/成功任务输出和 Agent 数据备份恢复切片已实现。画布 JSON 导出尚未接入 IPC 或 Renderer；旧版“导入为新画布”语义因当前单项目单画布模型而未实现。分组/堆叠命令尚未接入 IPC 或 Renderer；恢复会创建新身份的副本，不覆盖原项目。Agent Worker 接入、跨版本恢复与完整项目升级流程尚未实现。
+状态：Electron 项目引导、本地画布与六类节点存储、连线/分组/堆叠领域命令、原页面上的画布 JSON 导出、图片素材导入/引用/重命名/替换/软删除、任务状态、本地文本与合成执行、Agnes 文本/图像/视频任务，以及当前格式下的项目备份恢复切片已实现。旧版“导入为新画布”语义因当前单项目单画布模型而未实现；音频、完整素材与跨平台安装包验收仍有缺口。Agent Worker 已接入原 TypeScript 服务；动态项目 Skill 与完整跨版本恢复仍待迁移。
 
 ## 项目目录
 
@@ -39,7 +39,7 @@ Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访�
 
 桌面版内置固定目录：文本 `agnes-2.5-flash`、图像 `agnes-image-2.5-flash`、视频 `agnes-video-2.5-flash`，API Base URL 为 `https://apihub.agnes-ai.com/v1`。模型 ID 和 endpoint 是非密钥能力元数据，不保存在项目内。API Key 只能通过受限 IPC 在 Electron Main 接收，并使用 Electron `safeStorage` 加密到独立凭据文件；Renderer 只能读取“是否已配置”，不能读取 Key。Generation Worker 只在调用 Agnes 时从 Main 收到短期内存副本，Key 不进入任务参数、SQLite、JSONL、日志或备份。
 
-用户从文本节点选择 Agnes 模型后，每个云端任务在进入 TaskStore 前都会显示一次确认，说明将发送当前文本提示词、供应商和可能费用。拒绝不会创建任务。图像和视频当前仅发送文本提示词及模型参数，不上传本地参考素材；返回媒体下载并校验后仍保存在项目任务目录。图像/视频模型目前不支持运行中取消。
+模型配置页说明云端调用的供应商、发送范围和可能费用；用户选择 Agnes 并点击节点生成后直接提交，不逐次弹发送确认。Agent 工具提交生成任务仍沿用原版的生成动作确认，拒绝不会创建任务。图像和视频当前仅发送文本提示词及模型参数，不上传本地参考素材；返回媒体下载并校验后仍保存在项目任务目录。图像/视频模型目前不支持运行中取消。
 
 ## `project.json`
 
@@ -73,13 +73,13 @@ Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写�
 
 `exportCanvas(projectId, canvasId)` 在 Store 内只读生成 interchange JSON：顶层同时写入 `schema_version` 和 `schemaVersion`（当前均为 `1.0.0`），并包含画布、节点、边、groups 与 stacks。图片节点只导出其稳定 `assetId` 引用，不打包素材文件；导出方法目前不经 IPC/Renderer 调用。旧后端 `CanvasService.importCanvas` 会创建另一张新画布并重映射节点/边身份、重置执行状态，但当前 `project_metadata` 仅保存一个 `canvasId`；本地尚无等价导入命令。为防止覆盖当前画布或生成无法解析的跨项目素材引用，画布 JSON 导入保持未实现，等待多画布身份和素材包迁移契约。
 
-文本、图像与视频节点可将当前提示词提交给已配置的本地或 Agnes 模型；选择云端模型并点击生成后直接调用，不逐次弹发送确认。任务输入使用 `Idempotency-Key` 和画布版本；Worker 将输出写入该任务目录，Local Core 校验文件类型、路径、可读性、SHA-256 与大小后才提交 `succeeded`。当前桌面画布按节点保存任务 ID 和状态，从任务文件读取文本结果，预览媒体结果；原版完整结果历史与其他模态仍待迁移。
+文本、图像与视频节点可将当前提示词提交给已配置的本地或 Agnes 模型；原合成节点按有序上游视频节点 ID 创建本地 `compose` 任务，由 Local Core 验证连线、最新成功视频结果与文件摘要，再交给 FFmpeg 统一转码并拼接。任务输入使用 `Idempotency-Key` 和画布版本；Worker 将输出写入该任务目录，Local Core 校验文件类型、路径、可读性、SHA-256 与大小后才提交 `succeeded`。原节点显示任务状态、历史和可预览结果；音频与其他尚未接入的模态仍待迁移。
 
 ## 素材首个切片
 
 通过系统文件选择器导入 PNG、JPEG、GIF 或 WebP 图片（每个文件不超过 200 MB）。Local Core 以实际文件签名识别 MIME、流式计算 SHA-256 并复制到 `.vibepaper/assets/<sha256>/<assetId>.<ext>`；相同内容只登记一条素材记录。画布中的图片节点保存稳定 `assetId`，保存画布时素材存在性检查与引用更新位于同一 SQLite 事务。Renderer 只使用受限的 `vibe://app/assets/<assetId>` 资源 URL，Main 通过 Local Core 查到项目内文件后提供只读图片响应。
 
-`user_version = 1` 升级到版本 2 前，会先在 `.vibepaper/backups/` 创建 SQLite 在线快照，再用事务创建素材表和引用表。`user_version = 2` 升级到版本 3 前同样创建回退副本，再用事务增加任务表和事件表。`user_version = 3` 升级到版本 4 前再次创建回退副本，再用事务增加画布命令账本。`user_version = 4` 升级到版本 5 前创建 v4 SQLite 回退副本，再用事务创建 `canvas_groups` 与 `canvas_stacks`。迁移失败时 SQLite 事务回滚，快照保留供恢复；项目备份通过 SQLite 在线快照自动包含两张新表，恢复 v4 备份时会先校验再迁移到当前版本。
+`user_version = 1` 到 5 逐级增加素材、任务、画布命令、分组与堆叠；版本 6 增加素材软删除字段。版本 6 升级到 7 前在 `.vibepaper/backups/` 创建 SQLite 在线快照，再在事务中扩展任务表的 `compose` 模态并保留旧任务和事件。迁移失败时事务回滚，快照保留供恢复；项目备份经校验后逐级迁移到当前版本。
 
 ## 本地备份与恢复首个切片
 

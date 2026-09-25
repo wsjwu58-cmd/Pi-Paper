@@ -8,6 +8,7 @@ import {
 	captureEvent,
 	forceInitialToolCall,
 	sanitizeAgentReply,
+	sanitizeAssistantMessage,
 } from "../src/application/agent-runtime.ts";
 
 describe("Pi runtime event mapping", () => {
@@ -22,8 +23,45 @@ describe("Pi runtime event mapping", () => {
 	});
 
 	it("uses Xiaop for legacy provider-branded introductions", () => {
-		expect(sanitizeAgentReply("你好！我是 Agnes，由 Sapiens AI 开发。")).toBe("你好！我是小P。");
+		expect(sanitizeAgentReply("你好！我是 Agnes，由 Sapiens AI 开发的语言模型。")).toBe("你好！我是小P。");
 		expect(sanitizeAgentReply("我会使用 agnes-2.5-flash 帮你完成这一步。")).toBe("我会帮你完成这一步。");
+	});
+
+	it("removes UUIDs left in legacy assistant replies", () => {
+		expect(sanitizeAgentReply("任务已完成：123e4567-e89b-12d3-a456-426614174000。")).toBe("任务已完成：。");
+	});
+
+	it("sanitizes Pi assistant text while preserving thinking and tool calls", () => {
+		const toolCall = { type: "toolCall", id: "call-1", name: "create_nodes", arguments: { nodes: [] } };
+		const message = {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "保留内部思考块结构" },
+				{ type: "text", text: "已整理节点 ID: node_12345678，并调用 get_canvas_summary。" },
+				toolCall,
+				{ type: "text", text: "我是 Agnes，由 Sapiens AI 开发的语言模型。" },
+			],
+			timestamp: 123,
+		};
+
+		const sanitized = sanitizeAssistantMessage(message);
+
+		expect(sanitized.content).toEqual([
+			{ type: "thinking", thinking: "保留内部思考块结构" },
+			{ type: "text", text: "已整理。我是小P。" },
+			toolCall,
+			{ type: "text", text: "" },
+		]);
+		expect(sanitized).toMatchObject({ role: "assistant", timestamp: 123 });
+		expect(message.content[1]).toEqual({ type: "text", text: "已整理节点 ID: node_12345678，并调用 get_canvas_summary。" });
+	});
+
+	it("keeps the legacy string-content shape and leaves non-assistant messages untouched", () => {
+		const legacy = { role: "assistant", content: "你好！我是 Agnes。" };
+		expect(sanitizeAssistantMessage(legacy)).toEqual({ role: "assistant", content: "你好！我是小P。" });
+
+		const userMessage = { role: "user", content: "你好！" };
+		expect(sanitizeAssistantMessage(userMessage)).toBe(userMessage);
 	});
 
 	it("preserves Markdown paragraph and heading boundaries while sanitizing", () => {

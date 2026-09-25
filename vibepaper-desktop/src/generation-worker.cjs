@@ -4,6 +4,7 @@ const { randomUUID } = require('node:crypto')
 const parentPort = process.parentPort
 const { normalizeLocalTextModelConfig } = require('./local-model-catalog.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
+const { composeVideos: runComposeVideos, ComposeFailure } = require('./compose-provider.cjs')
 
 if (!parentPort) throw new Error('Generation Worker must run as an Electron utility process.')
 
@@ -442,7 +443,7 @@ let running = false
 parentPort.on('message', async (event) => {
   const request = event?.data ?? event
   if (!request || !Number.isSafeInteger(request.id)
-    || !['generate:text', 'generate:image', 'generate:video'].includes(request.method)) return
+    || !['generate:text', 'generate:image', 'generate:video', 'generate:compose'].includes(request.method)) return
   if (running) {
     parentPort.postMessage({ id: request.id, ok: false, errorCode: 'WORKER_BUSY' })
     return
@@ -451,13 +452,15 @@ parentPort.on('message', async (event) => {
   try {
     const result = request.method === 'generate:text' ? await runTextTask(request.payload)
       : request.method === 'generate:image' ? await runImageTask(request.payload)
-        : await runVideoTask(request.payload)
+        : request.method === 'generate:video' ? await runVideoTask(request.payload)
+          : await runComposeVideos(request.payload)
     parentPort.postMessage({ id: request.id, ok: true, result })
   } catch (error) {
     parentPort.postMessage({
       id: request.id,
       ok: false,
-      errorCode: error instanceof WorkerFailure ? error.code : 'LOCAL_MODEL_EXECUTION_FAILED',
+      errorCode: error instanceof WorkerFailure || error instanceof ComposeFailure
+        ? error.code : 'LOCAL_MODEL_EXECUTION_FAILED',
     })
   } finally {
     running = false

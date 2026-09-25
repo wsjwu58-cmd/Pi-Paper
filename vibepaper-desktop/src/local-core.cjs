@@ -132,6 +132,8 @@ async function dispatch(method, payload) {
       return store.getTask(payload?.projectId, payload?.taskId)
     case 'task:get-input':
       return store.getTaskInput(payload?.projectId, payload?.taskId)
+    case 'task:resolve-compose-inputs':
+      return store.resolveComposeInputPaths(payload?.projectId, payload?.taskId)
     case 'task:read-output':
       return store.readTaskOutputText(payload?.projectId, payload?.taskId)
     case 'task:resolve-output-preview':

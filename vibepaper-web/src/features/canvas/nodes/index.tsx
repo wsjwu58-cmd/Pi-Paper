@@ -12,7 +12,7 @@ import { NODE_COLORS, statusBadge } from './NodeShell'
 import { NodeEditorDialog, NodeFloatingToolbar } from './NodeEditorPanel'
 import { SplitNodeLayout } from './SplitNodeLayout'
 import { textNodeContent } from './textContent'
-import { persistNodeExec, submitNodeTask, syncExecFields } from './taskActions'
+import { persistNodeExec, submitComposeNodeTask, submitNodeTask, syncExecFields } from './taskActions'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { DirectorNodeView } from '../director'
 import { desktopAssetView, isDesktopRuntime } from '../canvasPort'
@@ -133,10 +133,10 @@ async function loadDesktopTask(
     if (task.modality === 'text') {
       const text = await bridge.readTaskOutput(projectId, task.taskId).catch(() => '')
       outputs = [{ id: task.taskId, outputType: 'text', meta: { text } }]
-    } else if (task.modality === 'image' || task.modality === 'video') {
+    } else if (task.modality === 'image' || task.modality === 'video' || task.modality === 'compose') {
       outputs = [{
         id: task.taskId,
-        outputType: task.modality,
+        outputType: task.modality === 'compose' ? 'video' : task.modality,
         url: `vibe://app/tasks/${task.taskId}/output`,
       }]
     }
@@ -348,13 +348,20 @@ function TaskHistoryBar({
         if (!project) throw new Error('没有打开的本地项目，无法重试任务。')
         const snapshot = await bridge.getTaskInput(project.projectId, sid(latest.taskId))
         if (!snapshot) throw new Error('本地任务输入已不可用，无法重试。')
-        await submitNodeTask(
-          nodeId,
-          snapshot.task.modelId ?? latest.modelType,
-          snapshot.parameters,
-          0,
-          { providerType: snapshot.task.providerType },
-        )
+        if (snapshot.task.modality === 'compose') {
+          const inputNodeIds = Array.isArray(snapshot.parameters.inputNodeIds)
+            ? snapshot.parameters.inputNodeIds.filter((id): id is string => typeof id === 'string')
+            : []
+          await submitComposeNodeTask(nodeId, inputNodeIds)
+        } else {
+          await submitNodeTask(
+            nodeId,
+            snapshot.task.modelId ?? latest.modelType,
+            snapshot.parameters,
+            0,
+            { providerType: snapshot.task.providerType },
+          )
+        }
         toastSuccess('已重新提交')
         window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId) } }))
       } catch (e) {
@@ -810,8 +817,9 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
 
   const videoInputs = useMemo(() => {
     if (!node) return [] as Array<{ id: string; payload: NodePayload; url?: string; status: string }>
+    const desktopMode = isDesktopRuntime()
     const incoming = edges
-      .filter((e) => sid(e.target) === sid(node.id))
+      .filter((e) => sid(e.target) === sid(node.id) && (!desktopMode || e.data?.valid !== false))
       .map((e) => allNodes.find((n) => sid(n.id) === sid(e.source)))
       .filter((n): n is FlowNode => !!n && n.data.node.type === 'video')
 
@@ -827,11 +835,17 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
       .map((id) => {
         const payload = byId.get(id)!.data.node
         const p = payload.params ?? {}
-        const url =
-          resolveMediaUrl((p.lastOutputUrl as string) || (p.url as string) || undefined, undefined) || undefined
-        return { id, payload, url, status: payload.status }
+        const localVideoTask = desktopMode
+          ? pickLatestTask(tasks.filter((task) => sid(task.nodeId) === id), payload.currentOutputId)
+          : null
+        const url = desktopMode
+          ? localVideoTask?.status === 'succeeded' && localVideoTask.outputs?.[0]?.outputType === 'video'
+            ? resolveMediaUrl(localVideoTask.outputs[0].url, localVideoTask.outputs[0].meta as Record<string, unknown>) || undefined
+            : undefined
+          : resolveMediaUrl((p.lastOutputUrl as string) || (p.url as string) || undefined, undefined) || undefined
+        return { id, payload, url, status: desktopMode ? localVideoTask?.status ?? payload.status : payload.status }
       })
-  }, [allNodes, edges, excluded, node])
+  }, [allNodes, edges, excluded, node, tasks])
 
   useEffect(() => {
     if (!node) return
@@ -844,6 +858,10 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
   }, [node, nodeId, videoInputs])
 
   useEffect(() => {
+    if (isDesktopRuntime()) {
+      setEstimate(null)
+      return
+    }
     let cancelled = false
     void api<{ estimatedCost: number }>('/models/estimate', {
       method: 'POST',
@@ -874,7 +892,9 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
   const busy = nodeBusy(node, latest) || busySubmit
   const meta = NODE_COLORS.compose
   const readyClips = videoInputs.filter((c) => Boolean(c.url))
-  const canCompose = readyClips.length >= 2 && !busy
+  const desktopMode = isDesktopRuntime()
+  const desktopComposeReady = !desktopMode || typeof window.vibepaperDesktop?.composeVideos === 'function'
+  const canCompose = readyClips.length >= 2 && !busy && desktopComposeReady
   const cost = estimate ?? 15
 
   const removeClip = (clipId: string) => {
@@ -898,17 +918,21 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
     setBusySubmit(true)
     setErr('')
     try {
-      await submitNodeTask(
-        node.id,
-        'compose-1.0',
-        {
-          operation: 'compose',
-          inputNodeIds: readyClips.map((c) => c.id),
-          inputUrls: readyClips.map((c) => c.url).filter(Boolean),
-          count: 1,
-        },
-        cost,
-      )
+      if (desktopMode) {
+        await submitComposeNodeTask(node.id, readyClips.map((c) => c.id))
+      } else {
+        await submitNodeTask(
+          node.id,
+          'compose-1.0',
+          {
+            operation: 'compose',
+            inputNodeIds: readyClips.map((c) => c.id),
+            inputUrls: readyClips.map((c) => c.url).filter(Boolean),
+            count: 1,
+          },
+          cost,
+        )
+      }
       toastSuccess('合成任务已提交')
     } catch (e) {
       const message = (e as Error).message
@@ -983,9 +1007,15 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
 
             <div className="flex items-center gap-2 border-t border-black/6 px-3.5 py-2.5">
               <span className={`flex-1 text-[12px] font-semibold ${canCompose ? 'text-emerald-600' : 'text-[#999]'}`}>
-                {canCompose ? '可以合成' : readyClips.length < 2 ? `还差 ${2 - readyClips.length} 个就绪视频` : '请稍候…'}
+                {desktopMode && !desktopComposeReady
+                  ? '桌面本地合成服务尚未接入'
+                  : canCompose
+                    ? '可以合成'
+                    : readyClips.length < 2
+                      ? `还差 ${2 - readyClips.length} 个就绪视频`
+                      : '请稍候…'}
               </span>
-              <span className="text-[11px] font-bold text-[#888]">~{cost}</span>
+              {!desktopMode && <span className="text-[11px] font-bold text-[#888]">~{cost}</span>}
               <button
                 type="button"
                 disabled={!canCompose}

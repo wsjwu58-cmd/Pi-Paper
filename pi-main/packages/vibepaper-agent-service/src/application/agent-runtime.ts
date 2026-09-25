@@ -326,7 +326,7 @@ export function sanitizeAgentReply(content: string): string {
 			// introduction. Keep the friendly greeting while consistently presenting
 			// the public-facing companion identity.
 			.replace(
-				/(?:我是|我叫|名称是|名为)\s*(?:agnes(?:[-_.\w]+)?)(?:\s*[，,]\s*)?(?:(?:由|来自|出自)\s*)?(?:sapiens\s*ai?)?\s*(?:开发|提供|驱动)?[。！？]?/gi,
+				/(?:我是|我叫|名称是|名为)\s*(?:agnes(?:[-_.\w]+)?)(?:\s*[，,]\s*)?(?:(?:由|来自|出自)\s*)?(?:sapiens\s*ai?)?\s*(?:开发|提供|驱动)?(?:的)?(?:大语言模型|语言模型|模型)?[。！？]?/gi,
 				"我是小P。",
 			)
 			.replace(
@@ -341,6 +341,7 @@ export function sanitizeAgentReply(content: string): string {
 				/[，,;；]?\s*(?:节点|任务|会话|画布)?\s*(?:ID|id|nodeId|taskId|sessionId|canvasId)\s*[:：]?\s*[`"']?[A-Za-z0-9_-]{6,}[`"']?/gi,
 				"",
 			)
+			.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "")
 			.replace(/(?:节点|任务|会话|画布)\s*[`"']?\d{6,}[`"']?/gi, "")
 			.replace(/(?:审校|报告|结果)\s*\/\s*\d{6,}/gi, "")
 			// Snowflake identifiers can appear as bare cells in a status table,
@@ -355,6 +356,44 @@ export function sanitizeAgentReply(content: string): string {
 			.replace(/\n[ \t]+/g, "\n")
 			.replace(/[，,;；]\s*。/g, "。")
 			.trim()
+	);
+}
+
+/**
+ * Sanitize the user-visible text in a Pi assistant message before it is shown
+ * or persisted, while leaving thinking, tool calls, and other message fields
+ * intact. Older session files may contain assistant text as a string, so keep
+ * that legacy shape readable as well.
+ */
+export function sanitizeAssistantMessage<T extends { role: string; content?: unknown }>(message: T): T {
+	if (message.role !== "assistant") return message;
+	if (typeof message.content === "string") {
+		return { ...message, content: sanitizeAgentReply(message.content) } as T;
+	}
+	if (!Array.isArray(message.content)) return message;
+
+	const text = message.content.filter(isTextContent).map((item) => item.text).join("");
+	if (!text) return message;
+
+	let replaced = false;
+	return {
+		...message,
+		content: message.content.map((item: unknown) => {
+			if (!isTextContent(item)) return item;
+			if (replaced) return { ...item, text: "" };
+			replaced = true;
+			return { ...item, text: sanitizeAgentReply(text) };
+		}),
+	} as T;
+}
+
+function isTextContent(item: unknown): item is { type: "text"; text: string } {
+	return (
+		typeof item === "object" &&
+		item !== null &&
+		!Array.isArray(item) &&
+		(item as { type?: unknown }).type === "text" &&
+		typeof (item as { text?: unknown }).text === "string"
 	);
 }
 

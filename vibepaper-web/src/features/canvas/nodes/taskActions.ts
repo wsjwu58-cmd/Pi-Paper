@@ -136,3 +136,44 @@ export async function submitNodeTask(
   }
   return res.taskId
 }
+
+/** Submit the original Compose node through the local FFmpeg task bridge. */
+export async function submitComposeNodeTask(nodeId: Id, inputNodeIds: string[]): Promise<string> {
+  if (!isDesktopRuntime()) throw new Error('本地视频合成接口仅适用于桌面项目。')
+  const bridge = window.vibepaperDesktop
+  if (!bridge?.composeVideos) throw new Error('桌面本地视频合成服务尚未就绪。')
+  const canvas = useCanvasStore.getState().canvas
+  if (!canvas) throw new Error('画布尚未加载，无法创建本地合成任务。')
+  const activeProject = await bridge.getActiveProject()
+  if (!activeProject) throw new Error('没有打开的本地项目，无法创建本地合成任务。')
+  const node = useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node
+  if (!node || node.type !== 'compose') throw new Error('合成节点已不存在。')
+  if (inputNodeIds.length < 2 || new Set(inputNodeIds).size !== inputNodeIds.length) {
+    throw new Error('合成至少需要 2 个不重复的视频输入。')
+  }
+
+  const task = await bridge.composeVideos({
+    projectId: activeProject.projectId,
+    canvasId: sid(canvas.canvas.id),
+    canvasVersion: canvas.canvas.version,
+    nodeId: sid(nodeId),
+    idempotencyKey: crypto.randomUUID(),
+    inputNodeIds,
+  })
+  if (!task?.taskId) throw new Error('本地合成任务没有创建成功。')
+
+  const current = useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node
+  useCanvasStore.getState().updateNodePayload(nodeId, {
+    ...syncExecFields(task.status),
+    params: {
+      ...(current?.params ?? node.params),
+      operation: 'compose',
+      count: 1,
+      inputNodeIds,
+      model: task.modelId ?? 'compose-1.0',
+    },
+    currentOutputId: task.taskId,
+  })
+  window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { taskId: task.taskId, nodeId: sid(nodeId) } }))
+  return task.taskId
+}

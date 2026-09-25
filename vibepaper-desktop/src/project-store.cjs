@@ -9,7 +9,7 @@ const { backup, DatabaseSync } = require('node:sqlite')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 6
+const PROJECT_DB_SCHEMA_VERSION = 7
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -19,7 +19,9 @@ const MAX_TASK_INPUT_BYTES = 1024 * 1024
 const MAX_TASK_OUTPUT_BYTES = 4 * 1024 * 1024 * 1024
 const MAX_TASK_SEARCH_PAGE = 1_000_000
 const MAX_TASK_SEARCH_PAGE_SIZE = 100
-const TASK_SEARCH_MODALITIES = new Set(['text', 'image', 'audio', 'video'])
+const COMPOSE_PROVIDER_ID = 'mock-compose'
+const COMPOSE_MODEL_ID = 'compose-1.0'
+const TASK_SEARCH_MODALITIES = new Set(['text', 'image', 'audio', 'video', 'compose'])
 const TASK_SEARCH_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'])
 const MAX_AGENT_BACKUP_BYTES = 4 * 1024 * 1024 * 1024
 const MAX_AGENT_BACKUP_FILES = 100_000
@@ -70,7 +72,7 @@ const TASK_DB_SCHEMA = `
     canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
     canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
     node_id TEXT,
-    modality TEXT NOT NULL CHECK (modality IN ('text', 'image', 'audio', 'video')),
+    modality TEXT NOT NULL CHECK (modality IN ('text', 'image', 'audio', 'video', 'compose')),
     provider_type TEXT NOT NULL CHECK (provider_type IN ('local', 'cloud')),
     provider_id TEXT NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 160),
     model_id TEXT NOT NULL CHECK (length(model_id) BETWEEN 1 AND 200),
@@ -405,7 +407,7 @@ function assertNoCredentialFields(value) {
 }
 
 function normalizeTaskInput(input) {
-  const modalities = ['text', 'image', 'audio', 'video']
+  const modalities = ['text', 'image', 'audio', 'video', 'compose']
   const providerTypes = ['local', 'cloud']
   if (!isRecord(input)
     || typeof input.projectId !== 'string' || !input.projectId
@@ -419,6 +421,19 @@ function normalizeTaskInput(input) {
     || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
     || (input.parameters !== undefined && !isRecord(input.parameters))) {
     throw new Error('本地生成任务参数无效。')
+  }
+  if (input.modality === 'compose') {
+    const ids = input.parameters.inputNodeIds
+    if (input.providerType !== 'local' || input.providerId.trim() !== COMPOSE_PROVIDER_ID
+      || input.modelId.trim() !== COMPOSE_MODEL_ID || input.nodeId == null
+      || input.parameters.operation !== 'compose'
+      || !Array.isArray(ids) || ids.length < 2 || ids.length > MAX_NODES
+      || ids.some((nodeId) => typeof nodeId !== 'string' || !nodeId.trim() || nodeId.length > 256)
+      || input.parameters.count !== undefined && input.parameters.count !== 1
+      || Object.hasOwn(input.parameters, 'inputUrls') || Object.hasOwn(input.parameters, 'inputs')
+      || Object.hasOwn(input.parameters, 'inputTaskIds')) {
+      throw new Error('合成任务输入无效：至少选择 2 个已连接的本地视频节点。')
+    }
   }
   const parametersJson = JSON.stringify(input.parameters ?? {})
   if (Buffer.byteLength(parametersJson, 'utf8') > MAX_TASK_INPUT_BYTES) {
@@ -488,6 +503,22 @@ function normalizeTaskSearchInput(input) {
   return { page, pageSize, keyword, model, modality, status, fromTime, toTime }
 }
 
+function pickLatestNodeTask(tasks, currentOutputId) {
+  if (currentOutputId !== undefined && currentOutputId !== null && String(currentOutputId)) {
+    const pinned = tasks.find((task) => task.task_id === String(currentOutputId))
+    if (pinned) return pinned
+  }
+  const inflight = tasks.find((task) => task.status === 'running' || task.status === 'queued')
+  const succeeded = tasks.find((task) => task.status === 'succeeded' && task.output_path)
+    ?? tasks.find((task) => task.status === 'succeeded')
+  if (inflight && succeeded) {
+    const inflightAt = Date.parse(inflight.created_at || '') || 0
+    const succeededAt = Date.parse(succeeded.created_at || '') || 0
+    return inflightAt > succeededAt ? inflight : succeeded
+  }
+  return inflight ?? succeeded ?? tasks[0] ?? null
+}
+
 function validateTaskOutputRelativePath(taskId, modality, relativePath) {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(taskId)) {
     throw new Error('任务结果标识无效。')
@@ -506,6 +537,7 @@ function validateTaskOutputRelativePath(taskId, modality, relativePath) {
     image: ['.png', '.jpg', '.jpeg', '.webp'],
     audio: ['.mp3', '.wav', '.ogg', '.m4a'],
     video: ['.mp4', '.webm', '.mov'],
+    compose: ['.mp4'],
   }[modality]
   if (!allowed?.includes(extension)) throw new Error('生成结果文件格式与任务模态不匹配。')
   return relativePath
@@ -1426,6 +1458,77 @@ async function migrateDatabaseV5ToV6(database, dataDirectory) {
   }
 }
 
+async function migrateDatabaseV6ToV7(database, dataDirectory) {
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v6-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(`
+      CREATE TABLE tasks_v7 (
+        task_id TEXT PRIMARY KEY,
+        idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 255),
+        input_hash TEXT NOT NULL CHECK (length(input_hash) = 64),
+        canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+        canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
+        node_id TEXT,
+        modality TEXT NOT NULL CHECK (modality IN ('text', 'image', 'audio', 'video', 'compose')),
+        provider_type TEXT NOT NULL CHECK (provider_type IN ('local', 'cloud')),
+        provider_id TEXT NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 160),
+        model_id TEXT NOT NULL CHECK (length(model_id) BETWEEN 1 AND 200),
+        input_json TEXT NOT NULL CHECK (json_valid(input_json)),
+        status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        output_path TEXT,
+        output_sha256 TEXT CHECK (output_sha256 IS NULL OR length(output_sha256) = 64),
+        output_size_bytes INTEGER CHECK (output_size_bytes IS NULL OR output_size_bytes > 0),
+        error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 120),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        CHECK (
+          (status = 'succeeded' AND output_path IS NOT NULL AND output_sha256 IS NOT NULL AND output_size_bytes IS NOT NULL)
+          OR (status <> 'succeeded' AND output_path IS NULL AND output_sha256 IS NULL AND output_size_bytes IS NULL)
+        )
+      ) STRICT;
+      INSERT INTO tasks_v7 (
+        task_id, idempotency_key, input_hash, canvas_id, canvas_version, node_id, modality,
+        provider_type, provider_id, model_id, input_json, status, attempt_count, output_path,
+        output_sha256, output_size_bytes, error_code, created_at, updated_at, started_at, completed_at
+      ) SELECT
+        task_id, idempotency_key, input_hash, canvas_id, canvas_version, node_id, modality,
+        provider_type, provider_id, model_id, input_json, status, attempt_count, output_path,
+        output_sha256, output_size_bytes, error_code, created_at, updated_at, started_at, completed_at
+      FROM tasks;
+      DROP TABLE tasks;
+      ALTER TABLE tasks_v7 RENAME TO tasks;
+      CREATE INDEX tasks_by_status ON tasks(status, created_at);
+      CREATE INDEX tasks_by_canvas ON tasks(canvas_id, created_at);
+      PRAGMA user_version = 7;
+    `)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
+  if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+    throw new Error('合成任务迁移后检测到无效引用。')
+  }
+}
+
 function readDatabaseCanvas(database, metadata) {
   const projectId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('projectId')
   const canvasId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('canvasId')
@@ -2087,7 +2190,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (![2, 3, 4, 5, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    if (![2, 3, 4, 5, 6, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -2304,6 +2407,7 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 3) await migrateDatabaseV3ToV4(database, dataDirectory)
       if (databaseVersion(database) === 4) await migrateDatabaseV4ToV5(database, dataDirectory)
       if (databaseVersion(database) === 5) await migrateDatabaseV5ToV6(database, dataDirectory)
+      if (databaseVersion(database) === 6) await migrateDatabaseV6ToV7(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
@@ -2774,6 +2878,69 @@ function createLocalProjectStore() {
     })
   }
 
+  async function resolveComposeSourceTaskIds(database, canvasId, composeNodeId, inputNodeIds) {
+    const target = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+      .get(canvasId, composeNodeId)
+    if (!target || JSON.parse(target.payload_json).type !== 'compose') {
+      throw new Error('合成目标节点不存在或不是合成节点。')
+    }
+
+    const incomingEdges = database.prepare(`
+      SELECT source_node_id, payload_json FROM edges WHERE canvas_id = ? AND target_node_id = ?
+    `).all(canvasId, composeNodeId)
+    const connectedCounts = new Map()
+    for (const row of incomingEdges) {
+      const payload = JSON.parse(row.payload_json)
+      const data = isRecord(payload.data) ? payload.data : {}
+      const edge = isRecord(data.edge) ? data.edge : {}
+      if (data.valid === false || edge.valid === false) continue
+      connectedCounts.set(row.source_node_id, (connectedCounts.get(row.source_node_id) ?? 0) + 1)
+    }
+    const requestedCounts = new Map()
+    for (const nodeId of inputNodeIds) {
+      requestedCounts.set(nodeId, (requestedCounts.get(nodeId) ?? 0) + 1)
+    }
+
+    const videoTasks = database.prepare(`
+      SELECT * FROM tasks WHERE canvas_id = ? AND node_id = ? AND modality = 'video'
+      ORDER BY created_at DESC, task_id
+    `)
+    const taskIds = []
+    for (const nodeId of inputNodeIds) {
+      if ((requestedCounts.get(nodeId) ?? 0) > (connectedCounts.get(nodeId) ?? 0)) {
+        throw new Error('合成输入必须来自连接到合成节点的视频节点。')
+      }
+      const source = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+        .get(canvasId, nodeId)
+      if (!source) throw new Error('合成输入视频节点不存在。')
+      const payload = JSON.parse(source.payload_json)
+      if (payload.type !== 'video') throw new Error('合成输入只支持视频节点。')
+      const data = isRecord(payload.data) ? payload.data : {}
+      const nestedNode = isRecord(data.node) ? data.node : {}
+      if (data.stale === true || nestedNode.stale === true || payload.stale === true) {
+        throw new Error('合成输入视频节点已过期，请先重新生成视频。')
+      }
+
+      const currentOutputId = data.currentOutputId ?? nestedNode.currentOutputId
+      const sourceTask = pickLatestNodeTask(videoTasks.all(canvasId, nodeId), currentOutputId)
+      if (!sourceTask || !sourceTask.output_path || !sourceTask.output_sha256
+        || sourceTask.status !== 'succeeded' || !Number.isSafeInteger(sourceTask.output_size_bytes)) {
+        throw new Error('每个合成输入都必须有已完成的视频任务。')
+      }
+      const output = await resolveTaskOutputFile(
+        path.join(active.directory, '.vibepaper'),
+        sourceTask.task_id,
+        'video',
+        sourceTask.output_path,
+      )
+      if (output.sha256 !== sourceTask.output_sha256 || output.sizeBytes !== sourceTask.output_size_bytes) {
+        throw new Error('合成输入视频结果校验失败。')
+      }
+      taskIds.push(sourceTask.task_id)
+    }
+    return taskIds
+  }
+
   function createTask(input) {
     return enqueue(async () => {
       if (!active) throw new Error('没有打开的本地项目。')
@@ -2791,6 +2958,22 @@ function createLocalProjectStore() {
       if (normalized.nodeId && !active.database.prepare('SELECT 1 FROM nodes WHERE canvas_id = ? AND id = ?')
         .get(normalized.canvasId, normalized.nodeId)) {
         throw new Error('生成任务关联的节点已不存在。')
+      }
+
+      let parametersJson = normalized.parametersJson
+      if (normalized.modality === 'compose') {
+        const parameters = JSON.parse(parametersJson)
+        const inputTaskIds = await resolveComposeSourceTaskIds(
+          active.database,
+          normalized.canvasId,
+          normalized.nodeId,
+          parameters.inputNodeIds,
+        )
+        parameters.inputTaskIds = inputTaskIds
+        parametersJson = JSON.stringify(parameters)
+        if (Buffer.byteLength(parametersJson, 'utf8') > MAX_TASK_INPUT_BYTES) {
+          throw new Error('合成任务输入超过本地保存上限。')
+        }
       }
 
       const now = new Date().toISOString()
@@ -2819,7 +3002,7 @@ function createLocalProjectStore() {
           normalized.providerType,
           normalized.providerId,
           normalized.modelId,
-          normalized.parametersJson,
+          parametersJson,
           now,
           now,
         )
@@ -2836,6 +3019,46 @@ function createLocalProjectStore() {
         active.database.exec('ROLLBACK')
         throw error
       }
+    })
+  }
+
+  function resolveComposeInputPaths(projectId, taskId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取合成输入。')
+      if (typeof taskId !== 'string' || !taskId) throw new Error('合成任务标识无效。')
+      const task = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (!task || task.modality !== 'compose' || task.status !== 'running') {
+        throw new Error('合成任务当前不可执行。')
+      }
+      const parameters = JSON.parse(task.input_json)
+      if (!Array.isArray(parameters.inputNodeIds) || !Array.isArray(parameters.inputTaskIds)
+        || parameters.inputNodeIds.length < 2 || parameters.inputNodeIds.length !== parameters.inputTaskIds.length) {
+        throw new Error('合成任务的输入快照无效。')
+      }
+      const paths = []
+      for (let index = 0; index < parameters.inputTaskIds.length; index += 1) {
+        const sourceTaskId = parameters.inputTaskIds[index]
+        const nodeId = parameters.inputNodeIds[index]
+        const sourceTask = active.database.prepare(`
+          SELECT * FROM tasks WHERE task_id = ? AND canvas_id = ? AND node_id = ?
+            AND modality = 'video' AND status = 'succeeded'
+        `).get(sourceTaskId, task.canvas_id, nodeId)
+        if (!sourceTask || !sourceTask.output_path || !sourceTask.output_sha256
+          || !Number.isSafeInteger(sourceTask.output_size_bytes)) {
+          throw new Error('合成输入视频任务已不可用。')
+        }
+        const output = await resolveTaskOutputFile(
+          path.join(active.directory, '.vibepaper'),
+          sourceTask.task_id,
+          'video',
+          sourceTask.output_path,
+        )
+        if (output.sha256 !== sourceTask.output_sha256 || output.sizeBytes !== sourceTask.output_size_bytes) {
+          throw new Error('合成输入视频结果校验失败。')
+        }
+        paths.push(output.filePath)
+      }
+      return paths
     })
   }
 
@@ -2952,7 +3175,7 @@ function createLocalProjectStore() {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务结果。')
       if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
       const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
-      if (!row || row.status !== 'succeeded' || !['image', 'video'].includes(row.modality)) {
+      if (!row || row.status !== 'succeeded' || !['image', 'video', 'compose'].includes(row.modality)) {
         throw new Error('此任务没有可预览的媒体结果。')
       }
       const cacheKey = `${projectId}:${taskId}`
@@ -2982,7 +3205,7 @@ function createLocalProjectStore() {
         '.webm': 'video/webm',
       }[extension]
       if (!mimeType || (row.modality === 'image' && !mimeType.startsWith('image/'))
-        || (row.modality === 'video' && !mimeType.startsWith('video/'))) {
+        || (['video', 'compose'].includes(row.modality) && !mimeType.startsWith('video/'))) {
         throw new Error('任务结果格式与模态不匹配。')
       }
       return { filePath: output.filePath, mimeType, sizeBytes: output.sizeBytes }
@@ -4203,6 +4426,7 @@ function createLocalProjectStore() {
     listTaskEvents,
     listTasks,
     readTaskOutputText,
+    resolveComposeInputPaths,
     resolveTaskOutputForPreview,
     loadCanvas,
     openProject,

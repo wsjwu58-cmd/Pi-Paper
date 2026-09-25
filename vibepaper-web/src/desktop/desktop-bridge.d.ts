@@ -176,7 +176,7 @@ export interface DesktopAssetDeleteImpact {
 }
 
 export type DesktopTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
-export type DesktopTaskModality = 'text' | 'image' | 'audio' | 'video'
+export type DesktopTaskModality = 'text' | 'image' | 'audio' | 'video' | 'compose'
 
 export interface DesktopTaskSearchQuery {
   page?: number
@@ -298,6 +298,16 @@ export interface DesktopCreateGenerationTaskInput {
   parameters?: Record<string, unknown>
 }
 
+export interface DesktopComposeTaskInput {
+  projectId: string
+  canvasId: string
+  canvasVersion: number
+  nodeId: string
+  idempotencyKey: string
+  /** Ordered IDs of connected, locally generated video nodes. */
+  inputNodeIds: string[]
+}
+
 export interface DesktopLocalTextModel {
   providerId: 'local-openai-compatible'
   providerType: 'local'
@@ -381,6 +391,7 @@ export interface DesktopBridge {
   getTaskInput(projectId: string, taskId: string): Promise<DesktopTaskInputSnapshot | null>
   cancelTask(projectId: string, taskId: string): Promise<DesktopTask>
   createGenerationTask(input: DesktopCreateGenerationTaskInput): Promise<DesktopTask | null>
+  composeVideos(input: DesktopComposeTaskInput): Promise<DesktopTask>
   readTaskOutput(projectId: string, taskId: string): Promise<string>
   getAgnesModels(): Promise<DesktopAgnesModelCatalog>
   saveAgnesApiKey(apiKey: string): Promise<DesktopAgnesModelCatalog>
