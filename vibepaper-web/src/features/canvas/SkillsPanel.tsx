@@ -119,11 +119,15 @@ export function SkillsPanel({
   onClose,
   onBackToChat,
   onApplied,
+  desktopSkills,
+  loadedSkillIds = [],
 }: {
   sessionId: string | number | null
   onClose: () => void
   onBackToChat: () => void
   onApplied?: (name: string) => void
+  desktopSkills?: readonly SkillView[]
+  loadedSkillIds?: readonly string[]
 }) {
   const [skills, setSkills] = useState<SkillView[]>([])
   const [keyword, setKeyword] = useState('')
@@ -135,30 +139,44 @@ export function SkillsPanel({
   const [draft, setDraft] = useState({ name: '', description: '', instructions: '', category: 'general' })
   const [enabledLocal, setEnabledLocal] = useState(true)
   const [loading, setLoading] = useState(false)
+  const desktopMode = desktopSkills !== undefined
 
   const reload = useCallback(() => {
+    if (desktopMode) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     void api<{ items: SkillView[] }>(`/skills${keyword ? `?keyword=${encodeURIComponent(keyword)}` : ''}`)
       .then((r) => setSkills(r.items ?? []))
       .catch(() => undefined)
       .finally(() => setLoading(false))
-  }, [keyword])
+  }, [desktopMode, keyword])
 
   useEffect(() => {
+    if (desktopMode) return
     reload()
-  }, [reload])
+  }, [desktopMode, reload])
 
   const filtered = useMemo(() => {
-    let list = skills.filter((s) => s.name !== 'paper-agent-default')
+    let list = (desktopSkills ?? skills).filter((s) => s.name !== 'paper-agent-default')
+    const normalizedKeyword = keyword.trim().toLocaleLowerCase()
+    if (normalizedKeyword) {
+      list = list.filter((skill) =>
+        [skill.id, skill.name, skill.description, skill.instructions]
+          .filter(Boolean)
+          .some((value) => String(value).toLocaleLowerCase().includes(normalizedKeyword)),
+      )
+    }
     if (category === 'favorite') {
       list = list.filter((s) => favorites.has(String(s.id)))
     } else if (category === 'mine') {
-      list = list.filter((s) => s.source !== 'builtin')
+      list = list.filter((s) => !desktopMode && s.source !== 'builtin')
     } else if (category === 'image' || category === 'video' || category === 'text') {
       list = list.filter((s) => (s.category || 'general') === category)
     }
     return list
-  }, [skills, category, favorites])
+  }, [desktopMode, desktopSkills, skills, keyword, category, favorites])
 
   const toggleFav = (id: string | number, e?: MouseEvent) => {
     e?.stopPropagation()
@@ -171,6 +189,12 @@ export function SkillsPanel({
   }
 
   const openDetail = async (s: SkillView) => {
+    if (desktopMode) {
+      setActive(s)
+      setEnabledLocal(true)
+      setView('detail')
+      return
+    }
     try {
       const full = await api<SkillView>(`/skills/${s.id}`)
       setActive(full)
@@ -185,6 +209,12 @@ export function SkillsPanel({
 
   const applySkill = async () => {
     if (!active) return
+    if (desktopMode) {
+      onApplied?.(active.name)
+      toastSuccess(`已选择 Skill：${active.name}`)
+      onBackToChat()
+      return
+    }
     if (!sessionId) {
       toastError('请先打开一个对话')
       return
@@ -219,6 +249,7 @@ export function SkillsPanel({
   }
 
   const toggleEnabled = async (on: boolean) => {
+    if (desktopMode) return
     setEnabledLocal(on)
     if (!active || active.source === 'builtin') return
     try {
@@ -273,12 +304,12 @@ export function SkillsPanel({
             type="button"
             role="switch"
             aria-checked={enabledLocal}
-            disabled={active.source === 'builtin'}
+            disabled={desktopMode || active.source === 'builtin'}
             onClick={() => void toggleEnabled(!enabledLocal)}
-            title={active.source === 'builtin' ? '内置 Skill 始终可用' : '启用/停用'}
+            title={desktopMode ? '桌面版内置 Skill 始终可用' : active.source === 'builtin' ? '内置 Skill 始终可用' : '启用/停用'}
             className={`relative h-7 w-12 rounded-full transition ${
               enabledLocal ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
-            } ${active.source === 'builtin' ? 'opacity-50' : ''}`}
+            } ${desktopMode || active.source === 'builtin' ? 'opacity-50' : ''}`}
           >
             <span
               className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${
@@ -363,7 +394,9 @@ export function SkillsPanel({
           <button
             type="button"
             onClick={() => setView('create')}
-            className="flex h-8 items-center gap-1 rounded-full bg-[#111] px-3 text-[12px] font-bold text-white"
+            disabled={desktopMode}
+            title={desktopMode ? '桌面版项目自定义 Skill 尚未接入' : '新建 Skill'}
+            className="flex h-8 items-center gap-1 rounded-full bg-[#111] px-3 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plus size={14} strokeWidth={2.5} /> 新建
           </button>
@@ -413,6 +446,11 @@ export function SkillsPanel({
             )
           })}
         </div>
+        {desktopMode && (
+          <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[10px] leading-relaxed text-amber-800">
+            当前仅支持内置 SYSTEM_SKILLS；项目自定义 Skill 的创建、导入和管理尚未接入桌面版。
+          </p>
+        )}
       </div>
 
       <div className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -445,7 +483,12 @@ export function SkillsPanel({
                 )}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[14px] font-bold text-[#111]">{s.name}</span>
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="block truncate text-[14px] font-bold text-[#111]">{s.name}</span>
+                  {desktopMode && loadedSkillIds.includes(id) && (
+                    <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">本会话已加载</span>
+                  )}
+                </span>
                 <span className="mt-0.5 block truncate text-[12px] text-[#9ca3af]">
                   {s.description || s.instructions?.slice(0, 80) || ''}
                 </span>

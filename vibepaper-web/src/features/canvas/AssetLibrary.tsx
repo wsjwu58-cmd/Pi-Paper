@@ -6,8 +6,11 @@ import { useAuth } from '@/lib/auth'
 import { useAuthedMediaUrl } from '@/lib/media'
 import { parseJsonPreserveIds, sid } from '@/lib/ids'
 import type { AssetView, Id, PageResult } from '@/lib/types'
+import { desktopAssetView, isDesktopRuntime } from './canvasPort'
 import { useCanvasStore } from './canvasStore'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
+
+type AssetLibraryItem = AssetView & { referenceCount?: number }
 
 async function replaceAsset(id: Id, file: File) {
   const fd = new FormData()
@@ -20,7 +23,14 @@ async function replaceAsset(id: Id, file: File) {
   return parseJsonPreserveIds(await res.text())
 }
 
-export function AssetLibrary() {
+export function AssetLibrary({
+  desktopMode = false,
+  projectId,
+}: {
+  desktopMode?: boolean
+  projectId?: string
+}) {
+  const isDesktop = desktopMode || isDesktopRuntime()
   const open = useCanvasStore((s) => s.assetOpen)
   const setOpen = useCanvasStore((s) => s.setAssetOpen)
   const canvas = useCanvasStore((s) => s.canvas)
@@ -28,16 +38,28 @@ export function AssetLibrary() {
   const [mode, setMode] = useState<'grid' | 'list'>('grid')
   const [renameId, setRenameId] = useState<Id | null>(null)
   const [renameName, setRenameName] = useState('')
-  const [deleteTarget, setDeleteTarget] = useState<AssetView | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<AssetLibraryItem | null>(null)
   const [preview, setPreview] = useState<AssetView | null>(null)
   const [replaceId, setReplaceId] = useState<Id | null>(null)
   const replaceInputRef = useRef<HTMLInputElement>(null)
   const qc = useQueryClient()
+  const assetsQueryKey = isDesktop ? ['assets', projectId] : ['assets']
 
   const { data, isLoading, refetch } = useQuery({
-    queryKey: ['assets'],
-    queryFn: () => api<PageResult<AssetView>>('/assets?page=1&pageSize=100'),
-    enabled: open,
+    queryKey: assetsQueryKey,
+    queryFn: async (): Promise<PageResult<AssetLibraryItem>> => {
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法读取素材。')
+        const assets = (await bridge.listAssets(projectId)).map((asset) => ({
+          ...desktopAssetView(asset),
+          referenceCount: asset.referenceCount,
+        }))
+        return { items: assets, total: assets.length, page: 1, pageSize: assets.length }
+      }
+      return api<PageResult<AssetLibraryItem>>('/assets?page=1&pageSize=100')
+    },
+    enabled: open && (!isDesktop || Boolean(projectId)),
   })
 
   useEffect(() => {
@@ -49,45 +71,88 @@ export function AssetLibrary() {
   }, [open, refetch])
 
   const upload = useMutation({
-    mutationFn: (file: File) => uploadAsset(file, undefined, canvas?.canvas.id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['assets'] })
-      toastSuccess('上传成功')
+    mutationFn: async (file?: File) => {
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法导入图片。')
+        return bridge.importImage(projectId)
+      }
+      if (!file) throw new Error('请选择要上传的素材。')
+      return uploadAsset(file, undefined, canvas?.canvas.id)
+    },
+    onSuccess: (result) => {
+      if (!result) return
+      qc.invalidateQueries({ queryKey: assetsQueryKey })
+      window.dispatchEvent(new Event('vp-assets-updated'))
+      toastSuccess(isDesktop ? '图片已导入本地素材库' : '上传成功')
     },
     onError: (e) => toastError((e as Error).message),
   })
 
   const del = useMutation({
-    mutationFn: (id: Id) =>
-      api<{ references?: Array<{ canvasId?: Id; nodeId?: Id; type?: string }> }>(`/assets/${id}`, {
+    mutationFn: (id: Id) => {
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法删除素材。')
+        return bridge.deleteAsset(projectId, sid(id))
+      }
+      return api<{ references?: Array<{ canvasId?: Id; nodeId?: Id; type?: string }> }>(`/assets/${id}`, {
         method: 'DELETE',
-      }),
+      })
+    },
     onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ['assets'] })
-      const n = res?.references?.length ?? 0
-      toastSuccess(n > 0 ? `已删除（曾被 ${n} 处引用）` : '已删除')
+      qc.invalidateQueries({ queryKey: assetsQueryKey })
+      window.dispatchEvent(new Event('vp-assets-updated'))
+      if (isDesktop) {
+        const n = res?.references?.length ?? 0
+        toastSuccess(n > 0 ? `已从素材库隐藏；${n} 个画布节点引用仍可访问` : '已从素材库隐藏')
+      } else {
+        const n = res?.references?.length ?? 0
+        toastSuccess(n > 0 ? `已删除（曾被 ${n} 处引用）` : '已删除')
+      }
       setDeleteTarget(null)
     },
     onError: (e) => toastError((e as Error).message),
   })
 
   const replace = useMutation({
-    mutationFn: ({ id, file }: { id: Id; file: File }) => replaceAsset(id, file),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['assets'] })
-      toastSuccess('素材已替换')
+    mutationFn: ({ id, file }: { id: Id; file?: File }) => {
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法替换素材。')
+        return bridge.replaceImage(projectId, sid(id))
+      }
+      if (!file) throw new Error('请选择要替换的素材。')
+      return replaceAsset(id, file)
+    },
+    onSuccess: (result) => {
       setReplaceId(null)
+      if (isDesktop && !result) return
+      qc.invalidateQueries({ queryKey: assetsQueryKey })
+      window.dispatchEvent(new Event('vp-assets-updated'))
+      toastSuccess('素材已替换')
     },
     onError: (e) => toastError((e as Error).message),
   })
 
   const rename = useMutation({
-    mutationFn: ({ id, name }: { id: Id; name: string }) =>
-      api(`/assets/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['assets'] })
-      toastSuccess('已重命名')
+    mutationFn: ({ id, name }: { id: Id; name: string }) => {
+      const nextName = name.trim()
+      if (!nextName) throw new Error('素材名称不能为空。')
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法重命名素材。')
+        return bridge.renameAsset(projectId, sid(id), nextName)
+      }
+      return api(`/assets/${id}`, { method: 'PUT', body: JSON.stringify({ name: nextName }) })
     },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: assetsQueryKey })
+      window.dispatchEvent(new Event('vp-assets-updated'))
+      toastSuccess('已重命名')
+      setRenameId(null)
+    },
+    onError: (e) => toastError((e as Error).message),
   })
 
   const toEnterprise = useMutation({
@@ -104,7 +169,7 @@ export function AssetLibrary() {
   })
 
   const download = (a: AssetView) => {
-    const url = assetUrl(a.url)
+    const url = isDesktop ? a.url : assetUrl(a.url)
     if (!url) return
     const link = document.createElement('a')
     link.href = url
@@ -118,6 +183,10 @@ export function AssetLibrary() {
   }
 
   const startReplace = (id: Id) => {
+    if (isDesktop) {
+      replace.mutate({ id })
+      return
+    }
     setReplaceId(id)
     window.setTimeout(() => replaceInputRef.current?.click(), 0)
   }
@@ -138,7 +207,7 @@ export function AssetLibrary() {
         }}
       />
       <div className="flex items-center justify-between border-b border-black/6 px-3 py-2.5">
-        <p className="text-[14px] font-bold text-[#111]">个人素材库</p>
+        <p className="text-[14px] font-bold text-[#111]">{isDesktop ? '本地素材库' : '个人素材库'}</p>
         <div className="flex items-center gap-1">
           <button
             onClick={() => setMode('grid')}
@@ -158,18 +227,35 @@ export function AssetLibrary() {
         </div>
       </div>
       <div className="flex items-center justify-between px-3 py-2">
-        <label className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white">
-          <Upload size={13} /> 上传
-          <input
-            type="file"
-            accept="image/*,video/*,audio/*,text/*"
-            multiple
-            className="hidden"
-            onChange={(e) => Array.from(e.target.files ?? []).forEach((f) => upload.mutate(f))}
-          />
-        </label>
+        {isDesktop ? (
+          <button
+            type="button"
+            disabled={!projectId || upload.isPending}
+            onClick={() => upload.mutate(undefined)}
+            title={!projectId ? '本地项目未就绪' : '从本机导入图片'}
+            className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Upload size={13} /> 导入图片
+          </button>
+        ) : (
+          <label className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white">
+            <Upload size={13} /> 上传
+            <input
+              type="file"
+              accept="image/*,video/*,audio/*,text/*"
+              multiple
+              className="hidden"
+              onChange={(e) => Array.from(e.target.files ?? []).forEach((f) => upload.mutate(f))}
+            />
+          </label>
+        )}
         <span className="text-[11px] text-[#999]">{data?.total ?? 0} 个素材</span>
       </div>
+      {isDesktop && (
+        <p className="mx-3 mb-1 rounded-lg bg-amber-50 px-2.5 py-2 text-[10px] leading-relaxed text-amber-800">
+          本地图片支持导入、替换和重命名。删除会将素材从列表隐藏，已有节点引用和文件仍保留。
+        </p>
+      )}
       <div className="flex-1 overflow-auto p-3">
         {isLoading ? (
           <p className="py-10 text-center text-[13px] text-[#999]">加载中…</p>
@@ -190,16 +276,17 @@ export function AssetLibrary() {
                   <MiniBtn title="下载" onClick={() => download(a)}>
                     <Download size={11} />
                   </MiniBtn>
-                  <MiniBtn title="替换素材" onClick={() => startReplace(a.id)}>
+                  <MiniBtn disabled={replace.isPending} title="替换素材" onClick={() => startReplace(a.id)}>
                     <RefreshCw size={11} />
                   </MiniBtn>
-                  {enterpriseId && !a.enterpriseId && (
+                  {!isDesktop && enterpriseId && !a.enterpriseId && (
                     <MiniBtn title="添加到企业素材库" onClick={() => toEnterprise.mutate(a.id)}>
                       <Building2 size={11} />
                     </MiniBtn>
                   )}
                   <MiniBtn
                     title="重命名"
+                    disabled={rename.isPending}
                     onClick={() => {
                       setRenameId(a.id)
                       setRenameName(a.name)
@@ -207,7 +294,7 @@ export function AssetLibrary() {
                   >
                     <Pencil size={11} />
                   </MiniBtn>
-                  <MiniBtn danger title="删除" onClick={() => setDeleteTarget(a)}>
+                  <MiniBtn danger title={isDesktop ? '从素材库隐藏' : '删除'} onClick={() => setDeleteTarget(a)}>
                     <Trash2 size={11} />
                   </MiniBtn>
                 </div>
@@ -227,7 +314,7 @@ export function AssetLibrary() {
                 <button onClick={() => setPreview(a)} className="rounded p-1 text-[#888] hover:text-[#111]" title="全屏预览">
                   <Maximize2 size={12} />
                 </button>
-                {enterpriseId && !a.enterpriseId && (
+                {!isDesktop && enterpriseId && !a.enterpriseId && (
                   <button
                     onClick={() => toEnterprise.mutate(a.id)}
                     className="rounded p-1 text-[#888] hover:text-[#111]"
@@ -239,19 +326,21 @@ export function AssetLibrary() {
                 <button onClick={() => download(a)} className="rounded p-1 text-[#888] hover:text-[#111]">
                   <Download size={12} />
                 </button>
-                <button onClick={() => startReplace(a.id)} className="rounded p-1 text-[#888] hover:text-[#111]" title="替换">
+                <button disabled={replace.isPending} onClick={() => startReplace(a.id)} className="rounded p-1 text-[#888] hover:text-[#111] disabled:cursor-not-allowed disabled:opacity-40" title="替换">
                   <RefreshCw size={12} />
                 </button>
                 <button
+                  disabled={rename.isPending}
                   onClick={() => {
                     setRenameId(a.id)
                     setRenameName(a.name)
                   }}
-                  className="rounded p-1 text-[#888] hover:text-[#111]"
+                  className="rounded p-1 text-[#888] hover:text-[#111] disabled:cursor-not-allowed disabled:opacity-40"
+                  title="重命名"
                 >
                   <Pencil size={12} />
                 </button>
-                <button onClick={() => setDeleteTarget(a)} className="rounded p-1 text-[#888] hover:text-red-600">
+                <button onClick={() => setDeleteTarget(a)} className="rounded p-1 text-[#888] hover:text-red-600" title={isDesktop ? '从素材库隐藏' : '删除'}>
                   <Trash2 size={12} />
                 </button>
               </div>
@@ -263,13 +352,13 @@ export function AssetLibrary() {
         <div className="border-t border-black/6 p-3">
           <input
             autoFocus
+            disabled={rename.isPending}
             value={renameName}
             onChange={(e) => setRenameName(e.target.value)}
             className="h-9 w-full rounded-lg border border-black/10 px-2 text-[13px]"
             onKeyDown={(e) => {
-              if (e.key === 'Enter') {
+              if (e.key === 'Enter' && !rename.isPending) {
                 rename.mutate({ id: renameId, name: renameName })
-                setRenameId(null)
               }
             }}
           />
@@ -279,14 +368,17 @@ export function AssetLibrary() {
       {deleteTarget && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full rounded-2xl bg-white p-4 shadow-xl">
-            <p className="text-[15px] font-bold text-[#111]">确认删除素材？</p>
+            <p className="text-[15px] font-bold text-[#111]">{isDesktop ? '确认从素材库隐藏？' : '确认删除素材？'}</p>
             <p className="mt-2 text-[12px] text-[#666]">
-              「{deleteTarget.name}」删除后不可恢复。若已被画布节点引用，相关节点将失去该素材关联。
+              {isDesktop
+                ? `「${deleteTarget.name}」将从本地素材库隐藏。当前有 ${deleteTarget.referenceCount ?? 0} 个画布节点引用；已有引用仍可继续访问。`
+                : `「${deleteTarget.name}」删除后不可恢复。若已被画布节点引用，相关节点将失去该素材关联。`}
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setDeleteTarget(null)}
+                disabled={del.isPending}
                 className="h-8 rounded-full px-3 text-[12px] font-semibold text-[#555]"
               >
                 取消
@@ -294,9 +386,10 @@ export function AssetLibrary() {
               <button
                 type="button"
                 onClick={() => del.mutate(deleteTarget.id)}
-                className="h-8 rounded-full bg-red-600 px-3 text-[12px] font-bold text-white"
+                disabled={del.isPending}
+                className="h-8 rounded-full bg-red-600 px-3 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                确认删除
+                {del.isPending ? '处理中…' : isDesktop ? '从素材库隐藏' : '确认删除'}
               </button>
             </div>
           </div>
@@ -322,19 +415,22 @@ export function AssetLibrary() {
 function MiniBtn({
   title,
   danger,
+  disabled,
   onClick,
   children,
 }: {
   title: string
   danger?: boolean
+  disabled?: boolean
   onClick: () => void
   children: React.ReactNode
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       title={title}
-      className={`rounded-md bg-white/95 p-1 shadow ${danger ? 'text-red-500' : 'text-[#444]'}`}
+      className={`rounded-md bg-white/95 p-1 shadow disabled:cursor-not-allowed disabled:opacity-40 ${danger ? 'text-red-500' : 'text-[#444]'}`}
     >
       {children}
     </button>

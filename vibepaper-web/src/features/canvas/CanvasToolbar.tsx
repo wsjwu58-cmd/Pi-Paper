@@ -24,6 +24,7 @@ import { sid } from '@/lib/ids'
 import { useCanvasStore } from './canvasStore'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { cn } from '@/lib/cn'
+import { isDesktopRuntime } from './canvasPort'
 
 const NODE_MENU = [
   { type: 'text', label: '文本', sub: 'Text', icon: Type },
@@ -42,13 +43,18 @@ export function CanvasToolbar({
   onFitView,
   onAutoLayout,
   onAddNode,
+  desktopMode = false,
+  projectId,
 }: {
   mode: 'select' | 'pan'
   setMode: (m: 'select' | 'pan') => void
   onFitView: () => void
   onAutoLayout: () => void
   onAddNode: (type: string) => void
+  desktopMode?: boolean
+  projectId?: string
 }) {
+  const isDesktop = desktopMode || isDesktopRuntime()
   const [menuOpen, setMenuOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const setAssetOpen = useCanvasStore((s) => s.setAssetOpen)
@@ -67,8 +73,25 @@ export function CanvasToolbar({
 
   const onUpload = async (file: File) => {
     try {
+      if (isDesktop) throw new Error('桌面版请使用“导入图片”从本机导入素材。')
       await uploadAsset(file, undefined, canvas?.canvas.id)
       toastSuccess('上传成功')
+      window.dispatchEvent(new Event('vp-assets-updated'))
+    } catch (e) {
+      toastError((e as Error).message)
+    }
+  }
+
+  const importLocalImage = async () => {
+    const bridge = window.vibepaperDesktop
+    if (!bridge || !projectId) {
+      toastError('本地项目未就绪，无法导入图片。')
+      return
+    }
+    try {
+      const imported = await bridge.importImage(projectId)
+      if (!imported) return
+      toastSuccess('图片已导入本地素材库')
       window.dispatchEvent(new Event('vp-assets-updated'))
     } catch (e) {
       toastError((e as Error).message)
@@ -78,6 +101,19 @@ export function CanvasToolbar({
   const groupSelected = async () => {
     if (!canvas || selected.length < 2) return
     try {
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法编组。')
+        const group = await bridge.addGroup({
+          projectId,
+          canvasId: sid(canvas.canvas.id),
+          nodeIds: selected.map((n) => sid(n.id)),
+          color: '#8b5cf6',
+        })
+        setGroups([...groups, { ...group, id: sid(group.id), nodeIds: group.nodeIds.map(sid) }])
+        toastSuccess('已编组')
+        return
+      }
       const g = await api<{ id: string | number; nodeIds: Array<string | number> }>(
         `/canvases/${sid(canvas.canvas.id)}/groups`,
         {
@@ -95,10 +131,16 @@ export function CanvasToolbar({
   const updateGroup = async (patch: { color?: string; layout?: string; name?: string }) => {
     if (!canvas || !activeGroup) return
     try {
-      const g = await api<{ id: string | number; name: string; color: string; layout: string; nodeIds: Array<string | number> }>(
-        `/canvases/${sid(canvas.canvas.id)}/groups/${sid(activeGroup.id)}`,
-        { method: 'PUT', body: JSON.stringify(patch) },
-      )
+      const g = isDesktop
+        ? await (async () => {
+            const bridge = window.vibepaperDesktop
+            if (!bridge || !projectId) throw new Error('本地项目未就绪，无法更新编组。')
+            return bridge.updateGroup({ projectId, canvasId: sid(canvas.canvas.id), groupId: sid(activeGroup.id), ...patch })
+          })()
+        : await api<{ id: string | number; name: string; color: string; layout: string; nodeIds: Array<string | number> }>(
+            `/canvases/${sid(canvas.canvas.id)}/groups/${sid(activeGroup.id)}`,
+            { method: 'PUT', body: JSON.stringify(patch) },
+          )
       setGroups(
         groups.map((item) =>
           sid(item.id) === sid(activeGroup.id)
@@ -130,7 +172,13 @@ export function CanvasToolbar({
   const ungroup = async () => {
     if (!canvas || !activeGroup) return
     try {
-      await api(`/canvases/${sid(canvas.canvas.id)}/groups/${sid(activeGroup.id)}`, { method: 'DELETE' })
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法取消编组。')
+        await bridge.deleteGroup({ projectId, canvasId: sid(canvas.canvas.id), groupId: sid(activeGroup.id) })
+      } else {
+        await api(`/canvases/${sid(canvas.canvas.id)}/groups/${sid(activeGroup.id)}`, { method: 'DELETE' })
+      }
       setGroups(groups.filter((g) => sid(g.id) !== sid(activeGroup.id)))
       toastSuccess('已取消编组')
     } catch (e) {
@@ -141,13 +189,19 @@ export function CanvasToolbar({
   const stackSelected = async () => {
     if (!canvas || selected.length < 2) return
     try {
-      const s = await api<{ id: string | number; nodeIds: Array<string | number> }>(
-        `/canvases/${sid(canvas.canvas.id)}/stacks`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ nodeIds: selected.map((n) => sid(n.id)) }),
-        },
-      )
+      const s = isDesktop
+        ? await (async () => {
+            const bridge = window.vibepaperDesktop
+            if (!bridge || !projectId) throw new Error('本地项目未就绪，无法堆叠。')
+            return bridge.addStack({ projectId, canvasId: sid(canvas.canvas.id), nodeIds: selected.map((n) => sid(n.id)) })
+          })()
+        : await api<{ id: string | number; nodeIds: Array<string | number> }>(
+            `/canvases/${sid(canvas.canvas.id)}/stacks`,
+            {
+              method: 'POST',
+              body: JSON.stringify({ nodeIds: selected.map((n) => sid(n.id)) }),
+            },
+          )
       setStacks([...stacks, { id: sid(s.id), collapsed: true, nodeIds: s.nodeIds.map(sid) }])
       const ids = s.nodeIds.map(sid)
       const base = nodes.find((n) => sid(n.id) === ids[0])
@@ -170,10 +224,16 @@ export function CanvasToolbar({
   const expandStack = async () => {
     if (!canvas || !activeStack) return
     try {
-      await api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(activeStack.id)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ collapsed: false }),
-      })
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法展开堆叠。')
+        await bridge.updateStack({ projectId, canvasId: sid(canvas.canvas.id), stackId: sid(activeStack.id), collapsed: false })
+      } else {
+        await api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(activeStack.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify({ collapsed: false }),
+        })
+      }
       const ids = activeStack.nodeIds.map(sid)
       const base = nodes.find((n) => sid(n.id) === ids[0])
       if (base) {
@@ -196,7 +256,13 @@ export function CanvasToolbar({
   const unstack = async () => {
     if (!canvas || !activeStack) return
     try {
-      await api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(activeStack.id)}`, { method: 'DELETE' })
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法取消堆叠。')
+        await bridge.deleteStack({ projectId, canvasId: sid(canvas.canvas.id), stackId: sid(activeStack.id) })
+      } else {
+        await api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(activeStack.id)}`, { method: 'DELETE' })
+      }
       setStacks(stacks.filter((s) => sid(s.id) !== sid(activeStack.id)))
       toastSuccess('已取消堆叠')
     } catch (e) {
@@ -204,12 +270,31 @@ export function CanvasToolbar({
     }
   }
 
-  const downloadSelected = () => {
-    const urls = selected
-      .map((n) => n.data.node.params.url as string | undefined)
-      .filter((u): u is string => Boolean(u))
+  const downloadSelected = async () => {
+    const bridge = isDesktop ? window.vibepaperDesktop : undefined
+    const downloads = await Promise.all(selected.map(async (flowNode) => {
+      const node = flowNode.data.node
+      const params = node.params ?? {}
+      const currentOutputId = node.currentOutputId
+
+      if (bridge && projectId && currentOutputId != null) {
+        const task = await bridge.getTask(projectId, sid(currentOutputId)).catch(() => null)
+        if (
+          task?.status === 'succeeded'
+          && task.nodeId === sid(node.id)
+          && task.modality !== 'text'
+        ) {
+          return `vibe://app/tasks/${task.taskId}/output`
+        }
+      }
+
+      const url = [params.lastOutputUrl, params.url, params.output_url]
+        .find((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+      return url
+    }))
+    const urls = downloads.filter((url): url is string => Boolean(url))
     if (urls.length === 0) {
-      toastError('选中节点暂无本地素材 URL')
+      toastError('选中节点暂无可下载的输出内容')
       return
     }
     urls.forEach((url, i) => {
@@ -219,7 +304,8 @@ export function CanvasToolbar({
       a.target = '_blank'
       a.click()
     })
-    toastSuccess(`已触发下载 ${urls.length} 个内容`)
+    const missing = selected.length - urls.length
+    toastSuccess(`已触发下载 ${urls.length} 个内容${missing > 0 ? `，${missing} 个节点暂无输出` : ''}`)
   }
 
   return (
@@ -263,15 +349,16 @@ export function CanvasToolbar({
             })}
             <div className="mx-1 my-2 h-px bg-white/10" />
             <button
-              onClick={() => fileRef.current?.click()}
+              onClick={() => (isDesktop ? void importLocalImage() : fileRef.current?.click())}
               className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-left transition hover:bg-white/8"
+              title={isDesktop ? '桌面本地仅支持导入图片' : '上传素材'}
             >
               <span className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-[#2d303a] text-white/90">
                 <Upload size={17} strokeWidth={1.6} />
               </span>
               <div>
-                <p className="text-[14px] font-semibold text-white">上传</p>
-                <p className="text-[11px] text-[#8e929c]">Upload</p>
+                <p className="text-[14px] font-semibold text-white">{isDesktop ? '导入图片' : '上传'}</p>
+                <p className="text-[11px] text-[#8e929c]">{isDesktop ? '本地素材' : 'Upload'}</p>
               </div>
             </button>
           </div>
@@ -283,6 +370,7 @@ export function CanvasToolbar({
         type="file"
         accept="image/*,video/*,audio/*"
         className="hidden"
+        disabled={isDesktop}
         onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
       />
 

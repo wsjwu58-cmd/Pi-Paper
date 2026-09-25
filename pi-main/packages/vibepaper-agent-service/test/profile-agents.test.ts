@@ -18,6 +18,16 @@ describe("canvas-general profile prompt", () => {
 		expect(prompt).toContain("必须调用 submit_generation");
 	});
 
+	it("keeps desktop task-submission confirmation without per-call API prompts or legacy billing", () => {
+		const prompt = profileSystemPrompt("canvas-general", { desktopMode: true });
+
+		expect(prompt).toContain("只有用户确认后才加入本地任务队列");
+		expect(prompt).toContain("确认只授权创建本地任务，不涉及平台点数、冻结或结算");
+		expect(prompt).toContain("普通云端对话请求由用户配置并主动发送，不需要逐次系统确认");
+		expect(prompt).not.toContain("扣除点数");
+		expect(prompt).not.toContain("模型估价");
+	});
+
 	it("requires user-facing replies to omit implementation details and reference relationships to become edges", () => {
 		for (const profile of ["canvas-general", "vertical-short-drama"] as const) {
 			const prompt = profileSystemPrompt(profile);

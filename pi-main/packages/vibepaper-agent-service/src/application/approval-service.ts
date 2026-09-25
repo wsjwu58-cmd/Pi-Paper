@@ -27,6 +27,7 @@ export interface ApprovalRepository {
 	save(record: ApprovalRecord): void | Promise<void>;
 	find(actionId: string): ApprovalRecord | undefined | Promise<ApprovalRecord | undefined>;
 	consumePending(actionId: string): ApprovalRecord | undefined | Promise<ApprovalRecord | undefined>;
+	rejectPending?(actionId: string): ApprovalRecord | undefined | Promise<ApprovalRecord | undefined>;
 }
 
 export class ApprovalError extends Error {
@@ -112,9 +113,66 @@ export class ApprovalService {
 		currentCanvasVersion: number,
 		now = Date.now(),
 	): Promise<ConsumedAction> {
+		return await this.consume(actionId, token, currentCanvasVersion, now, false);
+	}
+
+	/**
+	 * Desktop task creation is idempotent by approval action ID. Allowing the same
+	 * accepted token to replay the exact bound action lets recovery finish a task
+	 * creation that was interrupted between SQLite databases without permitting a
+	 * different task to be submitted.
+	 */
+	async consumeApprovalIdempotently(
+		actionId: string,
+		token: string,
+		currentCanvasVersion: number,
+		now = Date.now(),
+	): Promise<ConsumedAction> {
+		return await this.consume(actionId, token, currentCanvasVersion, now, true);
+	}
+
+	async rejectApproval(actionId: string, token: string): Promise<void> {
 		const record = await this.repository.find(actionId);
 		if (!record || record.status !== "pending")
+			throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌无效或已处理");
+		this.assertStoredToken(record, token);
+		const [payload, signature] = token.split(".");
+		if (!payload || !signature || !safeEqual(sign(this.secret, payload), signature))
+			throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌无效");
+		const binding = decode(payload);
+		if (
+			!binding ||
+			binding.actionHash !== record.action.actionHash ||
+			binding.userId !== record.action.userId ||
+			binding.sessionId !== record.action.sessionId ||
+			binding.canvasId !== record.action.canvasId ||
+			binding.canvasVersion !== record.action.canvasVersion
+		)
+			throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌无效");
+		if (!this.repository.rejectPending) throw new Error("APPROVAL_REJECTION_NOT_SUPPORTED");
+		if (!(await this.repository.rejectPending(actionId)))
+			throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌已被其他请求处理");
+	}
+
+	/** Validate the exact persisted capability before returning a previous decision. */
+	async validateApprovalToken(actionId: string, token: string): Promise<void> {
+		const record = await this.repository.find(actionId);
+		if (!record) throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌无效或已处理");
+		this.assertStoredToken(record, token);
+	}
+
+	private async consume(
+		actionId: string,
+		token: string,
+		currentCanvasVersion: number,
+		now: number,
+		allowConsumedReplay: boolean,
+	): Promise<ConsumedAction> {
+		const record = await this.repository.find(actionId);
+		const replay = record?.status === "consumed" && allowConsumedReplay;
+		if (!record || (record.status !== "pending" && !replay))
 			throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌无效或已消费");
+		this.assertStoredToken(record, token);
 		if (record.action.canvasVersion !== currentCanvasVersion)
 			throw new ApprovalError("VERSION_CONFLICT", "画布版本已变化，请重新确认");
 		const [payload, signature] = token.split(".");
@@ -124,16 +182,23 @@ export class ApprovalService {
 		if (
 			!binding ||
 			binding.actionHash !== record.action.actionHash ||
-			binding.expiresAt <= now ||
+			(!replay && binding.expiresAt <= now) ||
 			binding.userId !== record.action.userId ||
 			binding.sessionId !== record.action.sessionId ||
 			binding.canvasId !== record.action.canvasId ||
 			binding.canvasVersion !== record.action.canvasVersion
 		)
 			throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌无效或已过期");
+		if (replay) return { ...record.action, status: "approved" };
 		const consumed = await this.repository.consumePending(actionId);
 		if (!consumed) throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌已被其他请求消费");
 		return { ...consumed.action, status: "approved" };
+	}
+
+	private assertStoredToken(record: ApprovalRecord, token: string): void {
+		const storedToken = record.action.approvalToken;
+		if (!storedToken || !safeEqual(storedToken, token))
+			throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌无效");
 	}
 
 	private binding(action: Omit<PlannedAction, "binding" | "approvalToken">, now: number): ActionBinding {

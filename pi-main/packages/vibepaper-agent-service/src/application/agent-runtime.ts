@@ -4,14 +4,15 @@ import { streamSimple } from "@earendil-works/pi-ai/compat";
 
 import type { ServiceConfig } from "../config.ts";
 import type { DramaStateStore } from "../domain/drama-state.ts";
-import type { AgentProfile } from "../domain/tool-manifest.ts";
 import type { SessionContext } from "../domain/session-context.ts";
+import type { AgentProfile } from "../domain/tool-manifest.ts";
 import { createDramaAgent } from "../pi/drama-agent.ts";
 import { createLoadSkillTool, type LoadedSkillResource } from "../tools/skill-tools.ts";
-import { compactContext } from "./context-compaction-service.ts";
 import { dedupeRepeatedSegments, removeRepeatedOpening } from "./assistant-text.ts";
+import { compactContext } from "./context-compaction-service.ts";
 import { resolveInstructionPrecedence } from "./instruction-precedence.ts";
 import { composeUserContent, type NodeReferenceSnapshot, nodeReferencesFromMeta } from "./node-reference-context.ts";
+import { referenceMappingClarification } from "./reference-mapping-clarification.ts";
 
 // A drama-planning turn can legitimately make several read/write tool calls
 // before the model returns its final acknowledgement.  90 seconds truncated
@@ -20,10 +21,14 @@ import { composeUserContent, type NodeReferenceSnapshot, nodeReferencesFromMeta 
 const MODEL_TURN_TIMEOUT_MS = 240_000;
 
 export interface StoredAgentMessage {
-	role: "user" | "assistant" | "system";
+	role: "user" | "assistant" | "system" | "toolResult";
 	content: string;
 	meta: Record<string, unknown>;
 	createdAt: Date;
+	/** Complete Pi message from the local JSONL session, including tool calls/results. */
+	piMessage?: AgentMessage;
+	toolCallIds?: readonly string[];
+	toolResultCallId?: string;
 }
 
 export interface AgentTurnEvent {
@@ -44,6 +49,7 @@ export interface AgentRuntimeHooks {
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	shouldStopAfterTurn?: NonNullable<AgentOptions["shouldStopAfterTurn"]>;
 	modelId?: string;
+	desktopMode?: boolean;
 	memoryContext?: string;
 	sessionContext?: SessionContext;
 	intentContext?: string;
@@ -87,7 +93,7 @@ export function agnesModel(config: ServiceConfig, modelId = config.llmModel): Mo
 
 export async function runDramaTurn(
 	config: ServiceConfig,
-	store: DramaStateStore,
+	store: DramaStateStore | undefined,
 	sessionId: string,
 	history: readonly StoredAgentMessage[],
 	content: string,
@@ -104,13 +110,32 @@ export async function runDramaTurn(
 			content: message.content,
 			meta: message.meta,
 			sourceIndex,
+			toolCallIds: message.toolCallIds,
+			toolResultCallId: message.toolResultCallId,
 		})),
 		{ maxTokens: 24_000, sessionContext: hooks.sessionContext },
 	);
 	const recentIndexes = new Set(compacted.recentMessages.map((message) => message.sourceIndex));
+	const recentByIndex = new Map(compacted.recentMessages.map((message) => [message.sourceIndex, message]));
 	const initialMessages: AgentMessage[] = [];
 	for (const [index, message] of history.entries()) {
 		if (!recentIndexes.has(index)) continue;
+		const compactedMessage = recentByIndex.get(index);
+		if (message.piMessage) {
+			if (
+				message.piMessage.role === "toolResult" &&
+				compactedMessage &&
+				compactedMessage.content !== message.content
+			) {
+				initialMessages.push({
+					...message.piMessage,
+					content: [{ type: "text", text: compactedMessage.content }],
+				} as AgentMessage);
+			} else {
+				initialMessages.push(message.piMessage);
+			}
+			continue;
+		}
 		if (message.role === "user") {
 			initialMessages.push({
 				role: "user",
@@ -173,6 +198,7 @@ export async function runDramaTurn(
 		extraTools: createLoadSkillTool(skillContext.skills, skillContext.loadedSkillIds, skillContext.onLoad),
 		runtimeTools: hooks.runtimeTools,
 		profile: hooks.profile,
+		desktopMode: hooks.desktopMode,
 		transformContext: hooks.transformContext,
 		shouldStopAfterTurn: hooks.shouldStopAfterTurn,
 	});
@@ -201,6 +227,13 @@ export async function runDramaTurn(
 		() => agent.abort(),
 		MODEL_TURN_TIMEOUT_MS,
 	);
+	const clarification = referenceMappingClarification(events, assistantText);
+	if (clarification) {
+		assistantText = clarification;
+		const event: AgentTurnEvent = { type: "assistant_message", content: clarification };
+		events.push(event);
+		await hooks.onEvent?.(event);
+	}
 	return { events, assistantText, totalTokens };
 }
 
@@ -300,7 +333,10 @@ export function sanitizeAgentReply(content: string): string {
 				/[，,]?\s*(?:使用|采用|通过)\s*(?:agnes(?:[-_.\w]+)?|sapiens\s*ai|openai|deepseek(?:[-_.\w]+)?|qwen(?:[-_.\w]+)?|gpt(?:[-_.\w]+)?|gemini(?:[-_.\w]+)?)\s*/gi,
 				"",
 			)
-			.replace(/\b(?:agnes(?:[-_.\w]+)?|sapiens\s*ai|openai|deepseek(?:[-_.\w]+)?|qwen(?:[-_.\w]+)?|gpt(?:[-_.\w]+)?|gemini(?:[-_.\w]+)?)\b/gi, "")
+			.replace(
+				/\b(?:agnes(?:[-_.\w]+)?|sapiens\s*ai|openai|deepseek(?:[-_.\w]+)?|qwen(?:[-_.\w]+)?|gpt(?:[-_.\w]+)?|gemini(?:[-_.\w]+)?)\b/gi,
+				"",
+			)
 			.replace(
 				/[，,;；]?\s*(?:节点|任务|会话|画布)?\s*(?:ID|id|nodeId|taskId|sessionId|canvasId)\s*[:：]?\s*[`"']?[A-Za-z0-9_-]{6,}[`"']?/gi,
 				"",

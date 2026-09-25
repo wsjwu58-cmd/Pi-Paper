@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react'
 import { assetUrl, getAccessToken } from './api'
 
+const LOCAL_MEDIA_PROTOCOL = /^vibe:\/\/app\/(?:assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|tasks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/output)$/iu
+
+function resolveRendererMediaUrl(url?: string): string | undefined {
+  if (!url) return undefined
+  if (url.startsWith('vibe://')) return LOCAL_MEDIA_PROTOCOL.test(url) ? url : undefined
+  return assetUrl(url)
+}
+
 /**
  * 解析可播放/可展示的媒体 URL。
  * 任务输出已落盘到 `/outputs/file/` 时优先走同源地址（网关已放行 GET），
@@ -8,7 +16,7 @@ import { assetUrl, getAccessToken } from './api'
  * 仅无本地缓存时再回退 remoteUrl。
  */
 export function resolveMediaUrl(url?: string, meta?: Record<string, unknown> | null): string | undefined {
-  const local = assetUrl(url)
+  const local = resolveRendererMediaUrl(url)
   if (local?.includes('/outputs/file/')) return local
   const outputType = meta?.outputType
   if (local && (outputType === 'video' || outputType === 'audio')) return local
@@ -19,11 +27,13 @@ export function resolveMediaUrl(url?: string, meta?: Record<string, unknown> | n
 
 /** 需要鉴权的素材下载（存库/下载按钮）。 */
 export async function fetchAuthedBlob(url?: string): Promise<Blob> {
-  const full = assetUrl(url)
+  const full = resolveRendererMediaUrl(url)
   if (!full) throw new Error('无输出 URL')
   const headers: Record<string, string> = {}
-  const token = getAccessToken()
-  if (token) headers.Authorization = `Bearer ${token}`
+  if (!full.startsWith('vibe://')) {
+    const token = getAccessToken()
+    if (token) headers.Authorization = `Bearer ${token}`
+  }
   const res = await fetch(full, { headers })
   if (!res.ok) throw new Error(`获取文件失败 (${res.status})`)
   return res.blob()
@@ -41,7 +51,15 @@ export function useAuthedMediaUrl(url?: string): string | undefined {
       setObjectUrl(undefined)
       return
     }
-    const resolved = assetUrl(url) ?? url
+    const resolved = resolveRendererMediaUrl(url)
+    if (!resolved) {
+      setObjectUrl(undefined)
+      return
+    }
+    if (resolved.startsWith('vibe://')) {
+      setObjectUrl(resolved)
+      return
+    }
     // 外链或已放行的任务输出可直接展示
     if (/^https?:\/\//i.test(resolved) && !resolved.includes('/api/v1/assets/file')) {
       setObjectUrl(resolved)

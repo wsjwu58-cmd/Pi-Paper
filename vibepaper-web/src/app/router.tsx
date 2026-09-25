@@ -15,7 +15,6 @@ import { AnnouncementsPage } from '@/features/announcements/AnnouncementsPage'
 import { AdminPage } from '@/features/admin/AdminPage'
 import { CanvasPage } from '@/features/canvas/CanvasPage'
 import { Spinner } from '@/components/ui/Spinner'
-import { DesktopWorkspace } from '@/desktop/DesktopWorkspace'
 
 function Protected({ children }: { children: React.ReactNode }) {
   const ready = useAuth((s) => s.ready)
@@ -41,7 +40,13 @@ export function AppRouter() {
   if (window.vibepaperDesktop) {
     return (
       <Routes>
-        <Route path="*" element={<DesktopWorkspace />} />
+        <Route path="/" element={<Navigate to="/workspace" replace />} />
+        <Route element={<HubLayout />}>
+          <Route path="/workspace" element={<WorkspacePage />} />
+          <Route path="/history" element={<HistoryPage />} />
+        </Route>
+        <Route path="/canvas/:canvasId" element={<CanvasPage />} />
+        <Route path="*" element={<Navigate to="/workspace" replace />} />
       </Routes>
     )
   }

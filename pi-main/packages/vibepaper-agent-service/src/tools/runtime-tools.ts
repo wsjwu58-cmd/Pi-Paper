@@ -3,12 +3,14 @@ import { type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 
 import type { ApprovalService } from "../application/approval-service.ts";
+import type { CanvasCommandGateway } from "../application/canvas-command-service.ts";
 import { CanvasCommandService } from "../application/canvas-command-service.ts";
+import { REFERENCE_MAPPING_ERROR } from "../application/reference-mapping-clarification.ts";
 import type { PlannedAction } from "../domain/action-approval.ts";
 import type { AuditInput } from "../domain/continuity-rules.ts";
-import type { ToolGateway } from "../infrastructure/tool-gateway.ts";
 import { ToolGatewayError } from "../infrastructure/tool-gateway.ts";
 import { GenerationTools } from "./generation-tools.ts";
+import type { ReadToolsGateway } from "./read-tools.ts";
 import { ReadTools } from "./read-tools.ts";
 
 const EmptySchema = Type.Object({}, { additionalProperties: false });
@@ -92,8 +94,8 @@ const DeleteNodesSchema = Type.Object(
 const ConnectNodesSchema = Type.Object(
 	{
 		nodeIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 2, maxItems: 20 }),
-		expectedVersion: Type.Integer({ minimum: 0 }),
-		idempotencyKey: Type.String({ minLength: 1, maxLength: 128 }),
+		expectedVersion: Type.Optional(Type.Integer({ minimum: 0 })),
+		idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 	},
 	{ additionalProperties: false },
 );
@@ -101,8 +103,8 @@ const UpdateNodeSchema = Type.Object(
 	{
 		nodeId: Type.String({ minLength: 1 }),
 		config: Type.Record(Type.String(), Type.Unknown()),
-		expectedVersion: Type.Integer({ minimum: 0 }),
-		idempotencyKey: Type.String({ minLength: 1, maxLength: 128 }),
+		expectedVersion: Type.Optional(Type.Integer({ minimum: 0 })),
+		idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 	},
 	{ additionalProperties: false },
 );
@@ -110,8 +112,8 @@ const LayoutSchema = Type.Object(
 	{
 		nodeIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 }),
 		layout: Type.Record(Type.String(), Type.Unknown()),
-		expectedVersion: Type.Integer({ minimum: 0 }),
-		idempotencyKey: Type.String({ minLength: 1, maxLength: 128 }),
+		expectedVersion: Type.Optional(Type.Integer({ minimum: 0 })),
+		idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 	},
 	{ additionalProperties: false },
 );
@@ -144,18 +146,182 @@ export type RuntimeToolContext = {
 	confirmationPending?: boolean;
 	/** Resume the original creative workflow in a fresh Agent run after this task succeeds. */
 	continueAfterTask?: boolean;
-	gateway: ToolGateway;
-	approvals: ApprovalService;
+	gateway: RuntimeToolGateway;
+	approvals?: ApprovalService;
+	/** Use desktop disclosures and omit unimplemented/destructive tools without a local approval flow. */
+	desktopMode?: boolean;
 	onApprovalRequired?: (action: PlannedAction) => void | Promise<void>;
 	onAuditRequested?: (input: AuditInput & { targetNodeId: string }) => Promise<Record<string, unknown>>;
 };
 
+export type RuntimeToolGateway = ReadToolsGateway &
+	CanvasCommandGateway & {
+		resolveGenerationModel?(userId: string, requestedModel: string, requestId?: string): Promise<string>;
+		estimateGeneration?(input: {
+			userId: string;
+			modelType: string;
+			modelParams: Record<string, unknown>;
+			requestId?: string;
+		}): Promise<{ estimatedCost: number }>;
+		createGenerationTask?(input: {
+			userId: string;
+			canvasId: string;
+			canvasVersion: number;
+			nodeId: string;
+			modelType: string;
+			modelParams: Record<string, unknown>;
+			idempotencyKey: string;
+		}): Promise<Record<string, unknown>>;
+	};
+
+export type DesktopGenerationTaskResult = {
+	nodeId: string;
+	modality: string;
+	taskId: string;
+	status: string;
+};
+
+export type DesktopGenerationConfirmationItem = {
+	target: string;
+	model: string;
+	input: string;
+	overwrite: boolean;
+};
+
+export async function desktopGenerationConfirmationItems(
+	action: Pick<PlannedAction, "userId" | "canvasId" | "toolName" | "params">,
+	gateway: RuntimeToolGateway,
+): Promise<DesktopGenerationConfirmationItem[]> {
+	const generations =
+		action.toolName === "submit_generation_batch"
+			? batchGenerationItems(action.params)
+			: action.toolName === "submit_generation"
+				? [singleGenerationItem(action.params)]
+				: [];
+	if (generations.length === 0) throw new ToolGatewayError("INVALID_INPUT", "确认内容不是生成任务", {});
+	const modelDirectory = await gateway.listModels(action.userId);
+	const models = Array.isArray(modelDirectory) ? modelDirectory : [];
+	return await Promise.all(
+		generations.map(async (generation) => {
+			const [node, model] = await Promise.all([
+				gateway.getNodeDetail(action.userId, action.canvasId, generation.nodeId),
+				Promise.resolve(models.find((entry) => isRecordValue(entry) && entry.name === generation.modelType)),
+			]);
+			const nodeRecord = isRecordValue(node) ? node : {};
+			const prompt = typeof generation.modelParams.prompt === "string" ? generation.modelParams.prompt : "";
+			return {
+				target: safeDisplayText(nodeRecord.label, "画布目标"),
+				model: isRecordValue(model) ? safeDisplayText(model.displayName ?? model.name, "已选择模型") : "已选择模型",
+				input: safePromptSummary(prompt),
+				overwrite: generation.overwrite === true,
+			};
+		}),
+	);
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function safeDisplayText(value: unknown, fallback: string): string {
+	if (typeof value !== "string" || !value.trim()) return fallback;
+	return value
+		.replace(/[\r\n\t]+/gu, " ")
+		.trim()
+		.slice(0, 80);
+}
+
+function safePromptSummary(value: string): string {
+	const sanitized = value
+		.replace(/(?:[A-Za-z]:\\|\\\\|\/(?:Users|home|private\/var|tmp)\/)[^\s"']+/gu, "[本地素材]")
+		.replace(/\bhttps?:\/\/[^\s]+/giu, "[引用素材]")
+		.replace(/[\r\n\t]+/gu, " ")
+		.trim();
+	if (!sanitized) return "使用目标节点中的提示词";
+	return sanitized.length > 160 ? `${sanitized.slice(0, 157)}…` : sanitized;
+}
+
+/** Submit only an action which has already passed ApprovalService confirmation. */
+export async function submitApprovedGenerationAction(
+	action: Pick<PlannedAction, "actionId" | "userId" | "canvasId" | "canvasVersion" | "toolName" | "params">,
+	gateway: RuntimeToolGateway,
+): Promise<DesktopGenerationTaskResult[]> {
+	if (!gateway.createGenerationTask)
+		throw new ToolGatewayError("GENERATION_UNAVAILABLE", "本地生成任务入口不可用", {});
+	const items =
+		action.toolName === "submit_generation_batch"
+			? batchGenerationItems(action.params)
+			: action.toolName === "submit_generation"
+				? [singleGenerationItem(action.params)]
+				: [];
+	if (items.length === 0) throw new ToolGatewayError("INVALID_INPUT", "确认内容不是生成任务", {});
+	const tasks: DesktopGenerationTaskResult[] = [];
+	for (const [index, item] of items.entries()) {
+		const created = await gateway.createGenerationTask({
+			userId: action.userId,
+			canvasId: action.canvasId,
+			canvasVersion: action.canvasVersion,
+			nodeId: item.nodeId,
+			modelType: item.modelType,
+			modelParams: item.modelParams,
+			idempotencyKey: `${action.actionId}:${index}`,
+		});
+		if (
+			typeof created.taskId !== "string" ||
+			typeof created.status !== "string" ||
+			typeof created.modality !== "string" ||
+			typeof created.nodeId !== "string"
+		)
+			throw new ToolGatewayError("INVALID_RESPONSE", "本地任务存储未返回有效任务", {});
+		tasks.push({
+			taskId: created.taskId,
+			status: created.status,
+			modality: created.modality,
+			nodeId: created.nodeId,
+		});
+	}
+	return tasks;
+}
+
+function singleGenerationItem(params: Record<string, unknown>): {
+	nodeId: string;
+	modelType: string;
+	modelParams: Record<string, unknown>;
+	overwrite: boolean;
+} {
+	const modelParams = params.modelParams;
+	if (
+		typeof params.nodeId !== "string" ||
+		typeof params.modelType !== "string" ||
+		typeof modelParams !== "object" ||
+		modelParams === null ||
+		Array.isArray(modelParams)
+	)
+		throw new ToolGatewayError("INVALID_INPUT", "确认内容缺少生成目标或模型参数", {});
+	return {
+		nodeId: params.nodeId,
+		modelType: params.modelType,
+		modelParams: modelParams as Record<string, unknown>,
+		overwrite: params.overwrite === true,
+	};
+}
+
+function batchGenerationItems(params: Record<string, unknown>): ReturnType<typeof singleGenerationItem>[] {
+	if (!Array.isArray(params.generations)) throw new ToolGatewayError("INVALID_INPUT", "批量确认内容无效", {});
+	return params.generations.map((item) => {
+		if (typeof item !== "object" || item === null || Array.isArray(item))
+			throw new ToolGatewayError("INVALID_INPUT", "批量确认内容无效", {});
+		return singleGenerationItem(item as Record<string, unknown>);
+	});
+}
+
 export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 	const read = new ReadTools(context.gateway);
 	const commands = new CanvasCommandService(context.gateway);
-	const generations = new GenerationTools(context.approvals);
+	const generations = context.approvals ? new GenerationTools(context.approvals) : undefined;
+	const canPrepareGeneration = Boolean(generations && (context.desktopMode || context.gateway.estimateGeneration));
 
-	return [
+	const tools: AgentTool[] = [
 		tool(
 			"get_canvas_summary",
 			"读取画布摘要",
@@ -207,7 +373,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 		tool(
 			"create_nodes",
 			"创建画布节点",
-			"通过画布服务创建节点并返回真实节点 ID。每个节点必须提供 type；展示内容写入 params（如 params.content），不得传入 id、title、content 或 contentType。",
+			"通过画布服务创建节点并返回真实节点 ID。每个节点必须提供 type；展示内容写入 params（如 params.content），不得传入 id、title、content 或 contentType。选中多个参考节点时，每个需要引用的目标必须明确填写自己的 sourceNodeIds；不能省略后让服务端把全部选中节点连到每个目标。不清楚对应关系时先问用户。",
 			CreateNodesSchema,
 			async (toolCallId, params) => {
 				assertNoPendingConfirmation(context);
@@ -223,29 +389,35 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 				);
 			},
 		),
-		tool("connect_nodes", "连接画布节点", "通过画布服务创建连线。", ConnectNodesSchema, async (_id, params) => {
-			assertNoPendingConfirmation(context);
-			return result(
-				rememberCanvasVersion(
-					context,
-					await commands.connectNodes({
-						userId: context.userId,
-						canvasId: context.canvasId,
-						requestId: context.requestId,
-						expectedVersion: context.canvasVersion,
-						idempotencyKey: params.idempotencyKey,
-						nodeIds: params.nodeIds,
-					}),
-					true,
-				),
-			);
-		}),
+		tool(
+			"connect_nodes",
+			"连接画布节点",
+			"通过画布服务创建连线。",
+			ConnectNodesSchema,
+			async (toolCallId, params) => {
+				assertNoPendingConfirmation(context);
+				return result(
+					rememberCanvasVersion(
+						context,
+						await commands.connectNodes({
+							userId: context.userId,
+							canvasId: context.canvasId,
+							requestId: context.requestId,
+							expectedVersion: context.canvasVersion,
+							idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
+							nodeIds: params.nodeIds,
+						}),
+						true,
+					),
+				);
+			},
+		),
 		tool(
 			"update_node_config",
 			"修改节点配置",
 			"通过画布服务更新节点配置。",
 			UpdateNodeSchema,
-			async (_id, params) => {
+			async (toolCallId, params) => {
 				assertNoPendingConfirmation(context);
 				return result(
 					rememberCanvasVersion(
@@ -255,7 +427,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 							canvasId: context.canvasId,
 							requestId: context.requestId,
 							expectedVersion: context.canvasVersion,
-							idempotencyKey: params.idempotencyKey,
+							idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
 							nodeId: params.nodeId,
 							config: params.config,
 						}),
@@ -269,7 +441,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 			"整理画布布局",
 			"通过画布服务按确定性规则保存节点布局。",
 			LayoutSchema,
-			async (_id, params) => {
+			async (toolCallId, params) => {
 				assertNoPendingConfirmation(context);
 				return result(
 					rememberCanvasVersion(
@@ -279,7 +451,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 							canvasId: context.canvasId,
 							requestId: context.requestId,
 							expectedVersion: context.canvasVersion,
-							idempotencyKey: params.idempotencyKey,
+							idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
 							nodeIds: params.nodeIds,
 							layout: params.layout,
 						}),
@@ -288,137 +460,172 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 				);
 			},
 		),
-		tool(
-			"delete_nodes",
-			"删除画布节点",
-			"通过画布服务删除节点，最多 20 个。",
-			DeleteNodesSchema,
-			async (toolCallId, params) => {
-				assertNoPendingConfirmation(context);
-				const nodeIds = parseNodeIdArray(params.nodeIds);
-				return result(
-					rememberCanvasVersion(
-						context,
-						await commands.deleteNodes({
-							userId: context.userId,
-							canvasId: context.canvasId,
-							requestId: context.requestId,
-							expectedVersion: context.canvasVersion,
-							idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
-							nodeIds,
-						}),
-						true,
+		...(context.desktopMode
+			? []
+			: [
+					tool(
+						"delete_nodes",
+						"删除画布节点",
+						"通过画布服务删除节点，最多 20 个。",
+						DeleteNodesSchema,
+						async (toolCallId, params) => {
+							assertNoPendingConfirmation(context);
+							const nodeIds = parseNodeIdArray(params.nodeIds);
+							return result(
+								rememberCanvasVersion(
+									context,
+									await commands.deleteNodes({
+										userId: context.userId,
+										canvasId: context.canvasId,
+										requestId: context.requestId,
+										expectedVersion: context.canvasVersion,
+										idempotencyKey: params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId),
+										nodeIds,
+									}),
+									true,
+								),
+							);
+						},
 					),
-				);
-			},
-		),
-		tool(
-			"submit_generation",
-			"提交生成任务",
-			"先生成确认 action；用户确认后才会估价、冻结点数并提交生成。",
-			GenerationSchema,
-			async (_id, params) => {
-				assertNoPendingConfirmation(context);
-				const modelType = await resolveGenerationModel(context, params.modelType);
-				const modelParams = inferImageOperation(
-					await withResolvedComposeInputs(
-						read,
-						context,
-						modelType,
-						await withAuthoritativePrompt(read, context, params.nodeId, params.modelParams),
+				]),
+		...(canPrepareGeneration && generations
+			? [
+					tool(
+						"submit_generation",
+						"提交生成任务",
+						context.desktopMode
+							? "先读取模型目录和目标节点，再创建桌面确认卡片；确认前不会创建本地生成任务。桌面任务不涉及平台点数。"
+							: "先生成确认 action；用户确认后才会估价、冻结点数并提交生成。",
+						GenerationSchema,
+						async (_id, params) => {
+							assertNoPendingConfirmation(context);
+							const modelType = await resolveGenerationModel(context, params.modelType);
+							const modelParams = inferImageOperation(
+								await withResolvedComposeInputs(
+									read,
+									context,
+									modelType,
+									await withAuthoritativePrompt(read, context, params.nodeId, params.modelParams),
+								),
+							);
+							assertComposeInputs(modelType, modelParams);
+							await assertCanvasVersion(context);
+							const estimatedCost = context.desktopMode
+								? 0
+								: (
+										await context.gateway.estimateGeneration!({
+											userId: context.userId,
+											modelType,
+											modelParams,
+											requestId: context.requestId,
+										})
+									).estimatedCost;
+							const action = await generations.submitGeneration({
+								actionIdempotencyKey: `${context.sessionId}:${params.nodeId}:${modelType}:${JSON.stringify(modelParams)}`,
+								userId: context.userId,
+								runId: context.runId,
+								sessionId: context.sessionId,
+								canvasId: context.canvasId,
+								canvasVersion: context.canvasVersion,
+								nodeId: params.nodeId,
+								modelType,
+								modelParams,
+								estimatedCost,
+								overwrite: params.overwrite,
+								continueAfterTask: context.continueAfterTask,
+							});
+							context.confirmationPending = true;
+							await context.onApprovalRequired?.(action);
+							return {
+								content: [
+									{
+										type: "text",
+										text: context.desktopMode
+											? "生成任务已准备，请先确认桌面卡片；确认后才会加入本地任务队列。"
+											: "该生成任务需要用户确认后才会扣除点数。",
+									},
+								],
+								details: { confirmation: action },
+								terminate: true,
+							};
+						},
 					),
-				);
-				assertComposeInputs(modelType, modelParams);
-				await assertCanvasVersion(context);
-				const estimate = await context.gateway.estimateGeneration({
-					userId: context.userId,
-					modelType,
-					modelParams,
-					requestId: context.requestId,
-				});
-				const action = await generations.submitGeneration({
-					actionIdempotencyKey: `${context.sessionId}:${params.nodeId}:${modelType}:${JSON.stringify(modelParams)}`,
-					userId: context.userId,
-					runId: context.runId,
-					sessionId: context.sessionId,
-					canvasId: context.canvasId,
-					canvasVersion: context.canvasVersion,
-					nodeId: params.nodeId,
-					modelType,
-					modelParams,
-					estimatedCost: estimate.estimatedCost,
-					overwrite: params.overwrite,
-					continueAfterTask: context.continueAfterTask,
-				});
-				context.confirmationPending = true;
-				await context.onApprovalRequired?.(action);
-				return {
-					content: [{ type: "text", text: "该生成任务需要用户确认后才会扣除点数。" }],
-					details: { confirmation: action },
-					terminate: true,
-				};
-			},
-		),
-		tool(
-			"submit_generation_batch",
-			"批量提交生成",
-			"为多个已创建的目标节点创建一份合并确认；确认后全部任务会提交，Agent 静默等待每个任务终态。",
-			GenerationBatchSchema,
-			async (_id, params) => {
-				assertNoPendingConfirmation(context);
-				await assertCanvasVersion(context);
-				const prepared = [] as Array<{
-					nodeId: string;
-					modelType: string;
-					modelParams: Record<string, unknown>;
-					estimatedCost: number;
-					overwrite: boolean;
-				}>;
-				for (const generation of params.generations) {
-					const modelType = await resolveGenerationModel(context, generation.modelType);
-					const modelParams = inferImageOperation(
-						await withResolvedComposeInputs(
-							read,
-							context,
-							modelType,
-							await withAuthoritativePrompt(read, context, generation.nodeId, generation.modelParams),
-						),
-					);
-					assertComposeInputs(modelType, modelParams);
-					const estimate = await context.gateway.estimateGeneration({
-						userId: context.userId,
-						modelType,
-						modelParams,
-						requestId: context.requestId,
-					});
-					prepared.push({
-						nodeId: generation.nodeId,
-						modelType,
-						modelParams,
-						estimatedCost: estimate.estimatedCost,
-						overwrite: generation.overwrite,
-					});
-				}
-				const action = await generations.submitGenerationBatch({
-					actionIdempotencyKey: `${context.sessionId}:batch:${JSON.stringify(prepared)}`,
-					userId: context.userId,
-					runId: context.runId,
-					sessionId: context.sessionId,
-					canvasId: context.canvasId,
-					canvasVersion: context.canvasVersion,
-					generations: prepared,
-					continueAfterTask: context.continueAfterTask,
-				});
-				context.confirmationPending = true;
-				await context.onApprovalRequired?.(action);
-				return {
-					content: [{ type: "text", text: "这批生成任务需要用户确认后才会扣除点数。" }],
-					details: { confirmation: action },
-					terminate: true,
-				};
-			},
-		),
+					tool(
+						"submit_generation_batch",
+						"批量提交生成",
+						context.desktopMode
+							? "为多个已创建的目标节点创建一份合并桌面确认；确认前不会创建本地生成任务。"
+							: "为多个已创建的目标节点创建一份合并确认；确认后全部任务会提交，Agent 静默等待每个任务终态。",
+						GenerationBatchSchema,
+						async (_id, params) => {
+							assertNoPendingConfirmation(context);
+							await assertCanvasVersion(context);
+							const prepared = [] as Array<{
+								nodeId: string;
+								modelType: string;
+								modelParams: Record<string, unknown>;
+								estimatedCost: number;
+								overwrite: boolean;
+							}>;
+							for (const generation of params.generations) {
+								const modelType = await resolveGenerationModel(context, generation.modelType);
+								const modelParams = inferImageOperation(
+									await withResolvedComposeInputs(
+										read,
+										context,
+										modelType,
+										await withAuthoritativePrompt(read, context, generation.nodeId, generation.modelParams),
+									),
+								);
+								assertComposeInputs(modelType, modelParams);
+								const estimatedCost = context.desktopMode
+									? 0
+									: (
+											await context.gateway.estimateGeneration!({
+												userId: context.userId,
+												modelType,
+												modelParams,
+												requestId: context.requestId,
+											})
+										).estimatedCost;
+								prepared.push({
+									nodeId: generation.nodeId,
+									modelType,
+									modelParams,
+									estimatedCost,
+									overwrite: generation.overwrite,
+								});
+							}
+							const action = await generations.submitGenerationBatch({
+								actionIdempotencyKey: `${context.sessionId}:batch:${JSON.stringify(prepared)}`,
+								userId: context.userId,
+								runId: context.runId,
+								sessionId: context.sessionId,
+								canvasId: context.canvasId,
+								canvasVersion: context.canvasVersion,
+								generations: prepared,
+								continueAfterTask: context.continueAfterTask,
+							});
+							context.confirmationPending = true;
+							await context.onApprovalRequired?.(action);
+							return {
+								content: [
+									{
+										type: "text",
+										text: context.desktopMode
+											? "这批生成任务已准备，请先确认桌面卡片；确认后才会加入本地任务队列。"
+											: "这批生成任务需要用户确认后才会扣除点数。",
+									},
+								],
+								details: { confirmation: action },
+								terminate: true,
+							};
+						},
+					),
+				]
+			: []),
 	];
+	return tools;
 }
 
 function assertNoPendingConfirmation(context: RuntimeToolContext): void {
@@ -431,6 +638,18 @@ async function createNodesWithReferenceEdges(
 	context: RuntimeToolContext,
 	params: { nodes: Array<{ type: string; sourceNodeIds?: readonly string[] }>; idempotencyKey: string },
 ): Promise<Record<string, unknown>> {
+	const selectedReferences = [...new Set(context.referenceNodeIds ?? [])].filter(Boolean);
+	const sourceMappings = params.nodes.map((node) => {
+		const declaredSources = [...new Set(node.sourceNodeIds ?? [])].filter(Boolean);
+		if (declaredSources.length > 0) return declaredSources;
+		if (!isReferenceTarget(node.type) || selectedReferences.length === 0) return [];
+		if (selectedReferences.length === 1) return selectedReferences;
+		throw new ToolGatewayError(
+			"INVALID_INPUT",
+			`${REFERENCE_MAPPING_ERROR}请根据创作依赖为每个目标指定对应来源；如果无法确定哪张图片对应哪个镜头，先向用户询问，不要自动交叉连线。`,
+			{},
+		);
+	});
 	const created = rememberCanvasVersion(
 		context,
 		await commands.createNodes({
@@ -447,20 +666,12 @@ async function createNodesWithReferenceEdges(
 	const targetIds = createdNodes
 		.map((node, index) => ({
 			id: typeof (node as { id?: unknown }).id === "string" ? (node as { id: string }).id : "",
-			type: params.nodes[index]?.type,
-			sourceNodeIds: params.nodes[index]?.sourceNodeIds ?? [],
+			sourceNodeIds: sourceMappings[index] ?? [],
 		}))
 		.filter((node) => node.id);
 	const referenceEdges: Array<{ sourceNodeId: string; targetNodeId: string }> = [];
 	for (const target of targetIds) {
-		const selectedReferences = isReferenceTarget(target.type) ? (context.referenceNodeIds ?? []) : [];
-		// A selected canvas can contain several modalities. When the model has
-		// declared sourceNodeIds, that explicit list is authoritative; merging
-		// every selected node would create invalid edges (for example video ->
-		// audio) and make the whole canvas command look unavailable.
-		const declaredSources = [...target.sourceNodeIds].filter(Boolean);
-		const sources = [...new Set(declaredSources.length > 0 ? declaredSources : selectedReferences)].filter(Boolean);
-		for (const sourceNodeId of sources) {
+		for (const sourceNodeId of target.sourceNodeIds) {
 			if (sourceNodeId === target.id) continue;
 			const edge = await commands.connectNodes({
 				userId: context.userId,
@@ -482,9 +693,11 @@ async function withCanvasVersionRetry<T>(context: RuntimeToolContext, operation:
 		return await operation();
 	} catch (error) {
 		if (!isVersionConflict(error)) throw error;
-		const gateway = context.gateway as Partial<ToolGateway>;
-		if (typeof gateway.getCanvasSummary !== "function") throw error;
-		const summary = await gateway.getCanvasSummary(context.userId, context.canvasId, context.requestId);
+		const summary = (await context.gateway.getCanvasSummary(
+			context.userId,
+			context.canvasId,
+			context.requestId,
+		)) as Record<string, unknown>;
 		const canvas =
 			typeof summary.canvas === "object" && summary.canvas !== null
 				? (summary.canvas as Record<string, unknown>)
@@ -625,7 +838,7 @@ function retryDelay(attempt: number, signal?: AbortSignal): Promise<void> {
 }
 
 async function resolveGenerationModel(context: RuntimeToolContext, requestedModel: string): Promise<string> {
-	const resolver = (context.gateway as Partial<ToolGateway>).resolveGenerationModel;
+	const resolver = context.gateway.resolveGenerationModel;
 	return typeof resolver === "function"
 		? resolver.call(context.gateway, context.userId, requestedModel, context.requestId)
 		: requestedModel;
@@ -745,10 +958,7 @@ async function withAuthoritativePrompt(
 	// continue from a selected Director/Image node. Reuse the authoritative
 	// scene description instead of sending an empty prompt downstream.
 	const referenceNodeIds = [...(context.referenceNodeIds ?? [])];
-	if (
-		referenceNodeIds.length === 0 &&
-		typeof (context.gateway as Partial<ToolGateway>).getCanvasSummary === "function"
-	) {
+	if (referenceNodeIds.length === 0) {
 		const summary = await read.getCanvasSummary(context.userId, context.canvasId, context.requestId);
 		for (const edge of Array.isArray(summary.edges) ? summary.edges : []) {
 			if (typeof edge !== "object" || edge === null || Array.isArray(edge)) continue;
@@ -806,13 +1016,11 @@ function inferImageOperation(modelParams: Record<string, unknown>): Record<strin
 }
 
 async function assertCanvasVersion(context: RuntimeToolContext): Promise<void> {
-	const gateway = context.gateway as ToolGateway & {
-		getCanvasSummary?: ToolGateway["getCanvasSummary"];
-	};
-	if (typeof gateway.getCanvasSummary !== "function") {
-		return;
-	}
-	const summary = await gateway.getCanvasSummary(context.userId, context.canvasId, context.requestId);
+	const summary = (await context.gateway.getCanvasSummary(
+		context.userId,
+		context.canvasId,
+		context.requestId,
+	)) as Record<string, unknown>;
 	const canvas = summary.canvas;
 	const actualVersion =
 		typeof canvas === "object" && canvas !== null && !Array.isArray(canvas)

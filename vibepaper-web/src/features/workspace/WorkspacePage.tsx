@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FilePlus2, Upload, Download, Pencil, Trash2, FolderOpen, Search, LayoutGrid } from 'lucide-react'
@@ -10,8 +10,112 @@ import { Field, Input } from '@/components/ui/Input'
 import { ConfirmDialog, Modal } from '@/components/ui/Modal'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
+import type { DesktopProject } from '@/desktop/desktop-bridge'
 
-export function WorkspacePage() {
+export interface WorkspaceDesktopProject {
+  projectId: string
+  canvasId: string
+  name: string
+}
+
+export interface WorkspaceDesktopAdapter {
+  projects: WorkspaceDesktopProject[]
+  isLoading: boolean
+  error: string
+  onSelectProject: (project: WorkspaceDesktopProject) => Promise<void>
+  onOpenExistingProject: () => Promise<void>
+  onCreateProject: (name: string) => Promise<void>
+  onExportProject?: (project: WorkspaceDesktopProject) => Promise<void>
+}
+
+export function WorkspacePage({ desktopAdapter }: { desktopAdapter?: WorkspaceDesktopAdapter } = {}) {
+  if (desktopAdapter) return <DesktopWorkspacePage adapter={desktopAdapter} />
+  if (window.vibepaperDesktop) return <WorkspacePageDesktop />
+  return <WorkspacePageWeb />
+}
+
+function WorkspacePageDesktop() {
+  const navigate = useNavigate()
+  const [projects, setProjects] = useState<DesktopProject[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  const loadProjects = useCallback(async () => {
+    setIsLoading(true)
+    setError('')
+    try {
+      const bridge = window.vibepaperDesktop
+      if (!bridge) throw new Error('桌面项目接口不可用。')
+      setProjects(await bridge.listRecentProjects())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法读取本地项目列表。')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { void loadProjects() }, [loadProjects])
+
+  const enterProject = (project: DesktopProject | null) => {
+    if (project) navigate(`/canvas/${encodeURIComponent(project.canvasId)}`)
+  }
+  const selectProject = async (candidate: WorkspaceDesktopProject) => {
+    setError('')
+    try {
+      const bridge = window.vibepaperDesktop
+      if (!bridge) throw new Error('桌面项目接口不可用。')
+      enterProject(await bridge.openRecentProject(candidate.projectId))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法打开本地项目。')
+      await loadProjects()
+    }
+  }
+  const openExistingProject = async () => {
+    setError('')
+    try {
+      enterProject(await window.vibepaperDesktop?.openProject() ?? null)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法打开本地项目。')
+    }
+  }
+  const createProject = async (name: string) => {
+    setError('')
+    try {
+      enterProject(await window.vibepaperDesktop?.createProject(name) ?? null)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法创建本地项目。')
+    }
+  }
+  const exportProject = async (project: WorkspaceDesktopProject) => {
+    setError('')
+    try {
+      const bridge = window.vibepaperDesktop
+      if (!bridge) throw new Error('桌面画布导出接口不可用。')
+      const document = await bridge.exportCanvas(project.projectId, project.canvasId)
+      const blob = new Blob([JSON.stringify(document, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const anchor = window.document.createElement('a')
+      anchor.href = url
+      anchor.download = `${project.name || 'canvas'}.json`
+      anchor.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法导出本地画布。')
+    }
+  }
+
+  return <DesktopWorkspacePage adapter={{
+    projects,
+    isLoading,
+    error,
+    onSelectProject: selectProject,
+    onOpenExistingProject: openExistingProject,
+    onCreateProject: createProject,
+    onExportProject: exportProject,
+  }} />
+}
+
+function WorkspacePageWeb() {
   const nav = useNavigate()
   const qc = useQueryClient()
   const [keyword, setKeyword] = useState('')
@@ -262,6 +366,121 @@ export function WorkspacePage() {
             <Input value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus />
           </Field>
           <Button type="submit">保存</Button>
+        </form>
+      </Modal>
+    </div>
+  )
+}
+
+function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter }) {
+  const [keyword, setKeyword] = useState('')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [newName, setNewName] = useState('我的项目')
+  const [busy, setBusy] = useState(false)
+  const filteredProjects = useMemo(() => {
+    const normalized = keyword.trim().toLocaleLowerCase()
+    return adapter.projects.filter((project) => !normalized || project.name.toLocaleLowerCase().includes(normalized))
+  }, [adapter.projects, keyword])
+
+  const create = async (event: React.FormEvent) => {
+    event.preventDefault()
+    const name = newName.trim()
+    if (!name || busy) return
+    setBusy(true)
+    try {
+      await adapter.onCreateProject(name)
+      setCreateOpen(false)
+      setNewName('我的项目')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const openExisting = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await adapter.onOpenExistingProject()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="w-full">
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="flex items-center gap-2.5 text-[28px] font-black tracking-tight text-[#111]">
+            <LayoutGrid size={26} strokeWidth={2.4} />
+            画布管理
+          </h1>
+          <p className="mt-2 text-[14px] text-[#888]">选择本地项目继续创作，或创建一个新项目</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#aaa]" />
+            <Input
+              className="h-11 w-48 rounded-xl border-black/8 bg-white pl-9"
+              placeholder="搜索项目"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+            />
+          </div>
+          <Button variant="primary" leftIcon={<FilePlus2 size={16} />} onClick={() => setCreateOpen(true)}>
+            新建本地项目
+          </Button>
+          <Button variant="secondary" leftIcon={<FolderOpen size={16} />} onClick={() => void openExisting()} disabled={busy}>
+            打开已有项目
+          </Button>
+        </div>
+      </div>
+
+      {adapter.error && <p role="alert" className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-[13px] text-red-700">{adapter.error}</p>}
+      {adapter.isLoading ? (
+        <div className="flex justify-center py-24"><Spinner className="h-8 w-8" /></div>
+      ) : filteredProjects.length === 0 ? (
+        <div className="rounded-3xl border border-dashed border-black/12 bg-white/60 py-24 text-center">
+          <FolderOpen size={40} className="mx-auto mb-3 text-[#ccc]" />
+          <p className="text-[16px] font-bold text-[#444]">{adapter.projects.length ? '没有匹配的本地项目' : '还没有打开过本地项目'}</p>
+          <p className="mt-1 text-[13px] text-[#999]">可以打开已有项目，或新建本地项目开始创作</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+          {filteredProjects.map((project) => (
+            <div
+              key={project.projectId}
+              role="button"
+              tabIndex={busy ? -1 : 0}
+              onClick={() => { if (!busy) void adapter.onSelectProject(project) }}
+              onKeyDown={(event) => { if (!busy && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void adapter.onSelectProject(project) } }}
+              aria-disabled={busy}
+              className="group relative aspect-[4/3] cursor-pointer overflow-hidden rounded-[18px] text-left shadow-[0_2px_12px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_40px_rgba(15,23,42,0.12)] aria-disabled:cursor-wait aria-disabled:opacity-60"
+            >
+              <div className="absolute inset-0 bg-gradient-to-b from-[#ececee] via-[#e4e4e8] to-[#c8c8ce]" />
+              <div className="absolute inset-0 flex items-center justify-center"><OrigamiIcon /></div>
+              <div className="absolute left-3 top-3 rounded-md bg-[#111] px-2 py-0.5 text-[11px] font-bold text-white">本地项目</div>
+              {adapter.onExportProject && <span className="absolute right-2.5 top-2.5 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                <IconBtn title="下载 JSON" onClick={(event) => { event.stopPropagation(); void adapter.onExportProject?.(project) }}>
+                  <Download size={13} />
+                </IconBtn>
+              </span>}
+              <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/55 to-transparent" />
+              <div className="absolute bottom-0 left-0 right-0 px-4 pb-3.5">
+                <p className="truncate text-[15px] font-bold text-white drop-shadow">{project.name}</p>
+                <p className="mt-0.5 text-[11px] text-white/75">包含 1 个本地画布 · 点击进入</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Modal open={createOpen} onClose={() => { if (!busy) setCreateOpen(false) }} title="新建本地项目">
+        <form className="flex flex-col gap-4" onSubmit={(event) => { void create(event) }}>
+          <Field label="项目名称">
+            <Input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="例如：赛博朋克短片" autoFocus />
+          </Field>
+          <p className="text-[12px] leading-5 text-[#777]">创建后会选择本机文件夹并在其中保存一个画布。</p>
+          <Button type="submit" disabled={busy || !newName.trim()}>{busy ? '正在创建…' : '创建并进入'}</Button>
         </form>
       </Modal>
     </div>

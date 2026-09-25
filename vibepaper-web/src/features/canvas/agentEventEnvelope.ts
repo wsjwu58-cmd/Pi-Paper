@@ -141,6 +141,8 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
         confirmReason: typeof event.data.confirmReason === 'string' ? event.data.confirmReason : undefined,
         estimatedCost: numberValue(event.data.estimatedCost),
         estimatedTotalCost: numberValue(event.data.estimatedTotalCost),
+        affectedNodeCount: numberValue(event.data.affectedNodeCount),
+        generationItems: generationItemsFrom(event.data.generationItems),
         canvasVersion: numberValue(event.data.canvasVersion),
         expiresAt: normalizeConfirmationExpiry(event.data.expiresAt),
         status: 'pending',
@@ -160,10 +162,42 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
       // A terminal summary must not replace the accumulated Agent reply.
       content: appendUniqueText(message.content, event.data.text),
     }))
+    const actionId = typeof event.data.actionId === 'string' ? event.data.actionId : undefined
+    const actionStatus = event.data.actionStatus === 'accepted' || event.data.actionStatus === 'rejected'
+      ? event.data.actionStatus
+      : undefined
+    const taskStatus = isRecord(event.data.taskStatus) ? event.data.taskStatus : undefined
+    if (actionId || taskStatus) updateAssistant((message) => {
+      const confirmation = message.meta?.confirmation
+      return {
+        ...message,
+        meta: {
+          ...withRun(message),
+          ...(actionId && actionStatus && confirmation?.actionId === actionId
+            ? { requiresConfirmation: false, confirmation: { ...confirmation, status: actionStatus } }
+            : {}),
+          ...(taskStatus ? { taskStatus: {
+            taskId: typeof taskStatus.taskId === 'string' ? taskStatus.taskId : undefined,
+            status: typeof taskStatus.status === 'string' ? taskStatus.status : undefined,
+            nodeId: typeof taskStatus.nodeId === 'string' ? taskStatus.nodeId : undefined,
+          } } : {}),
+        },
+      }
+    })
   } else if (event.type === 'run_failed' || event.type === 'run_aborted') {
     next.runStatus = event.type === 'run_failed' ? 'failed' : 'aborted'
     next.errorCode = typeof event.data.errorCode === 'string' ? event.data.errorCode : undefined
-    updateAssistant((message) => ({ ...message, meta: { ...withRun(message), errorCode: next.errorCode, runStatus: next.runStatus } }))
+    updateAssistant((message) => ({
+      ...message,
+      meta: {
+        ...withRun(message),
+        errorCode: next.errorCode,
+        runStatus: next.runStatus,
+        ...(message.meta?.confirmation?.status === 'pending'
+          ? { requiresConfirmation: false, confirmation: { ...message.meta.confirmation, status: 'rejected' as const } }
+          : {}),
+      },
+    }))
   }
   return next
 }
@@ -277,6 +311,20 @@ function appendReasoning(steps: ExecutionStep[], text: string): ExecutionStep[] 
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function generationItemsFrom(value: unknown): NonNullable<AgentConfirmation['generationItems']> | undefined {
+  if (!Array.isArray(value)) return undefined
+  const items = value.flatMap((entry) => {
+    if (!isRecord(entry) || typeof entry.target !== 'string' || typeof entry.model !== 'string'
+      || typeof entry.input !== 'string' || typeof entry.overwrite !== 'boolean') return []
+    return [{ target: entry.target, model: entry.model, input: entry.input, overwrite: entry.overwrite }]
+  })
+  return items.length ? items : undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function printablePayload(value: unknown): string | undefined {

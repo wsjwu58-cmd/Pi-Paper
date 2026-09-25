@@ -6,6 +6,7 @@ import { api, uploadAsset } from '@/lib/api'
 import { fetchAuthedBlob, resolveMediaUrl, useAuthedMediaUrl } from '@/lib/media'
 import { sid } from '@/lib/ids'
 import type { GenerationTask, Id, ModelInfo, NodePayload, PageResult } from '@/lib/types'
+import type { DesktopTask } from '@/desktop/desktop-bridge'
 import { useCanvasStore, nodeMediaUrl, type FlowNode } from '../canvasStore'
 import { NODE_COLORS, statusBadge } from './NodeShell'
 import { NodeEditorDialog, NodeFloatingToolbar } from './NodeEditorPanel'
@@ -14,6 +15,7 @@ import { textNodeContent } from './textContent'
 import { persistNodeExec, submitNodeTask, syncExecFields } from './taskActions'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { DirectorNodeView } from '../director'
+import { desktopAssetView, isDesktopRuntime } from '../canvasPort'
 
 function useNodeData(nodeId: string) {
   return useCanvasStore((s) => s.nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node)
@@ -23,16 +25,32 @@ function useNodeTasks(nodeId: string) {
   const qc = useQueryClient()
   const canvasId = useCanvasStore((s) => s.canvas?.canvas.id)
   const canvasKey = canvasId == null ? '' : sid(canvasId)
-  const { data = [] } = useQuery({
+  const isDesktop = isDesktopRuntime()
+  const { data: activeProject } = useQuery({
+    queryKey: ['desktop-active-project'],
+    queryFn: () => window.vibepaperDesktop?.getActiveProject() ?? Promise.resolve(null),
+    enabled: isDesktop,
+    staleTime: 1_000,
+  })
+  const projectId = activeProject?.projectId
+  const queryKey = ['canvas-tasks', isDesktop ? projectId ?? 'desktop-no-project' : canvasKey] as const
+  const { data = [] } = useQuery<GenerationTask[]>({
     // All cards on a canvas share one task feed. Previously every visible node
     // opened its own two-second poll, which multiplied traffic as a workflow
     // grew and could trip the gateway's global limiter.
-    queryKey: ['canvas-tasks', canvasKey],
-    queryFn: () =>
-      api<PageResult<GenerationTask>>(
+    queryKey,
+    queryFn: async () => {
+      if (isDesktop) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !projectId) return []
+        const localTasks = await bridge.listTasks(projectId, 100)
+        return Promise.all(localTasks.map((task) => loadDesktopTask(bridge, projectId, canvasKey, task)))
+      }
+      return api<PageResult<GenerationTask>>(
         `/tasks?canvas_id=${encodeURIComponent(canvasKey)}&canvasId=${encodeURIComponent(canvasKey)}&page=1&pageSize=100`,
-      ).then((r) => r.items ?? []),
-    enabled: Boolean(nodeId && canvasKey),
+      ).then((r) => r.items ?? [])
+    },
+    enabled: Boolean(nodeId && canvasKey && (!isDesktop || projectId)),
     refetchInterval: (query) => {
       const items = query.state.data
       if (items?.some((t) => ['queued', 'running'].includes(t.status))) return 2000
@@ -84,11 +102,11 @@ function useNodeTasks(nodeId: string) {
     const handler = (ev: Event) => {
       const detail = (ev as CustomEvent<{ nodeId?: string }>).detail
       if (!detail?.nodeId || sid(detail.nodeId) !== sid(nodeId)) return
-      void qc.invalidateQueries({ queryKey: ['canvas-tasks', canvasKey] })
+      void qc.invalidateQueries({ queryKey })
     }
     window.addEventListener('vp-task-updated', handler)
     return () => window.removeEventListener('vp-task-updated', handler)
-  }, [canvasKey, nodeId, qc])
+  }, [canvasKey, nodeId, qc, queryKey])
 
   const currentId = useCanvasStore(
     (s) => s.nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node.currentOutputId,
@@ -99,6 +117,48 @@ function useNodeTasks(nodeId: string) {
   }, [currentId, data, nodeId])
 
   return { tasks: data, latest }
+}
+
+async function loadDesktopTask(
+  bridge: NonNullable<Window['vibepaperDesktop']>,
+  projectId: string,
+  canvasId: string,
+  task: DesktopTask,
+): Promise<GenerationTask> {
+  const snapshot = await bridge.getTaskInput(projectId, task.taskId).catch(() => null)
+  const parameters = snapshot?.parameters ?? {}
+  const status = task.status === 'interrupted' ? 'failed' : task.status
+  let outputs: GenerationTask['outputs'] = []
+  if (status === 'succeeded') {
+    if (task.modality === 'text') {
+      const text = await bridge.readTaskOutput(projectId, task.taskId).catch(() => '')
+      outputs = [{ id: task.taskId, outputType: 'text', meta: { text } }]
+    } else if (task.modality === 'image' || task.modality === 'video') {
+      outputs = [{
+        id: task.taskId,
+        outputType: task.modality,
+        url: `vibe://app/tasks/${task.taskId}/output`,
+      }]
+    }
+  }
+  return {
+    taskId: task.taskId,
+    userId: 'local',
+    nodeId: task.nodeId ?? undefined,
+    canvasId,
+    modelType: task.modelId ?? task.modality,
+    modelParams: parameters,
+    estimatedCost: 0,
+    actualCost: 0,
+    status,
+    errorCode: task.errorCode ?? undefined,
+    errorMessage: task.errorCode ? `本地任务失败：${task.errorCode}` : undefined,
+    retryable: ['failed', 'interrupted'].includes(task.status),
+    source: 'desktop',
+    outputs,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+  }
 }
 
 async function saveOutputToLibrary(taskId: string | number, url?: string, remoteUrl?: string) {
@@ -260,7 +320,15 @@ function TaskHistoryBar({
   const cancel = async () => {
     if (!latest) return
     try {
-      await api(`/tasks/${latest.taskId}/cancel`, { method: 'POST' })
+      if (isDesktopRuntime()) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge) throw new Error('本地任务接口不可用。')
+        const project = await bridge.getActiveProject()
+        if (!project) throw new Error('没有打开的本地项目，无法取消任务。')
+        await bridge.cancelTask(project.projectId, sid(latest.taskId))
+      } else {
+        await api(`/tasks/${latest.taskId}/cancel`, { method: 'POST' })
+      }
       useCanvasStore.getState().updateNodePayload(nodeId, syncExecFields('cancelled'))
       void persistNodeExec(nodeId, syncExecFields('cancelled'))
       toastSuccess('任务已取消')
@@ -272,6 +340,28 @@ function TaskHistoryBar({
 
   const retry = async () => {
     if (!latest) return
+    if (isDesktopRuntime()) {
+      try {
+        const bridge = window.vibepaperDesktop
+        if (!bridge) throw new Error('本地任务接口不可用。')
+        const project = await bridge.getActiveProject()
+        if (!project) throw new Error('没有打开的本地项目，无法重试任务。')
+        const snapshot = await bridge.getTaskInput(project.projectId, sid(latest.taskId))
+        if (!snapshot) throw new Error('本地任务输入已不可用，无法重试。')
+        await submitNodeTask(
+          nodeId,
+          snapshot.task.modelId ?? latest.modelType,
+          snapshot.parameters,
+          0,
+          { providerType: snapshot.task.providerType },
+        )
+        toastSuccess('已重新提交')
+        window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId) } }))
+      } catch (e) {
+        toastError((e as Error).message)
+      }
+      return
+    }
     try {
       await api(`/tasks/${latest.taskId}/retry`, { method: 'POST' })
       useCanvasStore.getState().updateNodePayload(nodeId, {
@@ -356,6 +446,9 @@ function HistoryThumb({ url }: { url: string }) {
 
 async function uploadNodeOutput(nodeId: Id, node: NodePayload, file: File) {
   try {
+    if (isDesktopRuntime()) {
+      throw new Error('桌面版请使用本地图片导入；视频和音频素材导入尚未接入。')
+    }
     const canvasId = useCanvasStore.getState().canvas?.canvas.id
     const assetType = node.type === 'audio' ? 'audio' : node.type === 'video' ? 'video' : 'image'
     const asset = (await uploadAsset(file, assetType, canvasId, nodeId)) as { url?: string }
@@ -369,6 +462,39 @@ async function uploadNodeOutput(nodeId: Id, node: NodePayload, file: File) {
       },
     })
     toastSuccess('素材已上传')
+  } catch (e) {
+    toastError((e as Error).message)
+  }
+}
+
+async function importDesktopImageToNode(nodeId: Id, fallbackNode: NodePayload) {
+  try {
+    const bridge = window.vibepaperDesktop
+    const project = await bridge?.getActiveProject()
+    if (!bridge || !project) throw new Error('请先打开本地项目，再导入图片。')
+
+    const asset = await bridge.importImage(project.projectId)
+    if (!asset) return
+
+    const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node
+    if (!current) {
+      window.dispatchEvent(new Event('vp-assets-updated'))
+      throw new Error('节点已不存在，图片已导入本地素材库。')
+    }
+
+    const view = desktopAssetView(asset)
+    useCanvasStore.getState().updateNodePayload(nodeId, {
+      params: {
+        ...(current.params ?? fallbackNode.params),
+        assetId: view.id,
+        name: view.name,
+        url: view.url,
+        lastOutputUrl: view.url,
+        thumbnailUrl: view.url,
+      },
+    })
+    window.dispatchEvent(new Event('vp-assets-updated'))
+    toastSuccess('图片已导入本地素材库并应用到节点')
   } catch (e) {
     toastError((e as Error).message)
   }
@@ -522,7 +648,11 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
         accentColor={meta.color}
         label="Image"
         icon={meta.icon}
-        topUpload={{ accept: 'image/*', onUpload: (f) => uploadNodeOutput(node.id, node, f) }}
+        topUpload={{
+          accept: 'image/*',
+          onUpload: (f) => uploadNodeOutput(node.id, node, f),
+          onDesktopImport: () => importDesktopImageToNode(node.id, node),
+        }}
         mediaFrame={outputs.length > 0 || mediaUrl ? 'natural' : undefined}
         topMinHeight="min-h-[72px]"
         topMinHeightCollapsed="min-h-[72px]"
@@ -578,7 +708,11 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
         accentColor={meta.color}
         label="Video"
         icon={meta.icon}
-        topUpload={{ accept: 'video/*', onUpload: (f) => uploadNodeOutput(node.id, node, f) }}
+        topUpload={{
+          accept: 'video/*',
+          onUpload: (f) => uploadNodeOutput(node.id, node, f),
+          unavailableReason: isDesktopRuntime() ? '桌面本地暂不支持导入视频素材' : undefined,
+        }}
         mediaFrame={mediaUrl ? 'natural' : undefined}
         topMinHeight="min-h-[72px]"
         topMinHeightCollapsed="min-h-[72px]"
@@ -624,7 +758,11 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
       icon={meta.icon}
       topMinHeight="min-h-[72px]"
       topMinHeightCollapsed="min-h-[48px]"
-      topUpload={{ accept: 'audio/*', onUpload: (f) => uploadNodeOutput(node.id, node, f) }}
+      topUpload={{
+        accept: 'audio/*',
+        onUpload: (f) => uploadNodeOutput(node.id, node, f),
+        unavailableReason: isDesktopRuntime() ? '桌面本地暂不支持导入音频素材' : undefined,
+      }}
       topContent={
         mediaUrl || out ? (
           <MediaContent url={out?.url ?? assetFallback} meta={out?.meta as Record<string, unknown>} outputType="audio" />

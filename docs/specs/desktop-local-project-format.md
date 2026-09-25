@@ -69,7 +69,7 @@ Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访�
 | `canvas_groups` | 编组 ID、名称、颜色、布局、成员节点 ID 列表及创建/更新时间 |
 | `canvas_stacks` | 堆叠 ID、折叠状态、成员节点 ID 列表及创建/更新时间 |
 
-Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写入须匹配项目/画布身份；全量保存与节点增删改、连接命令须匹配 `expectedVersion`，节点创建按旧接口允许内部调用省略版本。Local Core 校验连线兼容性、自连接、节点类型、引用及载荷大小，再在 SQLite 事务中提交；这些版本化命令按旧接口推进画布版本。`saveCanvas` 可选接收持久化幂等键，但当前 Renderer 保存 IPC 未传入该键。分组/堆叠七项 Store 命令写入成员节点关系，但不递增画布版本，符合旧 `GraphService` 行为，目前尚未经 IPC/Renderer 调用。桌面现有全量保存未带 `groups`/`stacks` 字段时会保留 Store 中的记录；显式传入字段（包括空数组或 `null`）时才按快照替换对应记录。与旧 `deleteNode` 一致，独立删除节点不会从分组/堆叠的 `node_ids_json` 列表中过滤其 ID。若数据库版本已被其他写者更新，事务回滚并要求重新打开画布。节点创建/更新/删除及显式连接命令的同一幂等键重试返回已提交结果，不重复执行。
+Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写入须匹配项目/画布身份；全量保存与节点增删改、连接命令须匹配 `expectedVersion`，节点创建按旧接口允许内部调用省略版本。Local Core 校验连线兼容性、自连接、节点类型、引用及载荷大小，再在 SQLite 事务中提交；这些版本化命令按旧接口推进画布版本。`saveCanvas` 可选接收持久化幂等键，但当前 Renderer 保存 IPC 未传入该键。分组/堆叠七项 Store 命令已通过受限 Main IPC 和 Preload 暴露，写入成员节点关系但不递增画布版本，符合旧 `GraphService` 行为；原 `CanvasPage` 仍需切换到这些桥接方法。桌面全量保存可接收 `groups`/`stacks`；未带字段时会保留 Store 中的记录，显式传入字段（包括空数组或 `null`）时才按快照替换。与旧 `deleteNode` 一致，独立删除节点不会从分组/堆叠的 `node_ids_json` 列表中过滤其 ID。若数据库版本已被其他写者更新，事务回滚并要求重新打开画布。节点创建/更新/删除及显式连接命令的同一幂等键重试返回已提交结果，不重复执行。
 
 `exportCanvas(projectId, canvasId)` 在 Store 内只读生成 interchange JSON：顶层同时写入 `schema_version` 和 `schemaVersion`（当前均为 `1.0.0`），并包含画布、节点、边、groups 与 stacks。图片节点只导出其稳定 `assetId` 引用，不打包素材文件；导出方法目前不经 IPC/Renderer 调用。旧后端 `CanvasService.importCanvas` 会创建另一张新画布并重映射节点/边身份、重置执行状态，但当前 `project_metadata` 仅保存一个 `canvasId`；本地尚无等价导入命令。为防止覆盖当前画布或生成无法解析的跨项目素材引用，画布 JSON 导入保持未实现，等待多画布身份和素材包迁移契约。
 

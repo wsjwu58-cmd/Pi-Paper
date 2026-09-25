@@ -2,6 +2,7 @@ import { api, apiUrl } from '@/lib/api'
 import { sid } from '@/lib/ids'
 import type { Id, NodePayload } from '@/lib/types'
 import { useCanvasStore } from '../canvasStore'
+import { isDesktopRuntime } from '../canvasPort'
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'expired'])
 
@@ -11,6 +12,8 @@ export function syncExecFields(status: string): Pick<NodePayload, 'status' | 'ex
 
 /** 立刻把节点执行态写回画布服务，避免只改本地 store、Agent 摘要仍读到 running。 */
 export async function persistNodeExec(nodeId: Id, patch: Partial<NodePayload>): Promise<void> {
+  // Desktop node changes are persisted by CanvasPage through the local canvas bridge.
+  if (isDesktopRuntime()) return
   const canvasId = useCanvasStore.getState().canvas?.canvas.id
   if (canvasId == null) return
   try {
@@ -28,7 +31,50 @@ export async function submitNodeTask(
   modelType: string,
   modelParams: Record<string, unknown>,
   estimatedCost = 8,
+  desktopOptions?: { providerType?: 'local' | 'cloud' },
 ) {
+  if (isDesktopRuntime()) {
+    const bridge = window.vibepaperDesktop
+    if (!bridge) throw new Error('桌面本地服务尚未就绪，无法创建生成任务。')
+    const canvas = useCanvasStore.getState().canvas
+    if (!canvas) throw new Error('画布尚未加载，无法创建本地任务。')
+    const activeProject = await bridge.getActiveProject()
+    if (!activeProject) throw new Error('没有打开的本地项目，无法创建生成任务。')
+    const node = useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node
+    const modality = node?.type
+    if (modality !== 'text' && modality !== 'image' && modality !== 'video') {
+      throw new Error('桌面本地生成目前支持文本、图片和视频；此节点类型尚未接入。')
+    }
+    const prompt = typeof modelParams.prompt === 'string' ? modelParams.prompt.trim() : ''
+    if (!prompt) throw new Error('请先填写生成提示词。')
+
+    const { prompt: _prompt, ...parameters } = modelParams
+    const task = await bridge.createGenerationTask({
+      projectId: activeProject.projectId,
+      canvasId: sid(canvas.canvas.id),
+      canvasVersion: canvas.canvas.version,
+      nodeId: sid(nodeId),
+      prompt,
+      idempotencyKey: crypto.randomUUID(),
+      providerType: desktopOptions?.providerType ?? 'cloud',
+      modality,
+      parameters,
+    })
+    if (!task) throw new Error('本地生成任务没有创建成功。')
+    const queued = {
+      ...syncExecFields('queued'),
+      params: {
+        ...(useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node.params ?? {}),
+        ...modelParams,
+        model: modelType,
+      },
+      currentOutputId: task.taskId,
+    }
+    useCanvasStore.getState().updateNodePayload(nodeId, queued)
+    window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { taskId: task.taskId, nodeId: sid(nodeId) } }))
+    return task.taskId
+  }
+
   const { useAuth } = await import('@/lib/auth')
   const canvas = useCanvasStore.getState().canvas
   const user = useAuth.getState().user

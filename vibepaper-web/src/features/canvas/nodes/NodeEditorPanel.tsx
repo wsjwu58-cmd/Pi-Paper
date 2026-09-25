@@ -15,12 +15,14 @@ import {
   Type,
   X,
 } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
 import { uploadAsset } from '@/lib/api'
 import { resolveMediaUrl, useAuthedMediaUrl } from '@/lib/media'
 import { sid } from '@/lib/ids'
 import type { GenerationTask, Id, ModelInfo, NodePayload } from '@/lib/types'
 import { ModelPicker } from '@/components/ui/ModelPicker'
 import { useCanvasStore, type FlowNode } from '../canvasStore'
+import { isDesktopRuntime } from '../canvasPort'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 
 const STYLE_PRESETS = ['赛博朋克', '水彩', '写实', '动漫', '电影感', '产品渲染', '三视图']
@@ -199,6 +201,7 @@ export function NodeFloatingToolbar({
   onSaveToLibrary?: () => void
   onFullscreen?: () => void
 }) {
+  const desktopMode = isDesktopRuntime()
   const [busy, setBusy] = useState(false)
   const [menu, setMenu] = useState<'crop' | 'upscale' | 'three' | null>(null)
   const imageModel =
@@ -212,6 +215,10 @@ export function NodeFloatingToolbar({
 
   const runOp = async (op: string, extra: Record<string, unknown> = {}) => {
     if (busy) return
+    if (desktopMode) {
+      toastError('桌面本地尚未接入裁剪、扩图、超分和视频剪辑工具。')
+      return
+    }
     setBusy(true)
     try {
       const { submitNodeTask } = await import('./taskActions')
@@ -236,33 +243,34 @@ export function NodeFloatingToolbar({
     >
       {node.type === 'image' && (
         <>
-          <ToolIcon title="裁剪" active={menu === 'crop'} onClick={() => setMenu(menu === 'crop' ? null : 'crop')}>
+          <ToolIcon title={desktopMode ? '桌面本地未接入：裁剪' : '裁剪'} disabled={desktopMode} active={menu === 'crop'} onClick={() => setMenu(menu === 'crop' ? null : 'crop')}>
             <Crop size={15} />
           </ToolIcon>
-          <ToolIcon title="扩图" disabled={busy} onClick={() => void runOp('扩图')}>
+          <ToolIcon title={desktopMode ? '桌面本地未接入：扩图' : '扩图'} disabled={desktopMode || busy} onClick={() => void runOp('扩图')}>
             <Expand size={15} />
           </ToolIcon>
-          <ToolIcon title="超分" active={menu === 'upscale'} onClick={() => setMenu(menu === 'upscale' ? null : 'upscale')}>
+          <ToolIcon title={desktopMode ? '桌面本地未接入：超分' : '超分'} disabled={desktopMode} active={menu === 'upscale'} onClick={() => setMenu(menu === 'upscale' ? null : 'upscale')}>
             <Scan size={15} />
           </ToolIcon>
-          <ToolIcon title="三视图" active={menu === 'three'} onClick={() => setMenu(menu === 'three' ? null : 'three')}>
+          <ToolIcon title={desktopMode ? '桌面本地未接入：三视图' : '三视图'} disabled={desktopMode} active={menu === 'three'} onClick={() => setMenu(menu === 'three' ? null : 'three')}>
             <Ratio size={15} />
           </ToolIcon>
         </>
       )}
       {node.type === 'video' && (
         <>
-          <ToolIcon title="剪辑" onClick={() => void runOp('剪辑', { start: 0, end: 5 })}>
+          <ToolIcon title={desktopMode ? '桌面本地未接入：剪辑' : '剪辑'} disabled={desktopMode} onClick={() => void runOp('剪辑', { start: 0, end: 5 })}>
             <Crop size={15} />
           </ToolIcon>
-          <ToolIcon title="提帧" onClick={() => void runOp('提帧', { frameAt: 1 })}>
+          <ToolIcon title={desktopMode ? '桌面本地未接入：提帧' : '提帧'} disabled={desktopMode} onClick={() => void runOp('提帧', { frameAt: 1 })}>
             <Film size={15} />
           </ToolIcon>
-          <ToolIcon title="超分" onClick={() => void runOp('超分', { resolution: '1920x1080' })}>
+          <ToolIcon title={desktopMode ? '桌面本地未接入：超分' : '超分'} disabled={desktopMode} onClick={() => void runOp('超分', { resolution: '1920x1080' })}>
             <Expand size={15} />
           </ToolIcon>
           <ToolIcon
-            title="Seedance 认证"
+            title={desktopMode ? '桌面本地未接入：Seedance 认证' : 'Seedance 认证'}
+            disabled={desktopMode}
             onClick={() => {
               toastSuccess('已提交 Seedance 认证申请')
             }}
@@ -277,8 +285,13 @@ export function NodeFloatingToolbar({
           <Download size={15} />
         </a>
       )}
-      {onSaveToLibrary && (
+      {onSaveToLibrary && !desktopMode && (
         <ToolIcon title="存入素材库" onClick={onSaveToLibrary}>
+          <Library size={15} />
+        </ToolIcon>
+      )}
+      {desktopMode && (
+        <ToolIcon title="桌面本地未接入：保存生成结果到素材库" disabled onClick={() => undefined}>
           <Library size={15} />
         </ToolIcon>
       )}
@@ -456,6 +469,53 @@ export function NodeEditorDialog({
   layout?: 'default' | 'text' | 'split'
 }) {
   const nodeId = sid(node.id)
+  const desktopMode = Boolean(window.vibepaperDesktop)
+  const { data: desktopModels = [], isFetched: desktopModelsFetched } = useQuery({
+    queryKey: ['desktop-node-models'],
+    enabled: desktopMode,
+    staleTime: 5_000,
+    queryFn: async (): Promise<ModelInfo[]> => {
+      const bridge = window.vibepaperDesktop
+      if (!bridge) return []
+      const [agnesResult, localResult] = await Promise.allSettled([
+        bridge.getAgnesModels(),
+        bridge.getLocalTextModel(),
+      ])
+      const available: ModelInfo[] = []
+      if (agnesResult.status === 'fulfilled') {
+        const catalog = agnesResult.value
+        if (catalog.apiKeyConfigured) {
+          for (const modality of ['text', 'image', 'video'] as const) {
+            const name = catalog.models[modality]
+            available.push({
+              id: name,
+              name,
+              modelType: modality,
+              displayName: `Agnes · ${modality === 'text' ? '文本' : modality === 'image' ? '图片' : '视频'}（云端）`,
+              description: '云端模型。点击生成会发送提示词和文本参考；供应商可能收费。',
+              provider: 'agnes',
+              enabled: true,
+              basePrice: null as unknown as number,
+            })
+          }
+        }
+      }
+      if (localResult.status === 'fulfilled' && localResult.value) {
+        const local = localResult.value
+        available.push({
+          id: local.modelId,
+          name: local.modelId,
+          modelType: 'text',
+          displayName: `本地 · ${local.modelId}`,
+          description: '本地模型，请求留在本机。',
+          provider: 'local',
+          enabled: true,
+          basePrice: null as unknown as number,
+        })
+      }
+      return available
+    },
+  })
   const upstream = useUpstreamRefs(nodeId)
   const excludedIds = useMemo(
     () => new Set(((node.params.excludedRefIds as string[]) ?? []).map(String)),
@@ -474,14 +534,16 @@ export function NodeEditorDialog({
   const [err, setErr] = useState('')
   const promptRef = useRef<HTMLTextAreaElement>(null)
 
+  const editorModels = desktopMode ? desktopModels : models
   const typeModels = useMemo(
     () =>
-      models.filter(
+      editorModels.filter(
         (m) => m.modelType === node.type && !/兼容别名|已停用/.test(String(m.description || '')),
       ),
-    [models, node.type],
+    [editorModels, node.type],
   )
   const preferred =
+    (desktopMode && node.type === 'text' ? typeModels.find((m) => m.provider === 'local')?.name : undefined) ??
     typeModels.find((m) => /agnes-image|agnes-video/i.test(m.name))?.name ??
     typeModels.find((m) => /agnes|seedream|seedance/i.test(m.name))?.name ??
     typeModels[0]?.name
@@ -557,6 +619,9 @@ export function NodeEditorDialog({
 
   const onUploadRef = async (file: File) => {
     try {
+      if (isDesktopRuntime()) {
+        throw new Error('桌面本地尚未接入节点参考媒体上传；请使用文本参考或移除媒体连线。')
+      }
       const canvasId = useCanvasStore.getState().canvas?.canvas.id
       const asset = (await uploadAsset(file, undefined, canvasId, node.id)) as {
         id?: Id
@@ -605,6 +670,10 @@ export function NodeEditorDialog({
       }
       const resolution = RES_MAP[resKey] || '1024x1024'
       const outputCount = isSplitLayout && node.type === 'text' ? count : 1
+      if (desktopMode && refsForUi.some((ref) => Boolean(ref.url))) {
+        throw new Error('桌面本地生成尚未接入图片、视频或音频参考输入。请移除媒体参考后重试。')
+      }
+      const selectedModel = typeModels.find((item) => item.name === (model || preferred))
       await submitNodeTask(
         node.id,
         model || preferred || node.type,
@@ -626,6 +695,7 @@ export function NodeEditorDialog({
           upstreamNodeIds: refsForUi.map((r) => r.sourceNodeId).filter(Boolean),
         },
         10,
+        { providerType: selectedModel?.provider === 'local' ? 'local' : 'cloud' },
       )
       const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === nodeId)?.data.node
       useCanvasStore.getState().updateNodePayload(node.id, {
@@ -673,12 +743,18 @@ export function NodeEditorDialog({
             type="file"
             accept={node.type === 'video' ? 'image/*,video/*' : 'image/*,video/*,audio/*,text/*'}
             className="hidden"
+            disabled={desktopMode}
             onChange={(e) => {
               const f = e.target.files?.[0]
               if (f) void onUploadRef(f)
             }}
           />
         </label>
+        {desktopMode && (
+          <span className="max-w-[180px] text-[10px] leading-relaxed text-[#999]">
+            桌面本地未接入节点参考媒体上传；可添加文本参考。
+          </span>
+        )}
         {node.type !== 'video' && (
           <button
             type="button"
@@ -814,6 +890,19 @@ export function NodeEditorDialog({
           })
         }}
       />
+      {desktopMode && (
+        <span className={`max-w-[210px] text-[9px] leading-tight ${isSplitLayout ? 'text-white/50' : 'text-[#999]'}`}>
+          {node.type === 'audio'
+            ? '桌面本地未接入音频生成。'
+            : !desktopModels.length && desktopModelsFetched
+              ? '未配置可用模型。请在桌面模型设置中配置本地文本模型或 Agnes API Key。'
+              : model || preferred
+                ? typeModels.find((item) => item.name === (model || preferred))?.provider === 'local'
+                  ? '本地模型，请求留在本机。'
+                  : 'Agnes 云端模型；提示词和文本参考会发送至供应商，可能产生费用。'
+                : '当前节点类型暂无桌面模型。'}
+        </span>
+      )}
       {isSplitLayout && node.type === 'text' && (
         <div className="flex shrink-0 overflow-hidden rounded-lg bg-white/10 p-0.5">
           {([1, 2, 4] as const).map((n) => (
@@ -902,7 +991,7 @@ export function NodeEditorDialog({
         )}
         <button
           type="button"
-          disabled={busy || !(model || preferred)}
+          disabled={busy || !(model || preferred) || (desktopMode && node.type === 'audio')}
           onClick={() => void doSubmit()}
           className={`flex h-9 w-9 items-center justify-center rounded-full hover:opacity-90 disabled:opacity-40 ${
             isSplitLayout ? 'bg-white/20 text-white' : 'bg-[#111] text-white'

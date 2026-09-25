@@ -1,7 +1,14 @@
 import { extractProtectedFacts } from "../domain/protected-facts.ts";
 import { formatSessionContext, type SessionContext } from "../domain/session-context.ts";
 
-export type ContextMessage = { role: string; content: string; meta?: Record<string, unknown>; sourceIndex?: number };
+export type ContextMessage = {
+	role: string;
+	content: string;
+	meta?: Record<string, unknown>;
+	sourceIndex?: number;
+	toolCallIds?: readonly string[];
+	toolResultCallId?: string;
+};
 export type CompactedContext = {
 	summary: string;
 	protectedFacts: readonly string[];
@@ -31,6 +38,7 @@ export function compactContext(
 		recentMessages.unshift(candidate);
 		remaining -= messageTokens;
 	}
+	closeToolCallPairs(recentMessages, messages);
 	return {
 		summary,
 		protectedFacts,
@@ -47,7 +55,7 @@ function estimate(value: string): number {
 }
 
 function compactLargeToolResult(message: ContextMessage): ContextMessage {
-	if (message.role !== "tool" || message.content.length <= 6_000) return message;
+	if ((message.role !== "tool" && message.role !== "toolResult") || message.content.length <= 6_000) return message;
 	const head = message.content.slice(0, 3_500);
 	const tail = message.content.slice(-1_500);
 	return {
@@ -55,4 +63,44 @@ function compactLargeToolResult(message: ContextMessage): ContextMessage {
 		content: `${head}\n…工具结果已压缩，完整结果应通过原工具重新读取…\n${tail}`,
 		meta: { ...message.meta, compacted: true, originalCharacters: message.content.length },
 	};
+}
+
+/** Keep Pi assistant tool calls and their tool results together in the LLM context. */
+function closeToolCallPairs(recent: ContextMessage[], all: readonly ContextMessage[]): void {
+	const selected = new Set(recent.map((message) => message.sourceIndex));
+	const assistantByCallId = new Map<string, number | undefined>();
+	const resultByCallId = new Map<string, number | undefined>();
+	for (const message of all) {
+		if (message.role === "assistant") {
+			for (const callId of message.toolCallIds ?? []) assistantByCallId.set(callId, message.sourceIndex);
+		}
+		if (message.role === "toolResult" && message.toolResultCallId) {
+			resultByCallId.set(message.toolResultCallId, message.sourceIndex);
+		}
+	}
+	let changed = true;
+	while (changed) {
+		changed = false;
+		for (const message of recent) {
+			if (message.role === "assistant" && (message.toolCallIds?.length ?? 0) > 0) {
+				const complete = (message.toolCallIds ?? []).every((callId) => {
+					const resultIndex = resultByCallId.get(callId);
+					return resultIndex !== undefined && selected.has(resultIndex);
+				});
+				if (!complete && message.sourceIndex !== undefined && selected.delete(message.sourceIndex)) changed = true;
+			}
+			if (message.role === "toolResult" && message.toolResultCallId) {
+				const assistantIndex = assistantByCallId.get(message.toolResultCallId);
+				if (
+					(assistantIndex === undefined || !selected.has(assistantIndex)) &&
+					message.sourceIndex !== undefined &&
+					selected.delete(message.sourceIndex)
+				)
+					changed = true;
+			}
+		}
+	}
+	for (let index = recent.length - 1; index >= 0; index -= 1) {
+		if (!selected.has(recent[index].sourceIndex)) recent.splice(index, 1);
+	}
 }

@@ -50,7 +50,7 @@ const WELCOME_CARDS = [
   },
 ]
 
-export function CanvasWelcome({ onCreate }: { onCreate: (type: string) => void }) {
+export function CanvasWelcome({ onCreate, availableTypes }: { onCreate: (type: string) => void; availableTypes?: string[] }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center overflow-hidden p-6">
       <div className="pointer-events-auto flex w-full max-w-3xl flex-col items-center">
@@ -70,8 +70,10 @@ export function CanvasWelcome({ onCreate }: { onCreate: (type: string) => void }
                 key={card.id}
                 type="button"
                 onClick={() => onCreate(card.type)}
+                disabled={availableTypes !== undefined && !availableTypes.includes(card.type)}
+                title={availableTypes !== undefined && !availableTypes.includes(card.type) ? '桌面版暂不可用' : undefined}
                 className={cn(
-                  'group relative flex flex-col items-start rounded-[24px] p-5 text-left transition-all duration-200 hover:scale-[1.02] hover:shadow-lg active:scale-[0.99]',
+                  'group relative flex flex-col items-start rounded-[24px] p-5 text-left transition-all duration-200 hover:scale-[1.02] hover:shadow-lg active:scale-[0.99] disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none',
                   isBottom && 'sm:col-span-2 lg:col-span-1',
                   idx === 3 && 'lg:col-start-2',
                 )}

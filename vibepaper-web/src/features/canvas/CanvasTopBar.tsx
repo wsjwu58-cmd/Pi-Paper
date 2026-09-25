@@ -25,7 +25,7 @@ import { Modal } from '@/components/ui/Modal'
 import { cn } from '@/lib/cn'
 import { PublicationDialog } from './PublicationDialog'
 
-export function CanvasTopBar() {
+export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean }) {
   const nav = useNavigate()
   const canvas = useCanvasStore((s) => s.canvas)
   const saving = useCanvasStore((s) => s.saving)
@@ -46,8 +46,8 @@ export function CanvasTopBar() {
   const accountRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    void refreshAccount()
-  }, [refreshAccount])
+    if (!desktopMode) void refreshAccount()
+  }, [desktopMode, refreshAccount])
 
   useEffect(() => {
     const openSub = () => {
@@ -70,16 +70,26 @@ export function CanvasTopBar() {
   const onExport = async () => {
     if (!canvas) return
     try {
-      const doc = await api<Record<string, unknown>>(
-        `/canvases/${sid(canvas.canvas.id)}/export`,
-        { method: 'POST' },
-      )
+      const doc = desktopMode
+        ? await (async () => {
+            const bridge = window.vibepaperDesktop
+            const project = await bridge?.getActiveProject()
+            if (!bridge || !project) throw new Error('请先打开本地项目，再导出画布。')
+            return bridge.exportCanvas(project.projectId, sid(canvas.canvas.id))
+          })()
+        : await api<Record<string, unknown>>(
+            `/canvases/${sid(canvas.canvas.id)}/export`,
+            { method: 'POST' },
+          )
       const a = document.createElement('a')
       a.href = URL.createObjectURL(
         new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }),
       )
       a.download = `${canvas.canvas.name}.json`
       a.click()
+      const objectUrl = a.href
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000)
+      if (desktopMode) toastSuccess('画布已导出')
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -115,6 +125,29 @@ export function CanvasTopBar() {
     } catch (e) {
       toastError((e as Error).message)
     }
+  }
+
+  if (desktopMode) {
+    return (
+      <>
+        <div className="pointer-events-auto absolute left-4 top-4 z-30">
+          <div className="flex h-11 items-center gap-2 rounded-[18px] bg-[#1a1a1b] px-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.18)]">
+            <button type="button" onClick={() => nav('/workspace')} className="rounded-full p-2.5 text-white/70 hover:bg-white/10 hover:text-white" title="返回画布展示">
+              <Undo2 size={16} />
+            </button>
+            <div className="min-w-0 pr-2">
+              <p className="max-w-48 truncate text-[14px] font-bold text-white">{canvas?.canvas.name ?? '加载中…'}</p>
+              <p className="text-[11px] text-white/50">{saving ? '保存中…' : dirty ? '有未保存修改' : <span className="inline-flex items-center gap-1 text-emerald-400"><Check size={11} /> 已保存到本地</span>}</p>
+            </div>
+          </div>
+        </div>
+        <div className="pointer-events-auto absolute right-4 top-4 z-30 flex h-11 items-center gap-1 rounded-[18px] border border-black/6 bg-white/95 px-1.5 shadow-[0_12px_40px_rgba(15,23,42,0.10)] backdrop-blur">
+          <TopIconButton title="Agent" active={agentOpen} onClick={() => setAgentOpen(!agentOpen)}><Bot size={17} /></TopIconButton>
+          <TopIconButton title="素材库" active={assetOpen} onClick={() => setAssetOpen(!assetOpen)}><Library size={17} /></TopIconButton>
+          <TopIconButton title="导出画布" onClick={() => void onExport()}><Download size={17} /></TopIconButton>
+        </div>
+      </>
+    )
   }
 
   return (

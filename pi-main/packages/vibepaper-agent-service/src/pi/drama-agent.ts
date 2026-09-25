@@ -15,15 +15,17 @@ export interface CreateDramaAgentOptions {
 	extraTools?: AgentTool[];
 	runtimeTools?: AgentTool[];
 	profile?: AgentProfile;
+	desktopMode?: boolean;
 	transformContext?: AgentOptions["transformContext"];
 	shouldStopAfterTurn?: AgentOptions["shouldStopAfterTurn"];
 }
 
-export function createDramaAgent(store: DramaStateStore, options: CreateDramaAgentOptions): Agent {
+export function createDramaAgent(store: DramaStateStore | undefined, options: CreateDramaAgentOptions): Agent {
 	// The legacy drama tools only prepare in-memory draft state and are kept for
 	// the standalone domain-agent tests. Runtime profiles must use the persisted
 	// Canvas/generation tools so a successful reply always has real node lineage.
-	const dramaTools = !options.profile ? createDramaTools(store) : [];
+	if (!options.profile && !store) throw new Error("DRAMA_STATE_STORE_REQUIRED");
+	const dramaTools = !options.profile ? createDramaTools(store!) : [];
 	const profileToolNames = options.profile
 		? new Set(getToolsForProfile(options.profile).map((entry) => entry.name))
 		: undefined;
@@ -37,7 +39,9 @@ export function createDramaAgent(store: DramaStateStore, options: CreateDramaAge
 		initialState: {
 			...options.initialState,
 			systemPrompt: [
-				options.profile ? profileSystemPrompt(options.profile) : VERTICAL_SHORT_DRAMA_SYSTEM_PROMPT,
+				options.profile
+					? profileSystemPrompt(options.profile, { desktopMode: options.desktopMode })
+					: VERTICAL_SHORT_DRAMA_SYSTEM_PROMPT,
 				options.systemPromptSuffix,
 			]
 				.filter(Boolean)

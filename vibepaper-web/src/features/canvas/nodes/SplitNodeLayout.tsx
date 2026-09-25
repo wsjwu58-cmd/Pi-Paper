@@ -28,7 +28,12 @@ export function SplitNodeLayout({
   label: string
   icon: LucideIcon
   topContent: ReactNode
-  topUpload?: { accept: string; onUpload: (file: File) => void | Promise<void> }
+  topUpload?: {
+    accept: string
+    onUpload: (file: File) => void | Promise<void>
+    onDesktopImport?: () => void | Promise<void>
+    unavailableReason?: string
+  }
   bottom: ReactNode
   extra?: ReactNode
   topMinHeight?: string
@@ -76,15 +81,27 @@ export function SplitNodeLayout({
             {expanded && topUpload && (
               <div className={mediaFrame ? 'absolute right-2 top-2 z-10' : 'mb-1.5 flex justify-end'}>
                 <label
-                  className="nodrag nowheel flex h-6 w-6 cursor-pointer items-center justify-center rounded-lg bg-[#f0f0f2] text-[#888] ring-1 ring-black/6 hover:bg-[#e8e8ec]"
-                  title="上传素材"
+                  className={`nodrag nowheel flex h-6 w-6 items-center justify-center rounded-lg bg-[#f0f0f2] ring-1 ring-black/6 ${topUpload.unavailableReason ? 'cursor-not-allowed text-[#b0b0b8]' : 'cursor-pointer text-[#888] hover:bg-[#e8e8ec]'}`}
+                  title={topUpload.unavailableReason || '上传素材'}
+                  aria-disabled={Boolean(topUpload.unavailableReason)}
                   onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    if (topUpload.unavailableReason) {
+                      e.preventDefault()
+                      return
+                    }
+                    if ((window.vibepaperDesktop || window.location.protocol === 'vibe:') && topUpload.onDesktopImport) {
+                      e.preventDefault()
+                      void topUpload.onDesktopImport()
+                    }
+                  }}
                 >
                   <ArrowUpFromLine size={12} />
                   <input
                     type="file"
                     accept={topUpload.accept}
                     className="hidden"
+                    disabled={Boolean(topUpload.unavailableReason)}
                     onChange={(e) => {
                       const f = e.target.files?.[0]
                       if (f) void topUpload.onUpload(f)

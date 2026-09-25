@@ -10,6 +10,7 @@ import {
   applyNodeChanges,
   applyEdgeChanges,
   type Connection,
+  type Edge,
   type EdgeChange,
   type NodeChange,
   type OnNodeDrag,
@@ -19,26 +20,32 @@ import { Copy, Files, Trash2, Upload } from 'lucide-react'
 import '@xyflow/react/dist/style.css'
 import { api, ApiError, uploadAsset } from '@/lib/api'
 import { isValidEntityId, sid } from '@/lib/ids'
-import type { AssetView, CanvasDetail, ModelInfo, NodePayload } from '@/lib/types'
+import type { AssetView, CanvasDetail, EdgePayload, ModelInfo, NodePayload } from '@/lib/types'
 import { buildFlow, mergeHydrateFlow, toPayloads, toEdgePayloads, useCanvasStore, type FlowNode } from './canvasStore'
 import { nodeTypes } from './nodes'
 import { CanvasTopBar } from './CanvasTopBar'
 import { CanvasToolbar } from './CanvasToolbar'
 import { AssetLibrary } from './AssetLibrary'
 import { AgentLauncher, AgentPanel } from './AgentPanel'
+import { useDesktopAgentController } from './useDesktopAgentController'
 import { SubscriptionMenu } from './SubscriptionMenu'
 import { AccountSidePanels } from './AccountSidePanels'
 import { CanvasWelcome } from './CanvasWelcome'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
+import { createCanvasNodePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
+import type { DesktopCanvas } from '@/desktop/desktop-bridge'
 
 const saveDebounce = 500
 let nodeClipboard: NodePayload[] = []
 
 export function CanvasPage() {
-  const { id } = useParams()
+  const params = useParams()
+  const id = params.id ?? params.canvasId
   const canvasId = sid(id)
-  if (!isValidEntityId(canvasId)) {
+  const validDesktopId = isDesktopRuntime()
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(canvasId)
+  if (!isValidEntityId(canvasId) && !validDesktopId) {
     return <Navigate to="/workspace" replace />
   }
   return (
@@ -90,22 +97,29 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const skipNextSave = useRef(true)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingUploadPos = useRef<{ x: number; y: number } | null>(null)
+  const pendingEdgeDelete = useRef<{ dirtyBefore: boolean; edgesBefore: Edge[] } | null>(null)
 
   const {
-    data: detail,
+    data: loadedCanvas,
     isLoading,
     isError,
     error,
     refetch,
   } = useQuery({
     queryKey: ['canvas', canvasId],
-    queryFn: () => api<CanvasDetail>(`/canvases/${canvasId}`),
+    queryFn: () => loadCanvasPort(canvasId),
     retry: 1,
   })
+  const detail = loadedCanvas?.detail
+  const desktopProjectId = loadedCanvas?.projectId
+  const desktopMode = isDesktopRuntime()
 
   const { data: models } = useQuery({
     queryKey: ['models'],
-    queryFn: () => api<{ items: ModelInfo[] }>('/models').then((r) => r.items),
+    queryFn: () => desktopMode
+      ? Promise.resolve([] as ModelInfo[])
+      : api<{ items: ModelInfo[] }>('/models').then((r) => r.items),
+    enabled: !desktopMode,
   })
 
   useEffect(() => {
@@ -164,8 +178,73 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     setNodes(current.map((n) => ({ ...n, data: { ...n.data, models } })))
   }, [models, setNodes])
 
+  const desktopSaveInFlight = useRef<Promise<void> | null>(null)
+
+  const persistDesktopChanges = useCallback(async () => {
+    if (!window.vibepaperDesktop) return
+    while (true) {
+      const snapshot = useCanvasStore.getState()
+      if (!snapshot.dirty) return
+      if (!snapshot.canvas || !desktopProjectId) throw new Error('没有可保存的本地画布。')
+      if (desktopSaveInFlight.current) {
+        await desktopSaveInFlight.current
+        continue
+      }
+
+      const pending = (async () => {
+        setSaving(true)
+        try {
+          const result = await saveCanvasPort({
+            projectId: desktopProjectId,
+            canvasId: sid(snapshot.canvas!.canvas.id),
+            expectedVersion: snapshot.canvas!.canvas.version,
+            nodes: snapshot.nodes,
+            edges: snapshot.edges,
+            groups: snapshot.groups,
+            stacks: snapshot.stacks,
+          })
+          const latest = useCanvasStore.getState()
+          const latestCanvas = latest.canvas
+          const sameGraph = latest.nodes === snapshot.nodes
+            && latest.edges === snapshot.edges
+            && latest.groups === snapshot.groups
+            && latest.stacks === snapshot.stacks
+          if (latestCanvas && sid(latestCanvas.canvas.id) === sid(snapshot.canvas!.canvas.id)) {
+            const version = Math.max(latestCanvas.canvas.version, result.version)
+            setCanvas({ ...latestCanvas, canvas: { ...latestCanvas.canvas, version } })
+            setSavedVersion(version)
+          }
+          setDirty(sameGraph ? false : true)
+        } catch (error) {
+          setDirty(true)
+          throw error
+        } finally {
+          setSaving(false)
+        }
+      })()
+      desktopSaveInFlight.current = pending
+      try {
+        await pending
+      } finally {
+        if (desktopSaveInFlight.current === pending) desktopSaveInFlight.current = null
+      }
+    }
+  }, [desktopProjectId, setCanvas, setDirty, setSavedVersion, setSaving])
+
   const save = useCallback(async () => {
     if (!canvas || externalSyncPending.current) return
+    if (window.vibepaperDesktop) {
+      try {
+        await persistDesktopChanges()
+      } catch (e) {
+        if (e instanceof ApiError && e.code === 'VERSION_CONFLICT') {
+          void refetch()
+        } else {
+          setDirty(true)
+        }
+      }
+      return
+    }
     setSaving(true)
     try {
       const res = await api<CanvasDetail>(`/canvases/${sid(canvas.canvas.id)}/save`, {
@@ -195,10 +274,53 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     } finally {
       setSaving(false)
     }
-  }, [canvas, nodes, edges, groups, stacks, setCanvas, setGroups, setStacks, setDirty, setSaving, refetch])
+  }, [canvas, nodes, edges, groups, stacks, persistDesktopChanges, setCanvas, setGroups, setStacks, setDirty, setSaving, refetch])
 
   const saveRef = useRef(save)
   saveRef.current = save
+
+  const flushDesktopEdits = useCallback(async () => {
+    if (!window.vibepaperDesktop) return
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    await persistDesktopChanges()
+    skipNextSave.current = true
+  }, [persistDesktopChanges])
+
+  const notifyDesktopAgentCanvasChanged = useCallback(() => {
+    window.dispatchEvent(new Event('vp-agent-executed'))
+  }, [])
+  const desktopAgent = useDesktopAgentController({
+    projectId: desktopMode ? desktopProjectId : undefined,
+    canvasId,
+    flushCanvas: flushDesktopEdits,
+    onCanvasChanged: notifyDesktopAgentCanvasChanged,
+  })
+
+  const createNodeInCanvas = useCallback(async (type: string, x: number, y: number, params: Record<string, unknown>) => {
+    await flushDesktopEdits()
+    const current = useCanvasStore.getState().canvas
+    const created = await createCanvasNodePort({
+      projectId: desktopProjectId,
+      canvasId,
+      expectedVersion: current?.canvas.version,
+      type,
+      x,
+      y,
+      params,
+    })
+    if (created.version !== undefined && current) {
+      const latest = useCanvasStore.getState().canvas ?? current
+      const wasEditedAgain = useCanvasStore.getState().dirty
+      const nextCanvas = { ...latest, canvas: { ...latest.canvas, version: created.version } }
+      setCanvas(nextCanvas)
+      setSavedVersion(created.version)
+      if (!wasEditedAgain) setDirty(false)
+    }
+    return created
+  }, [canvasId, desktopProjectId, flushDesktopEdits, setCanvas, setDirty])
 
   // 防抖自动保存（300-500ms 增量落盘 + 乐观锁）；跳过初次 hydrate
   useEffect(() => {
@@ -250,8 +372,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     (node: FlowNode) => {
       positionSaveQueue.current = positionSaveQueue.current
         .catch(() => undefined)
-        .then(async () => {
+      .then(async () => {
           const position = { x: node.position.x, y: node.position.y }
+          if (window.vibepaperDesktop) {
+            setDirty(true)
+            return
+          }
           let lastError: unknown
           // A position is an independent, low-risk edit. Retrying it against
           // the newest canvas version prevents an Agent status update from
@@ -304,6 +430,13 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
+      const removed = changes.filter((change) => change.type === 'remove').map((change) => change.id)
+      if (window.vibepaperDesktop && removed.length > 0) {
+        pendingEdgeDelete.current = {
+          dirtyBefore: useCanvasStore.getState().dirty,
+          edgesBefore: edges,
+        }
+      }
       setEdges(applyEdgeChanges(changes, edges))
       // Edge reconciliation is likewise view state; explicit connect/delete
       // handlers below mark real edge edits dirty.
@@ -314,6 +447,42 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const onConnect = useCallback(
     async (conn: Connection) => {
       try {
+        if (window.vibepaperDesktop) {
+          await flushDesktopEdits()
+          if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法建立连线。')
+          const current = useCanvasStore.getState().canvas
+          if (!current) throw new Error('画布尚未加载完成。')
+          const result = await window.vibepaperDesktop.connectEdge({
+            projectId: desktopProjectId,
+            canvasId,
+            expectedVersion: current.canvas.version,
+            idempotencyKey: crypto.randomUUID(),
+            sourceNodeId: sid(conn.source),
+            targetNodeId: sid(conn.target),
+            sourcePort: conn.sourceHandle ?? 'output',
+            targetPort: conn.targetHandle ?? 'input',
+          })
+          const edge = result.edge
+          setEdges([
+            ...useCanvasStore.getState().edges,
+            {
+              id: sid(edge.id),
+              source: sid(edge.sourceNodeId),
+              target: sid(edge.targetNodeId),
+              sourceHandle: edge.sourcePort,
+              targetHandle: edge.targetPort,
+              style: { stroke: '#93c5fd', strokeWidth: 1.5 },
+              data: { valid: edge.valid, edge },
+            },
+          ])
+          const wasEditedAgain = useCanvasStore.getState().dirty
+          const latest = useCanvasStore.getState().canvas ?? current
+          setCanvas({ ...latest, canvas: { ...latest.canvas, version: result.version } })
+          setSavedVersion(result.version)
+          if (!wasEditedAgain) setDirty(false)
+          toastSuccess('连线已建立')
+          return
+        }
         const edge = await api<{ id: string | number }>(`/canvases/${canvasId}/edges`, {
           method: 'POST',
           body: JSON.stringify({
@@ -337,7 +506,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         toastError(e instanceof ApiError ? e.message : '连线失败')
       }
     },
-    [canvasId, edges, setEdges],
+    [canvasId, desktopProjectId, edges, flushDesktopEdits, setCanvas, setDirty, setEdges],
   )
 
   const requestDeleteNodes = useCallback(
@@ -363,6 +532,42 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     if (!deleteConfirm) return
     const ids = deleteConfirm.nodeIds
     setDeleteConfirm(null)
+    if (window.vibepaperDesktop) {
+      try {
+        await flushDesktopEdits()
+        if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法删除节点。')
+        let version = useCanvasStore.getState().canvas?.canvas.version
+        if (version === undefined) throw new Error('画布尚未加载完成。')
+        let resultCanvas: DesktopCanvas | null = null
+        for (const nodeId of ids) {
+          const result = await window.vibepaperDesktop.deleteNode({
+            projectId: desktopProjectId,
+            canvasId,
+            expectedVersion: version,
+            idempotencyKey: crypto.randomUUID(),
+            nodeId,
+          })
+          version = result.version
+          resultCanvas = result.canvas
+        }
+        const project = await window.vibepaperDesktop.getActiveProject()
+        if (!project || !resultCanvas) throw new Error('本地删除成功，但无法读取更新后的画布。')
+        const next = desktopCanvasDetail(resultCanvas, project)
+        setCanvas(next)
+        const flow = buildFlow(next, selectNode)
+        setNodes(flow.nodes.map((node) => ({ ...node, data: { ...node.data, models: models ?? [] } })))
+        setEdges(flow.edges)
+        setGroups(next.groups)
+        setStacks(next.stacks)
+        setSavedVersion(next.canvas.version)
+        if (!useCanvasStore.getState().dirty) setDirty(false)
+        toastSuccess(`已删除 ${ids.length} 个节点`)
+      } catch (e) {
+        toastError((e as Error).message)
+        void refetch()
+      }
+      return
+    }
     setNodes(nodes.filter((n) => !ids.includes(sid(n.id))))
     setEdges(edges.filter((e) => !ids.includes(sid(e.source)) && !ids.includes(sid(e.target))))
     setDirty(true)
@@ -374,7 +579,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       }
     }
     toastSuccess(`已删除 ${ids.length} 个节点`)
-  }, [canvasId, deleteConfirm, edges, nodes, setDirty, setEdges, setNodes])
+  }, [canvasId, deleteConfirm, desktopProjectId, edges, flushDesktopEdits, models, nodes, refetch, selectNode, setCanvas, setDirty, setEdges, setGroups, setNodes, setStacks])
 
   const onNodesDelete = useCallback((_deleted: FlowNode[]) => {
     // 删除改由确认弹窗处理（deleteKeyCode 已关闭）
@@ -386,15 +591,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       for (const n of selected) {
         const src = n.data.node
         try {
-          const created = await api<{ id: string | number; type: string }>(`/canvases/${canvasId}/nodes`, {
-            method: 'POST',
-            body: JSON.stringify({
-              type: src.type,
-              x: (src.x ?? n.position.x) + 40,
-              y: (src.y ?? n.position.y) + 40,
-              params: { ...src.params },
-            }),
-          })
+          const created = await createNodeInCanvas(
+            src.type,
+            (src.x ?? n.position.x) + 40,
+            (src.y ?? n.position.y) + 40,
+            { ...src.params },
+          )
           const node: FlowNode = {
             id: sid(created.id),
             type: created.type,
@@ -418,11 +620,11 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           toastError((e as Error).message)
         }
       }
-      setDirty(true)
+      if (!window.vibepaperDesktop) setDirty(true)
       toastSuccess(`已创建 ${selected.length} 个副本`)
       setNodeMenu(null)
     },
-    [canvasId, models, nodes, selectNode, setDirty, setNodes],
+    [createNodeInCanvas, models, nodes, selectNode, setDirty, setNodes],
   )
 
   const copyNodes = useCallback(
@@ -438,15 +640,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     if (nodeClipboard.length === 0) return
     for (const src of nodeClipboard) {
       try {
-        const created = await api<{ id: string | number; type: string }>(`/canvases/${canvasId}/nodes`, {
-          method: 'POST',
-          body: JSON.stringify({
-            type: src.type,
-            x: (src.x ?? 120) + 48,
-            y: (src.y ?? 120) + 48,
-            params: { ...src.params },
-          }),
-        })
+        const created = await createNodeInCanvas(
+          src.type,
+          (src.x ?? 120) + 48,
+          (src.y ?? 120) + 48,
+          { ...src.params },
+        )
         const node: FlowNode = {
           id: sid(created.id),
           type: created.type,
@@ -470,19 +669,54 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         toastError((e as Error).message)
       }
     }
-    setDirty(true)
+    if (!window.vibepaperDesktop) setDirty(true)
     toastSuccess('已粘贴')
-  }, [canvasId, models, selectNode, setDirty, setNodes])
+  }, [createNodeInCanvas, models, selectNode, setDirty, setNodes])
 
   const onEdgesDelete = useCallback(
     (deleted: Array<{ id: string }>) => {
+      if (window.vibepaperDesktop) {
+        const bridge = window.vibepaperDesktop
+        const snapshot = pendingEdgeDelete.current
+        pendingEdgeDelete.current = null
+        if (saveTimer.current) {
+          window.clearTimeout(saveTimer.current)
+          saveTimer.current = null
+        }
+        void (async () => {
+          if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法删除连线。')
+          const current = useCanvasStore.getState()
+          if (snapshot?.dirtyBefore && current.canvas) {
+            const saved = await saveCanvasPort({
+              projectId: desktopProjectId,
+              canvasId: sid(current.canvas.canvas.id),
+              expectedVersion: current.canvas.canvas.version,
+              nodes: current.nodes,
+              edges: snapshot.edgesBefore,
+              groups: current.groups,
+              stacks: current.stacks,
+            })
+            const latest = useCanvasStore.getState().canvas ?? current.canvas
+            setCanvas({ ...latest, canvas: { ...latest.canvas, version: saved.version } })
+            setSavedVersion(saved.version)
+            setDirty(false)
+          }
+          for (const edge of deleted) {
+            await bridge.deleteEdge({ projectId: desktopProjectId, canvasId, edgeId: sid(edge.id) })
+          }
+        })().catch((error: unknown) => {
+          toastError(error instanceof Error ? error.message : '无法删除本地连线。')
+          void refetch()
+        })
+        return
+      }
       for (const e of deleted) {
         void api(`/canvases/${canvasId}/edges/${sid(e.id)}`, { method: 'DELETE' }).catch((err) =>
           toastError((err as Error).message),
         )
       }
     },
-    [canvasId],
+    [canvasId, desktopProjectId, refetch, setCanvas, setDirty],
   )
 
   const addNode = useCallback(
@@ -493,21 +727,20 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       connect?: { nodeId: string; direction: 'upstream' | 'downstream' },
     ) => {
       try {
-        const n = await api<{ id: string | number; type: string }>(`/canvases/${canvasId}/nodes`, {
-          method: 'POST',
-          body: JSON.stringify({ type, x: x ?? 120, y: y ?? 120, params: {} }),
-        })
         const model = models?.find((m) => m.modelType === type)
+        const nodeX = x ?? 120
+        const nodeY = y ?? 120
+        const n = await createNodeInCanvas(type, nodeX, nodeY, { model: model?.name ?? '' })
         const node: FlowNode = {
           id: sid(n.id),
           type,
-          position: { x: x ?? 120, y: y ?? 120 },
+          position: { x: nodeX, y: nodeY },
           data: {
             node: {
               id: sid(n.id),
               type: n.type,
-              x: x ?? 120,
-              y: y ?? 120,
+              x: nodeX,
+              y: nodeY,
               params: { model: model?.name ?? '' },
               status: 'idle',
             },
@@ -520,46 +753,57 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         if (connect?.nodeId) {
           const sourceNodeId = connect.direction === 'downstream' ? connect.nodeId : sid(n.id)
           const targetNodeId = connect.direction === 'downstream' ? sid(n.id) : connect.nodeId
-          const edge = await api<{ id: string | number }>(`/canvases/${canvasId}/edges`, {
-            method: 'POST',
-            body: JSON.stringify({
+          let edgeId: string
+          let edgeData: Record<string, unknown> = { valid: true }
+          if (window.vibepaperDesktop) {
+            if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法建立连线。')
+            const current = useCanvasStore.getState().canvas
+            if (!current) throw new Error('画布尚未加载完成。')
+            const result = await window.vibepaperDesktop.connectEdge({
+              projectId: desktopProjectId,
+              canvasId,
+              expectedVersion: current.canvas.version,
+              idempotencyKey: crypto.randomUUID(),
               sourceNodeId,
               targetNodeId,
               sourcePort: 'output',
               targetPort: 'input',
-            }),
-          })
+            })
+            edgeId = sid(result.edge.id)
+            edgeData = { valid: result.edge.valid, edge: result.edge as unknown as EdgePayload }
+            setCanvas({ ...current, canvas: { ...current.canvas, version: result.version } })
+            setSavedVersion(result.version)
+          } else {
+            const edge = await api<{ id: string | number }>(`/canvases/${canvasId}/edges`, {
+              method: 'POST',
+              body: JSON.stringify({ sourceNodeId, targetNodeId, sourcePort: 'output', targetPort: 'input' }),
+            })
+            edgeId = sid(edge.id)
+          }
           setEdges([
             ...useCanvasStore.getState().edges,
             {
-              id: sid(edge.id),
+              id: edgeId,
               source: sourceNodeId,
               target: targetNodeId,
               style: { stroke: '#93c5fd', strokeWidth: 1.5 },
-              data: { valid: true },
+              data: edgeData,
             },
           ])
           toastSuccess(connect.direction === 'downstream' ? '已创建下游节点并连线' : '已创建上游节点并连线')
         }
-        setDirty(true)
+        if (!window.vibepaperDesktop) setDirty(true)
       } catch (e) {
         toastError((e as Error).message)
       }
     },
-    [canvasId, models, setEdges, setNodes, setDirty, selectNode],
+    [canvasId, createNodeInCanvas, desktopProjectId, models, setCanvas, setEdges, setDirty, setNodes],
   )
 
   const addAssetNode = useCallback(
     async (asset: AssetView, x: number, y: number) => {
-      const n = await api<{ id: string | number }>(`/canvases/${canvasId}/nodes`, {
-        method: 'POST',
-        body: JSON.stringify({
-          type: asset.assetType,
-          x,
-          y,
-          params: { assetId: sid(asset.id), prompt: '', name: asset.name, url: asset.url },
-        }),
-      })
+      const params = { assetId: sid(asset.id), prompt: '', name: asset.name, url: asset.url }
+      const n = await createNodeInCanvas(asset.assetType, x, y, params)
       setNodes([
         ...useCanvasStore.getState().nodes,
         {
@@ -581,10 +825,10 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           },
         },
       ])
-      setDirty(true)
+      if (!window.vibepaperDesktop) setDirty(true)
       toastSuccess('素材已导入画布')
     },
-    [canvasId, models, selectNode, setDirty, setNodes],
+    [createNodeInCanvas, models, selectNode, setDirty, setNodes],
   )
 
   const onDrop = useCallback(
@@ -592,6 +836,10 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       e.preventDefault()
       const point = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       if (e.dataTransfer.files?.length) {
+        if (window.vibepaperDesktop) {
+          toastError('桌面版文件拖放导入尚未接入，请使用画布上传入口选择图片。')
+          return
+        }
         void (async () => {
           for (const file of Array.from(e.dataTransfer.files)) {
             const asset = (await uploadAsset(file, undefined, canvasId)) as AssetView
@@ -649,10 +897,21 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const uploadAt = useCallback(
     (flowX: number, flowY: number) => {
       pendingUploadPos.current = { x: flowX, y: flowY }
+      if (window.vibepaperDesktop) {
+        if (!desktopProjectId) {
+          toastError('没有已打开的本地项目，无法导入素材。')
+          return
+        }
+        void window.vibepaperDesktop.importImage(desktopProjectId)
+          .then((asset) => asset && addAssetNode(desktopAssetView(asset), flowX, flowY))
+          .catch((error: unknown) => toastError(error instanceof Error ? error.message : '无法导入本地图片。'))
+        setAddMenu(null)
+        return
+      }
       fileInputRef.current?.click()
       setAddMenu(null)
     },
-    [],
+    [addAssetNode, desktopProjectId],
   )
 
   useEffect(() => {
@@ -810,6 +1069,10 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           const pos = pendingUploadPos.current ?? { x: 160, y: 160 }
           pendingUploadPos.current = null
           e.target.value = ''
+          if (window.vibepaperDesktop) {
+            if (files.length) toastError('桌面版文件选择请使用本地图片导入入口。')
+            return
+          }
           void (async () => {
             for (const file of files) {
               const asset = (await uploadAsset(file, undefined, canvasId)) as AssetView
@@ -820,7 +1083,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           })().catch((err) => toastError((err as Error).message))
         }}
       />
-      <CanvasTopBar />
+      <CanvasTopBar desktopMode={desktopMode} />
       <div className="absolute left-4 top-1/2 z-20 -translate-y-1/2">
         <CanvasToolbar
           mode={mode}
@@ -828,12 +1091,14 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           onFitView={() => void fitView()}
           onAutoLayout={onAutoLayout}
           onAddNode={(t) => void addNode(t)}
+          desktopMode={desktopMode}
+          projectId={desktopProjectId}
         />
       </div>
-      <AssetLibrary />
+      <AssetLibrary desktopMode={desktopMode} projectId={desktopProjectId} />
       {!agentOpen ? <AgentLauncher onOpen={() => setAgentOpen(true)} /> : null}
-      <SubscriptionMenu />
-      <AccountSidePanels />
+      {!desktopMode && <SubscriptionMenu />}
+      {!desktopMode && <AccountSidePanels />}
 
       <div className="relative h-full w-full">
       {nodes.length === 0 && detail && <CanvasWelcome onCreate={(type) => void addNode(type)} />}
@@ -873,11 +1138,13 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           // 指南：点空白收起已展开的堆叠
           const expanded = stacks.filter((s) => !s.collapsed)
           if (expanded.length && canvas) {
-            for (const s of expanded) {
-              void api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(s.id)}`, {
-                method: 'PUT',
-                body: JSON.stringify({ collapsed: true }),
-              }).catch(() => undefined)
+            if (!window.vibepaperDesktop) {
+              for (const s of expanded) {
+                void api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(s.id)}`, {
+                  method: 'PUT',
+                  body: JSON.stringify({ collapsed: true }),
+                }).catch(() => undefined)
+              }
             }
             const nextStacks = stacks.map((s) => ({ ...s, collapsed: true }))
             setStacks(nextStacks)
@@ -908,6 +1175,22 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           // 指南：双击堆叠卡片展开
           const stack = stacks.find((s) => s.collapsed && s.nodeIds.map(sid).includes(id))
           if (stack && canvas) {
+            if (window.vibepaperDesktop) {
+              const ids = stack.nodeIds.map(sid)
+              const base = nodes.find((x) => ids.includes(sid(x.id)) && sid(x.id) === ids[0])
+              if (base) {
+                setNodes(nodes.map((x) => {
+                  const idx = ids.indexOf(sid(x.id))
+                  if (idx < 0) return x
+                  return { ...x, position: { x: base.position.x + (idx % 3) * 330, y: base.position.y + Math.floor(idx / 3) * 280 } }
+                }))
+                setDirty(true)
+              }
+              setStacks(stacks.map((item) => sid(item.id) === sid(stack.id) ? { ...item, collapsed: false } : item))
+              setDirty(true)
+              toastSuccess('堆叠已展开')
+              return
+            }
             void api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(stack.id)}`, {
               method: 'PUT',
               body: JSON.stringify({ collapsed: false }),
@@ -1088,7 +1371,10 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         </div>
       )}
       </div>
-      <AgentPanel />
+      {!desktopMode
+        ? <AgentPanel />
+        : agentOpen && desktopProjectId && <AgentPanel desktopAdapter={desktopAgent} />}
+      {desktopMode && desktopAgent.settingsDialog}
     </div>
   )
 }

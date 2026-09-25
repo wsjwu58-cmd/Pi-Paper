@@ -77,6 +77,9 @@ export async function authedFetch(
   path: string,
   options: RequestInit & { idempotencyKey?: string } = {},
 ): Promise<Response> {
+  if (typeof window !== "undefined" && (window.vibepaperDesktop || window.location.protocol === "vibe:")) {
+    throw new ApiError(0, "DESKTOP_API_UNAVAILABLE", "此功能尚未接入本地项目，请使用桌面画布中的本地操作入口。");
+  }
   const headers: Record<string, string> = {
     ...((options.headers as Record<string, string>) ?? {}),
   };
@@ -162,6 +165,11 @@ export async function api<T = unknown>(
 
 export function assetUrl(url?: string): string | undefined {
   if (!url) return undefined;
+  if (typeof window !== "undefined" && window.vibepaperDesktop) {
+    return /^vibe:\/\/app\/(?:assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|tasks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/output)$/iu.test(url)
+      ? url
+      : undefined;
+  }
   if (url.startsWith("http")) return url;
   // Relative URLs go through the Vite proxy in dev
   return url.startsWith("/") ? url : `/${url}`;

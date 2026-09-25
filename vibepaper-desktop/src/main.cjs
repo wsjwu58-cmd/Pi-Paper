@@ -21,6 +21,9 @@ const {
 } = require('electron')
 const { AGNES_MODELS, AGNES_PROVIDER_ID, getAgnesModelCatalog } = require('./agnes-model-catalog.cjs')
 const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
+const { buildDesktopAgentModelDirectory } = require('./agent-model-directory.cjs')
+const { ALLOWED_AGENT_CORE_METHODS } = require('./agent-local-tools.cjs')
+const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
 
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
@@ -32,6 +35,8 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock()
 let mainWindow = null
 let localCore = null
 let recentProjectFile = null
+let recentProjectsFile = null
+let recentProjectCatalog = null
 let desktopSettingsFile = null
 let agnesCredentialFile = null
 let quittingAfterCoreClose = false
@@ -66,6 +71,45 @@ function assertTrustedSender(event) {
   if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame
     || !isTrustedRendererUrl(event.senderFrame.url)) {
     throw new Error('此本地请求未通过桌面宿主校验。')
+  }
+}
+
+function isCanvasDomainId(value) {
+  return (typeof value === 'string' && value.length > 0 && value.length <= 256)
+    || (typeof value === 'number' && Number.isSafeInteger(value))
+}
+
+function assertGroupStackRequest(input, label, options = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || typeof input.projectId !== 'string' || input.projectId.length === 0 || input.projectId.length > 200
+    || typeof input.canvasId !== 'string' || input.canvasId.length === 0 || input.canvasId.length > 200) {
+    throw new Error(`${label}请求无效。`)
+  }
+  if (options.idField && !isCanvasDomainId(input[options.idField])) throw new Error(`${label}标识无效。`)
+  if (options.nodeIdsRequired || input.nodeIds !== undefined && input.nodeIds !== null) {
+    const minimum = options.nodeIdsRequired ? 2 : 0
+    if (!Array.isArray(input.nodeIds) || input.nodeIds.length < minimum || input.nodeIds.length > 10_000
+      || input.nodeIds.some((nodeId) => !isCanvasDomainId(nodeId))) {
+      throw new Error(`${label}节点列表无效。`)
+    }
+  }
+  for (const field of options.stringFields ?? []) {
+    if (input[field] !== undefined && input[field] !== null && typeof input[field] !== 'string') {
+      throw new Error(`${label}数据无效。`)
+    }
+  }
+  if (options.booleanFields?.some((field) => input[field] !== undefined && input[field] !== null
+    && typeof input[field] !== 'boolean')) {
+    throw new Error(`${label}数据无效。`)
+  }
+  let serialized
+  try {
+    serialized = JSON.stringify(input)
+  } catch {
+    throw new Error(`${label}请求无效。`)
+  }
+  if (typeof serialized !== 'string' || Buffer.byteLength(serialized, 'utf8') > 32 * 1024 * 1024) {
+    throw new Error(`${label}请求超过本地画布数据上限。`)
   }
 }
 
@@ -232,6 +276,103 @@ function createAgentWorker() {
   let exitedSettled = false
   const started = new Promise((resolve) => { markStarted = resolve })
   const exited = new Promise((resolve) => { markExited = resolve })
+  let workerReference = null
+  const executeAgentCoreRequest = async (method, input) => {
+    if (!ALLOWED_AGENT_CORE_METHODS.has(method)) throw new Error('AGENT_LOCAL_CORE_METHOD_UNSUPPORTED')
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || input.projectId.length < 1 || input.projectId.length > 128) {
+      throw new Error('AGENT_LOCAL_CORE_INPUT_INVALID')
+    }
+    const allowedKeys = {
+      'agent:core:load-canvas': ['projectId', 'canvasId'],
+      'agent:core:create-node': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'type', 'creativeType', 'prompt', 'params', 'x', 'y', 'width', 'height', 'modelRef'],
+      'agent:core:update-node': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'nodeId', 'x', 'y', 'width', 'height', 'params', 'prompt', 'modelRef', 'creativeType', 'status', 'execStatus', 'output', 'currentOutputId', 'groupId', 'stackId', 'stale'],
+      'agent:core:connect-edge': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'sourceNodeId', 'targetNodeId', 'sourcePort', 'targetPort', 'dependencyType'],
+      'agent:core:save-canvas': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'nodes', 'edges', 'groups', 'stacks'],
+      'agent:core:get-task': ['projectId', 'taskId'],
+      'agent:core:list-assets': ['projectId'],
+      'agent:core:list-models': ['projectId'],
+      'agent:core:create-generation-task': ['projectId', 'canvasId', 'canvasVersion', 'nodeId', 'modality', 'providerType', 'providerId', 'modelId', 'idempotencyKey', 'prompt', 'parameters'],
+    }[method]
+    if (Object.keys(input).some((key) => !allowedKeys.includes(key))) throw new Error('AGENT_LOCAL_CORE_INPUT_INVALID')
+    if (stopping || projectTransitionCount > 0 || agentWorker !== workerReference || agentProjectId !== input.projectId) {
+      throw new Error('AGENT_PROJECT_CHANGED')
+    }
+    const active = await localCore.request('project:get-active', undefined, 15_000)
+    if (!active || active.projectId !== input.projectId
+      || (input.canvasId !== undefined && input.canvasId !== active.canvasId)
+      || stopping || projectTransitionCount > 0 || agentWorker !== workerReference || agentProjectId !== input.projectId) {
+      throw new Error('AGENT_PROJECT_CHANGED')
+    }
+    switch (method) {
+      case 'agent:core:load-canvas':
+        return localCore.request('canvas:load', { projectId: input.projectId, canvasId: active.canvasId }, 15_000)
+      case 'agent:core:create-node':
+        return localCore.request('canvas:create-node', input, 30_000)
+      case 'agent:core:update-node':
+        return localCore.request('canvas:update-node', input, 30_000)
+      case 'agent:core:connect-edge':
+        return localCore.request('canvas:connect', input, 30_000)
+      case 'agent:core:save-canvas':
+        return localCore.request('canvas:save', input, 60_000)
+      case 'agent:core:get-task':
+        return localCore.request('task:get', input, 15_000)
+      case 'agent:core:list-assets':
+        return localCore.request('asset:list', { projectId: input.projectId }, 15_000)
+      case 'agent:core:list-models': {
+        const [agnes, localTextModel] = await Promise.all([getAgnesModelSettings(), getLocalTextModelConfig()])
+        return buildDesktopAgentModelDirectory(agnes, localTextModel)
+      }
+      case 'agent:core:create-generation-task': {
+        const modalities = ['text', 'image', 'video']
+        if (typeof input.canvasId !== 'string' || !input.canvasId
+          || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
+          || typeof input.nodeId !== 'string' || !input.nodeId
+          || !modalities.includes(input.modality)
+          || !['local', 'cloud'].includes(input.providerType)
+          || typeof input.providerId !== 'string' || !input.providerId
+          || typeof input.modelId !== 'string' || !input.modelId
+          || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
+          || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 200_000
+          || !input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)) {
+          throw new Error('AGENT_GENERATION_INPUT_INVALID')
+        }
+        const canvas = await localCore.request('canvas:load', { projectId: input.projectId, canvasId: active.canvasId }, 15_000)
+        if (!canvas || canvas.canvasId !== input.canvasId || canvas.version !== input.canvasVersion
+          || !Array.isArray(canvas.nodes) || !canvas.nodes.some((node) => node.id === input.nodeId)) {
+          throw new Error('AGENT_CANVAS_CHANGED')
+        }
+        const [agnes, localTextModel] = await Promise.all([getAgnesModelSettings(), getLocalTextModelConfig()])
+        const model = buildDesktopAgentModelDirectory(agnes, localTextModel).find((entry) =>
+          entry.enabled === true && entry.name === input.modelId && entry.modelType === input.modality
+          && entry.providerType === input.providerType && entry.providerId === input.providerId)
+        if (!model) throw new Error('AGENT_GENERATION_MODEL_UNAVAILABLE')
+        if ((input.providerType === 'local' && input.modality !== 'text')
+          || (input.providerType === 'cloud' && !agnes?.apiKeyConfigured)) {
+          throw new Error(input.providerType === 'cloud' ? 'CLOUD_CREDENTIAL_MISSING' : 'UNSUPPORTED_MODALITY')
+        }
+        beginTaskCreation()
+        try {
+          const task = await localCore.request('task:create', {
+            projectId: input.projectId,
+            canvasId: input.canvasId,
+            canvasVersion: input.canvasVersion,
+            nodeId: input.nodeId,
+            modality: input.modality,
+            providerType: input.providerType,
+            providerId: input.providerId,
+            modelId: input.modelId,
+            idempotencyKey: input.idempotencyKey,
+            parameters: { ...input.parameters, prompt: input.prompt },
+          }, 30_000)
+          void scheduleTaskPump(input.projectId)
+          return task
+        } finally {
+          finishTaskCreation()
+        }
+      }
+    }
+  }
 
   const worker = {
     child,
@@ -260,6 +401,7 @@ function createAgentWorker() {
       await exited
     },
   }
+  workerReference = worker
 
   const failWorker = (error) => {
     exitError = error
@@ -281,6 +423,21 @@ function createAgentWorker() {
 
   child.once('spawn', markStarted)
   child.on('message', (message) => {
+    if (message?.kind === 'agent-local-core-request') {
+      if (typeof message.requestId !== 'string' || !/^agent-core-\d{1,12}$/u.test(message.requestId)) return
+      void executeAgentCoreRequest(message.method, message.payload).then((result) => {
+        child.postMessage({ kind: 'agent-local-core-response', requestId: message.requestId, ok: true, result })
+      }).catch((error) => {
+        const errorMessage = error instanceof Error ? error.message : ''
+        const errorCode = /^[A-Z0-9_]{1,120}$/u.test(errorMessage) ? errorMessage : 'CANVAS_UNAVAILABLE'
+        try {
+          child.postMessage({ kind: 'agent-local-core-response', requestId: message.requestId, ok: false, errorCode })
+        } catch {
+          // The Worker may exit while its read-only Local Core request is settling.
+        }
+      })
+      return
+    }
     if (!message || !Number.isSafeInteger(message.id)) return
     const request = pending.get(message.id)
     if (!request) return
@@ -445,22 +602,8 @@ async function runProjectTransition(operation) {
 }
 
 async function writeRecentProjectDirectory(directory) {
-  if (!recentProjectFile) throw new Error('桌面设置尚未初始化。')
-  const temporaryPath = path.join(path.dirname(recentProjectFile), `.recent-project.${randomUUID()}.tmp`)
-  await fs.mkdir(path.dirname(recentProjectFile), { recursive: true })
-  let handle
-  try {
-    handle = await fs.open(temporaryPath, 'wx', 0o600)
-    await handle.writeFile(`${JSON.stringify({ schemaVersion: 1, projectDirectory: directory })}\n`, 'utf8')
-    await handle.sync()
-    await handle.close()
-    handle = undefined
-    await fs.rename(temporaryPath, recentProjectFile)
-  } catch (error) {
-    if (handle) await handle.close().catch(() => undefined)
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
-    throw error
-  }
+  if (!recentProjectCatalog) throw new Error('桌面设置尚未初始化。')
+  return recentProjectCatalog.record(directory)
 }
 
 async function readDesktopSettings() {
@@ -605,8 +748,8 @@ async function restoreRecentProject() {
     await writeRecentProjectDirectory(opened.directory)
     await startAgentWorker(opened.directory)
     return opened.project
-  } catch (error) {
-    if (!error || error.code !== 'ENOENT') await fs.rm(recentProjectFile, { force: true }).catch(() => undefined)
+  } catch {
+    // Preserve recent-project.json even when the path is stale; a future open can repair it.
     return null
   }
 }
@@ -720,10 +863,52 @@ function registerRendererProtocol() {
   })
 }
 
+function assertAssetProjectId(projectId) {
+  if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200) {
+    throw new Error('素材项目标识无效。')
+  }
+}
+
+function assertAssetId(assetId) {
+  if (typeof assetId !== 'string'
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(assetId)) {
+    throw new Error('素材标识无效。')
+  }
+}
+
+async function assertActiveAssetProject(projectId) {
+  assertAssetProjectId(projectId)
+  if (stopping || projectTransitionCount > 0 || !localCore) throw new Error('项目正在切换，请稍后重试。')
+  const active = await localCore.request('project:get-active')
+  if (!active || active.projectId !== projectId) throw new Error('当前项目已更改，无法操作素材。')
+  if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+}
+
 function registerProjectIpc() {
   ipcMain.handle('desktop:project:get-active', (event) => {
     assertTrustedSender(event)
     return localCore.request('project:get-active')
+  })
+  ipcMain.handle('desktop:project:list-recent', (event) => {
+    assertTrustedSender(event)
+    return recentProjectCatalog.listRecentProjects()
+  })
+  ipcMain.handle('desktop:project:open-recent', async (event, projectId) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    const selected = await recentProjectCatalog.resolve(projectId)
+    const opened = await runProjectTransition(() => localCore.request('project:open', {
+      directory: selected.directory,
+      expectedProjectId: selected.project.projectId,
+      expectedCanvasId: selected.project.canvasId,
+    }))
+    if (opened.project.projectId !== selected.project.projectId
+      || opened.project.canvasId !== selected.project.canvasId) {
+      throw new Error('最近项目身份已变化，请从项目目录重新打开。')
+    }
+    await writeRecentProjectDirectory(opened.directory)
+    void scheduleTaskPump(opened.project.projectId)
+    return opened.project
   })
   ipcMain.handle('desktop:project:create', async (event, name) => {
     assertTrustedSender(event)
@@ -799,29 +984,350 @@ function registerProjectIpc() {
   })
   ipcMain.handle('desktop:asset:import-image', async (event, projectId) => {
     assertTrustedSender(event)
+    await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
       title: '导入本地图片素材',
       properties: ['openFile'],
       filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    return localCore.request('asset:import', { sourcePath: result.filePaths[0], projectId })
+    await assertActiveAssetProject(projectId)
+    return localCore.request('asset:import', { sourcePath: result.filePaths[0], projectId }, 5 * 60 * 1000)
   })
-  ipcMain.handle('desktop:asset:list', (event, projectId) => {
+  ipcMain.handle('desktop:asset:list', async (event, projectId) => {
     assertTrustedSender(event)
+    await assertActiveAssetProject(projectId)
     return localCore.request('asset:list', { projectId })
+  })
+  ipcMain.handle('desktop:asset:rename', async (event, projectId, assetId, name) => {
+    assertTrustedSender(event)
+    assertAssetId(assetId)
+    if (typeof name !== 'string' || name.length === 0 || name.length > 255 || !name.trim()) {
+      throw new Error('素材名称需为 1-255 个字符。')
+    }
+    await assertActiveAssetProject(projectId)
+    return localCore.request('asset:rename', { projectId, assetId, name })
+  })
+  ipcMain.handle('desktop:asset:replace-image', async (event, projectId, assetId) => {
+    assertTrustedSender(event)
+    assertAssetId(assetId)
+    await assertActiveAssetProject(projectId)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '替换本地图片素材',
+      properties: ['openFile'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    await assertActiveAssetProject(projectId)
+    return localCore.request('asset:replace', {
+      projectId,
+      assetId,
+      sourcePath: result.filePaths[0],
+    }, 5 * 60 * 1000)
+  })
+  ipcMain.handle('desktop:asset:delete', async (event, projectId, assetId) => {
+    assertTrustedSender(event)
+    assertAssetId(assetId)
+    await assertActiveAssetProject(projectId)
+    return localCore.request('asset:delete', { projectId, assetId })
   })
   ipcMain.handle('desktop:canvas:load', (event, projectId, canvasId) => {
     assertTrustedSender(event)
     return localCore.request('canvas:load', { projectId, canvasId })
   })
+  ipcMain.handle('desktop:canvas:export', (event, projectId, canvasId) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200
+      || typeof canvasId !== 'string' || canvasId.length === 0 || canvasId.length > 200) {
+      throw new Error('画布导出请求无效。')
+    }
+    return localCore.request('canvas:export', { projectId, canvasId })
+  })
+  ipcMain.handle('desktop:canvas:create-node', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || input.projectId.length === 0 || input.projectId.length > 200
+      || typeof input.canvasId !== 'string' || input.canvasId.length === 0 || input.canvasId.length > 200
+      || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0 || input.expectedVersion > 2_147_483_647
+      || typeof input.idempotencyKey !== 'string' || !input.idempotencyKey.trim() || input.idempotencyKey.length > 128
+      || !['text', 'image', 'video', 'audio', 'compose', 'director'].includes(input.type)
+      || typeof input.x !== 'number' || !Number.isFinite(input.x)
+      || typeof input.y !== 'number' || !Number.isFinite(input.y)
+      || (input.width !== undefined && (typeof input.width !== 'number' || !Number.isFinite(input.width)))
+      || (input.height !== undefined && (typeof input.height !== 'number' || !Number.isFinite(input.height)))
+      || (input.params !== undefined && (!input.params || typeof input.params !== 'object' || Array.isArray(input.params)))
+      || (input.prompt !== undefined && (typeof input.prompt !== 'string' || input.prompt.length > 20_000))
+      || (input.modelRef !== undefined && input.modelRef !== null && typeof input.modelRef !== 'string')
+      || (input.creativeType !== undefined && input.creativeType !== null && typeof input.creativeType !== 'string')) {
+      throw new Error('节点创建请求无效。')
+    }
+    const params = input.params ?? (typeof input.prompt === 'string' ? { prompt: input.prompt } : {})
+    let paramsJson
+    try {
+      paramsJson = JSON.stringify(params)
+    } catch {
+      throw new Error('节点参数必须是有效的 JSON 对象。')
+    }
+    if (typeof paramsJson !== 'string' || Buffer.byteLength(paramsJson, 'utf8') > 32 * 1024 * 1024) {
+      throw new Error('节点参数超过本地画布数据上限。')
+    }
+    return localCore.request('canvas:create-node', {
+      projectId: input.projectId,
+      canvasId: input.canvasId,
+      expectedVersion: input.expectedVersion,
+      idempotencyKey: input.idempotencyKey,
+      type: input.type,
+      x: input.x,
+      y: input.y,
+      ...(input.width === undefined ? {} : { width: input.width }),
+      ...(input.height === undefined ? {} : { height: input.height }),
+      params,
+      ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+      ...(input.modelRef === undefined ? {} : { modelRef: input.modelRef }),
+      ...(input.creativeType === undefined ? {} : { creativeType: input.creativeType }),
+    })
+  })
+  ipcMain.handle('desktop:canvas:update-node', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || input.projectId.length === 0 || input.projectId.length > 200
+      || typeof input.canvasId !== 'string' || input.canvasId.length === 0 || input.canvasId.length > 200
+      || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0 || input.expectedVersion > 2_147_483_647
+      || typeof input.idempotencyKey !== 'string' || !input.idempotencyKey.trim() || input.idempotencyKey.length > 128
+      || typeof input.nodeId !== 'string' || input.nodeId.length === 0 || input.nodeId.length > 256
+      || (input.prompt !== undefined && (typeof input.prompt !== 'string' || input.prompt.length > 20_000))
+      || (input.params !== undefined && (!input.params || typeof input.params !== 'object' || Array.isArray(input.params)))
+      || (input.prompt === undefined && input.params === undefined)) {
+      throw new Error('节点更新请求无效。')
+    }
+    let paramsJson
+    if (input.params !== undefined) {
+      try {
+        paramsJson = JSON.stringify(input.params)
+      } catch {
+        throw new Error('节点参数必须是有效的 JSON 对象。')
+      }
+      if (typeof paramsJson !== 'string' || Buffer.byteLength(paramsJson, 'utf8') > 32 * 1024 * 1024) {
+        throw new Error('节点参数超过本地画布数据上限。')
+      }
+    }
+    return localCore.request('canvas:update-node', {
+      projectId: input.projectId,
+      canvasId: input.canvasId,
+      expectedVersion: input.expectedVersion,
+      idempotencyKey: input.idempotencyKey,
+      nodeId: input.nodeId,
+      ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+      ...(input.params === undefined ? {} : { params: input.params }),
+    })
+  })
+  ipcMain.handle('desktop:canvas:delete-node', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || input.projectId.length === 0 || input.projectId.length > 200
+      || typeof input.canvasId !== 'string' || input.canvasId.length === 0 || input.canvasId.length > 200
+      || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0 || input.expectedVersion > 2_147_483_647
+      || typeof input.idempotencyKey !== 'string' || !input.idempotencyKey.trim() || input.idempotencyKey.length > 128
+      || typeof input.nodeId !== 'string' || input.nodeId.length === 0 || input.nodeId.length > 256) {
+      throw new Error('节点删除请求无效。')
+    }
+    return localCore.request('canvas:delete-node', {
+      projectId: input.projectId,
+      canvasId: input.canvasId,
+      expectedVersion: input.expectedVersion,
+      idempotencyKey: input.idempotencyKey,
+      nodeId: input.nodeId,
+    })
+  })
   ipcMain.handle('desktop:canvas:save', (event, input) => {
     assertTrustedSender(event)
     return localCore.request('canvas:save', input)
   })
+  ipcMain.handle('desktop:canvas:connect', (event, input) => {
+    assertTrustedSender(event)
+    return localCore.request('canvas:connect', input)
+  })
+  ipcMain.handle('desktop:canvas:delete-edge', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || input.projectId.length === 0 || input.projectId.length > 200
+      || typeof input.canvasId !== 'string' || input.canvasId.length === 0 || input.canvasId.length > 200
+      || typeof input.edgeId !== 'string' || input.edgeId.length === 0 || input.edgeId.length > 256) {
+      throw new Error('连线删除请求无效。')
+    }
+    return localCore.request('canvas:delete-edge', {
+      projectId: input.projectId,
+      canvasId: input.canvasId,
+      edgeId: input.edgeId,
+    })
+  })
+  ipcMain.handle('desktop:canvas:group:add', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    assertGroupStackRequest(input, '编组', { nodeIdsRequired: true, stringFields: ['color'] })
+    return localCore.request('canvas:group:add', input)
+  })
+  ipcMain.handle('desktop:canvas:group:update', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    assertGroupStackRequest(input, '编组', {
+      idField: 'groupId',
+      stringFields: ['name', 'color', 'layout'],
+    })
+    return localCore.request('canvas:group:update', input)
+  })
+  ipcMain.handle('desktop:canvas:group:delete', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    assertGroupStackRequest(input, '编组', { idField: 'groupId' })
+    return localCore.request('canvas:group:delete', input)
+  })
+  ipcMain.handle('desktop:canvas:stack:add', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    assertGroupStackRequest(input, '堆叠', { nodeIdsRequired: true })
+    return localCore.request('canvas:stack:add', input)
+  })
+  ipcMain.handle('desktop:canvas:stack:update', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    assertGroupStackRequest(input, '堆叠', { idField: 'stackId', booleanFields: ['collapsed'] })
+    return localCore.request('canvas:stack:update', input)
+  })
+  ipcMain.handle('desktop:canvas:stack:extract', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    assertGroupStackRequest(input, '堆叠', { idField: 'stackId' })
+    if (!isCanvasDomainId(input.nodeId)) throw new Error('节点标识无效。')
+    return localCore.request('canvas:stack:extract', input)
+  })
+  ipcMain.handle('desktop:canvas:stack:delete', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    assertGroupStackRequest(input, '堆叠', { idField: 'stackId' })
+    return localCore.request('canvas:stack:delete', input)
+  })
   ipcMain.handle('desktop:task:list', (event, projectId, limit) => {
     assertTrustedSender(event)
     return localCore.request('task:list', { projectId, limit })
+  })
+  ipcMain.handle('desktop:task:search', async (event, projectId, query) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200
+      || !query || typeof query !== 'object' || Array.isArray(query)) {
+      throw new Error('任务搜索请求无效。')
+    }
+    const allowedFields = new Set(['page', 'pageSize', 'keyword', 'model', 'modality', 'status', 'fromTime', 'toTime'])
+    if (Object.keys(query).some((key) => !allowedFields.has(key))) throw new Error('任务搜索条件无效。')
+    const page = query.page ?? 1
+    const pageSize = query.pageSize ?? 20
+    if (!Number.isSafeInteger(page) || page < 1 || page > 1_000_000
+      || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+      throw new Error('任务搜索分页参数无效。')
+    }
+    for (const key of ['keyword', 'model']) {
+      const value = query[key]
+      if (value !== undefined && value !== null && (typeof value !== 'string' || value.length > 200)) {
+        throw new Error('任务搜索条件无效。')
+      }
+    }
+    if (query.modality !== undefined && query.modality !== null && query.modality !== ''
+      && !['text', 'image', 'audio', 'video'].includes(query.modality)) {
+      throw new Error('任务模态筛选无效。')
+    }
+    if (query.status !== undefined && query.status !== null && query.status !== ''
+      && !['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'].includes(query.status)) {
+      throw new Error('任务状态筛选无效。')
+    }
+    for (const key of ['fromTime', 'toTime']) {
+      const value = query[key]
+      if (value !== undefined && value !== null
+        && (!Number.isSafeInteger(value) || Math.abs(value) > 8_640_000_000_000_000)) {
+        throw new Error('任务日期筛选无效。')
+      }
+    }
+    if (query.fromTime != null && query.toTime != null && query.fromTime > query.toTime) {
+      throw new Error('任务日期范围无效。')
+    }
+
+    const result = await localCore.request('task:search', { projectId, query })
+    return {
+      items: result.items.map((task) => ({
+        taskId: task.taskId,
+        nodeId: task.nodeId,
+        modality: task.modality,
+        providerType: task.providerType,
+        status: task.status,
+        attemptCount: task.attemptCount,
+        errorCode: task.errorCode,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+        startedAt: task.startedAt,
+        completedAt: task.completedAt,
+      })),
+      total: result.total,
+      page: result.page,
+      pageSize: result.pageSize,
+    }
+  })
+  ipcMain.handle('desktop:task:get', async (event, projectId, taskId) => {
+    assertTrustedSender(event)
+    if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200
+      || typeof taskId !== 'string' || taskId.length === 0 || taskId.length > 200) {
+      throw new Error('任务查询请求无效。')
+    }
+    const task = await localCore.request('task:get', { projectId, taskId })
+    if (!task) return null
+    // Expose only the task summary used by the renderer; keep input hashes,
+    // output paths, and internal provider/model identifiers in the main process.
+    return {
+      taskId: task.taskId,
+      nodeId: task.nodeId,
+      modality: task.modality,
+      providerType: task.providerType,
+      status: task.status,
+      attemptCount: task.attemptCount,
+      errorCode: task.errorCode,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      startedAt: task.startedAt,
+      completedAt: task.completedAt,
+    }
+  })
+  ipcMain.handle('desktop:task:get-input', async (event, projectId, taskId) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200
+      || typeof taskId !== 'string' || taskId.length === 0 || taskId.length > 200) {
+      throw new Error('任务输入查询请求无效。')
+    }
+    const result = await localCore.request('task:get-input', { projectId, taskId })
+    if (!result) return null
+    const task = result.task
+    return {
+      task: {
+        taskId: task.taskId,
+        canvasId: task.canvasId,
+        canvasVersion: task.canvasVersion,
+        nodeId: task.nodeId,
+        modality: task.modality,
+        providerType: task.providerType,
+        providerId: task.providerId,
+        modelId: task.modelId,
+        status: task.status,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+        startedAt: task.startedAt,
+        completedAt: task.completedAt,
+      },
+      parameters: result.parameters,
+    }
   })
   ipcMain.handle('desktop:task:cancel', (event, projectId, taskId) => {
     assertTrustedSender(event)
@@ -856,18 +1362,6 @@ function registerProjectIpc() {
         if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING')
         modelId = AGNES_MODELS[input.modality]
         providerId = AGNES_PROVIDER_ID
-        const modalityName = ({ text: '文本', image: '图像', video: '视频' })[input.modality]
-        const consent = await dialog.showMessageBox(mainWindow, {
-          type: 'warning',
-          title: `将${modalityName}提示词发送到 Agnes`,
-          buttons: ['取消', '发送到 Agnes'],
-          defaultId: 0,
-          cancelId: 0,
-          noLink: true,
-          message: `本次${modalityName}任务会把当前文本节点的内容发送至 Agnes AI（Sapiens Technology）。`,
-          detail: '请求将离开本机并由供应商处理；供应商可能按其规则收费。此请求只发送提示词和生成参数，不会上传整个项目或本地素材。',
-        })
-        if (consent.response !== 1) return null
       }
       const task = await localCore.request('task:create', {
         projectId: input.projectId,
@@ -945,6 +1439,15 @@ function registerAgentIpc() {
     const worker = await getAgentWorker(projectId)
     return worker.request('agent:list-sessions', { projectId })
   })
+  ipcMain.handle('desktop:agent:list-skills', async (event, projectId, sessionId, keyword) => {
+    assertTrustedSender(event)
+    if ((typeof sessionId !== 'undefined' && (typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 128))
+      || (typeof keyword !== 'undefined' && (typeof keyword !== 'string' || keyword.length > 160))) {
+      throw codedError('AGENT_SKILL_QUERY_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:list-skills', { projectId, sessionId, keyword })
+  })
   ipcMain.handle('desktop:agent:create-session', async (event, projectId, title) => {
     assertTrustedSender(event)
     const worker = await getAgentWorker(projectId)
@@ -955,11 +1458,78 @@ function registerAgentIpc() {
     const worker = await getAgentWorker(projectId)
     return worker.request('agent:get-messages', { projectId, sessionId })
   })
-  ipcMain.handle('desktop:agent:send-message', async (event, projectId, sessionId, content) => {
+  ipcMain.handle('desktop:agent:get-snapshot', async (event, projectId, sessionId) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:get-snapshot', { projectId, sessionId })
+  })
+  ipcMain.handle('desktop:agent:list-events', async (event, projectId, sessionId, afterSeq) => {
+    assertTrustedSender(event)
+    if (typeof sessionId !== 'string' || sessionId.length > 128
+      || !Number.isSafeInteger(afterSeq) || afterSeq < 0) throw codedError('AGENT_SESSION_INPUT_INVALID')
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:list-events', { projectId, sessionId, afterSeq })
+  })
+  ipcMain.handle('desktop:agent:start-run', async (event, input) => {
+    assertTrustedSender(event)
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
+      || typeof input.sessionId !== 'string' || input.sessionId.length > 128
+      || typeof input.content !== 'string' || !input.content.trim() || input.content.length > 20_000
+      || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
+      || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
+      || (input.selectedSkillId !== undefined && (typeof input.selectedSkillId !== 'string'
+        || input.selectedSkillId.length < 1 || input.selectedSkillId.length > 160))
+      || (input.selectedNodeIds !== undefined && (!Array.isArray(input.selectedNodeIds)
+        || input.selectedNodeIds.length > 20 || input.selectedNodeIds.some((id) => typeof id !== 'string' || !id)))) {
+      throw codedError('AGENT_RUN_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(input.projectId)
+    const apiKey = await getAgnesApiKey()
+    if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
+    const active = await localCore.request('project:get-active')
+    if (!active || active.projectId !== input.projectId || active.canvasId !== input.canvasId) throw codedError('AGENT_PROJECT_CHANGED')
+    const canvas = await localCore.request('canvas:load', { projectId: input.projectId, canvasId: input.canvasId })
+    if (canvas.version !== input.canvasVersion) throw codedError('AGENT_CANVAS_CHANGED')
+    const canvasContext = buildAgentCanvasContext(canvas)
+    const latestWorker = await getAgentWorker(input.projectId)
+    const latestProject = await localCore.request('project:get-active')
+    if (latestWorker !== worker || !latestProject || latestProject.projectId !== input.projectId
+      || latestProject.canvasId !== input.canvasId) throw codedError('AGENT_PROJECT_CHANGED')
+    const latestCanvas = await localCore.request('canvas:load', { projectId: input.projectId, canvasId: input.canvasId })
+    if (latestCanvas.version !== input.canvasVersion) throw codedError('AGENT_CANVAS_CHANGED')
+    return worker.request('agent:start-run', {
+      ...input,
+      content: input.content.trim(),
+      canvasContext,
+      canvasNodeCount: latestCanvas.nodes.length,
+      apiKey,
+    }, 30_000)
+  })
+  ipcMain.handle('desktop:agent:confirm-action', async (event, input) => {
+    assertTrustedSender(event)
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
+      || typeof input.sessionId !== 'string' || input.sessionId.length > 128
+      || typeof input.actionId !== 'string' || input.actionId.length > 128
+      || typeof input.approvalToken !== 'string' || input.approvalToken.length > 4096
+      || typeof input.accept !== 'boolean'
+      || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0) {
+      throw codedError('AGENT_CONFIRMATION_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(input.projectId)
+    const active = await localCore.request('project:get-active')
+    if (!active || active.projectId !== input.projectId || active.canvasId !== input.canvasId) throw codedError('AGENT_PROJECT_CHANGED')
+    const canvas = await localCore.request('canvas:load', { projectId: input.projectId, canvasId: input.canvasId })
+    return worker.request('agent:confirm-action', { ...input, currentCanvasVersion: canvas.version }, 60_000)
+  })
+  ipcMain.handle('desktop:agent:send-message', async (event, projectId, sessionId, content, selectedSkillId) => {
     assertTrustedSender(event)
     if (typeof content !== 'string' || !content.trim() || content.length > 20_000) {
       throw codedError('AGENT_MESSAGE_INVALID')
     }
+    if (selectedSkillId !== undefined && (typeof selectedSkillId !== 'string'
+      || selectedSkillId.length < 1 || selectedSkillId.length > 160)) throw codedError('AGENT_SKILL_ID_INVALID')
     const worker = await getAgentWorker(projectId)
     const apiKey = await getAgnesApiKey()
     if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
@@ -967,17 +1537,6 @@ function registerAgentIpc() {
     if (!active || active.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
     const canvas = await localCore.request('canvas:load', { projectId, canvasId: active.canvasId })
     const canvasContext = buildAgentCanvasContext(canvas)
-    const confirmation = await dialog.showMessageBox(mainWindow, {
-      type: 'warning',
-      title: '发送文本与画布摘要到 Agnes',
-      message: '这轮 Agent 对话将发送到 Agnes（agnes-2.5-flash）。',
-      detail: `会发送本条文本、当前会话历史，以及下面列出的当前画布只读摘要。Agnes 可能收费；请求会离开本机并由供应商处理。应用不会附带项目目录、素材路径或图片/视频文件。\n\n本条文本：\n${content.trim().slice(0, 1200)}${content.trim().length > 1200 ? '…' : ''}\n\n本次附带的画布摘要：\n${canvasContext}`,
-      buttons: ['发送到 Agnes', '取消'],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true,
-    })
-    if (confirmation.response !== 0) throw codedError('CLOUD_SEND_CANCELLED')
     const latestWorker = await getAgentWorker(projectId)
     const latestProject = await localCore.request('project:get-active')
     if (latestWorker !== worker || !latestProject || latestProject.projectId !== projectId) {
@@ -989,6 +1548,10 @@ function registerAgentIpc() {
       projectId,
       sessionId,
       content,
+      selectedSkillId,
+      canvasId: latestProject.canvasId,
+      canvasVersion: latestCanvas.version,
+      canvasNodeCount: latestCanvas.nodes.length,
       canvasContext,
       apiKey,
       idempotencyKey: randomUUID(),
@@ -1002,6 +1565,7 @@ async function createWindow() {
     height: 920,
     minWidth: 960,
     minHeight: 640,
+    autoHideMenuBar: true,
     backgroundColor: '#f7f7f8',
     show: false,
     webPreferences: {
@@ -1039,9 +1603,21 @@ if (hasSingleInstanceLock) {
   app.whenReady().then(async () => {
     if (!developmentUrl) await fs.access(rendererIndex)
     recentProjectFile = path.join(app.getPath('userData'), 'recent-project.json')
+    recentProjectsFile = path.join(app.getPath('userData'), 'recent-projects.json')
     desktopSettingsFile = path.join(app.getPath('userData'), 'settings.json')
     agnesCredentialFile = path.join(app.getPath('userData'), 'credentials', 'agnes-api-key.bin')
     localCore = startLocalCore()
+    recentProjectCatalog = createRecentProjectCatalog({
+      catalogFile: recentProjectsFile,
+      legacyFile: recentProjectFile,
+      inspectProject: (directory, expectedIdentity) => localCore.request('project:inspect', {
+        directory,
+        ...(expectedIdentity ? {
+          expectedProjectId: expectedIdentity.projectId,
+          expectedCanvasId: expectedIdentity.canvasId,
+        } : {}),
+      }),
+    })
     const restoredProject = await restoreRecentProject()
     if (restoredProject) void scheduleTaskPump(restoredProject.projectId)
     registerRendererProtocol()

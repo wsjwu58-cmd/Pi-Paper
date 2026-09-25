@@ -152,6 +152,26 @@ describe("runtime tool integration", () => {
 		).toBe(false);
 	});
 
+	it("keeps desktop tool availability separate from the legacy Web generation contract", () => {
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			canvasId: "301",
+			canvasVersion: 1,
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				estimateGeneration: async () => ({ estimatedCost: 0, pricingVersion: 1, models: [] }),
+			} as never,
+			desktopMode: true,
+		});
+
+		const names = tools.map((tool) => tool.name);
+		expect(names).toContain("create_nodes");
+		expect(names).not.toContain("delete_nodes");
+		expect(names).toContain("submit_generation");
+		expect(names).toContain("submit_generation_batch");
+	});
+
 	it("parses a serialized node array before sending the canvas command", async () => {
 		const commands: Array<Record<string, unknown>> = [];
 		const tools = createRuntimeTools({
@@ -277,6 +297,120 @@ describe("runtime tool integration", () => {
 			expectedVersion: 2,
 			payload: { nodeIds: ["source-image", "derived-video"] },
 		});
+	});
+
+	it("rejects ambiguous multi-selection before creating any nodes or edges", async () => {
+		const commands: Array<Record<string, unknown>> = [];
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			canvasId: "301",
+			canvasVersion: 1,
+			referenceNodeIds: ["shot-image-1", "shot-image-2", "shot-image-3"],
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				execute: async (command: Record<string, unknown>) => {
+					commands.push(command);
+					return { createdNodes: [], canvasVersion: 2 };
+				},
+			} as never,
+		});
+
+		await expect(
+			tools
+				.find((tool) => tool.name === "create_nodes")!
+				.execute("tool-create", {
+					nodes: [
+						{ type: "video", params: { prompt: "镜头一" } },
+						{ type: "video", params: { prompt: "镜头二" } },
+						{ type: "video", params: { prompt: "镜头三" } },
+					],
+					expectedVersion: 1,
+					idempotencyKey: "create-three-videos",
+				}),
+		).rejects.toThrow(/INVALID_INPUT.*先向用户询问/);
+		expect(commands).toHaveLength(0);
+	});
+
+	it("creates only the three declared one-to-one image-to-video edges", async () => {
+		const commands: Array<Record<string, unknown>> = [];
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			canvasId: "301",
+			canvasVersion: 1,
+			referenceNodeIds: ["shot-image-1", "shot-image-2", "shot-image-3"],
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				execute: async (command: Record<string, unknown>) => {
+					commands.push(command);
+					if (command.operation === "create_nodes")
+						return {
+							createdNodes: [{ id: "shot-video-1" }, { id: "shot-video-2" }, { id: "shot-video-3" }],
+							canvasVersion: 2,
+						};
+					return { canvasVersion: commands.length + 1 };
+				},
+			} as never,
+		});
+
+		await tools
+			.find((tool) => tool.name === "create_nodes")!
+			.execute("tool-create", {
+				nodes: [
+					{ type: "video", sourceNodeIds: ["shot-image-1"], params: { prompt: "镜头一" } },
+					{ type: "video", sourceNodeIds: ["shot-image-2"], params: { prompt: "镜头二" } },
+					{ type: "video", sourceNodeIds: ["shot-image-3"], params: { prompt: "镜头三" } },
+				],
+				expectedVersion: 1,
+				idempotencyKey: "create-three-videos-one-to-one",
+			});
+
+		expect(commands).toHaveLength(4);
+		const edgePayloads = commands
+			.filter((command) => command.operation === "connect_nodes")
+			.map((command) => command.payload);
+		expect(edgePayloads).toEqual([
+			{ nodeIds: ["shot-image-1", "shot-video-1"] },
+			{ nodeIds: ["shot-image-2", "shot-video-2"] },
+			{ nodeIds: ["shot-image-3", "shot-video-3"] },
+		]);
+	});
+
+	it("preserves an explicitly declared multi-reference input for one target", async () => {
+		const commands: Array<Record<string, unknown>> = [];
+		const tools = createRuntimeTools({
+			userId: "101",
+			sessionId: "201",
+			canvasId: "301",
+			canvasVersion: 1,
+			referenceNodeIds: ["reference-image-1", "reference-image-2"],
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			gateway: {
+				execute: async (command: Record<string, unknown>) => {
+					commands.push(command);
+					if (command.operation === "create_nodes")
+						return { createdNodes: [{ id: "derived-video" }], canvasVersion: 2 };
+					return { canvasVersion: commands.length + 1 };
+				},
+			} as never,
+		});
+
+		await tools
+			.find((tool) => tool.name === "create_nodes")!
+			.execute("tool-create", {
+				nodes: [{ type: "video", sourceNodeIds: ["reference-image-1", "reference-image-2"] }],
+				expectedVersion: 1,
+				idempotencyKey: "create-multi-reference-video",
+			});
+
+		const edgePayloads = commands
+			.filter((command) => command.operation === "connect_nodes")
+			.map((command) => command.payload);
+		expect(edgePayloads).toEqual([
+			{ nodeIds: ["reference-image-1", "derived-video"] },
+			{ nodeIds: ["reference-image-2", "derived-video"] },
+		]);
 	});
 
 	it("does not add incompatible selected references when a media node declares its sources", async () => {
@@ -413,6 +547,7 @@ describe("runtime tool integration", () => {
 			approvals,
 			gateway: {
 				execute: async () => ({ canvasVersion: 2 }),
+				getCanvasSummary: async () => ({ canvas: { version: 2 }, edges: [] }),
 				estimateGeneration: async () => ({ estimatedCost: 4, pricingVersion: 1, models: [] }),
 			} as never,
 		});
@@ -446,6 +581,7 @@ describe("runtime tool integration", () => {
 			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
 			gateway: {
 				getNodeDetail: async () => ({ id: "401", prompt: "authoritative bottle prompt" }),
+				getCanvasSummary: async () => ({ canvas: { version: 1 }, edges: [] }),
 				estimateGeneration: async (input: { modelParams: Record<string, unknown> }) => {
 					estimatedParams = input.modelParams;
 					return { estimatedCost: 4, pricingVersion: 1, models: [] };
@@ -475,6 +611,7 @@ describe("runtime tool integration", () => {
 			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
 			gateway: {
 				getNodeDetail: async () => ({ id: "401", prompt: null, params: { content: "generated image prompt" } }),
+				getCanvasSummary: async () => ({ canvas: { version: 1 }, edges: [] }),
 				estimateGeneration: async (input: { modelParams: Record<string, unknown> }) => {
 					estimatedParams = input.modelParams;
 					return { estimatedCost: 4, pricingVersion: 1, models: [] };
@@ -519,6 +656,7 @@ describe("runtime tool integration", () => {
 						params: { description: "雨巷对峙，女主左侧，男主靠墙，路灯居中" },
 					},
 				],
+				getCanvasSummary: async () => ({ canvas: { version: 1 }, edges: [] }),
 				estimateGeneration: async (input: { modelParams: Record<string, unknown> }) => {
 					estimatedParams = input.modelParams;
 					return { estimatedCost: 4, pricingVersion: 1, models: [] };
@@ -588,6 +726,7 @@ describe("runtime tool integration", () => {
 			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
 			gateway: {
 				getNodeDetail: async () => ({ id: "401", prompt: null, params: { content: "将原图向右扩展留白" } }),
+				getCanvasSummary: async () => ({ canvas: { version: 1 }, edges: [] }),
 				estimateGeneration: async (input: { modelParams: Record<string, unknown> }) => {
 					estimatedParams = input.modelParams;
 					return { estimatedCost: 4, pricingVersion: 1, models: [] };
@@ -617,6 +756,7 @@ describe("runtime tool integration", () => {
 			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
 			gateway: {
 				getNodeDetail: async () => ({ id: "401", prompt: "source image" }),
+				getCanvasSummary: async () => ({ canvas: { version: 1 }, edges: [] }),
 				estimateGeneration: async (input: { modelParams: Record<string, unknown> }) => {
 					estimatedParams = input.modelParams;
 					return { estimatedCost: 4, pricingVersion: 1, models: [] };
@@ -645,6 +785,9 @@ describe("runtime tool integration", () => {
 			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
 			gateway: {
 				getCanvasSummary: async () => ({ canvas: { version: 3 } }),
+				estimateGeneration: async () => {
+					throw new Error("stale canvas should fail before estimate");
+				},
 			} as never,
 		});
 
@@ -670,6 +813,7 @@ describe("runtime tool integration", () => {
 			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
 			gateway: {
 				resolveGenerationModel: async () => "compose-1.0",
+				getCanvasSummary: async () => ({ canvas: { version: 1 }, edges: [] }),
 				estimateGeneration: async () => {
 					estimated = true;
 					return { estimatedCost: 15, pricingVersion: 1, models: [] };
@@ -701,6 +845,7 @@ describe("runtime tool integration", () => {
 			approvals,
 			gateway: {
 				resolveGenerationModel: async () => "agnes-image-2.5-flash",
+				getCanvasSummary: async () => ({ canvas: { version: 4 }, edges: [] }),
 				estimateGeneration: async () => ({ estimatedCost: 4, pricingVersion: 2, models: [] }),
 			} as never,
 			onApprovalRequired: (action) => {
@@ -735,6 +880,7 @@ describe("runtime tool integration", () => {
 			approvals,
 			gateway: {
 				resolveGenerationModel: async () => "agnes-image-2.5-flash",
+				getCanvasSummary: async () => ({ canvas: { version: 4 }, edges: [] }),
 				estimateGeneration: async () => ({ estimatedCost: 4, pricingVersion: 1, models: [] }),
 			} as never,
 			onApprovalRequired: async () => {},

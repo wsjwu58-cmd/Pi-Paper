@@ -2,13 +2,14 @@ const nativeFs = require('node:fs')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { createHash, randomUUID } = require('node:crypto')
-const { Readable, Transform } = require('node:stream')
+const { Readable } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 const { backup, DatabaseSync } = require('node:sqlite')
 
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
-const PROJECT_DB_SCHEMA_VERSION = 3
+const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
+const PROJECT_DB_SCHEMA_VERSION = 6
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -16,22 +17,38 @@ const MAX_CANVAS_BYTES = 32 * 1024 * 1024
 const MAX_ASSET_BYTES = 200 * 1024 * 1024
 const MAX_TASK_INPUT_BYTES = 1024 * 1024
 const MAX_TASK_OUTPUT_BYTES = 4 * 1024 * 1024 * 1024
+const MAX_TASK_SEARCH_PAGE = 1_000_000
+const MAX_TASK_SEARCH_PAGE_SIZE = 100
+const TASK_SEARCH_MODALITIES = new Set(['text', 'image', 'audio', 'video'])
+const TASK_SEARCH_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'])
 const MAX_AGENT_BACKUP_BYTES = 4 * 1024 * 1024 * 1024
 const MAX_AGENT_BACKUP_FILES = 100_000
 const MAX_AGENT_SESSION_HEADER_BYTES = 1024 * 1024
 const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'session-memory'])
 const AGENT_BACKUP_EXTENSIONS = new Set(['.jsonl', '.json', '.md', '.zst'])
+const EDGE_COMPATIBLE_TARGET_TYPES = Object.freeze({
+  text: new Set(['text', 'image', 'video', 'audio', 'director']),
+  image: new Set(['image', 'video', 'director']),
+  video: new Set(['video', 'compose']),
+  audio: new Set(['audio', 'video']),
+  compose: new Set(['video', 'compose']),
+  director: new Set(['image', 'video']),
+})
 
 const ASSET_DB_SCHEMA = `
   CREATE TABLE assets (
     id TEXT PRIMARY KEY,
-    sha256 TEXT NOT NULL UNIQUE,
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
     original_name TEXT NOT NULL,
     mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp')),
     size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
     relative_path TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))
   ) STRICT;
+
+  CREATE INDEX assets_by_sha ON assets(sha256, deleted);
 
   CREATE TABLE asset_references (
     canvas_id TEXT NOT NULL,
@@ -88,6 +105,42 @@ const TASK_DB_SCHEMA = `
   ) STRICT;
 `
 
+const CANVAS_GRAPH_COMMANDS_DB_SCHEMA = `
+  CREATE TABLE canvas_graph_commands (
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+    operation TEXT NOT NULL CHECK (length(operation) BETWEEN 1 AND 64),
+    result_canvas_version INTEGER CHECK (result_canvas_version IS NULL OR result_canvas_version >= 0),
+    result_snapshot TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(result_snapshot)),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (canvas_id, idempotency_key)
+  ) STRICT;
+`
+
+const CANVAS_GROUP_STACK_DB_SCHEMA = `
+  CREATE TABLE canvas_groups (
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL,
+    layout TEXT NOT NULL,
+    node_ids_json TEXT NOT NULL CHECK (json_valid(node_ids_json)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (canvas_id, id)
+  ) STRICT;
+
+  CREATE TABLE canvas_stacks (
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    collapsed INTEGER NOT NULL CHECK (collapsed IN (0, 1)),
+    node_ids_json TEXT NOT NULL CHECK (json_valid(node_ids_json)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (canvas_id, id)
+  ) STRICT;
+`
+
 const PROJECT_DB_SCHEMA = `
   CREATE TABLE project_metadata (
     key TEXT PRIMARY KEY,
@@ -125,6 +178,8 @@ const PROJECT_DB_SCHEMA = `
   CREATE INDEX edges_by_target ON edges(canvas_id, target_node_id);
   ${ASSET_DB_SCHEMA}
   ${TASK_DB_SCHEMA}
+  ${CANVAS_GRAPH_COMMANDS_DB_SCHEMA}
+  ${CANVAS_GROUP_STACK_DB_SCHEMA}
 `
 
 function isRecord(value) {
@@ -156,6 +211,20 @@ async function readJson(filePath) {
   return JSON.parse(content)
 }
 
+async function readProjectMetadata(dataDirectory) {
+  const metadataPath = path.join(dataDirectory, 'project.json')
+  const info = await fs.lstat(metadataPath).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
+  if (!info?.isFile() || info.isSymbolicLink()) throw new Error('项目元数据缺失或路径无效。')
+  return readJson(metadataPath)
+}
+
+async function readProjectLegacyCanvas(dataDirectory, metadata) {
+  const canvasPath = path.join(dataDirectory, 'canvas.json')
+  const info = await fs.lstat(canvasPath).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
+  if (!info?.isFile() || info.isSymbolicLink()) throw new Error('项目缺少画布数据库和可迁移的画布文件。')
+  return validateLegacyCanvas(await readJson(canvasPath), metadata)
+}
+
 async function writeJsonAtomically(filePath, value) {
   const parent = path.dirname(filePath)
   const temporaryPath = path.join(parent, `.${path.basename(filePath)}.${randomUUID()}.tmp`)
@@ -180,6 +249,7 @@ function validateGraph(nodes, edges) {
   if (!Array.isArray(edges) || edges.length > MAX_EDGES) throw new Error('画布连线数据无效或超过上限。')
 
   const nodeIds = new Set()
+  const nodeTypes = new Map()
   for (const node of nodes) {
     if (!isRecord(node) || typeof node.id !== 'string' || !node.id || node.id.length > 256 || nodeIds.has(node.id)) {
       throw new Error('画布包含无效或重复的节点。')
@@ -187,21 +257,69 @@ function validateGraph(nodes, edges) {
     if (!isRecord(node.position) || !Number.isFinite(node.position.x) || !Number.isFinite(node.position.y) || !isRecord(node.data)) {
       throw new Error('画布节点缺少有效的位置或数据。')
     }
+    if (typeof node.type !== 'string' || !Object.hasOwn(EDGE_COMPATIBLE_TARGET_TYPES, node.type)) {
+      throw new Error(`非法节点类型: ${String(node.type)}`)
+    }
     nodeIds.add(node.id)
+    nodeTypes.set(node.id, node.type)
   }
 
   const edgeIds = new Set()
+  const validatedEdges = []
   for (const edge of edges) {
-    if (!isRecord(edge) || typeof edge.id !== 'string' || !edge.id || edgeIds.has(edge.id)) {
+    if (!isRecord(edge)) {
       throw new Error('画布包含无效或重复的连线。')
     }
-    if (typeof edge.source !== 'string' || typeof edge.target !== 'string' || !nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+    if (typeof edge.id !== 'string' || !edge.id) {
+      throw new Error('画布包含无效或重复的连线。')
+    }
+    if (typeof edge.source !== 'string' || typeof edge.target !== 'string') {
       throw new Error('画布连线引用了不存在的节点。')
     }
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      // CanvasService.saveCanvas only persists edges whose endpoints both
+      // belong to the submitted graph. Keep the same behavior for snapshots.
+      continue
+    }
+    if (edgeIds.has(edge.id)) {
+      throw new Error('画布包含无效或重复的连线。')
+    }
     edgeIds.add(edge.id)
+
+    const sourceType = nodeTypes.get(edge.source)
+    const targetType = nodeTypes.get(edge.target)
+    const compatible = EDGE_COMPATIBLE_TARGET_TYPES[sourceType].has(targetType)
+    const originalData = isRecord(edge.data) ? edge.data : {}
+    const originalPayload = isRecord(originalData.edge) ? originalData.edge : {}
+    const requestedValidity = originalPayload.valid ?? originalData.valid
+    const valid = compatible && requestedValidity !== false
+    const sourcePort = edge.sourceHandle ?? originalPayload.sourcePort ?? 'output'
+    const targetPort = edge.targetHandle ?? originalPayload.targetPort ?? 'input'
+    const dependencyType = originalPayload.dependencyType ?? edge.dependencyType ?? 'reference'
+
+    // Keep the same validity payload that the Web canvas derives from
+    // CanvasService.toEdgePayload(). This lets the renderer show incompatible
+    // edges as invalid while preserving the user's graph for later repair.
+    validatedEdges.push({
+      ...edge,
+      data: {
+        ...originalData,
+        valid,
+        edge: {
+          ...originalPayload,
+          id: edge.id,
+          sourceNodeId: edge.source,
+          sourcePort,
+          targetNodeId: edge.target,
+          targetPort,
+          valid,
+          dependencyType,
+        },
+      },
+    })
   }
 
-  const graph = JSON.parse(JSON.stringify({ nodes, edges }))
+  const graph = JSON.parse(JSON.stringify({ nodes, edges: validatedEdges }))
   if (Buffer.byteLength(JSON.stringify(graph), 'utf8') > MAX_CANVAS_BYTES) throw new Error('画布数据超过本地项目的单次保存上限。')
   return graph
 }
@@ -325,6 +443,49 @@ function normalizeTaskInput(input) {
     parametersJson,
     inputHash: createHash('sha256').update(canonicalInput).digest('hex'),
   }
+}
+
+function normalizeTaskSearchInput(input) {
+  if (!isRecord(input)) throw new Error('任务搜索请求无效。')
+  const page = input.page ?? 1
+  const pageSize = input.pageSize ?? 20
+  if (!Number.isSafeInteger(page) || page < 1 || page > MAX_TASK_SEARCH_PAGE
+    || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > MAX_TASK_SEARCH_PAGE_SIZE) {
+    throw new Error('任务搜索分页参数无效。')
+  }
+
+  const textFilter = (key) => {
+    const value = input[key]
+    if (value === undefined || value === null) return ''
+    if (typeof value !== 'string' || value.length > 200) throw new Error('任务搜索条件无效。')
+    return value.trim()
+  }
+  const keyword = textFilter('keyword')
+  const model = textFilter('model')
+  const modality = input.modality ?? ''
+  const status = input.status ?? ''
+  if (modality !== '' && (typeof modality !== 'string' || !TASK_SEARCH_MODALITIES.has(modality))) {
+    throw new Error('任务模态筛选无效。')
+  }
+  if (status !== '' && (typeof status !== 'string' || !TASK_SEARCH_STATUSES.has(status))) {
+    throw new Error('任务状态筛选无效。')
+  }
+
+  const timestamp = (key) => {
+    const value = input[key]
+    if (value === undefined || value === null) return null
+    if (!Number.isSafeInteger(value) || Math.abs(value) > 8_640_000_000_000_000) {
+      throw new Error('任务日期筛选无效。')
+    }
+    return value
+  }
+  const fromTime = timestamp('fromTime')
+  const toTime = timestamp('toTime')
+  if (fromTime !== null && toTime !== null && fromTime > toTime) {
+    throw new Error('任务日期范围无效。')
+  }
+
+  return { page, pageSize, keyword, model, modality, status, fromTime, toTime }
 }
 
 function validateTaskOutputRelativePath(taskId, modality, relativePath) {
@@ -608,6 +769,7 @@ function insertAssetReferences(database, canvasId, graph) {
   for (const node of graph.nodes) {
     if (node.type !== 'image') continue
     const assetId = node.data.assetId
+    if (assetId === undefined || assetId === null || assetId === '') continue
     if (typeof assetId !== 'string' || !findAsset.get(assetId)) {
       throw new Error('画布图片节点引用了不存在的本地素材。')
     }
@@ -619,12 +781,461 @@ function validateAssetReferences(database, canvasId, graph) {
   const expected = new Map()
   for (const node of graph.nodes) {
     if (node.type !== 'image') continue
-    if (typeof node.data.assetId !== 'string') throw new Error('项目画布中的图片节点缺少素材标识。')
+    if (node.data.assetId === undefined || node.data.assetId === null || node.data.assetId === '') continue
+    if (typeof node.data.assetId !== 'string') throw new Error('项目画布中的图片节点素材标识无效。')
     expected.set(node.id, node.data.assetId)
   }
   const actualRows = database.prepare('SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ?').all(canvasId)
   if (actualRows.length !== expected.size || actualRows.some((row) => expected.get(row.node_id) !== row.asset_id)) {
     throw new Error('项目画布与本地素材引用记录不一致。')
+  }
+}
+
+function normalizeCreateNodeInput(input) {
+  if (typeof input.type !== 'string' || !input.type.trim()) {
+    throw new Error('节点类型不能为空。')
+  }
+  if (input.expectedVersion !== undefined && input.expectedVersion !== null
+    && (!Number.isInteger(input.expectedVersion) || input.expectedVersion < -2_147_483_648 || input.expectedVersion > 2_147_483_647)) {
+    throw new Error('画布版本无效，请重新打开项目。')
+  }
+
+  const numberOrDefault = (key, fallback) => {
+    const value = input[key]
+    if (value === undefined || value === null) return fallback
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`节点${key}无效。`)
+    return value
+  }
+  const optionalString = (key) => {
+    const value = input[key]
+    if (value === undefined || value === null) return null
+    if (typeof value !== 'string') throw new Error(`节点${key}无效。`)
+    return value
+  }
+
+  let params = input.params ?? {}
+  if (!isRecord(params)) throw new Error('节点参数必须是对象。')
+  try {
+    const json = JSON.stringify(params)
+    if (typeof json !== 'string' || Buffer.byteLength(json, 'utf8') > MAX_CANVAS_BYTES) {
+      throw new Error('节点参数超过本地画布数据上限。')
+    }
+    params = JSON.parse(json)
+  } catch (error) {
+    if (error instanceof Error && error.message === '节点参数超过本地画布数据上限。') throw error
+    throw new Error('节点参数必须是有效的 JSON 对象。')
+  }
+  if (!isRecord(params)) throw new Error('节点参数必须是有效的 JSON 对象。')
+
+  const modelRef = optionalString('modelRef')
+  const creativeType = optionalString('creativeType')
+  const explicitPrompt = optionalString('prompt')
+  let prompt = explicitPrompt
+  if (prompt === null) {
+    const promptValue = params.prompt ?? params.title
+    prompt = promptValue === undefined || promptValue === null ? null : String(promptValue)
+  }
+  if (modelRef !== null) params.model = modelRef
+  if (prompt !== null) params.prompt = prompt
+
+  return {
+    type: input.type,
+    x: numberOrDefault('x', 120),
+    y: numberOrDefault('y', 120),
+    width: numberOrDefault('width', 280),
+    height: numberOrDefault('height', 220),
+    params,
+    creativeType,
+    modelRef,
+    prompt,
+    expectedVersion: input.expectedVersion ?? null,
+  }
+}
+
+function flowNodeFromPayload(payload, assetId) {
+  const data = {
+    label: payload.prompt ?? '',
+    node: payload,
+    params: payload.params,
+    status: payload.status,
+    currentOutputId: payload.currentOutputId,
+    groupId: payload.groupId,
+    stackId: payload.stackId,
+    creativeType: payload.creativeType,
+    stale: payload.stale,
+    modelRef: payload.modelRef,
+    prompt: payload.prompt,
+    output: payload.output,
+    execStatus: payload.execStatus,
+    selected: false,
+  }
+  if (assetId) data.assetId = assetId
+  if (typeof payload.params.name === 'string') data.name = payload.params.name
+  if (typeof payload.params.url === 'string') data.url = payload.params.url
+  return {
+    id: payload.id,
+    type: payload.type,
+    position: { x: payload.x, y: payload.y },
+    width: payload.width,
+    height: payload.height,
+    data,
+  }
+}
+
+function cloneJsonRecord(value, label) {
+  if (!isRecord(value)) throw new Error(`${label}必须是对象。`)
+  try {
+    const json = JSON.stringify(value)
+    if (typeof json !== 'string' || Buffer.byteLength(json, 'utf8') > MAX_CANVAS_BYTES) {
+      throw new Error(`${label}超过本地画布数据上限。`)
+    }
+    const parsed = JSON.parse(json)
+    if (!isRecord(parsed)) throw new Error('invalid JSON object')
+    return parsed
+  } catch (error) {
+    if (error instanceof Error && error.message === `${label}超过本地画布数据上限。`) throw error
+    throw new Error(`${label}必须是有效的 JSON 对象。`)
+  }
+}
+
+function normalizeCanvasEntityId(value, label) {
+  if (typeof value === 'string' && value.length > 0 && value.length <= 256) return value
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
+  throw new Error(`${label}标识无效。`)
+}
+
+function normalizeCanvasNodeIds(value, label, minimum = 0) {
+  if (!Array.isArray(value) || value.length < minimum || value.length > MAX_NODES) {
+    throw new Error(label)
+  }
+  return value.map((nodeId) => normalizeCanvasEntityId(nodeId, '节点'))
+}
+
+function normalizeCanvasGroups(groups) {
+  if (groups === undefined || groups === null) return []
+  if (!Array.isArray(groups) || groups.length > MAX_NODES) throw new Error('画布编组数据无效或超过上限。')
+  const ids = new Set()
+  return groups.map((group) => {
+    if (!isRecord(group)) throw new Error('画布编组数据无效。')
+    const id = normalizeCanvasEntityId(group.id, '编组')
+    if (ids.has(id)) throw new Error('画布包含重复编组。')
+    ids.add(id)
+    const name = group.name ?? '编组'
+    const color = group.color ?? '#8b5cf6'
+    const layout = group.layout ?? 'free'
+    if (typeof name !== 'string' || typeof color !== 'string' || typeof layout !== 'string') {
+      throw new Error('画布编组数据无效。')
+    }
+    const nodeIds = normalizeCanvasNodeIds(group.nodeIds ?? [], '画布编组节点列表无效。')
+    return { id, name, color, layout, nodeIds }
+  })
+}
+
+function normalizeCanvasStacks(stacks) {
+  if (stacks === undefined || stacks === null) return []
+  if (!Array.isArray(stacks) || stacks.length > MAX_NODES) throw new Error('画布堆叠数据无效或超过上限。')
+  const ids = new Set()
+  return stacks.map((stack) => {
+    if (!isRecord(stack)) throw new Error('画布堆叠数据无效。')
+    const id = normalizeCanvasEntityId(stack.id, '堆叠')
+    if (ids.has(id)) throw new Error('画布包含重复堆叠。')
+    ids.add(id)
+    const collapsed = stack.collapsed ?? true
+    if (typeof collapsed !== 'boolean') throw new Error('堆叠 collapsed 无效。')
+    const nodeIds = normalizeCanvasNodeIds(stack.nodeIds ?? [], '画布堆叠节点列表无效。')
+    return { id, collapsed, nodeIds }
+  })
+}
+
+function setNodeMembership(node, field, value) {
+  const data = isRecord(node.data) ? node.data : {}
+  const nextData = { ...data, [field]: value }
+  if (isRecord(data.node)) nextData.node = { ...data.node, [field]: value }
+  return { ...node, data: nextData }
+}
+
+function updateNodeMembership(database, canvasId, nodeId, field, value) {
+  const row = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+    .get(canvasId, nodeId)
+  if (!row) return null
+  const updated = setNodeMembership(JSON.parse(row.payload_json), field, value)
+  const result = database.prepare(`
+    UPDATE nodes SET payload_json = ? WHERE canvas_id = ? AND id = ?
+  `).run(JSON.stringify(updated), canvasId, nodeId)
+  if (result.changes !== 1) return null
+  return updated
+}
+
+function updateNodeMemberships(database, canvasId, nodeIds, field, value, requireEveryNode) {
+  const updatedNodes = new Map()
+  for (const nodeId of nodeIds) {
+    const updated = updateNodeMembership(database, canvasId, nodeId, field, value)
+    if (!updated && requireEveryNode) throw new Error('节点不存在')
+    if (updated) updatedNodes.set(nodeId, updated)
+  }
+  return updatedNodes
+}
+
+function nodesWithMembershipUpdates(nodes, updatedNodes) {
+  return nodes.map((node) => updatedNodes.get(node.id) ?? node)
+}
+
+function groupPayloadFromRow(row) {
+  if (!row) return null
+  const payload = normalizeCanvasGroups([{
+    id: row.id,
+    name: row.name,
+    color: row.color,
+    layout: row.layout,
+    nodeIds: JSON.parse(row.node_ids_json),
+  }])[0]
+  return payload
+}
+
+function stackPayloadFromRow(row) {
+  if (!row) return null
+  return normalizeCanvasStacks([{
+    id: row.id,
+    collapsed: Boolean(row.collapsed),
+    nodeIds: JSON.parse(row.node_ids_json),
+  }])[0]
+}
+
+function normalizeUpdateNodeInput(input) {
+  const expectedVersion = input.expectedVersion ?? null
+  if (expectedVersion !== null
+    && (!Number.isInteger(expectedVersion) || expectedVersion < -2_147_483_648 || expectedVersion > 2_147_483_647)) {
+    throw new Error('画布版本无效，请重新打开项目。')
+  }
+
+  const request = { expectedVersion }
+  for (const key of ['x', 'y', 'width', 'height']) {
+    if (input[key] === undefined || input[key] === null) continue
+    if (typeof input[key] !== 'number' || !Number.isFinite(input[key])) throw new Error(`节点${key}无效。`)
+    request[key] = input[key]
+  }
+  for (const key of ['params', 'output']) {
+    if (input[key] === undefined || input[key] === null) continue
+    request[key] = cloneJsonRecord(input[key], key === 'params' ? '节点参数' : '节点输出')
+  }
+  for (const key of ['status', 'creativeType', 'modelRef', 'prompt', 'execStatus']) {
+    if (input[key] === undefined || input[key] === null) continue
+    if (typeof input[key] !== 'string') throw new Error(`节点${key}无效。`)
+    request[key] = input[key]
+  }
+  for (const key of ['currentOutputId', 'groupId', 'stackId']) {
+    if (input[key] === undefined || input[key] === null) continue
+    const value = input[key]
+    if (!(typeof value === 'string' && value.length > 0 && value.length <= 256)
+      && !(typeof value === 'number' && Number.isSafeInteger(value))) {
+      throw new Error(`节点${key}无效。`)
+    }
+    request[key] = value
+  }
+  if (input.stale !== undefined && input.stale !== null) {
+    if (typeof input.stale !== 'boolean') throw new Error('节点stale无效。')
+    request.stale = input.stale
+  }
+  return request
+}
+
+function nodePayloadFromFlowNode(node) {
+  const data = isRecord(node.data) ? node.data : {}
+  const nested = isRecord(data.node) ? data.node : {}
+  const params = isRecord(data.params) ? data.params : isRecord(nested.params) ? nested.params : {}
+  return {
+    id: node.id,
+    type: node.type,
+    x: node.position.x,
+    y: node.position.y,
+    width: node.width ?? nested.width ?? null,
+    height: node.height ?? nested.height ?? null,
+    params: cloneJsonRecord(params, '节点参数'),
+    status: data.status ?? nested.status ?? 'idle',
+    currentOutputId: data.currentOutputId ?? nested.currentOutputId ?? null,
+    groupId: data.groupId ?? nested.groupId ?? null,
+    stackId: data.stackId ?? nested.stackId ?? null,
+    creativeType: data.creativeType ?? nested.creativeType ?? null,
+    stale: data.stale ?? nested.stale ?? false,
+    modelRef: data.modelRef ?? nested.modelRef ?? null,
+    prompt: data.prompt ?? nested.prompt ?? null,
+    output: isRecord(data.output) ? cloneJsonRecord(data.output, '节点输出')
+      : isRecord(nested.output) ? cloneJsonRecord(nested.output, '节点输出') : null,
+    execStatus: data.execStatus ?? nested.execStatus ?? 'idle',
+  }
+}
+
+function canvasNodeExportPayload(node) {
+  const payload = nodePayloadFromFlowNode(node)
+  const data = isRecord(node.data) ? node.data : {}
+  if (node.type === 'image' && typeof data.assetId === 'string'
+    && payload.params.assetId === undefined) {
+    payload.params.assetId = data.assetId
+  }
+  return payload
+}
+
+function preserveNodeGenerationState(nodes, previousNodes) {
+  const previousById = new Map(previousNodes.map((node) => [node.id, node]))
+  const preservedMediaParamKeys = ['url', 'lastOutputUrl', 'thumbnailUrl', 'output_url', 'lastOutputText']
+  const successfulStatuses = new Set(['succeeded', 'success', 'ready'])
+  const resetStatuses = new Set(['idle', 'stale', ''])
+
+  return nodes.map((node) => {
+    const previous = previousById.get(node.id)
+    if (!previous) return node
+
+    const payload = nodePayloadFromFlowNode(node)
+    const previousPayload = nodePayloadFromFlowNode(previous)
+    const nextParams = { ...payload.params }
+    for (const key of preservedMediaParamKeys) {
+      const value = nextParams[key]
+      if ((value === undefined || value === null || String(value).trim() === '')
+        && previousPayload.params[key] !== undefined && previousPayload.params[key] !== null) {
+        nextParams[key] = previousPayload.params[key]
+      }
+    }
+    payload.params = nextParams
+
+    if ((!payload.output || Object.keys(payload.output).length === 0)
+      && previousPayload.output && Object.keys(previousPayload.output).length > 0) {
+      payload.output = previousPayload.output
+    }
+
+    const incomingExecStatus = String(payload.execStatus ?? '').toLowerCase()
+    const previousExecStatus = String(previousPayload.execStatus ?? '').toLowerCase()
+    if (successfulStatuses.has(previousExecStatus) && resetStatuses.has(incomingExecStatus)) {
+      payload.execStatus = previousPayload.execStatus
+      if (resetStatuses.has(String(payload.status ?? '').toLowerCase())) {
+        payload.status = previousPayload.status ?? previousPayload.execStatus
+      }
+    }
+
+    const data = { ...node.data, params: payload.params, output: payload.output,
+      status: payload.status, execStatus: payload.execStatus }
+    if (isRecord(data.node)) {
+      data.node = {
+        ...data.node,
+        params: payload.params,
+        output: payload.output,
+        status: payload.status,
+        execStatus: payload.execStatus,
+      }
+    }
+    return { ...node, data }
+  })
+}
+
+function canvasEdgeExportPayload(edge) {
+  const data = isRecord(edge.data) ? edge.data : {}
+  const payload = isRecord(data.edge) ? data.edge : {}
+  return {
+    id: payload.id ?? edge.id,
+    sourceNodeId: payload.sourceNodeId ?? edge.source,
+    sourcePort: payload.sourcePort ?? edge.sourceHandle ?? 'output',
+    targetNodeId: payload.targetNodeId ?? edge.target,
+    targetPort: payload.targetPort ?? edge.targetHandle ?? 'input',
+    valid: payload.valid ?? data.valid ?? true,
+    dependencyType: payload.dependencyType ?? edge.dependencyType ?? 'reference',
+  }
+}
+
+function applyUpdateNodeRequest(flowNode, request) {
+  const currentData = isRecord(flowNode.data) ? flowNode.data : {}
+  const hasNestedPayload = isRecord(currentData.node)
+  const nested = hasNestedPayload ? currentData.node : {}
+  const payload = nodePayloadFromFlowNode(flowNode)
+  let contentChanged = false
+
+  for (const key of ['x', 'y', 'width', 'height', 'params', 'status', 'currentOutputId', 'groupId', 'stackId',
+    'creativeType', 'stale', 'modelRef', 'prompt', 'output', 'execStatus']) {
+    if (request[key] === undefined) continue
+    payload[key] = request[key]
+    if (['params', 'creativeType', 'modelRef', 'prompt', 'output'].includes(key)) contentChanged = true
+  }
+  if (request.execStatus !== undefined
+    && ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'expired'].includes(request.execStatus)) {
+    payload.status = request.execStatus
+  }
+
+  if (payload.modelRef !== null) payload.params.model = payload.modelRef
+  if (payload.prompt !== null) payload.params.prompt = payload.prompt
+  if (payload.output !== null) {
+    if (payload.output.url !== undefined && payload.output.url !== null) {
+      payload.params.output_url = payload.output.url
+      if (payload.params.lastOutputUrl === undefined || payload.params.lastOutputUrl === null) {
+        payload.params.lastOutputUrl = payload.output.url
+      }
+      if (payload.params.url === undefined || payload.params.url === null) payload.params.url = payload.output.url
+    } else {
+      payload.params.output = payload.output
+    }
+  }
+  if (contentChanged) payload.stale = false
+
+  const data = {
+    ...currentData,
+    params: payload.params,
+    status: payload.status,
+    currentOutputId: payload.currentOutputId,
+    groupId: payload.groupId,
+    stackId: payload.stackId,
+    creativeType: payload.creativeType,
+    stale: payload.stale,
+    modelRef: payload.modelRef,
+    prompt: payload.prompt,
+    execStatus: payload.execStatus,
+  }
+  if (request.prompt !== undefined) data.label = payload.prompt
+  if (request.output !== undefined) data.output = payload.output
+  if (hasNestedPayload) data.node = payload
+
+  const updated = {
+    ...flowNode,
+    position: { ...flowNode.position, x: payload.x, y: payload.y },
+    data,
+  }
+  if (request.width !== undefined) updated.width = payload.width
+  if (request.height !== undefined) updated.height = payload.height
+  return { node: updated, contentChanged }
+}
+
+function markDownstreamNodesStale(nodes, edges, sourceNodeId) {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]))
+  const staleNodeIds = new Set()
+  const outgoingInputEdges = new Map()
+  for (const edge of edges) {
+    const dependencyType = edge.data?.edge?.dependencyType ?? edge.dependencyType ?? 'reference'
+    if (dependencyType !== 'input') continue
+    const outgoing = outgoingInputEdges.get(edge.source) ?? []
+    outgoing.push(edge)
+    outgoingInputEdges.set(edge.source, outgoing)
+  }
+
+  const pending = [sourceNodeId]
+  while (pending.length > 0) {
+    const currentSourceId = pending.pop()
+    for (const edge of outgoingInputEdges.get(currentSourceId) ?? []) {
+      const target = nodesById.get(edge.target)
+      if (!target) continue
+      const data = isRecord(target.data) ? target.data : {}
+      const nested = isRecord(data.node) ? data.node : null
+      if ((data.stale ?? nested?.stale) === true) continue
+
+      const execStatus = data.execStatus ?? nested?.execStatus ?? ''
+      const preserveExecStatus = ['queued', 'running', 'succeeded', 'success', 'ready'].includes(String(execStatus).toLowerCase())
+      const nextExecStatus = preserveExecStatus ? execStatus : 'stale'
+      const nextData = { ...data, stale: true }
+      if (!preserveExecStatus) nextData.execStatus = 'stale'
+      if (nested) nextData.node = { ...nested, stale: true, execStatus: nextExecStatus }
+      nodesById.set(target.id, { ...target, data: nextData })
+      staleNodeIds.add(target.id)
+      pending.push(target.id)
+    }
+  }
+  return {
+    nodes: nodes.map((node) => nodesById.get(node.id)),
+    staleNodeIds,
   }
 }
 
@@ -638,12 +1249,37 @@ function initializeDatabase(database, metadata, canvas) {
     database.prepare('INSERT INTO canvases (id, version, updated_at) VALUES (?, ?, ?)')
       .run(metadata.canvasId, canvas.version, new Date().toISOString())
     insertGraph(database, metadata.canvasId, canvas)
+    insertCanvasGroupsAndStacks(
+      database,
+      metadata.canvasId,
+      normalizeCanvasGroups(canvas.groups),
+      normalizeCanvasStacks(canvas.stacks),
+    )
     insertAssetReferences(database, metadata.canvasId, canvas)
     database.exec(`PRAGMA user_version = ${PROJECT_DB_SCHEMA_VERSION}`)
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
     throw error
+  }
+}
+
+function insertCanvasGroupsAndStacks(database, canvasId, groups, stacks) {
+  const insertGroup = database.prepare(`
+    INSERT INTO canvas_groups (canvas_id, id, name, color, layout, node_ids_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const group of groups) {
+    const now = new Date().toISOString()
+    insertGroup.run(canvasId, group.id, group.name, group.color, group.layout, JSON.stringify(group.nodeIds), now, now)
+  }
+  const insertStack = database.prepare(`
+    INSERT INTO canvas_stacks (canvas_id, id, collapsed, node_ids_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  for (const stack of stacks) {
+    const now = new Date().toISOString()
+    insertStack.run(canvasId, stack.id, stack.collapsed ? 1 : 0, JSON.stringify(stack.nodeIds), now, now)
   }
 }
 
@@ -695,6 +1331,101 @@ async function migrateDatabaseV2ToV3(database, dataDirectory) {
   }
 }
 
+async function migrateDatabaseV3ToV4(database, dataDirectory) {
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v3-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec(CANVAS_GRAPH_COMMANDS_DB_SCHEMA)
+    database.exec('PRAGMA user_version = 4')
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+async function migrateDatabaseV4ToV5(database, dataDirectory) {
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v4-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec(CANVAS_GROUP_STACK_DB_SCHEMA)
+    database.exec('PRAGMA user_version = 5')
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+async function migrateDatabaseV5ToV6(database, dataDirectory) {
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v5-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(`
+      CREATE TABLE assets_v6 (
+        id TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp')),
+        size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
+        relative_path TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))
+      ) STRICT;
+      INSERT INTO assets_v6 (id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted)
+        SELECT id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, created_at, 0 FROM assets;
+      DROP TABLE assets;
+      ALTER TABLE assets_v6 RENAME TO assets;
+      CREATE INDEX assets_by_sha ON assets(sha256, deleted);
+      PRAGMA user_version = 6;
+    `)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
+  if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+    throw new Error('本地素材迁移后检测到无效引用。')
+  }
+}
+
 function readDatabaseCanvas(database, metadata) {
   const projectId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('projectId')
   const canvasId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('canvasId')
@@ -710,6 +1441,28 @@ function readDatabaseCanvas(database, metadata) {
     .map((row) => JSON.parse(row.payload_json))
   const edges = database.prepare('SELECT payload_json FROM edges WHERE canvas_id = ? ORDER BY rowid').all(metadata.canvasId)
     .map((row) => JSON.parse(row.payload_json))
+  const groups = databaseVersion(database) >= 5
+    ? normalizeCanvasGroups(database.prepare(`
+      SELECT id, name, color, layout, node_ids_json FROM canvas_groups
+      WHERE canvas_id = ? ORDER BY rowid
+    `).all(metadata.canvasId).map((row) => ({
+      id: row.id,
+      name: row.name,
+      color: row.color,
+      layout: row.layout,
+      nodeIds: JSON.parse(row.node_ids_json),
+    })))
+    : []
+  const stacks = databaseVersion(database) >= 5
+    ? normalizeCanvasStacks(database.prepare(`
+      SELECT id, collapsed, node_ids_json FROM canvas_stacks
+      WHERE canvas_id = ? ORDER BY rowid
+    `).all(metadata.canvasId).map((row) => ({
+      id: row.id,
+      collapsed: Boolean(row.collapsed),
+      nodeIds: JSON.parse(row.node_ids_json),
+    })))
+    : []
   const graph = validateGraph(nodes, edges)
   validateAssetReferences(database, metadata.canvasId, graph)
   return {
@@ -718,6 +1471,8 @@ function readDatabaseCanvas(database, metadata) {
     canvasId: metadata.canvasId,
     version: canvasRow.version,
     ...graph,
+    groups,
+    stacks,
   }
 }
 
@@ -732,24 +1487,19 @@ async function copyAssetSource(sourcePath, temporaryPath) {
 
   let size = 0
   const hash = createHash('sha256')
-  const digest = new Transform({
-    transform(chunk, encoding, callback) {
-      size += chunk.length
-      if (size > MAX_ASSET_BYTES) {
-        callback(new Error('图片文件超过 200 MB 的本地素材上限。'))
-        return
-      }
-      hash.update(chunk)
-      callback(null, chunk)
-    },
-  })
   const handle = await fs.open(temporaryPath, 'wx', 0o600)
   try {
-    await pipeline(
-      nativeFs.createReadStream(source),
-      digest,
-      handle.createWriteStream({ autoClose: false }),
-    )
+    for await (const chunk of nativeFs.createReadStream(source)) {
+      size += chunk.length
+      if (size > MAX_ASSET_BYTES) throw new Error('图片文件超过 200 MB 的本地素材上限。')
+      hash.update(chunk)
+      let offset = 0
+      while (offset < chunk.length) {
+        const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset, null)
+        if (bytesWritten <= 0) throw new Error('图片文件写入失败。')
+        offset += bytesWritten
+      }
+    }
     await handle.sync()
   } catch (error) {
     await handle.close().catch(() => undefined)
@@ -1337,7 +2087,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (schemaVersion !== 2 && schemaVersion !== PROJECT_DB_SCHEMA_VERSION) {
+    if (![2, 3, 4, 5, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -1392,7 +2142,120 @@ async function projectAssetsDirectory(projectDirectory) {
   return { dataDirectory, assetsDirectory }
 }
 
-async function openProjectData(projectDirectory) {
+function assertAssetRowPath(asset) {
+  if (!isRecord(asset) || typeof asset.id !== 'string'
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(asset.id)
+    || typeof asset.sha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(asset.sha256)) {
+    throw new Error('本地素材索引无效。')
+  }
+  const extension = extensionForImageMimeType(asset.mime_type)
+  const expectedPath = `assets/${asset.sha256}/${asset.id}.${extension}`
+  if (!extension || asset.relative_path !== expectedPath) throw new Error('本地素材路径无效。')
+  return expectedPath
+}
+
+async function resolveProjectAssetFile(projectDirectory, asset, { allowMissing = false } = {}) {
+  const relativePath = assertAssetRowPath(asset)
+  const { dataDirectory, assetsDirectory } = await projectAssetsDirectory(projectDirectory)
+  const filePath = path.resolve(dataDirectory, ...relativePath.split('/'))
+  const relativeToAssets = path.relative(assetsDirectory, filePath)
+  if (!relativeToAssets || relativeToAssets === '..' || relativeToAssets.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relativeToAssets)) {
+    throw new Error('本地素材路径越界。')
+  }
+
+  const directory = path.dirname(filePath)
+  const directoryInfo = await fs.lstat(directory).catch((error) => {
+    if (allowMissing && nodeErrorCode(error) === 'ENOENT') return null
+    throw error
+  })
+  if (!directoryInfo && allowMissing) return null
+  const realDirectory = await fs.realpath(directory)
+  if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()
+    || path.relative(directory, realDirectory) !== '') {
+    throw new Error('本地素材内容目录缺失或路径无效。')
+  }
+
+  const fileInfo = await fs.lstat(filePath).catch((error) => {
+    if (allowMissing && nodeErrorCode(error) === 'ENOENT') return null
+    throw error
+  })
+  if (!fileInfo && allowMissing) return null
+  if (!fileInfo.isFile() || fileInfo.isSymbolicLink()) throw new Error('本地素材文件缺失或路径无效。')
+  const realFile = await fs.realpath(filePath)
+  if (path.relative(filePath, realFile) !== '') throw new Error('本地素材文件不能是符号链接。')
+  return { filePath, dataDirectory, assetsDirectory }
+}
+
+function normalizeAssetName(value) {
+  if (typeof value !== 'string' || !value.trim() || value.length > 255) {
+    throw new Error('素材名称需为 1-255 个字符。')
+  }
+  const name = value.replace(/[\u0000-\u001f]/gu, '_')
+  if (!name.trim()) throw new Error('素材名称不能为空。')
+  return name
+}
+
+function assertExpectedProjectIdentity(metadata, expectedIdentity) {
+  if (expectedIdentity === undefined || expectedIdentity === null) return
+  if (!isRecord(expectedIdentity)
+    || typeof expectedIdentity.projectId !== 'string' || !expectedIdentity.projectId
+    || typeof expectedIdentity.canvasId !== 'string' || !expectedIdentity.canvasId) {
+    throw new Error('最近项目身份校验请求无效。')
+  }
+  if (metadata.projectId !== expectedIdentity.projectId || metadata.canvasId !== expectedIdentity.canvasId) {
+    throw new Error('最近项目身份已变化，请从项目目录重新打开。')
+  }
+}
+
+async function inspectProjectDirectory(projectDirectory, expectedIdentity) {
+  if (typeof projectDirectory !== 'string' || !projectDirectory.trim()) throw new Error('项目目录无效。')
+  const directory = await fs.realpath(path.resolve(projectDirectory))
+  const rootInfo = await fs.lstat(directory)
+  if (!rootInfo.isDirectory()) throw new Error('项目目录不是文件夹。')
+  const dataDirectory = path.join(directory, '.vibepaper')
+  const dataDirectoryInfo = await fs.lstat(dataDirectory).catch(() => null)
+  if (!dataDirectoryInfo?.isDirectory() || dataDirectoryInfo.isSymbolicLink()) {
+    throw new Error('项目数据目录缺失、无效或不能是符号链接。')
+  }
+  const metadata = await readProjectMetadata(dataDirectory)
+  validateMetadata(metadata)
+  assertExpectedProjectIdentity(metadata, expectedIdentity)
+
+  const databasePath = path.join(dataDirectory, 'project.sqlite')
+  const databaseInfo = await fs.lstat(databasePath).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
+  if (!databaseInfo) {
+    await readProjectLegacyCanvas(dataDirectory, metadata)
+    return { project: publicProject(metadata), directory }
+  }
+  if (databaseInfo.isSymbolicLink() || !databaseInfo.isFile()) {
+    throw new Error('项目数据库不能是符号链接或非普通文件。')
+  }
+
+  const database = new DatabaseSync(databasePath, { readOnly: true, timeout: 5000 })
+  try {
+    const version = databaseVersion(database)
+    if (version === 0) {
+      await readProjectLegacyCanvas(dataDirectory, metadata)
+    } else {
+      if (version < 1 || version > PROJECT_DB_SCHEMA_VERSION) {
+        throw new Error(`本地项目数据库版本 ${version} 当前不受支持。`)
+      }
+      const storedProjectId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('projectId')
+      const storedCanvasId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('canvasId')
+      if (storedProjectId?.value !== metadata.projectId || storedCanvasId?.value !== metadata.canvasId) {
+        throw new Error('本地数据库与项目身份不匹配。')
+      }
+      const canvas = database.prepare('SELECT id FROM canvases WHERE id = ?').get(metadata.canvasId)
+      if (!canvas) throw new Error('本地数据库缺少项目对应的画布。')
+    }
+  } finally {
+    database.close()
+  }
+  return { project: publicProject(metadata), directory }
+}
+
+async function openProjectData(projectDirectory, expectedIdentity) {
   const directory = await fs.realpath(path.resolve(projectDirectory))
   const dataDirectory = path.join(directory, '.vibepaper')
   const dataDirectoryInfo = await fs.lstat(dataDirectory).catch(() => null)
@@ -1401,7 +2264,7 @@ async function openProjectData(projectDirectory) {
   }
   let metadata
   try {
-    metadata = await readJson(path.join(dataDirectory, 'project.json'))
+    metadata = await readProjectMetadata(dataDirectory)
   } catch (error) {
     if (error && (error.code === 'ENOENT' || error instanceof SyntaxError)) {
       throw new Error('所选文件夹不是可读取的 VibePaper 本地项目。')
@@ -1409,6 +2272,7 @@ async function openProjectData(projectDirectory) {
     throw error
   }
   validateMetadata(metadata)
+  assertExpectedProjectIdentity(metadata, expectedIdentity)
 
   const releaseWriterLock = await acquireProjectWriterLock(dataDirectory)
   let database
@@ -1427,10 +2291,7 @@ async function openProjectData(projectDirectory) {
     if (version === 0) {
       let legacyCanvas
       try {
-        legacyCanvas = validateLegacyCanvas(
-          await readJson(path.join(dataDirectory, 'canvas.json')),
-          metadata,
-        )
+        legacyCanvas = await readProjectLegacyCanvas(dataDirectory, metadata)
       } catch (error) {
         if (error && error.code === 'ENOENT') throw new Error('项目缺少画布数据库和可迁移的画布文件。')
         throw error
@@ -1440,6 +2301,9 @@ async function openProjectData(projectDirectory) {
       if (version === 1) await migrateDatabaseV1ToV2(database, dataDirectory)
       const migratedVersion = databaseVersion(database)
       if (migratedVersion === 2) await migrateDatabaseV2ToV3(database, dataDirectory)
+      if (databaseVersion(database) === 3) await migrateDatabaseV3ToV4(database, dataDirectory)
+      if (databaseVersion(database) === 4) await migrateDatabaseV4ToV5(database, dataDirectory)
+      if (databaseVersion(database) === 5) await migrateDatabaseV5ToV6(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
@@ -1488,19 +2352,24 @@ function createLocalProjectStore() {
     return result
   }
 
-  async function openProject(projectDirectory) {
+  async function openProject(projectDirectory, expectedIdentity) {
     return enqueue(async () => {
       const directory = await fs.realpath(path.resolve(projectDirectory))
       if (active?.directory === directory) {
+        assertExpectedProjectIdentity(active.metadata, expectedIdentity)
         return { project: publicProject(active.metadata), directory: active.directory }
       }
-      const next = await openProjectData(directory)
+      const next = await openProjectData(directory, expectedIdentity)
       const previous = active
       active = next
       if (previous?.metadata.projectId !== next.metadata.projectId) previewDigestCache.clear()
       if (previous && previous.database !== next.database) await closeProjectData(previous)
       return { project: publicProject(next.metadata), directory: next.directory }
     })
+  }
+
+  function inspectProject(projectDirectory, expectedIdentity) {
+    return enqueue(() => inspectProjectDirectory(projectDirectory, expectedIdentity))
   }
 
   async function createProject(parentDirectory, nameValue) {
@@ -1688,9 +2557,9 @@ function createLocalProjectStore() {
         const copied = await copyAssetSource(sourcePath, temporaryPath)
         const mimeType = await detectImageMimeType(temporaryPath)
         const existing = active.database.prepare(`
-          SELECT a.id, a.sha256, a.original_name, a.mime_type, a.size_bytes, a.created_at,
+          SELECT a.id, a.sha256, a.original_name, a.mime_type, a.size_bytes, a.created_at, a.updated_at,
             (SELECT COUNT(*) FROM asset_references r WHERE r.asset_id = a.id) AS reference_count
-          FROM assets a WHERE a.sha256 = ?
+          FROM assets a WHERE a.sha256 = ? AND a.deleted = 0
         `).get(copied.sha256)
         if (existing) {
           await fs.rm(temporaryPath, { force: true })
@@ -1718,16 +2587,16 @@ function createLocalProjectStore() {
         try {
           active.database.exec('BEGIN IMMEDIATE')
           active.database.prepare(`
-            INSERT INTO assets (id, sha256, original_name, mime_type, size_bytes, relative_path, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).run(assetId, copied.sha256, originalName, mimeType, copied.sizeBytes, relativePath, createdAt)
+            INSERT INTO assets (id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(assetId, copied.sha256, originalName, mimeType, copied.sizeBytes, relativePath, createdAt, createdAt)
           active.database.exec('COMMIT')
         } catch (error) {
           active.database.exec('ROLLBACK')
           await fs.rm(destination, { force: true }).catch(() => undefined)
           throw error
         }
-        return { assetId, name: originalName, mimeType, sizeBytes: copied.sizeBytes, createdAt, referenceCount: 0 }
+        return { assetId, name: originalName, mimeType, sizeBytes: copied.sizeBytes, createdAt, updatedAt: createdAt, referenceCount: 0 }
       } catch (error) {
         await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
         throw error
@@ -1740,36 +2609,168 @@ function createLocalProjectStore() {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取素材。')
       return active.database.prepare(`
         SELECT a.id AS assetId, a.original_name AS name, a.mime_type AS mimeType,
-          a.size_bytes AS sizeBytes, a.created_at AS createdAt,
+          a.size_bytes AS sizeBytes, a.created_at AS createdAt, a.updated_at AS updatedAt,
           (SELECT COUNT(*) FROM asset_references r WHERE r.asset_id = a.id) AS referenceCount
-        FROM assets a ORDER BY a.created_at DESC, a.id
+        FROM assets a WHERE a.deleted = 0 ORDER BY a.created_at DESC, a.id
       `).all()
+    })
+  }
+
+  function renameAsset(projectId, assetId, name) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法重命名素材。')
+      if (typeof assetId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(assetId)) {
+        throw new Error('素材标识无效。')
+      }
+      const normalizedName = normalizeAssetName(name)
+      const database = active.database
+      if (!database.prepare('SELECT id FROM assets WHERE id = ? AND deleted = 0').get(assetId)) {
+        throw new Error('本地素材不存在。')
+      }
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const updated = database.prepare('UPDATE assets SET original_name = ?, updated_at = ? WHERE id = ? AND deleted = 0')
+          .run(normalizedName, new Date().toISOString(), assetId)
+        if (updated.changes !== 1) throw new Error('本地素材不存在。')
+        const row = database.prepare(`
+          SELECT a.id AS assetId, a.original_name AS name, a.mime_type AS mimeType,
+            a.size_bytes AS sizeBytes, a.created_at AS createdAt, a.updated_at AS updatedAt,
+            (SELECT COUNT(*) FROM asset_references r WHERE r.asset_id = a.id) AS referenceCount
+          FROM assets a WHERE a.id = ?
+        `).get(assetId)
+        database.exec('COMMIT')
+        return publicAsset(row)
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function replaceAsset(projectId, assetId, sourcePath) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法替换素材。')
+      if (typeof assetId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(assetId)) {
+        throw new Error('素材标识无效。')
+      }
+      const database = active.database
+      const current = database.prepare('SELECT * FROM assets WHERE id = ? AND deleted = 0').get(assetId)
+      if (!current) throw new Error('本地素材不存在。')
+      assertAssetRowPath(current)
+      const oldAssetFile = await resolveProjectAssetFile(active.directory, current, { allowMissing: true })
+      const { assetsDirectory } = await projectAssetsDirectory(active.directory)
+      const temporaryPath = path.join(assetsDirectory, `.replace-${randomUUID()}.tmp`)
+      let destinationPath = null
+      let destinationAsset = null
+      let databaseCommitted = false
+      try {
+        const copied = await copyAssetSource(sourcePath, temporaryPath)
+        const mimeType = await detectImageMimeType(temporaryPath)
+        const extension = extensionForImageMimeType(mimeType)
+        const rawName = path.basename(path.resolve(sourcePath))
+        const normalizedName = normalizeAssetName(rawName || current.original_name)
+        const nextUpdatedAt = new Date().toISOString()
+
+        if (copied.sha256 !== current.sha256 || !oldAssetFile) {
+          const relativePath = `assets/${copied.sha256}/${assetId}.${extension}`
+          const assetDirectory = path.join(assetsDirectory, copied.sha256)
+          await fs.mkdir(assetDirectory, { recursive: true })
+          const directoryInfo = await fs.lstat(assetDirectory)
+          const realAssetDirectory = await fs.realpath(assetDirectory)
+          if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()
+            || path.relative(assetDirectory, realAssetDirectory) !== '') {
+            throw new Error('项目素材内容目录不能是符号链接。')
+          }
+          destinationPath = path.join(assetDirectory, `${assetId}.${extension}`)
+          destinationAsset = { id: assetId, sha256: copied.sha256, mime_type: mimeType, relative_path: relativePath }
+          await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+          await fs.rename(temporaryPath, destinationPath)
+        } else {
+          await fs.rm(temporaryPath, { force: true })
+          await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+        }
+
+        database.exec('BEGIN IMMEDIATE')
+        try {
+          const updated = destinationAsset
+            ? database.prepare(`
+              UPDATE assets
+              SET sha256 = ?, original_name = ?, mime_type = ?, size_bytes = ?, relative_path = ?, updated_at = ?
+              WHERE id = ? AND deleted = 0 AND sha256 = ? AND relative_path = ?
+            `).run(copied.sha256, normalizedName, mimeType, copied.sizeBytes, destinationAsset.relative_path,
+              nextUpdatedAt, assetId, current.sha256, current.relative_path)
+            : database.prepare(`
+              UPDATE assets SET original_name = ?, updated_at = ?
+              WHERE id = ? AND deleted = 0 AND sha256 = ? AND relative_path = ?
+            `).run(normalizedName, nextUpdatedAt, assetId, current.sha256, current.relative_path)
+          if (updated.changes !== 1) throw new Error('本地素材已变化，无法替换。')
+          const result = database.prepare(`
+            SELECT a.id AS assetId, a.original_name AS name, a.mime_type AS mimeType,
+              a.size_bytes AS sizeBytes, a.created_at AS createdAt, a.updated_at AS updatedAt,
+              (SELECT COUNT(*) FROM asset_references r WHERE r.asset_id = a.id) AS referenceCount
+            FROM assets a WHERE a.id = ?
+          `).get(assetId)
+          database.exec('COMMIT')
+          databaseCommitted = true
+          if (oldAssetFile && destinationPath && oldAssetFile.filePath !== destinationPath) {
+            await resolveProjectAssetFile(active.directory, current, { allowMissing: true })
+              .then((resolved) => resolved ? fs.rm(resolved.filePath, { force: true }) : undefined)
+              .catch(() => undefined)
+          }
+          return publicAsset(result)
+        } catch (error) {
+          database.exec('ROLLBACK')
+          throw error
+        }
+      } catch (error) {
+        await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+        if (!databaseCommitted && destinationPath && destinationAsset) {
+          await resolveProjectAssetFile(active.directory, destinationAsset, { allowMissing: true })
+            .then((resolved) => resolved ? fs.rm(resolved.filePath, { force: true }) : undefined)
+            .catch(() => undefined)
+        }
+        throw error
+      }
+    })
+  }
+
+  function deleteAsset(projectId, assetId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法删除素材。')
+      if (typeof assetId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(assetId)) {
+        throw new Error('素材标识无效。')
+      }
+      const database = active.database
+      if (!database.prepare('SELECT id FROM assets WHERE id = ? AND deleted = 0').get(assetId)) {
+        throw new Error('本地素材不存在。')
+      }
+      const references = database.prepare(`
+        SELECT canvas_id AS canvasId, node_id AS nodeId FROM asset_references
+        WHERE asset_id = ? ORDER BY canvas_id, node_id
+      `).all(assetId).map((reference) => ({ ...reference, type: 'canvas' }))
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const updated = database.prepare('UPDATE assets SET deleted = 1, updated_at = ? WHERE id = ? AND deleted = 0')
+          .run(new Date().toISOString(), assetId)
+        if (updated.changes !== 1) throw new Error('本地素材不存在。')
+        database.exec('COMMIT')
+        return { deletedAssetId: assetId, references }
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
     })
   }
 
   function resolveAsset(assetId) {
     return enqueue(async () => {
       if (!active || typeof assetId !== 'string') throw new Error('本地素材不可用。')
-      const asset = active.database.prepare('SELECT mime_type, relative_path FROM assets WHERE id = ?').get(assetId)
-      if (!asset || !asset.relative_path.startsWith('assets/')) throw new Error('本地素材不存在。')
-      const dataDirectory = path.resolve(active.directory, '.vibepaper')
-      const filePath = path.resolve(dataDirectory, asset.relative_path)
-      const relativePath = path.relative(dataDirectory, filePath)
-      if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
-        throw new Error('本地素材路径无效。')
-      }
-      if (!/^assets[\\/][a-f0-9]{64}[\\/][a-f0-9-]{36}\.(?:png|jpg|gif|webp)$/iu.test(asset.relative_path)) {
-        throw new Error('本地素材路径格式无效。')
-      }
-      const assetDirectory = path.dirname(filePath)
-      const directoryInfo = await fs.lstat(assetDirectory).catch(() => null)
-      if (!directoryInfo?.isDirectory() || directoryInfo.isSymbolicLink()
-        || path.relative(assetDirectory, await fs.realpath(assetDirectory)) !== '') {
-        throw new Error('本地素材目录缺失或路径无效。')
-      }
-      const fileInfo = await fs.lstat(filePath).catch(() => null)
-      if (!fileInfo?.isFile() || fileInfo.isSymbolicLink()) throw new Error('本地素材文件缺失或无法读取。')
-      return { filePath: await fs.realpath(filePath), mimeType: asset.mime_type }
+      const asset = active.database.prepare('SELECT id, sha256, mime_type, relative_path FROM assets WHERE id = ?').get(assetId)
+      if (!asset) throw new Error('本地素材不存在。')
+      const resolved = await resolveProjectAssetFile(active.directory, asset)
+      return { filePath: resolved.filePath, mimeType: asset.mime_type }
     })
   }
 
@@ -1844,6 +2845,57 @@ function createLocalProjectStore() {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error('任务列表上限无效。')
       return active.database.prepare('SELECT * FROM tasks ORDER BY created_at DESC, task_id LIMIT ?')
         .all(limit).map(taskFromRow)
+    })
+  }
+
+  function searchTasks(projectId, query) {
+    return enqueue(() => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法搜索任务。')
+      const normalized = normalizeTaskSearchInput(query)
+      const clauses = []
+      const values = []
+      if (normalized.keyword) {
+        const promptExpression = `COALESCE(
+          CASE WHEN json_type(input_json, '$.prompt') = 'text'
+            THEN json_extract(input_json, '$.prompt') END,
+          CASE WHEN json_type(input_json, '$.modelParams.prompt') = 'text'
+            THEN json_extract(input_json, '$.modelParams.prompt') END,
+          ''
+        )`
+        clauses.push(`instr(lower(${promptExpression}), lower(?)) > 0`)
+        values.push(normalized.keyword)
+      }
+      if (normalized.model) {
+        clauses.push("instr(lower(provider_id || ' ' || model_id || ' ' || provider_type), lower(?)) > 0")
+        values.push(normalized.model)
+      }
+      if (normalized.modality) {
+        clauses.push('modality = ?')
+        values.push(normalized.modality)
+      }
+      if (normalized.status) {
+        clauses.push('status = ?')
+        values.push(normalized.status)
+      }
+      if (normalized.fromTime !== null) {
+        clauses.push('created_at >= ?')
+        values.push(new Date(normalized.fromTime).toISOString())
+      }
+      if (normalized.toTime !== null) {
+        clauses.push('created_at <= ?')
+        values.push(new Date(normalized.toTime).toISOString())
+      }
+
+      const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
+      const total = Number(active.database.prepare(`SELECT COUNT(*) AS total FROM tasks ${where}`)
+        .get(...values).total)
+      const offset = (normalized.page - 1) * normalized.pageSize
+      const items = active.database.prepare(`
+        SELECT * FROM tasks ${where}
+        ORDER BY created_at DESC, task_id
+        LIMIT ? OFFSET ?
+      `).all(...values, normalized.pageSize, offset).map(taskFromRow)
+      return { items, total, page: normalized.page, pageSize: normalized.pageSize }
     })
   }
 
@@ -2097,34 +3149,1005 @@ function createLocalProjectStore() {
     return JSON.parse(JSON.stringify(active.canvas))
   }
 
+  function exportCanvas(projectId, canvasId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，请重新打开画布。')
+      }
+      const canvas = readDatabaseCanvas(active.database, active.metadata)
+      const updatedAt = active.database.prepare('SELECT updated_at FROM canvases WHERE id = ?')
+        .get(active.metadata.canvasId)?.updated_at ?? null
+      const document = {
+        schema_version: CANVAS_EXPORT_SCHEMA_VERSION,
+        schemaVersion: CANVAS_EXPORT_SCHEMA_VERSION,
+        canvas: {
+          id: canvas.canvasId,
+          name: active.metadata.name,
+          description: null,
+          schemaVersion: CANVAS_EXPORT_SCHEMA_VERSION,
+          version: canvas.version,
+          createdAt: active.metadata.createdAt,
+          updatedAt,
+        },
+        nodes: canvas.nodes.map(canvasNodeExportPayload),
+        edges: canvas.edges.map(canvasEdgeExportPayload),
+        groups: canvas.groups,
+        stacks: canvas.stacks,
+      }
+      return JSON.parse(JSON.stringify(document))
+    })
+  }
+
+  function createNode(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      const idempotencyKey = input.idempotencyKey
+      if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.length > 128) {
+        throw new Error('Idempotency-Key 必须为 1-128 个字符。')
+      }
+      const request = normalizeCreateNodeInput(input)
+      const database = active.database
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        let command = database.prepare(`
+          SELECT operation, result_canvas_version, result_snapshot
+          FROM canvas_graph_commands WHERE canvas_id = ? AND idempotency_key = ?
+        `).get(active.metadata.canvasId, idempotencyKey)
+        if (command && command.operation !== 'create_nodes') {
+          throw new Error('Idempotency-Key 已用于其他画布命令。')
+        }
+        if (command && command.result_snapshot !== '{}') {
+          let payload
+          try {
+            payload = JSON.parse(command.result_snapshot)
+            if (!isRecord(payload) || typeof payload.id !== 'string' || typeof payload.type !== 'string'
+              || !isRecord(payload.params)) throw new Error('invalid node snapshot')
+          } catch {
+            throw new Error('画布命令结果快照损坏。')
+          }
+          const localAsset = payload.type === 'image' && typeof payload.params.assetId === 'string'
+            ? database.prepare('SELECT id FROM assets WHERE id = ?').get(payload.params.assetId)?.id
+            : undefined
+          const node = flowNodeFromPayload(payload, localAsset)
+          database.exec('COMMIT')
+          return {
+            node: JSON.parse(JSON.stringify(node)),
+            version: active.canvas.version,
+            replayed: true,
+          }
+        }
+
+        if (!command) {
+          database.prepare(`
+            INSERT INTO canvas_graph_commands (canvas_id, idempotency_key, operation, created_at)
+            VALUES (?, ?, 'create_nodes', ?)
+          `).run(active.metadata.canvasId, idempotencyKey, new Date().toISOString())
+        }
+
+        const canvasRow = database.prepare('SELECT version FROM canvases WHERE id = ?')
+          .get(active.metadata.canvasId)
+        if (!canvasRow || canvasRow.version !== active.canvas.version
+          || (request.expectedVersion !== null && request.expectedVersion !== canvasRow.version)) {
+          throw new Error('画布已在其他会话更新，请刷新。')
+        }
+        if (!Object.hasOwn(EDGE_COMPATIBLE_TARGET_TYPES, request.type)) {
+          throw new Error(`非法节点类型: ${request.type}`)
+        }
+
+        const nodeId = randomUUID()
+        const payload = {
+          id: nodeId,
+          type: request.type,
+          x: request.x,
+          y: request.y,
+          width: request.width,
+          height: request.height,
+          params: request.params,
+          status: 'idle',
+          currentOutputId: null,
+          groupId: null,
+          stackId: null,
+          creativeType: request.creativeType,
+          stale: false,
+          modelRef: request.modelRef,
+          prompt: request.prompt,
+          output: null,
+          execStatus: 'idle',
+        }
+        const localAssetId = payload.type === 'image' && typeof payload.params.assetId === 'string'
+          ? database.prepare('SELECT id FROM assets WHERE id = ?').get(payload.params.assetId)?.id
+          : undefined
+        const node = flowNodeFromPayload(payload, localAssetId)
+        const graph = validateGraph([...active.canvas.nodes, node], active.canvas.edges)
+        const persistedNode = graph.nodes[graph.nodes.length - 1]
+        const nextVersion = canvasRow.version + 1
+        if (!Number.isSafeInteger(nextVersion)) throw new Error('画布版本已达到本地上限。')
+
+        await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+        database.prepare(`
+          INSERT INTO nodes (canvas_id, id, position_x, position_y, payload_json)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(active.metadata.canvasId, persistedNode.id, persistedNode.position.x, persistedNode.position.y, JSON.stringify(persistedNode))
+        insertAssetReferences(database, active.metadata.canvasId, { nodes: [persistedNode] })
+        const updated = database.prepare(`
+          UPDATE canvases SET version = ?, updated_at = ? WHERE id = ? AND version = ?
+        `).run(nextVersion, new Date().toISOString(), active.metadata.canvasId, canvasRow.version)
+        if (updated.changes !== 1) throw new Error('画布已在其他会话更新，请刷新。')
+        database.prepare(`
+          UPDATE canvas_graph_commands
+          SET operation = 'create_nodes', result_canvas_version = ?, result_snapshot = ?
+          WHERE canvas_id = ? AND idempotency_key = ?
+        `).run(nextVersion, JSON.stringify(payload), active.metadata.canvasId, idempotencyKey)
+        database.exec('COMMIT')
+
+        active.canvas = {
+          ...active.canvas,
+          version: nextVersion,
+          nodes: graph.nodes,
+          edges: graph.edges,
+        }
+        return {
+          node: JSON.parse(JSON.stringify(persistedNode)),
+          version: nextVersion,
+          replayed: false,
+        }
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function updateNode(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      if (typeof input.nodeId !== 'string' || !input.nodeId || input.nodeId.length > 256) {
+        throw new Error('节点标识无效。')
+      }
+      const idempotencyKey = input.idempotencyKey
+      if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.length > 128) {
+        throw new Error('Idempotency-Key 必须为 1-128 个字符。')
+      }
+      const request = normalizeUpdateNodeInput(input)
+      const database = active.database
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const command = database.prepare(`
+          SELECT operation, result_snapshot
+          FROM canvas_graph_commands WHERE canvas_id = ? AND idempotency_key = ?
+        `).get(active.metadata.canvasId, idempotencyKey)
+        if (command && command.operation !== 'update_node_config') {
+          throw new Error('Idempotency-Key 已用于其他画布命令。')
+        }
+        if (command && command.result_snapshot !== '{}') {
+          let node
+          try {
+            node = JSON.parse(command.result_snapshot)
+            if (!isRecord(node) || typeof node.id !== 'string' || typeof node.type !== 'string'
+              || !isRecord(node.position) || !isRecord(node.data)) throw new Error('invalid node snapshot')
+          } catch {
+            throw new Error('画布命令结果快照损坏。')
+          }
+          database.exec('COMMIT')
+          return {
+            node: JSON.parse(JSON.stringify(node)),
+            version: active.canvas.version,
+            replayed: true,
+          }
+        }
+
+        if (!command) {
+          database.prepare(`
+            INSERT INTO canvas_graph_commands (canvas_id, idempotency_key, operation, created_at)
+            VALUES (?, ?, 'update_node_config', ?)
+          `).run(active.metadata.canvasId, idempotencyKey, new Date().toISOString())
+        }
+
+        const canvasRow = database.prepare('SELECT version FROM canvases WHERE id = ?')
+          .get(active.metadata.canvasId)
+        if (!canvasRow || canvasRow.version !== active.canvas.version
+          || (request.expectedVersion !== null && request.expectedVersion !== canvasRow.version)) {
+          throw new Error('画布已在其他会话更新，请刷新。')
+        }
+        const storedNode = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+          .get(active.metadata.canvasId, input.nodeId)
+        const currentNode = active.canvas.nodes.find((node) => node.id === input.nodeId)
+        if (!storedNode || !currentNode) throw new Error('节点不存在。')
+
+        const { node: updatedNode, contentChanged } = applyUpdateNodeRequest(currentNode, request)
+        const candidateNodes = active.canvas.nodes.map((node) => node.id === input.nodeId ? updatedNode : node)
+        const staleResult = contentChanged
+          ? markDownstreamNodesStale(candidateNodes, active.canvas.edges, input.nodeId)
+          : { nodes: candidateNodes, staleNodeIds: new Set() }
+        const graph = validateGraph(staleResult.nodes, active.canvas.edges)
+        const resultNode = graph.nodes.find((node) => node.id === input.nodeId)
+        const nextVersion = canvasRow.version + 1
+        if (!Number.isSafeInteger(nextVersion)) throw new Error('画布版本已达到本地上限。')
+
+        await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+        const updateNodeRow = database.prepare(`
+          UPDATE nodes SET position_x = ?, position_y = ?, payload_json = ?
+          WHERE canvas_id = ? AND id = ?
+        `)
+        const changedNodeIds = new Set([input.nodeId, ...staleResult.staleNodeIds])
+        for (const nodeId of changedNodeIds) {
+          const node = graph.nodes.find((entry) => entry.id === nodeId)
+          if (!node) continue
+          updateNodeRow.run(node.position.x, node.position.y, JSON.stringify(node), active.metadata.canvasId, nodeId)
+        }
+        const updatedCanvas = database.prepare(`
+          UPDATE canvases SET version = ?, updated_at = ? WHERE id = ? AND version = ?
+        `).run(nextVersion, new Date().toISOString(), active.metadata.canvasId, canvasRow.version)
+        if (updatedCanvas.changes !== 1) throw new Error('画布已在其他会话更新，请刷新。')
+        database.prepare(`
+          UPDATE canvas_graph_commands
+          SET operation = 'update_node_config', result_canvas_version = ?, result_snapshot = ?
+          WHERE canvas_id = ? AND idempotency_key = ?
+        `).run(nextVersion, JSON.stringify(resultNode), active.metadata.canvasId, idempotencyKey)
+        database.exec('COMMIT')
+
+        active.canvas = { ...active.canvas, version: nextVersion, nodes: graph.nodes, edges: graph.edges }
+        return {
+          node: JSON.parse(JSON.stringify(resultNode)),
+          version: nextVersion,
+          replayed: false,
+        }
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function deleteNode(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      if (typeof input.nodeId !== 'string' || !input.nodeId || input.nodeId.length > 256) {
+        throw new Error('节点标识无效。')
+      }
+      const idempotencyKey = input.idempotencyKey
+      if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.length > 128) {
+        throw new Error('Idempotency-Key 必须为 1-128 个字符。')
+      }
+      const expectedVersion = input.expectedVersion ?? null
+      if (expectedVersion !== null
+        && (!Number.isInteger(expectedVersion) || expectedVersion < -2_147_483_648 || expectedVersion > 2_147_483_647)) {
+        throw new Error('画布版本无效，请重新打开项目。')
+      }
+
+      const database = active.database
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const command = database.prepare(`
+          SELECT operation, result_snapshot
+          FROM canvas_graph_commands WHERE canvas_id = ? AND idempotency_key = ?
+        `).get(active.metadata.canvasId, idempotencyKey)
+        if (command && command.operation !== 'delete_nodes') {
+          throw new Error('Idempotency-Key 已用于其他画布命令。')
+        }
+        if (command && command.result_snapshot !== '{}') {
+          let impact
+          try {
+            impact = JSON.parse(command.result_snapshot)
+            if (!isRecord(impact) || typeof impact.deletedNodeId !== 'string'
+              || !Array.isArray(impact.connectedEdges) || !impact.connectedEdges.every((id) => typeof id === 'string')
+              || !Array.isArray(impact.downstreamNodes)
+              || !impact.downstreamNodes.every((node) => isRecord(node)
+                && typeof node.id === 'string' && typeof node.type === 'string' && typeof node.name === 'string')) {
+              throw new Error('invalid delete snapshot')
+            }
+          } catch {
+            throw new Error('画布命令结果快照损坏。')
+          }
+          database.exec('COMMIT')
+          return JSON.parse(JSON.stringify(impact))
+        }
+
+        if (!command) {
+          database.prepare(`
+            INSERT INTO canvas_graph_commands (canvas_id, idempotency_key, operation, created_at)
+            VALUES (?, ?, 'delete_nodes', ?)
+          `).run(active.metadata.canvasId, idempotencyKey, new Date().toISOString())
+        }
+
+        const canvasRow = database.prepare('SELECT version FROM canvases WHERE id = ?')
+          .get(active.metadata.canvasId)
+        if (!canvasRow || canvasRow.version !== active.canvas.version
+          || (expectedVersion !== null && expectedVersion !== canvasRow.version)) {
+          throw new Error('画布已在其他会话更新，请刷新。')
+        }
+        const storedNode = database.prepare('SELECT id FROM nodes WHERE canvas_id = ? AND id = ?')
+          .get(active.metadata.canvasId, input.nodeId)
+        if (!storedNode || !active.canvas.nodes.some((node) => node.id === input.nodeId)) {
+          throw new Error('节点不存在。')
+        }
+
+        const connectedEdges = database.prepare(`
+          SELECT id, source_node_id, target_node_id
+          FROM edges
+          WHERE canvas_id = ? AND (source_node_id = ? OR target_node_id = ?)
+          ORDER BY rowid
+        `).all(active.metadata.canvasId, input.nodeId, input.nodeId)
+        const downstreamIds = new Set(connectedEdges
+          .filter((edge) => edge.source_node_id === input.nodeId)
+          .map((edge) => edge.target_node_id))
+        const downstreamRows = downstreamIds.size === 0
+          ? []
+          : database.prepare(`
+            SELECT id, payload_json FROM nodes
+            WHERE canvas_id = ? AND id IN (${Array.from(downstreamIds, () => '?').join(', ')})
+            ORDER BY rowid
+          `).all(active.metadata.canvasId, ...downstreamIds)
+        const legacyNodeNames = {
+          text: '文本节点',
+          image: '图片节点',
+          video: '视频节点',
+          audio: '音频节点',
+          compose: '合成节点',
+          director: '导演台节点',
+        }
+        const impact = {
+          connectedEdges: connectedEdges.map((edge) => edge.id),
+          downstreamNodes: downstreamRows.map((row) => {
+            const payload = JSON.parse(row.payload_json)
+            return {
+              id: row.id,
+              type: payload.type,
+              name: Object.hasOwn(legacyNodeNames, payload.type) ? legacyNodeNames[payload.type] : '节点',
+            }
+          }),
+          deletedNodeId: input.nodeId,
+        }
+        const nextVersion = canvasRow.version + 1
+        if (!Number.isSafeInteger(nextVersion)) throw new Error('画布版本已达到本地上限。')
+
+        await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+        const deleteEdge = database.prepare('DELETE FROM edges WHERE canvas_id = ? AND id = ?')
+        for (const edge of connectedEdges) deleteEdge.run(active.metadata.canvasId, edge.id)
+        const deleted = database.prepare('DELETE FROM nodes WHERE canvas_id = ? AND id = ?')
+          .run(active.metadata.canvasId, input.nodeId)
+        if (deleted.changes !== 1) throw new Error('节点不存在。')
+        const updatedCanvas = database.prepare(`
+          UPDATE canvases SET version = ?, updated_at = ? WHERE id = ? AND version = ?
+        `).run(nextVersion, new Date().toISOString(), active.metadata.canvasId, canvasRow.version)
+        if (updatedCanvas.changes !== 1) throw new Error('画布已在其他会话更新，请刷新。')
+        database.prepare(`
+          UPDATE canvas_graph_commands
+          SET operation = 'delete_nodes', result_canvas_version = ?, result_snapshot = ?
+          WHERE canvas_id = ? AND idempotency_key = ?
+        `).run(nextVersion, JSON.stringify(impact), active.metadata.canvasId, idempotencyKey)
+        database.exec('COMMIT')
+
+        active.canvas = {
+          ...active.canvas,
+          version: nextVersion,
+          nodes: active.canvas.nodes.filter((node) => node.id !== input.nodeId),
+          edges: active.canvas.edges.filter((edge) => edge.source !== input.nodeId && edge.target !== input.nodeId),
+        }
+        return JSON.parse(JSON.stringify(impact))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function connectEdge(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      const sourceNodeId = input.sourceNodeId
+      const targetNodeId = input.targetNodeId
+      if (typeof sourceNodeId !== 'string' || !sourceNodeId
+        || typeof targetNodeId !== 'string' || !targetNodeId) {
+        throw new Error('连线节点标识无效。')
+      }
+      const hasIdempotencyKey = input.idempotencyKey !== undefined && input.idempotencyKey !== null
+      const idempotencyKey = hasIdempotencyKey ? input.idempotencyKey : null
+      if (hasIdempotencyKey
+        && (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.length > 128)) {
+        throw new Error('Idempotency-Key 必须为 1-128 个字符。')
+      }
+      const expectedVersion = input.expectedVersion ?? null
+      if (expectedVersion !== null
+        && (!Number.isInteger(expectedVersion) || expectedVersion < -2_147_483_648 || expectedVersion > 2_147_483_647)) {
+        throw new Error('画布版本无效，请重新打开项目后再连接。')
+      }
+
+      const database = active.database
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const command = hasIdempotencyKey
+          ? database.prepare(`
+            SELECT operation, result_snapshot
+            FROM canvas_graph_commands WHERE canvas_id = ? AND idempotency_key = ?
+          `).get(active.metadata.canvasId, idempotencyKey)
+          : undefined
+        if (command && command.operation !== 'connect_nodes') {
+          throw new Error('Idempotency-Key 已用于其他画布命令。')
+        }
+        if (command && command.result_snapshot !== '{}') {
+          let edge
+          try {
+            edge = JSON.parse(command.result_snapshot)
+            if (!isRecord(edge) || typeof edge.id !== 'string'
+              || typeof edge.sourceNodeId !== 'string' || typeof edge.sourcePort !== 'string'
+              || typeof edge.targetNodeId !== 'string' || typeof edge.targetPort !== 'string'
+              || typeof edge.valid !== 'boolean' || typeof edge.dependencyType !== 'string') {
+              throw new Error('invalid edge snapshot')
+            }
+          } catch {
+            throw new Error('画布命令结果快照损坏。')
+          }
+          database.exec('COMMIT')
+          return {
+            edge: JSON.parse(JSON.stringify(edge)),
+            version: active.canvas.version,
+            replayed: true,
+          }
+        }
+
+        if (hasIdempotencyKey && !command) {
+          database.prepare(`
+            INSERT INTO canvas_graph_commands (canvas_id, idempotency_key, operation, created_at)
+            VALUES (?, ?, 'connect_nodes', ?)
+          `).run(active.metadata.canvasId, idempotencyKey, new Date().toISOString())
+        }
+
+        if (sourceNodeId === targetNodeId) throw new Error('禁止自连接')
+        const existingRow = database.prepare(`
+          SELECT payload_json FROM edges
+          WHERE canvas_id = ? AND source_node_id = ? AND target_node_id = ?
+          ORDER BY rowid LIMIT 1
+        `).get(active.metadata.canvasId, sourceNodeId, targetNodeId)
+        if (existingRow) {
+          const existingEdge = active.canvas.edges.find((edge) => edge.source === sourceNodeId && edge.target === targetNodeId)
+            ?? JSON.parse(existingRow.payload_json)
+          const existingPayload = existingEdge.data?.edge ?? {
+            id: existingEdge.id,
+            sourceNodeId: existingEdge.source,
+            sourcePort: existingEdge.sourceHandle ?? 'output',
+            targetNodeId: existingEdge.target,
+            targetPort: existingEdge.targetHandle ?? 'input',
+            valid: existingEdge.data?.valid ?? true,
+            dependencyType: existingEdge.dependencyType ?? 'reference',
+          }
+          const canvasRow = database.prepare('SELECT version FROM canvases WHERE id = ?')
+            .get(active.metadata.canvasId)
+          if (!canvasRow) throw new Error('画布不存在。')
+          if (hasIdempotencyKey) {
+            database.prepare(`
+              UPDATE canvas_graph_commands
+              SET operation = 'connect_nodes', result_canvas_version = ?, result_snapshot = ?
+              WHERE canvas_id = ? AND idempotency_key = ?
+            `).run(canvasRow.version, JSON.stringify(existingPayload), active.metadata.canvasId, idempotencyKey)
+          }
+          database.exec('COMMIT')
+          return {
+            edge: JSON.parse(JSON.stringify(existingPayload)),
+            version: active.canvas.version,
+            replayed: true,
+          }
+        }
+
+        const canvasRow = database.prepare('SELECT version FROM canvases WHERE id = ?')
+          .get(active.metadata.canvasId)
+        if (!canvasRow || canvasRow.version !== active.canvas.version
+          || (expectedVersion !== null && expectedVersion !== canvasRow.version)) {
+          throw new Error('画布已在其他会话更新，请刷新。')
+        }
+
+        const sourceRow = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+          .get(active.metadata.canvasId, sourceNodeId)
+        const targetRow = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+          .get(active.metadata.canvasId, targetNodeId)
+        if (!sourceRow || !targetRow) throw new Error('节点不存在')
+        const sourceNode = JSON.parse(sourceRow.payload_json)
+        const targetNode = JSON.parse(targetRow.payload_json)
+        if (!Object.hasOwn(EDGE_COMPATIBLE_TARGET_TYPES, sourceNode.type)
+          || !EDGE_COMPATIBLE_TARGET_TYPES[sourceNode.type].has(targetNode.type)) {
+          throw new Error(`连线不兼容：${sourceNode.type} 不能作为 ${targetNode.type} 的上游`)
+        }
+
+        const sourcePort = input.sourcePort ?? 'output'
+        const targetPort = input.targetPort ?? 'input'
+        if (typeof sourcePort !== 'string' || typeof targetPort !== 'string') {
+          throw new Error('连线端口无效。')
+        }
+        const dependencyType = input.dependencyType ?? 'reference'
+        if (!new Set(['reference', 'input', 'control']).has(dependencyType)) {
+          throw new Error('dependencyType 必须是 reference/input/control')
+        }
+
+        const edgeId = randomUUID()
+        const edge = {
+          id: edgeId,
+          source: sourceNodeId,
+          sourceHandle: sourcePort,
+          target: targetNodeId,
+          targetHandle: targetPort,
+          data: {
+            valid: true,
+            edge: {
+              id: edgeId,
+              sourceNodeId,
+              sourcePort,
+              targetNodeId,
+              targetPort,
+              valid: true,
+              dependencyType,
+            },
+          },
+        }
+        const graph = validateGraph(active.canvas.nodes, [...active.canvas.edges, edge])
+        const normalizedEdge = graph.edges[graph.edges.length - 1]
+        const nextVersion = canvasRow.version + 1
+        if (!Number.isSafeInteger(nextVersion)) throw new Error('画布版本已达到本地上限。')
+        const now = new Date().toISOString()
+        await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+        database.prepare(`
+          INSERT INTO edges (canvas_id, id, source_node_id, target_node_id, payload_json)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(active.metadata.canvasId, normalizedEdge.id, sourceNodeId, targetNodeId, JSON.stringify(normalizedEdge))
+        const updated = database.prepare(`
+          UPDATE canvases SET version = ?, updated_at = ? WHERE id = ? AND version = ?
+        `).run(nextVersion, now, active.metadata.canvasId, canvasRow.version)
+        if (updated.changes !== 1) throw new Error('画布已在其他会话更新，请刷新。')
+        if (hasIdempotencyKey) {
+          database.prepare(`
+            UPDATE canvas_graph_commands
+            SET operation = 'connect_nodes', result_canvas_version = ?, result_snapshot = ?
+            WHERE canvas_id = ? AND idempotency_key = ?
+          `).run(nextVersion, JSON.stringify(normalizedEdge.data.edge), active.metadata.canvasId, idempotencyKey)
+        }
+        database.exec('COMMIT')
+
+        active.canvas = { ...active.canvas, version: nextVersion, edges: graph.edges }
+        return {
+          edge: JSON.parse(JSON.stringify(normalizedEdge.data.edge)),
+          version: nextVersion,
+          replayed: false,
+        }
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function deleteEdge(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      if (typeof input.edgeId !== 'string' || !input.edgeId || input.edgeId.length > 256) {
+        throw new Error('连线标识无效。')
+      }
+
+      const database = active.database
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const edge = database.prepare('SELECT id FROM edges WHERE canvas_id = ? AND id = ?')
+          .get(active.metadata.canvasId, input.edgeId)
+        if (!edge) throw new Error('连线不存在')
+
+        await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+        const deleted = database.prepare('DELETE FROM edges WHERE canvas_id = ? AND id = ?')
+          .run(active.metadata.canvasId, input.edgeId)
+        if (deleted.changes !== 1) throw new Error('连线不存在')
+        database.exec('COMMIT')
+
+        active.canvas = {
+          ...active.canvas,
+          edges: active.canvas.edges.filter((candidate) => candidate.id !== input.edgeId),
+        }
+        return { status: 'ok' }
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function addGroup(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      const nodeIds = normalizeCanvasNodeIds(input.nodeIds, '编组至少需要 2 个节点', 2)
+      const color = input.color ?? '#8b5cf6'
+      if (typeof color !== 'string') throw new Error('编组颜色无效。')
+      const group = { id: randomUUID(), name: '编组', color, layout: 'free', nodeIds }
+      const database = active.database
+      const now = new Date().toISOString()
+
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        database.prepare(`
+          INSERT INTO canvas_groups (canvas_id, id, name, color, layout, node_ids_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(active.metadata.canvasId, group.id, group.name, group.color, group.layout,
+          JSON.stringify(group.nodeIds), now, now)
+        const updatedNodes = updateNodeMemberships(
+          database, active.metadata.canvasId, nodeIds, 'groupId', group.id, true,
+        )
+        database.exec('COMMIT')
+
+        active.canvas = {
+          ...active.canvas,
+          nodes: nodesWithMembershipUpdates(active.canvas.nodes, updatedNodes),
+          groups: [...active.canvas.groups, group],
+        }
+        return JSON.parse(JSON.stringify(group))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function updateGroup(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      const groupId = normalizeCanvasEntityId(input.groupId, '编组')
+      const database = active.database
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const currentRow = database.prepare(`
+          SELECT id, name, color, layout, node_ids_json
+          FROM canvas_groups WHERE canvas_id = ? AND id = ?
+        `).get(active.metadata.canvasId, groupId)
+        if (!currentRow) throw new Error('编组不存在')
+
+        const current = groupPayloadFromRow(currentRow)
+        const name = input.name === undefined || input.name === null ? current.name : input.name
+        const color = input.color === undefined || input.color === null ? current.color : input.color
+        const layout = input.layout === undefined || input.layout === null ? current.layout : input.layout
+        if (typeof name !== 'string' || typeof color !== 'string' || typeof layout !== 'string') {
+          throw new Error('编组数据无效。')
+        }
+        if (input.layout !== undefined && input.layout !== null
+          && !['free', 'grid', 'horizontal'].includes(layout)) {
+          throw new Error('布局类型必须是 free/grid/horizontal')
+        }
+        const nodeIds = input.nodeIds === undefined || input.nodeIds === null
+          ? current.nodeIds
+          : normalizeCanvasNodeIds(input.nodeIds, '画布编组节点列表无效。')
+        const updatedGroup = { id: groupId, name, color, layout, nodeIds }
+        const updatedAt = new Date().toISOString()
+        database.prepare(`
+          UPDATE canvas_groups
+          SET name = ?, color = ?, layout = ?, node_ids_json = ?, updated_at = ?
+          WHERE canvas_id = ? AND id = ?
+        `).run(name, color, layout, JSON.stringify(nodeIds), updatedAt, active.metadata.canvasId, groupId)
+        database.exec('COMMIT')
+
+        active.canvas = {
+          ...active.canvas,
+          groups: active.canvas.groups.map((group) => group.id === groupId ? updatedGroup : group),
+        }
+        return JSON.parse(JSON.stringify(updatedGroup))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function deleteGroup(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      const groupId = normalizeCanvasEntityId(input.groupId, '编组')
+      const database = active.database
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const row = database.prepare(`
+          SELECT node_ids_json FROM canvas_groups WHERE canvas_id = ? AND id = ?
+        `).get(active.metadata.canvasId, groupId)
+        if (!row) throw new Error('编组不存在')
+        const nodeIds = normalizeCanvasNodeIds(JSON.parse(row.node_ids_json), '画布编组节点列表无效。')
+        const updatedNodes = updateNodeMemberships(
+          database, active.metadata.canvasId, nodeIds, 'groupId', null, false,
+        )
+        const deleted = database.prepare('DELETE FROM canvas_groups WHERE canvas_id = ? AND id = ?')
+          .run(active.metadata.canvasId, groupId)
+        if (deleted.changes !== 1) throw new Error('编组不存在')
+        database.exec('COMMIT')
+
+        active.canvas = {
+          ...active.canvas,
+          nodes: nodesWithMembershipUpdates(active.canvas.nodes, updatedNodes),
+          groups: active.canvas.groups.filter((group) => group.id !== groupId),
+        }
+        return { status: 'ok' }
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function addStack(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      const nodeIds = normalizeCanvasNodeIds(input.nodeIds, '堆叠至少需要 2 个节点', 2)
+      const stack = { id: randomUUID(), collapsed: true, nodeIds }
+      const database = active.database
+      const now = new Date().toISOString()
+
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        database.prepare(`
+          INSERT INTO canvas_stacks (canvas_id, id, collapsed, node_ids_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(active.metadata.canvasId, stack.id, 1, JSON.stringify(stack.nodeIds), now, now)
+        const updatedNodes = updateNodeMemberships(
+          database, active.metadata.canvasId, nodeIds, 'stackId', stack.id, true,
+        )
+        database.exec('COMMIT')
+
+        active.canvas = {
+          ...active.canvas,
+          nodes: nodesWithMembershipUpdates(active.canvas.nodes, updatedNodes),
+          stacks: [...active.canvas.stacks, stack],
+        }
+        return JSON.parse(JSON.stringify(stack))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function updateStack(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      const stackId = normalizeCanvasEntityId(input.stackId, '堆叠')
+      const database = active.database
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const currentRow = database.prepare(`
+          SELECT id, collapsed, node_ids_json
+          FROM canvas_stacks WHERE canvas_id = ? AND id = ?
+        `).get(active.metadata.canvasId, stackId)
+        if (!currentRow) throw new Error('堆叠不存在')
+        if (input.collapsed !== undefined && input.collapsed !== null && typeof input.collapsed !== 'boolean') {
+          throw new Error('堆叠 collapsed 无效。')
+        }
+        const updatedStack = {
+          id: stackId,
+          collapsed: input.collapsed === undefined || input.collapsed === null
+            ? Boolean(currentRow.collapsed)
+            : input.collapsed,
+          nodeIds: normalizeCanvasNodeIds(JSON.parse(currentRow.node_ids_json), '画布堆叠节点列表无效。'),
+        }
+        database.prepare(`
+          UPDATE canvas_stacks SET collapsed = ?, updated_at = ? WHERE canvas_id = ? AND id = ?
+        `).run(updatedStack.collapsed ? 1 : 0, new Date().toISOString(), active.metadata.canvasId, stackId)
+        database.exec('COMMIT')
+
+        active.canvas = {
+          ...active.canvas,
+          stacks: active.canvas.stacks.map((stack) => stack.id === stackId ? updatedStack : stack),
+        }
+        return JSON.parse(JSON.stringify(updatedStack))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function extractFromStack(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      const stackId = normalizeCanvasEntityId(input.stackId, '堆叠')
+      const nodeId = normalizeCanvasEntityId(input.nodeId, '节点')
+      const database = active.database
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const currentRow = database.prepare(`
+          SELECT id, collapsed, node_ids_json
+          FROM canvas_stacks WHERE canvas_id = ? AND id = ?
+        `).get(active.metadata.canvasId, stackId)
+        if (!currentRow) throw new Error('堆叠不存在')
+        const storedNode = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+          .get(active.metadata.canvasId, nodeId)
+        const currentNode = active.canvas.nodes.find((node) => node.id === nodeId)
+        if (!storedNode || !currentNode) throw new Error('节点不存在')
+        const stack = stackPayloadFromRow(currentRow)
+        if (!stack.nodeIds.includes(nodeId)) throw new Error('该节点不在堆叠中')
+
+        const remainingNodeIds = stack.nodeIds.filter((candidate) => candidate !== nodeId)
+        if (remainingNodeIds.length === 0) {
+          database.prepare('DELETE FROM canvas_stacks WHERE canvas_id = ? AND id = ?')
+            .run(active.metadata.canvasId, stackId)
+        } else {
+          database.prepare(`
+            UPDATE canvas_stacks SET node_ids_json = ?, updated_at = ? WHERE canvas_id = ? AND id = ?
+          `).run(JSON.stringify(remainingNodeIds), new Date().toISOString(), active.metadata.canvasId, stackId)
+        }
+        const updatedNode = updateNodeMembership(database, active.metadata.canvasId, nodeId, 'stackId', null)
+        if (!updatedNode) throw new Error('节点不存在')
+        database.exec('COMMIT')
+
+        const updatedFlowNode = updatedNode
+        const remainingStack = remainingNodeIds.length === 0
+          ? null
+          : { ...stack, nodeIds: remainingNodeIds }
+        active.canvas = {
+          ...active.canvas,
+          nodes: nodesWithMembershipUpdates(active.canvas.nodes, new Map([[nodeId, updatedFlowNode]])),
+          stacks: remainingStack
+            ? active.canvas.stacks.map((candidate) => candidate.id === stackId ? remainingStack : candidate)
+            : active.canvas.stacks.filter((candidate) => candidate.id !== stackId),
+        }
+        return nodePayloadFromFlowNode(updatedFlowNode)
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function deleteStack(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input)
+        || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，画布没有保存。')
+      }
+      const stackId = normalizeCanvasEntityId(input.stackId, '堆叠')
+      const database = active.database
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const row = database.prepare(`
+          SELECT node_ids_json FROM canvas_stacks WHERE canvas_id = ? AND id = ?
+        `).get(active.metadata.canvasId, stackId)
+        if (!row) throw new Error('堆叠不存在')
+        const nodeIds = normalizeCanvasNodeIds(JSON.parse(row.node_ids_json), '画布堆叠节点列表无效。')
+        const updatedNodes = updateNodeMemberships(
+          database, active.metadata.canvasId, nodeIds, 'stackId', null, false,
+        )
+        const deleted = database.prepare('DELETE FROM canvas_stacks WHERE canvas_id = ? AND id = ?')
+          .run(active.metadata.canvasId, stackId)
+        if (deleted.changes !== 1) throw new Error('堆叠不存在')
+        database.exec('COMMIT')
+
+        active.canvas = {
+          ...active.canvas,
+          nodes: nodesWithMembershipUpdates(active.canvas.nodes, updatedNodes),
+          stacks: active.canvas.stacks.filter((stack) => stack.id !== stackId),
+        }
+        return { status: 'ok' }
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
   function saveCanvas(input) {
     return enqueue(async () => {
       if (!active || !isRecord(input)
         || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) {
         throw new Error('当前项目已更改，画布没有保存。')
       }
-      if (input.expectedVersion !== active.canvas.version) {
-        throw new Error('画布版本已变化，请重新打开项目后再保存。')
+      const hasIdempotencyKey = input.idempotencyKey !== undefined && input.idempotencyKey !== null
+      const idempotencyKey = hasIdempotencyKey ? input.idempotencyKey : null
+      if (hasIdempotencyKey
+        && (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.length > 128)) {
+        throw new Error('Idempotency-Key 必须为 1-128 个字符。')
       }
-
-      const graph = validateGraph(input.nodes, input.edges)
       const database = active.database
-      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
       database.exec('BEGIN IMMEDIATE')
       try {
+        const command = hasIdempotencyKey
+          ? database.prepare(`
+            SELECT operation, result_canvas_version, result_snapshot
+            FROM canvas_graph_commands WHERE canvas_id = ? AND idempotency_key = ?
+          `).get(active.metadata.canvasId, idempotencyKey)
+          : undefined
+        if (command && command.operation !== 'save_canvas') {
+          throw new Error('Idempotency-Key 已用于其他画布命令。')
+        }
+        if (command && command.result_snapshot !== '{}') {
+          let resultVersion
+          try {
+            const snapshot = JSON.parse(command.result_snapshot)
+            resultVersion = snapshot?.version ?? snapshot?.canvas?.version ?? command.result_canvas_version
+            if (!Number.isSafeInteger(resultVersion) || resultVersion < 0) {
+              throw new Error('invalid save snapshot')
+            }
+          } catch {
+            throw new Error('画布命令结果快照损坏。')
+          }
+          database.exec('COMMIT')
+          return { version: resultVersion, replayed: true }
+        }
+
+        if (hasIdempotencyKey && !command) {
+          database.prepare(`
+            INSERT INTO canvas_graph_commands (canvas_id, idempotency_key, operation, created_at)
+            VALUES (?, ?, 'save_canvas', ?)
+          `).run(active.metadata.canvasId, idempotencyKey, new Date().toISOString())
+        }
+
+        if (input.expectedVersion !== active.canvas.version) {
+          throw new Error('画布版本已变化，请重新打开项目后再保存。')
+        }
         const persistedVersion = database.prepare('SELECT version FROM canvases WHERE id = ?').get(active.metadata.canvasId)
         if (!persistedVersion || persistedVersion.version !== input.expectedVersion) {
           throw new Error('画布版本已被其他操作更新，请重新打开项目后再保存。')
         }
 
+        const graph = validateGraph(input.nodes, input.edges)
+        graph.nodes = preserveNodeGenerationState(graph.nodes, active.canvas.nodes)
+        // Existing Renderer saves contain only graph data. Preserve Store-only
+        // group/stack entities when those fields are omitted from the snapshot.
+        const groups = input.groups === undefined
+          ? normalizeCanvasGroups(active.canvas.groups)
+          : normalizeCanvasGroups(input.groups)
+        const stacks = input.stacks === undefined
+          ? normalizeCanvasStacks(active.canvas.stacks)
+          : normalizeCanvasStacks(input.stacks)
+        if (Buffer.byteLength(JSON.stringify({ ...graph, groups, stacks }), 'utf8') > MAX_CANVAS_BYTES) {
+          throw new Error('画布数据超过本地项目的单次保存上限。')
+        }
+
+        await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
         database.prepare('DELETE FROM edges WHERE canvas_id = ?').run(active.metadata.canvasId)
+        database.prepare('DELETE FROM canvas_groups WHERE canvas_id = ?').run(active.metadata.canvasId)
+        database.prepare('DELETE FROM canvas_stacks WHERE canvas_id = ?').run(active.metadata.canvasId)
         database.prepare('DELETE FROM nodes WHERE canvas_id = ?').run(active.metadata.canvasId)
         insertGraph(database, active.metadata.canvasId, graph)
+        insertCanvasGroupsAndStacks(database, active.metadata.canvasId, groups, stacks)
         insertAssetReferences(database, active.metadata.canvasId, graph)
         const nextVersion = input.expectedVersion + 1
         const update = database.prepare('UPDATE canvases SET version = ?, updated_at = ? WHERE id = ? AND version = ?')
           .run(nextVersion, new Date().toISOString(), active.metadata.canvasId, input.expectedVersion)
         if (update.changes !== 1) throw new Error('画布版本已被其他操作更新，请重新打开项目后再保存。')
+        if (hasIdempotencyKey) {
+          database.prepare(`
+            UPDATE canvas_graph_commands
+            SET operation = 'save_canvas', result_canvas_version = ?, result_snapshot = ?
+            WHERE canvas_id = ? AND idempotency_key = ?
+          `).run(nextVersion, JSON.stringify({ version: nextVersion }), active.metadata.canvasId, idempotencyKey)
+        }
         database.exec('COMMIT')
 
         active.canvas = {
@@ -2133,8 +4156,12 @@ function createLocalProjectStore() {
           canvasId: active.metadata.canvasId,
           version: nextVersion,
           ...graph,
+          groups,
+          stacks,
         }
-        return { version: nextVersion }
+        return hasIdempotencyKey
+          ? { version: nextVersion, replayed: false }
+          : { version: nextVersion }
       } catch (error) {
         database.exec('ROLLBACK')
         throw error
@@ -2151,15 +4178,26 @@ function createLocalProjectStore() {
   }
 
   return {
+    addGroup,
+    addStack,
     backupProject,
     cancelTask,
     claimNextTask,
     close,
+    connectEdge,
+    createNode,
     createProject,
     createTask,
+    deleteGroup,
+    deleteEdge,
+    deleteNode,
+    deleteStack,
+    extractFromStack,
+    exportCanvas,
     getActiveProject,
     getTask,
     getTaskInput,
+    inspectProject,
     importAsset,
     listAssets,
     listTaskEvents,
@@ -2171,8 +4209,15 @@ function createLocalProjectStore() {
     recordTaskFailed,
     recordTaskSucceeded,
     resolveAsset,
+    renameAsset,
+    replaceAsset,
+    deleteAsset,
     restoreBackup,
     saveCanvas,
+    searchTasks,
+    updateGroup,
+    updateNode,
+    updateStack,
   }
 }
 
@@ -2183,8 +4228,9 @@ function publicAsset(row) {
     mimeType: row.mime_type ?? row.mimeType,
     sizeBytes: Number(row.size_bytes ?? row.sizeBytes),
     createdAt: row.created_at ?? row.createdAt,
+    updatedAt: row.updated_at ?? row.updatedAt ?? row.created_at ?? row.createdAt,
     referenceCount: Number(row.reference_count ?? row.referenceCount ?? 0),
   }
 }
 
-module.exports = { createLocalProjectStore }
+module.exports = { createLocalProjectStore, validateGraph }

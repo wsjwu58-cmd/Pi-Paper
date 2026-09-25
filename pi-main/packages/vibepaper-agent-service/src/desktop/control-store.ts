@@ -1,11 +1,13 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import type { ApprovalRecord, ApprovalRepository } from "../application/approval-service.ts";
 import type { RunRepository, StartRunInput } from "../application/session-run-service.ts";
 import { RunConflictError } from "../application/session-run-service.ts";
+import type { PlannedAction } from "../domain/action-approval.ts";
 import type { AgentRun, AgentRunEvent, AgentRunEventType, AgentRunStatus } from "../domain/agent-run.ts";
 import { isActiveRunStatus } from "../domain/agent-run.ts";
 
-const CONTROL_SCHEMA_VERSION = 1;
+const CONTROL_SCHEMA_VERSION = 3;
 const MAX_OPERATION_RESULT_BYTES = 1_000_000;
 
 const CONTROL_SCHEMA = `
@@ -66,6 +68,9 @@ const CONTROL_SCHEMA = `
     canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
     operation_hash TEXT NOT NULL CHECK (length(operation_hash) = 64),
     token_hash TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
+    action_json TEXT NOT NULL CHECK (json_valid(action_json)),
+    nonce TEXT NOT NULL,
+    token_signature TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected', 'expired', 'invalidated')),
     created_at TEXT NOT NULL,
@@ -73,6 +78,17 @@ const CONTROL_SCHEMA = `
   ) STRICT;
 
   CREATE INDEX approvals_by_session_status ON approvals(session_id, status, expires_at);
+
+  CREATE TABLE control_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  ) STRICT;
+
+  CREATE TABLE agent_session_skill_state (
+    session_id TEXT PRIMARY KEY,
+    loaded_skill_ids TEXT NOT NULL CHECK (json_valid(loaded_skill_ids)),
+    updated_at TEXT NOT NULL
+  ) STRICT;
 
   CREATE TABLE task_links (
     task_id TEXT PRIMARY KEY,
@@ -161,6 +177,22 @@ export type DesktopOutboxItem = {
 	createdAt: Date;
 };
 
+type ApprovalRow = {
+	approval_id: string;
+	session_id: string;
+	run_id: string;
+	project_id: string;
+	canvas_id: string;
+	canvas_version: number;
+	operation_hash: string;
+	token_hash: string;
+	action_json: string;
+	nonce: string;
+	token_signature: string;
+	expires_at: number;
+	status: "pending" | "accepted" | "rejected" | "expired" | "invalidated";
+};
+
 const ACTIVE_STATUS_SQL = "('queued', 'running', 'waiting_confirmation', 'waiting_task')";
 
 function jsonObject(value: string): Record<string, unknown> {
@@ -224,7 +256,21 @@ function toOutboxItem(row: Record<string, unknown>): DesktopOutboxItem {
 	};
 }
 
-export class DesktopAgentControlStore implements RunRepository {
+function toApprovalRecord(row: ApprovalRow): ApprovalRecord {
+	const action = JSON.parse(row.action_json) as PlannedAction;
+	return {
+		action,
+		nonce: row.nonce,
+		tokenSignature: row.token_signature,
+		status: row.status === "pending" ? "pending" : row.status === "accepted" ? "consumed" : "rejected",
+	};
+}
+
+function digest(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+export class DesktopAgentControlStore implements RunRepository, ApprovalRepository {
 	private readonly database: DatabaseSync;
 	private closed = false;
 
@@ -250,6 +296,45 @@ export class DesktopAgentControlStore implements RunRepository {
 		`)
 			.get(sessionId, idempotencyKey) as unknown as RunRow | undefined;
 		return row ? toRun(row) : undefined;
+	}
+
+	getLoadedSkillIds(sessionId: string): string[] {
+		if (typeof sessionId !== "string" || sessionId.length < 1 || sessionId.length > 128)
+			throw new Error("SESSION_ID_INVALID");
+		const row = this.database
+			.prepare("SELECT loaded_skill_ids FROM agent_session_skill_state WHERE session_id = ?")
+			.get(sessionId) as { loaded_skill_ids: string } | undefined;
+		if (!row) return [];
+		try {
+			const value: unknown = JSON.parse(row.loaded_skill_ids);
+			return Array.isArray(value)
+				? [...new Set(value.filter((item): item is string => typeof item === "string" && item.length > 0))]
+				: [];
+		} catch {
+			return [];
+		}
+	}
+
+	markSkillLoaded(sessionId: string, skillId: string): string[] {
+		if (typeof sessionId !== "string" || sessionId.length < 1 || sessionId.length > 128)
+			throw new Error("SESSION_ID_INVALID");
+		if (typeof skillId !== "string" || skillId.length < 1 || skillId.length > 160)
+			throw new Error("SKILL_ID_INVALID");
+		return this.transaction(() => {
+			const loadedSkillIds = this.getLoadedSkillIds(sessionId);
+			if (loadedSkillIds.includes(skillId)) return loadedSkillIds;
+			const next = [...loadedSkillIds, skillId];
+			this.database
+				.prepare(`
+					INSERT INTO agent_session_skill_state (session_id, loaded_skill_ids, updated_at)
+					VALUES (?, ?, ?)
+					ON CONFLICT(session_id) DO UPDATE SET
+						loaded_skill_ids = excluded.loaded_skill_ids,
+						updated_at = excluded.updated_at
+				`)
+				.run(sessionId, JSON.stringify(next), new Date().toISOString());
+			return next;
+		});
 	}
 
 	findActive(sessionId: string): AgentRun | undefined {
@@ -299,7 +384,14 @@ export class DesktopAgentControlStore implements RunRepository {
 		});
 	}
 
-	save(run: AgentRun): void {
+	save(run: AgentRun): void;
+	save(record: ApprovalRecord): void;
+	save(value: AgentRun | ApprovalRecord): void {
+		if ("action" in value) {
+			this.saveApproval(value);
+			return;
+		}
+		const run = value as AgentRun;
 		this.database
 			.prepare(`
 			INSERT INTO agent_runs (id, session_id, idempotency_key, status, created_at, updated_at)
@@ -454,6 +546,164 @@ export class DesktopAgentControlStore implements RunRepository {
 			}
 			return true;
 		});
+	}
+
+	private saveApproval(record: ApprovalRecord): void {
+		const action = record.action;
+		const approvalToken = action.approvalToken;
+		if (
+			!approvalToken ||
+			action.status !== "awaiting_approval" ||
+			!action.runId ||
+			!Number.isSafeInteger(action.canvasVersion) ||
+			!Number.isSafeInteger(action.binding.expiresAt) ||
+			!/^[a-f0-9]{64}$/u.test(action.actionHash)
+		)
+			throw new Error("APPROVAL_RECORD_INVALID");
+		const actionJson = JSON.stringify(action);
+		if (typeof actionJson !== "string") throw new Error("APPROVAL_RECORD_NOT_SERIALIZABLE");
+		const runId = action.runId;
+		const now = new Date().toISOString();
+		this.transaction(() => {
+			const run = this.database.prepare("SELECT session_id, status FROM agent_runs WHERE id = ?").get(runId) as
+				| { session_id: string; status: AgentRunStatus }
+				| undefined;
+			if (!run || run.session_id !== action.sessionId || !isActiveRunStatus(run.status))
+				throw new Error("RUN_NOT_ACTIVE");
+			this.database
+				.prepare(`
+				INSERT INTO approvals (
+					approval_id, session_id, run_id, project_id, canvas_id, canvas_version,
+					operation_hash, token_hash, action_json, nonce, token_signature,
+					expires_at, status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+			`)
+				.run(
+					action.actionId,
+					action.sessionId,
+					runId,
+					action.userId,
+					action.canvasId,
+					action.canvasVersion,
+					action.actionHash,
+					digest(approvalToken),
+					actionJson,
+					record.nonce,
+					record.tokenSignature,
+					action.binding.expiresAt,
+					now,
+					now,
+				);
+		});
+	}
+
+	find(actionId: string): ApprovalRecord | undefined {
+		if (typeof actionId !== "string" || !actionId) return undefined;
+		let row = this.database.prepare("SELECT * FROM approvals WHERE approval_id = ?").get(actionId) as
+			| ApprovalRow
+			| undefined;
+		if (row?.status === "pending" && row.expires_at <= Date.now()) {
+			this.database
+				.prepare(`
+				UPDATE approvals SET status = 'expired', updated_at = ?
+				WHERE approval_id = ? AND status = 'pending' AND expires_at <= ?
+			`)
+				.run(new Date().toISOString(), actionId, Date.now());
+			row = this.database.prepare("SELECT * FROM approvals WHERE approval_id = ?").get(actionId) as
+				| ApprovalRow
+				| undefined;
+		}
+		return row ? toApprovalRecord(row) : undefined;
+	}
+
+	findConsumedApprovalForRun(runId: string): ApprovalRecord | undefined {
+		const row = this.database
+			.prepare(`
+			SELECT * FROM approvals WHERE run_id = ? AND status = 'accepted'
+			ORDER BY created_at DESC LIMIT 1
+		`)
+			.get(runId) as ApprovalRow | undefined;
+		return row ? toApprovalRecord(row) : undefined;
+	}
+
+	consumePending(actionId: string): ApprovalRecord | undefined {
+		return this.transaction(() => {
+			const now = Date.now();
+			const updated = this.database
+				.prepare(`
+				UPDATE approvals SET status = 'accepted', updated_at = ?
+				WHERE approval_id = ? AND status = 'pending' AND expires_at > ?
+			`)
+				.run(new Date(now).toISOString(), actionId, now);
+			if (updated.changes !== 1) {
+				this.database
+					.prepare(`
+					UPDATE approvals SET status = 'expired', updated_at = ?
+					WHERE approval_id = ? AND status = 'pending' AND expires_at <= ?
+				`)
+					.run(new Date(now).toISOString(), actionId, now);
+				return undefined;
+			}
+			const row = this.database.prepare("SELECT * FROM approvals WHERE approval_id = ?").get(actionId) as
+				| ApprovalRow
+				| undefined;
+			return row ? toApprovalRecord(row) : undefined;
+		});
+	}
+
+	rejectPending(actionId: string): ApprovalRecord | undefined {
+		return this.transaction(() => {
+			const updated = this.database
+				.prepare(`
+				UPDATE approvals SET status = 'rejected', updated_at = ?
+				WHERE approval_id = ? AND status = 'pending'
+			`)
+				.run(new Date().toISOString(), actionId);
+			if (updated.changes !== 1) return undefined;
+			const row = this.database.prepare("SELECT * FROM approvals WHERE approval_id = ?").get(actionId) as
+				| ApprovalRow
+				| undefined;
+			return row ? toApprovalRecord(row) : undefined;
+		});
+	}
+
+	invalidatePendingForRun(runId: string): void {
+		if (typeof runId !== "string" || !runId) return;
+		this.database
+			.prepare(`
+			UPDATE approvals SET status = 'invalidated', updated_at = ?
+			WHERE run_id = ? AND status = 'pending'
+		`)
+			.run(new Date().toISOString(), runId);
+	}
+
+	getOrCreateApprovalSecret(): string {
+		const existing = this.database
+			.prepare("SELECT value FROM control_metadata WHERE key = 'approval_secret'")
+			.get() as { value: string } | undefined;
+		if (existing?.value) return existing.value;
+		const generated = randomBytes(32).toString("base64url");
+		this.database
+			.prepare("INSERT OR IGNORE INTO control_metadata (key, value) VALUES ('approval_secret', ?)")
+			.run(generated);
+		const stored = this.database.prepare("SELECT value FROM control_metadata WHERE key = 'approval_secret'").get() as
+			| { value: string }
+			| undefined;
+		if (!stored?.value) throw new Error("APPROVAL_SECRET_UNAVAILABLE");
+		return stored.value;
+	}
+
+	linkTask(input: { taskId: string; sessionId: string; runId: string; nodeId: string; status: string }): void {
+		if (!input.taskId || !input.sessionId || !input.runId || !input.nodeId || !input.status)
+			throw new Error("TASK_LINK_INVALID");
+		const now = new Date().toISOString();
+		this.database
+			.prepare(`
+			INSERT INTO task_links (task_id, session_id, run_id, node_id, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(task_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at
+		`)
+			.run(input.taskId, input.sessionId, input.runId, input.nodeId, input.status, now, now);
 	}
 
 	listEvents(runId: string): readonly AgentRunEvent[] {
@@ -719,6 +969,37 @@ export class DesktopAgentControlStore implements RunRepository {
 			(this.database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
 		);
 		if (version === CONTROL_SCHEMA_VERSION) return;
+		if (version === 1) {
+			this.transaction(() => {
+				this.database.exec(`
+					ALTER TABLE approvals ADD COLUMN action_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(action_json));
+					ALTER TABLE approvals ADD COLUMN nonce TEXT NOT NULL DEFAULT '';
+					ALTER TABLE approvals ADD COLUMN token_signature TEXT NOT NULL DEFAULT '';
+					CREATE TABLE control_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+					CREATE TABLE agent_session_skill_state (
+						session_id TEXT PRIMARY KEY,
+						loaded_skill_ids TEXT NOT NULL CHECK (json_valid(loaded_skill_ids)),
+						updated_at TEXT NOT NULL
+					) STRICT;
+					UPDATE approvals SET status = 'rejected' WHERE status IN ('pending', 'accepted');
+				`);
+				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+			});
+			return;
+		}
+		if (version === 2) {
+			this.transaction(() => {
+				this.database.exec(`
+					CREATE TABLE agent_session_skill_state (
+						session_id TEXT PRIMARY KEY,
+						loaded_skill_ids TEXT NOT NULL CHECK (json_valid(loaded_skill_ids)),
+						updated_at TEXT NOT NULL
+					) STRICT;
+				`);
+				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+			});
+			return;
+		}
 		if (version !== 0) throw new Error(`Agent 控制库版本 ${version} 当前不受支持。`);
 		const existingTables = this.database
 			.prepare(`

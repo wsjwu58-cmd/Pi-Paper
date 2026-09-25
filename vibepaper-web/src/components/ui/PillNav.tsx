@@ -16,6 +16,34 @@ export function PillNav() {
   const navigate = useNavigate()
   const isAdmin = user && (user.role === 'ops_admin' || user.role === 'super_admin')
 
+  if (window.vibepaperDesktop) {
+    const desktopItems = [
+      { to: '/workspace', label: '画布展示', icon: LayoutGrid },
+      { to: '/history', label: '历史记录', icon: Clock },
+    ]
+    return (
+      <nav className="mx-auto flex w-fit max-w-[calc(100vw-1.5rem)] items-center gap-1 rounded-full border border-black/[0.05] bg-white px-1.5 py-1.5 shadow-[0_8px_28px_rgba(15,23,42,0.08)]">
+        {desktopItems.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            className={({ isActive }) =>
+              cn(
+                'inline-flex h-10 items-center gap-2 rounded-full px-4 text-[14px] font-semibold transition',
+                isActive
+                  ? 'bg-[#111111] text-white [&_svg]:stroke-white'
+                  : 'text-[#666] hover:bg-black/[0.04] hover:text-[#111]',
+              )
+            }
+          >
+            <item.icon size={16} strokeWidth={2.2} />
+            <span>{item.label}</span>
+          </NavLink>
+        ))}
+      </nav>
+    )
+  }
+
   return (
     <nav className="mx-auto flex w-fit max-w-[calc(100vw-1.5rem)] items-center gap-1 rounded-full border border-black/[0.05] bg-white px-1.5 py-1.5 shadow-[0_8px_28px_rgba(15,23,42,0.08)]">
       {items.map((it) => (
