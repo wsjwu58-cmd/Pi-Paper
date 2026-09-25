@@ -7,8 +7,8 @@
 | 模块 | 原实现依据 | 桌面等价实现必须覆盖 | 当前状态与差距 |
 | --- | --- | --- | --- |
 | 画布与节点 | `vibepaper-services/canvas-service/.../CanvasService.java`、`GraphService.java`、`EdgeRules.java` | 画布版本、节点类型/能力、连线方向与依赖、上下游失效、删除影响、分组堆叠、导入导出、幂等与错误语义 | **已接通：** 全量 `saveCanvas` 经 Local Core 和受限 IPC 接到原 `CanvasPage`；校验六种节点类型与连线兼容矩阵，跳过悬空边，并按原 `CanvasService.applyPreservedGeneration` 保留旧节点的生成产物、媒体参数及已成功状态；`createNode`、`updateNode`、`deleteNode`、`connectEdge`、`deleteEdge` 均从原 `CanvasPage` 调用桌面桥接。`updateNode` 保留字段更新、版本 CAS、命令账本及仅沿 input 边传播 stale；`connectEdge` 校验端点、自连接、兼容性和依赖类型，显式命令键可重启回放，重复端点按原规则返回已有边且不增版本。`addGroup`、`updateGroup`、`deleteGroup`、`addStack`、`updateStack`、`deleteStack` 经原 `CanvasToolbar` 调用 Local Core；节点双击时展开堆叠，布局字段和坐标随整图保存；成员命令不递增画布版本。Store 的 `saveCanvas` 接收显式 groups/stacks 快照；省略字段会保留本地记录，这一兼容行为不同于 Java 全量保存对缺省字段的清空语义。只读 `exportCanvas` 已从 Store 接到 Local Core、Main IPC、Preload 和 bridge 类型；导出按钮及文件保存 UI 待原 `WorkspacePage` 接入。Store 的保存命令幂等键尚未由 Renderer 保存 IPC 传入。**未迁移：** `extractFromStack` 有 Store/IPC/Preload 实现，但原 `CanvasToolbar` 当前无对应调用；画布导入未实现，桌面仍是单项目单画布，不能安全复刻旧 `importCanvas`“新建画布并重新映射身份”的语义。旧 `deleteNode` 不从 group/stack 的 `nodeIds` 清除被删节点，此处保留原行为。 |
-| 素材 | `vibepaper-services/asset-service/.../AssetService.java` 及画布素材引用 | 原件/派生文件、引用计数、删除影响、导入导出与项目备份恢复 | 原 `AssetLibrary` 已接本地图片导入、重命名、替换、软删除和引用计数；删除保留原文件供现有节点使用。视频/音频/文本素材导入、派生文件与完整备份恢复仍未迁移。 |
-| 生成与任务 | 原 `generation-service`、节点任务动作及模型能力目录 | 文/图/音/视频及合成的参数、模型能力、异步状态、取消、结果文件、历史结果、恢复与幂等 | 本地文本、Agnes 文/图/视频已接通；原 `ComposeNodeView` 接本地 `mock-compose`/FFmpeg 顺序拼接，Local Core 验证有序上游节点、连线、成功视频任务和输出摘要，`compose` 模态进入 TaskStore 并在原节点回显。Windows SAPI 音频任务已从原 `WindowsSapiTtsProvider` 迁移，按原参数归一化生成本地 WAV，并复用 TaskStore、原音频节点与预览位置；只在 Windows 提供该本地模型。云端音频提供方、音频参考输入、音频素材导入、多提供方、运行中取消及完整后处理仍未迁移。TaskStore 保留为内部权威状态，不加独立任务抽屉。 |
+| 素材 | `vibepaper-services/asset-service/.../AssetService.java` 及画布素材引用 | 原件/派生文件、引用计数、删除影响、导入导出与项目备份恢复 | 原 `AssetLibrary` 已接本地图片导入、重命名、替换、软删除和引用计数；删除保留原文件供现有节点使用。原音频节点的“存入素材库”已通过受限任务 ID 保存经校验的 WAV；每次保存创建独立音频素材，音频节点引用、删除影响和项目备份恢复已接本地 Store。通用视频/音频/文本上传、音频替换、派生文件与完整跨模态素材能力仍未迁移。 |
+| 生成与任务 | 原 `generation-service`、节点任务动作及模型能力目录 | 文/图/音/视频及合成的参数、模型能力、异步状态、取消、结果文件、历史结果、恢复与幂等 | 本地文本、Agnes 文/图/视频已接通；原 `ComposeNodeView` 接本地 `mock-compose`/FFmpeg 顺序拼接，Local Core 验证有序上游节点、连线、成功视频任务和输出摘要，`compose` 模态进入 TaskStore 并在原节点回显。Windows SAPI 音频任务已从原 `WindowsSapiTtsProvider` 迁移，按原参数归一化生成本地 WAV，并复用 TaskStore、原音频节点与预览位置；只在 Windows 提供该本地模型。云端音频提供方、音频参考输入、通用音频上传、多提供方、运行中取消及完整后处理仍未迁移。TaskStore 保留为内部权威状态，不加独立任务抽屉。 |
 | Agent | `pi-main/packages/vibepaper-agent-service/src/domain/tool-manifest.ts`、`src/pi/profile-agents.ts`、`src/tools/runtime-tools.ts` | “小P”人格、读画布/节点/素材、建改删节点、连线/布局、生成/任务状态、Skill、会话与风险确认 | 桌面 Worker 直接打包原 TypeScript Agent，保留“小P”角色；原工具通过本地白名单网关访问画布、节点、任务，生成动作使用持久化确认令牌，单个与批量目标确认后提交。Pi 工具调用与结果成对保存在 JSONL、压缩时保持配对；可见回复清理规则已收敛到原 TS runtime；内置 Skill 列表及加载状态接入原 `SkillsPanel` 与本地 SQLite。动态项目 Skill、完整素材与音频任务能力仍有缺口，不能宣称 Agent 1:1 完成。 |
 
 ## 迁移规则
@@ -16,6 +16,8 @@
 本地合成已按原 `ComposeProvider` 的 FFmpeg 转码、concat copy 与失败重编码实现，保留 `compose` 任务模态、输入顺序、幂等与文件校验；当前只接受当前画布已连接节点的成功视频任务。原 provider 可直接读取本地路径、data URL 与 HTTP(S) URL，以及返回完整 `meta` 和独立错误详情，这些接口语义尚未全部迁移。桌面设置页也尚未提供 FFmpeg 路径选择。这些差距在 1:1 验收前必须处理或经产品契约明确调整。
 
 本地音频沿用原 SAPI 的文本、voice、language、speed、tone 归一化、速率范围与哈希；输入经 PowerShell stdin 传递，真实 WAV 先写临时文件并校验后进入任务结果，`voiceId`、时长和采样率随成功事件持久化。修复了原 PowerShell 正则把 `female` 中的 `male` 误判为男性声音的问题。测试覆盖真实 Windows 合成、失败码、结果预览、重启与幂等。此链路仅覆盖原项目的 Windows SAPI 提供方；其他音频模型与素材链路仍是迁移缺口。
+
+音频生成结果保存素材沿用原 Web 的每次点击独立上传语义；Renderer 只提交项目与任务 ID，Local Core 核对成功任务的 WAV、哈希及 200 MB 素材上限，复制成独立原件。项目 SQLite v7→v8 扩展音频 MIME 并先生成回退副本；备份和恢复校验 WAV 内容、路径、哈希及节点引用。通用文件上传和音频替换仍需按原 `AssetService` 迁移。
 
 ### 画布 JSON 导入/导出
 

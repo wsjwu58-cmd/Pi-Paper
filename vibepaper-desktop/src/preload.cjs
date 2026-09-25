@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   backupProject: (projectId) => ipcRenderer.invoke('desktop:project:backup', projectId),
   restoreBackup: () => ipcRenderer.invoke('desktop:project:restore-backup'),
   importImage: (projectId) => ipcRenderer.invoke('desktop:asset:import-image', projectId),
+  saveTaskOutputToLibrary: (projectId, taskId) => ipcRenderer.invoke('desktop:asset:save-task-output', projectId, taskId),
   listAssets: (projectId) => ipcRenderer.invoke('desktop:asset:list', projectId),
   renameAsset: (projectId, assetId, name) => ipcRenderer.invoke('desktop:asset:rename', projectId, assetId, name),
   replaceImage: (projectId, assetId) => ipcRenderer.invoke('desktop:asset:replace-image', projectId, assetId),

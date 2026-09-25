@@ -9,7 +9,7 @@ const { backup, DatabaseSync } = require('node:sqlite')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 7
+const PROJECT_DB_SCHEMA_VERSION = 8
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -42,7 +42,7 @@ const ASSET_DB_SCHEMA = `
     id TEXT PRIMARY KEY,
     sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
     original_name TEXT NOT NULL,
-    mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp')),
+    mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'audio/wav')),
     size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
     relative_path TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
@@ -831,14 +831,19 @@ function insertGraph(database, canvasId, graph) {
 }
 
 function insertAssetReferences(database, canvasId, graph) {
-  const findAsset = database.prepare('SELECT id FROM assets WHERE id = ?')
+  const findAsset = database.prepare('SELECT id, mime_type FROM assets WHERE id = ?')
   const insertReference = database.prepare('INSERT INTO asset_references (canvas_id, node_id, asset_id) VALUES (?, ?, ?)')
   for (const node of graph.nodes) {
-    if (node.type !== 'image') continue
-    const assetId = node.data.assetId
+    if (!['image', 'audio'].includes(node.type)) continue
+    const params = isRecord(node.data.params) ? node.data.params : {}
+    const assetId = node.data.assetId ?? params.assetId
     if (assetId === undefined || assetId === null || assetId === '') continue
-    if (typeof assetId !== 'string' || !findAsset.get(assetId)) {
-      throw new Error('画布图片节点引用了不存在的本地素材。')
+    const asset = typeof assetId === 'string' ? findAsset.get(assetId) : null
+    const expectedMimePrefix = node.type === 'image' ? 'image/' : 'audio/'
+    if (!asset) throw new Error(node.type === 'image'
+      ? '画布图片节点引用了不存在的本地素材。' : '画布音频节点引用了不存在的本地素材。')
+    if (!asset.mime_type.startsWith(expectedMimePrefix)) {
+      throw new Error(`画布${node.type === 'image' ? '图片' : '音频'}节点引用了类型不匹配的本地素材。`)
     }
     insertReference.run(canvasId, node.id, assetId)
   }
@@ -847,10 +852,17 @@ function insertAssetReferences(database, canvasId, graph) {
 function validateAssetReferences(database, canvasId, graph) {
   const expected = new Map()
   for (const node of graph.nodes) {
-    if (node.type !== 'image') continue
-    if (node.data.assetId === undefined || node.data.assetId === null || node.data.assetId === '') continue
-    if (typeof node.data.assetId !== 'string') throw new Error('项目画布中的图片节点素材标识无效。')
-    expected.set(node.id, node.data.assetId)
+    if (!['image', 'audio'].includes(node.type)) continue
+    const params = isRecord(node.data.params) ? node.data.params : {}
+    const assetId = node.data.assetId ?? params.assetId
+    if (assetId === undefined || assetId === null || assetId === '') continue
+    if (typeof assetId !== 'string') throw new Error(`项目画布中的${node.type === 'image' ? '图片' : '音频'}节点素材标识无效。`)
+    const asset = database.prepare('SELECT mime_type FROM assets WHERE id = ?').get(assetId)
+    const expectedMimePrefix = node.type === 'image' ? 'image/' : 'audio/'
+    if (!asset) throw new Error(node.type === 'image'
+      ? '项目画布中的图片节点引用了不存在的本地素材。' : '项目画布中的音频节点引用了不存在的本地素材。')
+    if (!asset.mime_type.startsWith(expectedMimePrefix)) throw new Error('项目画布中的本地素材引用类型不匹配。')
+    expected.set(node.id, assetId)
   }
   const actualRows = database.prepare('SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ?').all(canvasId)
   if (actualRows.length !== expected.size || actualRows.some((row) => expected.get(row.node_id) !== row.asset_id)) {
@@ -1109,7 +1121,10 @@ function normalizeUpdateNodeInput(input) {
 function nodePayloadFromFlowNode(node) {
   const data = isRecord(node.data) ? node.data : {}
   const nested = isRecord(data.node) ? data.node : {}
-  const params = isRecord(data.params) ? data.params : isRecord(nested.params) ? nested.params : {}
+  let params = isRecord(data.params) ? data.params : isRecord(nested.params) ? nested.params : {}
+  if (['image', 'audio'].includes(node.type) && typeof data.assetId === 'string' && params.assetId === undefined) {
+    params = { ...params, assetId: data.assetId }
+  }
   return {
     id: node.id,
     type: node.type,
@@ -1135,7 +1150,7 @@ function nodePayloadFromFlowNode(node) {
 function canvasNodeExportPayload(node) {
   const payload = nodePayloadFromFlowNode(node)
   const data = isRecord(node.data) ? node.data : {}
-  if (node.type === 'image' && typeof data.assetId === 'string'
+  if (['image', 'audio'].includes(node.type) && typeof data.assetId === 'string'
     && payload.params.assetId === undefined) {
     payload.params.assetId = data.assetId
   }
@@ -1564,6 +1579,53 @@ async function migrateDatabaseV6ToV7(database, dataDirectory) {
   }
 }
 
+async function migrateDatabaseV7ToV8(database, dataDirectory) {
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v7-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(`
+      CREATE TABLE assets_v8 (
+        id TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'audio/wav')),
+        size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
+        relative_path TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))
+      ) STRICT;
+      INSERT INTO assets_v8 (id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted)
+        SELECT id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted FROM assets;
+      DROP TABLE assets;
+      ALTER TABLE assets_v8 RENAME TO assets;
+      CREATE INDEX assets_by_sha ON assets(sha256, deleted);
+      PRAGMA user_version = 8;
+    `)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
+  if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+    throw new Error('音频素材迁移后检测到无效引用。')
+  }
+}
+
 function readDatabaseCanvas(database, metadata) {
   const projectId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('projectId')
   const canvasId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('canvasId')
@@ -1616,12 +1678,12 @@ function readDatabaseCanvas(database, metadata) {
 
 async function copyAssetSource(sourcePath, temporaryPath) {
   if (typeof sourcePath !== 'string' || !sourcePath.trim() || sourcePath.length > 32_768) {
-    throw new Error('所选图片文件无效。')
+    throw new Error('所选素材文件无效。')
   }
   const source = path.resolve(sourcePath)
   const info = await fs.stat(source).catch(() => null)
-  if (!info?.isFile()) throw new Error('请选择一个可读取的图片文件。')
-  if (info.size <= 0 || info.size > MAX_ASSET_BYTES) throw new Error('图片文件必须大于 0 字节且不超过 200 MB。')
+  if (!info?.isFile()) throw new Error('请选择一个可读取的素材文件。')
+  if (info.size <= 0 || info.size > MAX_ASSET_BYTES) throw new Error('素材文件必须大于 0 字节且不超过 200 MB。')
 
   let size = 0
   const hash = createHash('sha256')
@@ -1629,12 +1691,12 @@ async function copyAssetSource(sourcePath, temporaryPath) {
   try {
     for await (const chunk of nativeFs.createReadStream(source)) {
       size += chunk.length
-      if (size > MAX_ASSET_BYTES) throw new Error('图片文件超过 200 MB 的本地素材上限。')
+      if (size > MAX_ASSET_BYTES) throw new Error('素材文件超过 200 MB 的本地素材上限。')
       hash.update(chunk)
       let offset = 0
       while (offset < chunk.length) {
         const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset, null)
-        if (bytesWritten <= 0) throw new Error('图片文件写入失败。')
+        if (bytesWritten <= 0) throw new Error('素材文件写入失败。')
         offset += bytesWritten
       }
     }
@@ -1647,7 +1709,7 @@ async function copyAssetSource(sourcePath, temporaryPath) {
   await handle.close()
   if (size === 0) {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
-    throw new Error('所选图片文件为空。')
+    throw new Error('所选素材文件为空。')
   }
   return { sha256: hash.digest('hex'), sizeBytes: size }
 }
@@ -1655,7 +1717,7 @@ async function copyAssetSource(sourcePath, temporaryPath) {
 async function copyProjectAssets(database, sourceDataDirectory, targetDataDirectory) {
   const assets = database.prepare('SELECT id, sha256, original_name, mime_type, size_bytes, relative_path FROM assets ORDER BY id').all()
   for (const asset of assets) {
-    if (!/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp)$/iu.test(asset.relative_path)) {
+    if (!/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav)$/iu.test(asset.relative_path)) {
       throw new Error('项目素材清单包含无效路径，无法安全备份。')
     }
     const sourcePath = path.resolve(sourceDataDirectory, asset.relative_path)
@@ -1678,7 +1740,7 @@ async function copyProjectAssets(database, sourceDataDirectory, targetDataDirect
     await fs.mkdir(path.dirname(targetPath), { recursive: true })
     const copied = await copyAssetSource(sourcePath, targetPath)
     if (copied.sha256 !== asset.sha256 || copied.sizeBytes !== asset.size_bytes
-      || await detectImageMimeType(targetPath) !== asset.mime_type) {
+      || await detectAssetMimeType(targetPath) !== asset.mime_type) {
       await fs.rm(targetPath, { force: true }).catch(() => undefined)
       throw new Error(`项目素材“${asset.original_name ?? asset.id}”校验失败，备份未完成。`)
     }
@@ -1764,7 +1826,7 @@ async function projectBackupPaths(database, dataDirectory, includeAgent = true) 
   const paths = ['project.json', 'project.sqlite']
   for (const row of assetRows) {
     if (typeof row.relative_path !== 'string'
-      || !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp)$/iu.test(row.relative_path)) {
+      || !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav)$/iu.test(row.relative_path)) {
       throw new Error('项目素材清单包含无效路径，无法备份或恢复。')
     }
     paths.push(row.relative_path)
@@ -2087,7 +2149,7 @@ async function safeBackupFilePath(dataDirectory, relativePath) {
     && taskOutputExtensions.includes(path.extname(taskOutputMatch[2]).toLowerCase())
   const isAgentFile = isValidAgentBackupRelativePath(relativePath)
   if (relativePath !== 'project.json' && relativePath !== 'project.sqlite'
-    && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp)$/iu.test(relativePath)
+    && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav)$/iu.test(relativePath)
     && !isTaskOutput && !isAgentFile) {
     throw new Error('备份包含无效文件路径。')
   }
@@ -2132,6 +2194,9 @@ async function safeBackupFilePath(dataDirectory, relativePath) {
   }
   const fileInfo = await fs.lstat(filePath).catch(() => null)
   if (!fileInfo?.isFile() || fileInfo.isSymbolicLink()) throw new Error(`备份文件“${relativePath}”缺失或路径无效。`)
+  if (relativePath.startsWith('assets/') && (fileInfo.size <= 0 || fileInfo.size > MAX_ASSET_BYTES)) {
+    throw new Error(`备份素材“${relativePath}”为空或超过本地素材上限。`)
+  }
   if (isTaskOutput && (fileInfo.size <= 0 || fileInfo.size > MAX_TASK_OUTPUT_BYTES)) {
     throw new Error(`备份任务结果“${relativePath}”为空或超过本地结果上限。`)
   }
@@ -2189,6 +2254,13 @@ async function verifyBackupManifest(dataDirectory, metadata, database) {
       throw new Error(`备份文件“${entry.path}”校验失败。`)
     }
     if (entry.path === 'agent/control.sqlite') await validateAgentControlDatabase(await safeBackupFilePath(dataDirectory, entry.path))
+    if (entry.path.startsWith('assets/')) {
+      const asset = database.prepare('SELECT mime_type, sha256, size_bytes FROM assets WHERE relative_path = ?').get(entry.path)
+      const assetPath = await safeBackupFilePath(dataDirectory, entry.path)
+      if (!asset || asset.size_bytes > MAX_ASSET_BYTES || await detectAssetMimeType(assetPath) !== asset.mime_type) {
+        throw new Error(`备份素材“${entry.path}”格式校验失败。`)
+      }
+    }
   }
   if (manifest.schemaVersion >= 2) await validateAgentSessionHeaders(dataDirectory, metadata.projectId)
   return manifest.schemaVersion
@@ -2225,7 +2297,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (![2, 3, 4, 5, 6, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    if (![2, 3, 4, 5, 6, 7, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -2264,8 +2336,74 @@ async function detectImageMimeType(filePath) {
   }
 }
 
+async function detectWavMimeType(filePath) {
+  const handle = await fs.open(filePath, 'r')
+  try {
+    const info = await handle.stat()
+    if (info.size < 44 || info.size > MAX_ASSET_BYTES) throw new Error('本地 WAV 素材大小无效。')
+    const header = Buffer.alloc(12)
+    const { bytesRead } = await handle.read(header, 0, header.length, 0)
+    if (bytesRead !== header.length || header.toString('ascii', 0, 4) !== 'RIFF'
+      || header.toString('ascii', 8, 12) !== 'WAVE') {
+      throw new Error('本地 WAV 素材格式无效。')
+    }
+    const riffEnd = header.readUInt32LE(4) + 8
+    if (riffEnd < 44 || riffEnd > info.size) throw new Error('本地 WAV 素材块长度无效。')
+
+    let offset = 12
+    let hasFormat = false
+    let hasAudioData = false
+    while (offset + 8 <= riffEnd) {
+      const chunkHeader = Buffer.alloc(8)
+      const read = await handle.read(chunkHeader, 0, chunkHeader.length, offset)
+      if (read.bytesRead !== chunkHeader.length) throw new Error('本地 WAV 素材块已截断。')
+      const chunkSize = chunkHeader.readUInt32LE(4)
+      const bodyOffset = offset + 8
+      const nextOffset = bodyOffset + chunkSize + (chunkSize % 2)
+      if (nextOffset > riffEnd) throw new Error('本地 WAV 素材块长度无效。')
+      const chunkName = chunkHeader.toString('ascii', 0, 4)
+      if (chunkName === 'fmt ') {
+        if (chunkSize < 16) throw new Error('本地 WAV 音频格式块无效。')
+        const format = Buffer.alloc(16)
+        const formatRead = await handle.read(format, 0, format.length, bodyOffset)
+        if (formatRead.bytesRead !== format.length || format.readUInt16LE(2) <= 0
+          || format.readUInt32LE(4) <= 0 || format.readUInt16LE(12) <= 0 || format.readUInt16LE(14) <= 0) {
+          throw new Error('本地 WAV 音频参数无效。')
+        }
+        hasFormat = true
+      } else if (chunkName === 'data') {
+        if (chunkSize <= 0) throw new Error('本地 WAV 音频数据为空。')
+        hasAudioData = true
+      }
+      offset = nextOffset
+    }
+    if (!hasFormat || !hasAudioData) throw new Error('本地 WAV 素材缺少音频格式或数据块。')
+    return 'audio/wav'
+  } finally {
+    await handle.close()
+  }
+}
+
+async function detectAssetMimeType(filePath) {
+  try {
+    return await detectImageMimeType(filePath)
+  } catch {
+    return detectWavMimeType(filePath)
+  }
+}
+
 function extensionForImageMimeType(mimeType) {
   return ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' })[mimeType]
+}
+
+function extensionForAssetMimeType(mimeType) {
+  return ({
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'audio/wav': 'wav',
+  })[mimeType]
 }
 
 async function projectAssetsDirectory(projectDirectory) {
@@ -2286,7 +2424,7 @@ function assertAssetRowPath(asset) {
     || typeof asset.sha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(asset.sha256)) {
     throw new Error('本地素材索引无效。')
   }
-  const extension = extensionForImageMimeType(asset.mime_type)
+  const extension = extensionForAssetMimeType(asset.mime_type)
   const expectedPath = `assets/${asset.sha256}/${asset.id}.${extension}`
   if (!extension || asset.relative_path !== expectedPath) throw new Error('本地素材路径无效。')
   return expectedPath
@@ -2443,6 +2581,7 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 4) await migrateDatabaseV4ToV5(database, dataDirectory)
       if (databaseVersion(database) === 5) await migrateDatabaseV5ToV6(database, dataDirectory)
       if (databaseVersion(database) === 6) await migrateDatabaseV6ToV7(database, dataDirectory)
+      if (databaseVersion(database) === 7) await migrateDatabaseV7ToV8(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
@@ -2735,9 +2874,86 @@ function createLocalProjectStore() {
           await fs.rm(destination, { force: true }).catch(() => undefined)
           throw error
         }
-        return { assetId, name: originalName, mimeType, sizeBytes: copied.sizeBytes, createdAt, updatedAt: createdAt, referenceCount: 0 }
+        return { assetId, assetType: 'image', name: originalName, mimeType, sizeBytes: copied.sizeBytes, createdAt, updatedAt: createdAt, referenceCount: 0 }
       } catch (error) {
         await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+        throw error
+      }
+    })
+  }
+
+  function saveTaskOutputToLibrary(projectId, taskId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法保存任务素材。')
+      if (typeof taskId !== 'string'
+        || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(taskId)) {
+        throw new Error('任务标识无效。')
+      }
+      const task = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (!task || task.status !== 'succeeded' || task.modality !== 'audio'
+        || typeof task.output_path !== 'string' || path.extname(task.output_path).toLowerCase() !== '.wav'
+        || !/^[a-f0-9]{64}$/iu.test(task.output_sha256 ?? '')
+        || !Number.isSafeInteger(task.output_size_bytes) || task.output_size_bytes <= 0) {
+        throw new Error('只有当前项目中已成功的 WAV 音频任务可以保存到素材库。')
+      }
+
+      const dataDirectory = path.join(active.directory, '.vibepaper')
+      const output = await resolveTaskOutputFile(dataDirectory, task.task_id, task.modality, task.output_path)
+      if (output.sha256 !== task.output_sha256 || output.sizeBytes !== task.output_size_bytes) {
+        throw new Error('任务音频结果校验失败，无法保存到素材库。')
+      }
+
+      const { assetsDirectory } = await projectAssetsDirectory(active.directory)
+      const temporaryPath = path.join(assetsDirectory, `.task-output-${randomUUID()}.tmp`)
+      let destinationPath = null
+      let databaseCommitted = false
+      try {
+        const copied = await copyAssetSource(output.filePath, temporaryPath)
+        if (copied.sha256 !== task.output_sha256 || copied.sizeBytes !== task.output_size_bytes) {
+          throw new Error('任务音频结果在保存期间发生变化。')
+        }
+        const mimeType = await detectWavMimeType(temporaryPath)
+        const assetId = randomUUID()
+        const extension = extensionForAssetMimeType(mimeType)
+        const relativePath = `assets/${copied.sha256}/${assetId}.${extension}`
+        const assetDirectory = path.join(assetsDirectory, copied.sha256)
+        await fs.mkdir(assetDirectory, { recursive: true })
+        const assetDirectoryInfo = await fs.lstat(assetDirectory)
+        const realAssetDirectory = await fs.realpath(assetDirectory)
+        if (!assetDirectoryInfo.isDirectory() || assetDirectoryInfo.isSymbolicLink()
+          || path.relative(assetDirectory, realAssetDirectory) !== '') {
+          throw new Error('项目素材内容目录不能是符号链接。')
+        }
+        destinationPath = path.join(assetDirectory, `${assetId}.${extension}`)
+        await invalidateBackupManifest(dataDirectory)
+        await fs.rename(temporaryPath, destinationPath)
+
+        const originalName = `task-${task.task_id}-output.wav`
+        const createdAt = new Date().toISOString()
+        try {
+          active.database.exec('BEGIN IMMEDIATE')
+          active.database.prepare(`
+            INSERT INTO assets (id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(assetId, copied.sha256, originalName, mimeType, copied.sizeBytes, relativePath, createdAt, createdAt)
+          active.database.exec('COMMIT')
+          databaseCommitted = true
+        } catch (error) {
+          active.database.exec('ROLLBACK')
+          throw error
+        }
+        return publicAsset({
+          id: assetId,
+          original_name: originalName,
+          mime_type: mimeType,
+          size_bytes: copied.sizeBytes,
+          created_at: createdAt,
+          updated_at: createdAt,
+          reference_count: 0,
+        })
+      } catch (error) {
+        await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+        if (!databaseCommitted && destinationPath) await fs.rm(destinationPath, { force: true }).catch(() => undefined)
         throw error
       }
     })
@@ -2751,7 +2967,7 @@ function createLocalProjectStore() {
           a.size_bytes AS sizeBytes, a.created_at AS createdAt, a.updated_at AS updatedAt,
           (SELECT COUNT(*) FROM asset_references r WHERE r.asset_id = a.id) AS referenceCount
         FROM assets a WHERE a.deleted = 0 ORDER BY a.created_at DESC, a.id
-      `).all()
+      `).all().map(publicAsset)
     })
   }
 
@@ -3490,7 +3706,7 @@ function createLocalProjectStore() {
           } catch {
             throw new Error('画布命令结果快照损坏。')
           }
-          const localAsset = payload.type === 'image' && typeof payload.params.assetId === 'string'
+          const localAsset = ['image', 'audio'].includes(payload.type) && typeof payload.params.assetId === 'string'
             ? database.prepare('SELECT id FROM assets WHERE id = ?').get(payload.params.assetId)?.id
             : undefined
           const node = flowNodeFromPayload(payload, localAsset)
@@ -3539,7 +3755,7 @@ function createLocalProjectStore() {
           output: null,
           execStatus: 'idle',
         }
-        const localAssetId = payload.type === 'image' && typeof payload.params.assetId === 'string'
+        const localAssetId = ['image', 'audio'].includes(payload.type) && typeof payload.params.assetId === 'string'
           ? database.prepare('SELECT id FROM assets WHERE id = ?').get(payload.params.assetId)?.id
           : undefined
         const node = flowNodeFromPayload(payload, localAssetId)
@@ -4481,6 +4697,7 @@ function createLocalProjectStore() {
     getTaskInput,
     inspectProject,
     importAsset,
+    saveTaskOutputToLibrary,
     listAssets,
     listTaskEvents,
     listTasks,
@@ -4505,10 +4722,12 @@ function createLocalProjectStore() {
 }
 
 function publicAsset(row) {
+  const mimeType = row.mime_type ?? row.mimeType
   return {
     assetId: row.id ?? row.assetId,
+    assetType: typeof mimeType === 'string' && mimeType.startsWith('audio/') ? 'audio' : 'image',
     name: row.original_name ?? row.name,
-    mimeType: row.mime_type ?? row.mimeType,
+    mimeType,
     sizeBytes: Number(row.size_bytes ?? row.sizeBytes),
     createdAt: row.created_at ?? row.createdAt,
     updatedAt: row.updated_at ?? row.updatedAt ?? row.created_at ?? row.createdAt,

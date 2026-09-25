@@ -1044,6 +1044,16 @@ function registerProjectIpc() {
     await assertActiveAssetProject(projectId)
     return localCore.request('asset:list', { projectId })
   })
+  ipcMain.handle('desktop:asset:save-task-output', async (event, projectId, taskId) => {
+    assertTrustedSender(event)
+    assertAssetProjectId(projectId)
+    if (typeof taskId !== 'string'
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(taskId)) {
+      throw new Error('任务标识无效。')
+    }
+    await assertActiveAssetProject(projectId)
+    return localCore.request('asset:save-task-output', { projectId, taskId }, 5 * 60 * 1000)
+  })
   ipcMain.handle('desktop:asset:rename', async (event, projectId, assetId, name) => {
     assertTrustedSender(event)
     assertAssetId(assetId)

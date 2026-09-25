@@ -49,6 +49,11 @@ async function dispatch(method, payload) {
         throw new Error('素材导入请求无效。')
       }
       return store.importAsset(payload.sourcePath, payload.projectId)
+    case 'asset:save-task-output':
+      if (!payload || typeof payload.projectId !== 'string' || typeof payload.taskId !== 'string') {
+        throw new Error('任务素材保存请求无效。')
+      }
+      return store.saveTaskOutputToLibrary(payload.projectId, payload.taskId)
     case 'asset:list':
       return store.listAssets(payload?.projectId)
     case 'asset:rename':

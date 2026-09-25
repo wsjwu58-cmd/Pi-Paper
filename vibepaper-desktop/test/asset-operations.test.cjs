@@ -8,6 +8,39 @@ const { createLocalProjectStore } = require('../src/project-store.cjs')
 
 const PNG_HEADER = Buffer.from('89504e470d0a1a0a', 'hex')
 const JPEG_HEADER = Buffer.from('ffd8ff', 'hex')
+function minimalWave() {
+  const buffer = Buffer.alloc(46)
+  buffer.write('RIFF', 0, 'ascii')
+  buffer.writeUInt32LE(buffer.length - 8, 4)
+  buffer.write('WAVE', 8, 'ascii')
+  buffer.write('fmt ', 12, 'ascii')
+  buffer.writeUInt32LE(16, 16)
+  buffer.writeUInt16LE(1, 20)
+  buffer.writeUInt16LE(1, 22)
+  buffer.writeUInt32LE(16_000, 24)
+  buffer.writeUInt32LE(32_000, 28)
+  buffer.writeUInt16LE(2, 32)
+  buffer.writeUInt16LE(16, 34)
+  buffer.write('data', 36, 'ascii')
+  buffer.writeUInt32LE(2, 40)
+  buffer.writeInt16LE(100, 44)
+  return buffer
+}
+
+function audioOutputMeta() {
+  return {
+    index: 0,
+    outputType: 'audio',
+    voiceId: 'Test Voice',
+    language: 'en-US',
+    rate: 0,
+    toneApplied: true,
+    textHash: 'a'.repeat(64),
+    durationMs: 1,
+    sampleRate: 16_000,
+    provider: 'local-sapi-tts',
+  }
+}
 
 async function openTestProject(t) {
   const parentDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-asset-operations-'))
@@ -128,7 +161,7 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 7)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 8)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const columns = migratedDatabase.prepare('PRAGMA table_info(assets)').all().map((row) => row.name)
     assert.ok(columns.includes('updated_at'))
@@ -136,6 +169,76 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
     const backupName = (await fs.readdir(path.join(directory, '.vibepaper', 'backups')))
       .find((name) => name.startsWith('project-schema-v5-'))
     assert.ok(backupName, 'v5 database backup exists before migration')
+  } finally {
+    migratedDatabase.close()
+  }
+})
+
+test('project schema v7 migrates image assets and references to v8 with a rollback snapshot', async (t) => {
+  const { store, directory, parentDirectory, project } = await openTestProject(t)
+  const sourcePath = await writeImage(parentDirectory, 'v7-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' v7 payload')]))
+  const asset = await store.importAsset(sourcePath, project.projectId)
+  const node = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'v7-image-reference-node',
+    expectedVersion: 0,
+    type: 'image',
+    params: { assetId: asset.assetId },
+  })
+  await store.close()
+
+  const databasePath = path.join(directory, '.vibepaper', 'project.sqlite')
+  const database = new DatabaseSync(databasePath)
+  try {
+    database.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN IMMEDIATE;
+      CREATE TABLE assets_v7 (
+        id TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp')),
+        size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
+        relative_path TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))
+      ) STRICT;
+      INSERT INTO assets_v7 SELECT id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted FROM assets;
+      DROP TABLE assets;
+      ALTER TABLE assets_v7 RENAME TO assets;
+      CREATE INDEX assets_by_sha ON assets(sha256, deleted);
+      PRAGMA user_version = 7;
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `)
+  } finally {
+    database.close()
+  }
+
+  await store.openProject(directory)
+  assert.equal((await store.listAssets(project.projectId))[0].assetId, asset.assetId)
+  assert.equal((await store.listAssets(project.projectId))[0].referenceCount, 1)
+  assert.equal(store.loadCanvas(project.projectId, project.canvasId).nodes[0].id, node.node.id)
+
+  const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
+  try {
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 8)
+    assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
+    const backupName = (await fs.readdir(path.join(directory, '.vibepaper', 'backups')))
+      .find((name) => name.startsWith('project-schema-v7-'))
+    assert.ok(backupName, 'v7 database backup exists before migration')
+    const backupDatabase = new DatabaseSync(path.join(directory, '.vibepaper', 'backups', backupName), { readOnly: true })
+    try {
+      assert.equal(Number(backupDatabase.prepare('PRAGMA user_version').get().user_version), 7)
+      assert.match(backupDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql,
+        /image\/webp/u)
+      assert.doesNotMatch(backupDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql,
+        /audio\/wav/u)
+    } finally {
+      backupDatabase.close()
+    }
   } finally {
     migratedDatabase.close()
   }
@@ -160,7 +263,101 @@ test('asset operations are exposed through project-scoped IPC and a path-restric
   assert.match(preload, /renameAsset: \(projectId, assetId, name\) => ipcRenderer\.invoke\('desktop:asset:rename'/u)
   assert.match(preload, /replaceImage: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace-image'/u)
   assert.match(preload, /deleteAsset: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:delete'/u)
+  assert.match(main, /desktop:asset:save-task-output',[\s\S]*assertTrustedSender\(event\)[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:save-task-output', \{ projectId, taskId \}/u)
+  assert.match(preload, /saveTaskOutputToLibrary: \(projectId, taskId\) => ipcRenderer\.invoke\('desktop:asset:save-task-output', projectId, taskId\)/u)
+  assert.match(localCore, /case 'asset:save-task-output':[\s\S]*store\.saveTaskOutputToLibrary\(payload\.projectId, payload\.taskId\)/u)
+  assert.match(bridgeTypes, /saveTaskOutputToLibrary\(projectId: string, taskId: string\): Promise<DesktopAsset>/u)
+  assert.match(bridgeTypes, /'audio\/wav'/u)
   assert.match(bridgeTypes, /renameAsset\(projectId: string, assetId: string, name: string\): Promise<DesktopAsset>/u)
   assert.match(bridgeTypes, /replaceImage\(projectId: string, assetId: string\): Promise<DesktopAsset \| null>/u)
   assert.match(bridgeTypes, /deleteAsset\(projectId: string, assetId: string\): Promise<DesktopAssetDeleteImpact>/u)
+})
+
+test('successful verified task WAVs become separate audio assets with durable node references and backup restore', async (t) => {
+  const { store, project } = await openTestProject(t)
+  const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-audio-backup-'))
+  const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-audio-restore-'))
+  t.after(async () => {
+    await fs.rm(backupParent, { recursive: true, force: true })
+    await fs.rm(restoreParent, { recursive: true, force: true })
+  })
+  const input = {
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    canvasVersion: 0,
+    nodeId: null,
+    modality: 'audio',
+    providerType: 'local',
+    providerId: 'local-sapi-tts',
+    modelId: 'local-sapi-tts',
+    idempotencyKey: 'asset-output-audio',
+    parameters: { prompt: 'Hello.' },
+  }
+  const task = await store.createTask(input)
+  const claimed = await store.claimNextTask(project.projectId)
+  const wave = minimalWave()
+  await fs.writeFile(path.join(claimed.outputDirectory, 'result.wav'), wave)
+  const resultPath = `generated/${task.taskId}/result.wav`
+  await store.recordTaskSucceeded(project.projectId, task.taskId, resultPath, audioOutputMeta())
+
+  await assert.rejects(store.saveTaskOutputToLibrary('another-project', task.taskId), /当前项目已更改/u)
+  await assert.rejects(store.saveTaskOutputToLibrary(project.projectId, 'not-a-task-id'), /任务标识无效/u)
+  const first = await store.saveTaskOutputToLibrary(project.projectId, task.taskId)
+  const second = await store.saveTaskOutputToLibrary(project.projectId, task.taskId)
+  assert.notEqual(first.assetId, second.assetId, 'each explicit save creates an asset record')
+  assert.equal(first.assetType, 'audio')
+  assert.equal(first.mimeType, 'audio/wav')
+  assert.equal(first.name, `task-${task.taskId}-output.wav`)
+  assert.equal(first.sizeBytes, wave.length)
+  assert.equal(first.referenceCount, 0)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(first.assetId)).filePath), wave)
+
+  const audioNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'audio-asset-node',
+    expectedVersion: 0,
+    type: 'audio',
+    params: { assetId: first.assetId, prompt: '' },
+  })
+  assert.equal((await store.listAssets(project.projectId)).find((asset) => asset.assetId === first.assetId).referenceCount, 1)
+
+  const backup = await store.backupProject(backupParent, project.projectId)
+  const restored = await store.restoreBackup(backup.directory, restoreParent)
+  const restoredAssets = await store.listAssets(restored.project.projectId)
+  const restoredAudio = restoredAssets.find((asset) => asset.assetId === first.assetId)
+  assert.ok(restoredAudio)
+  assert.equal(restoredAudio.assetType, 'audio')
+  assert.equal(restoredAudio.mimeType, 'audio/wav')
+  assert.equal(restoredAudio.referenceCount, 1)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(first.assetId)).filePath), wave)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(second.assetId)).filePath), wave)
+  const impact = await store.deleteAsset(restored.project.projectId, first.assetId)
+  assert.deepEqual(impact.references, [{ canvasId: restored.project.canvasId, nodeId: audioNode.node.id, type: 'canvas' }])
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(first.assetId)).filePath), wave,
+    'soft deletion preserves referenced audio files')
+})
+
+test('saving audio task output rejects non-WAV bytes and changed task output', async (t) => {
+  const { store, project } = await openTestProject(t)
+  const task = await store.createTask({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    canvasVersion: 0,
+    nodeId: null,
+    modality: 'audio',
+    providerType: 'local',
+    providerId: 'local-sapi-tts',
+    modelId: 'local-sapi-tts',
+    idempotencyKey: 'asset-output-invalid-audio',
+    parameters: { prompt: 'Hello.' },
+  })
+  const claimed = await store.claimNextTask(project.projectId)
+  await fs.writeFile(path.join(claimed.outputDirectory, 'result.wav'), Buffer.from('not a wav'))
+  await store.recordTaskSucceeded(project.projectId, task.taskId, `generated/${task.taskId}/result.wav`, audioOutputMeta())
+  await assert.rejects(store.saveTaskOutputToLibrary(project.projectId, task.taskId), /本地 WAV 素材/u)
+
+  await fs.writeFile(path.join(claimed.outputDirectory, 'result.wav'), minimalWave())
+  await assert.rejects(store.saveTaskOutputToLibrary(project.projectId, task.taskId), /任务音频结果校验失败/u)
+  assert.equal((await store.listAssets(project.projectId)).length, 0)
 })

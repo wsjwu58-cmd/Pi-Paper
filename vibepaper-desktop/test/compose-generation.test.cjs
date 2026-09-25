@@ -270,7 +270,7 @@ test('project database v6 migrates tasks without losing task events and admits c
   await store.openProject(directory)
   const migratedDatabase = new DatabaseSync(databasePath)
   try {
-    assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 7)
+    assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 8)
     assert.equal(migratedDatabase.prepare('PRAGMA foreign_key_check').all().length, 0)
     const migratedEvents = migratedDatabase.prepare(`
       SELECT event_id, task_id, event_seq, type, data_json, created_at

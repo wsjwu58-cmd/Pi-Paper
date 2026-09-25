@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施中（2026-09-25）。桌面壳、本地项目、画布与任务持久化、图片素材、备份恢复已有纵向链路；Renderer 已直接接入原 `WorkspacePage`、`HistoryPage`、`CanvasPage`、原节点和 `AgentPanel`。文本可调用本地 loopback 模型或 Agnes，图像/视频接 Agnes，原合成节点接本地 FFmpeg，原音频节点接 Windows SAPI 本地语音。普通云端调用不逐次弹确认，配置页披露供应商、发送范围和可能费用；Agent 生成动作保留原确认。Agent Worker 运行原 TypeScript 服务代码和“小P”角色，工具经本地网关访问画布/任务，具备本地会话、Skill、压缩与记忆链路。参考媒体输入、完整音视频素材、部分后处理、动态 Skill、多提供方、端到端同状态比对、原后端全部规则和多平台安装包仍有缺口，不能宣称 1:1 完成。当前契约以根目录 `AGENTS.md` 为准；项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施中（2026-09-25）。桌面壳、本地项目、画布与任务持久化、图片素材、备份恢复已有纵向链路；Renderer 已直接接入原 `WorkspacePage`、`HistoryPage`、`CanvasPage`、原节点和 `AgentPanel`。文本可调用本地 loopback 模型或 Agnes，图像/视频接 Agnes，原合成节点接本地 FFmpeg，原音频节点接 Windows SAPI 本地语音并可将成功 WAV 保存到本地素材库。普通云端调用不逐次弹确认，配置页披露供应商、发送范围和可能费用；Agent 生成动作保留原确认。Agent Worker 运行原 TypeScript 服务代码和“小P”角色，工具经本地网关访问画布/任务，具备本地会话、Skill、压缩与记忆链路。参考媒体输入、完整音视频素材、部分后处理、动态 Skill、多提供方、端到端同状态比对、原后端全部规则和多平台安装包仍有缺口，不能宣称 1:1 完成。当前契约以根目录 `AGENTS.md` 为准；项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 ## 1. 已确定的产品决策
 

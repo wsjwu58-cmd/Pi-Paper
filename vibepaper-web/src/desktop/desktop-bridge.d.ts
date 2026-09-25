@@ -162,8 +162,9 @@ export interface DesktopDeleteNodeResult {
 
 export interface DesktopAsset {
   assetId: string
+  assetType?: 'image' | 'audio'
   name: string
-  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'audio/wav'
   sizeBytes: number
   createdAt: string
   updatedAt?: string
@@ -368,6 +369,7 @@ export interface DesktopBridge {
   backupProject(projectId: string): Promise<{ name: string } | null>
   restoreBackup(): Promise<DesktopProject | null>
   importImage(projectId: string): Promise<DesktopAsset | null>
+  saveTaskOutputToLibrary(projectId: string, taskId: string): Promise<DesktopAsset>
   listAssets(projectId: string): Promise<DesktopAsset[]>
   renameAsset(projectId: string, assetId: string, name: string): Promise<DesktopAsset>
   replaceImage(projectId: string, assetId: string): Promise<DesktopAsset | null>

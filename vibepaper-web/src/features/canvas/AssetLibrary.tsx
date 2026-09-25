@@ -276,7 +276,11 @@ export function AssetLibrary({
                   <MiniBtn title="下载" onClick={() => download(a)}>
                     <Download size={11} />
                   </MiniBtn>
-                  <MiniBtn disabled={replace.isPending} title="替换素材" onClick={() => startReplace(a.id)}>
+                  <MiniBtn
+                    disabled={replace.isPending || (isDesktop && a.assetType === 'audio')}
+                    title={isDesktop && a.assetType === 'audio' ? '桌面本地暂未接通音频素材替换' : '替换素材'}
+                    onClick={() => startReplace(a.id)}
+                  >
                     <RefreshCw size={11} />
                   </MiniBtn>
                   {!isDesktop && enterpriseId && !a.enterpriseId && (
@@ -326,7 +330,12 @@ export function AssetLibrary({
                 <button onClick={() => download(a)} className="rounded p-1 text-[#888] hover:text-[#111]">
                   <Download size={12} />
                 </button>
-                <button disabled={replace.isPending} onClick={() => startReplace(a.id)} className="rounded p-1 text-[#888] hover:text-[#111] disabled:cursor-not-allowed disabled:opacity-40" title="替换">
+                <button
+                  disabled={replace.isPending || (isDesktop && a.assetType === 'audio')}
+                  onClick={() => startReplace(a.id)}
+                  className="rounded p-1 text-[#888] hover:text-[#111] disabled:cursor-not-allowed disabled:opacity-40"
+                  title={isDesktop && a.assetType === 'audio' ? '桌面本地暂未接通音频素材替换' : '替换'}
+                >
                   <RefreshCw size={12} />
                 </button>
                 <button

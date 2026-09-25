@@ -171,6 +171,18 @@ async function loadDesktopTask(
 
 async function saveOutputToLibrary(taskId: string | number, url?: string, remoteUrl?: string) {
   try {
+    if (isDesktopRuntime()) {
+      const bridge = window.vibepaperDesktop
+      if (!bridge?.saveTaskOutputToLibrary) throw new Error('桌面本地素材服务尚未就绪。')
+      const project = await bridge.getActiveProject()
+      if (!project) throw new Error('没有打开的本地项目，无法存入素材库。')
+      const asset = await bridge.saveTaskOutputToLibrary(project.projectId, sid(taskId))
+      if (!asset?.assetId) throw new Error('本地音频素材未保存成功。')
+      window.dispatchEvent(new Event('vp-assets-updated'))
+      toastSuccess('已存入素材库')
+      return
+    }
+
     let blob: Blob
     if (remoteUrl?.startsWith('http')) {
       blob = await (await fetch(remoteUrl)).blob()
@@ -793,10 +805,8 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
               <div className="mt-2 flex justify-end">
                 <button
                   type="button"
-                  disabled={isDesktopRuntime()}
-                  title={isDesktopRuntime() ? '桌面本地暂未接通保存生成结果到素材库' : '存入素材库'}
                   onClick={() => void saveOutputToLibrary(latest.taskId, out.url)}
-                  className="rounded-lg bg-black/5 px-2.5 py-1.5 text-[11px] font-bold text-[#333] hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-lg bg-black/5 px-2.5 py-1.5 text-[11px] font-bold text-[#333] hover:bg-black/10"
                 >
                   存入素材库
                 </button>
