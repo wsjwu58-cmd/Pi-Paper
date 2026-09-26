@@ -28,6 +28,21 @@ function minimalWave() {
   return buffer
 }
 
+function minimalMp3() {
+  const frameLength = 417
+  const frameHeader = Buffer.from([0xff, 0xfb, 0x90, 0x64])
+  const frames = Buffer.alloc(frameLength * 2)
+  frameHeader.copy(frames, 0)
+  frameHeader.copy(frames, frameLength)
+  return frames
+}
+
+function id3Mp3() {
+  const tagBody = Buffer.from('metadata')
+  const id3Header = Buffer.from([0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, tagBody.length])
+  return Buffer.concat([id3Header, tagBody, minimalMp3()])
+}
+
 function audioOutputMeta() {
   return {
     index: 0,
@@ -132,7 +147,41 @@ async function mutateV8ProjectDatabase(databasePath, mutate) {
   }
 }
 
-test('local asset import detects image and WAV content, hashes it and tracks references', async (t) => {
+async function mutateProjectToV9(databasePath) {
+  const database = new DatabaseSync(databasePath)
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(`
+      CREATE TABLE assets_v9 (
+        id TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'audio/wav')),
+        size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
+        relative_path TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))
+      ) STRICT;
+      INSERT INTO assets_v9 (id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted)
+        SELECT id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted FROM assets;
+      DROP TABLE assets;
+      ALTER TABLE assets_v9 RENAME TO assets;
+      CREATE INDEX assets_by_sha ON assets(sha256, deleted);
+      PRAGMA user_version = 9;
+    `)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+    database.close()
+  }
+}
+
+test('local asset import detects image, WAV and MP3 content, hashes it and tracks references', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
   const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-duplicate-import-backup-'))
   const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-duplicate-import-restore-'))
@@ -142,12 +191,15 @@ test('local asset import detects image and WAV content, hashes it and tracks ref
   })
   const imageBytes = Buffer.concat([PNG_HEADER, Buffer.from(' imported png payload')])
   const waveBytes = minimalWave()
+  const mp3Bytes = id3Mp3()
   const imagePath = await writeImage(parentDirectory, 'cover.png', imageBytes)
   const wavePath = await writeImage(parentDirectory, 'voice.wav', waveBytes)
+  const mp3Path = await writeImage(parentDirectory, 'voice.mp3', mp3Bytes)
   const image = await store.importAsset(imagePath, project.projectId)
   await assert.rejects(store.importAsset(wavePath, project.projectId), /PNG、JPEG、GIF 和 WebP 图片/u)
   const audio = await store.importAsset(wavePath, project.projectId, 'local')
   const duplicateAudio = await store.importAsset(wavePath, project.projectId, 'local')
+  const mp3Audio = await store.importAsset(mp3Path, project.projectId, 'local')
 
   assert.equal(image.assetType, 'image')
   assert.equal(image.mimeType, 'image/png')
@@ -155,26 +207,35 @@ test('local asset import detects image and WAV content, hashes it and tracks ref
   assert.equal(audio.assetType, 'audio')
   assert.equal(audio.mimeType, 'audio/wav')
   assert.equal(audio.name, 'voice.wav')
+  assert.equal(mp3Audio.assetType, 'audio')
+  assert.equal(mp3Audio.mimeType, 'audio/mpeg')
+  assert.equal(mp3Audio.name, 'voice.mp3')
   assert.notEqual(duplicateAudio.assetId, audio.assetId, 'each import creates an independent asset record')
   const audioResolved = await store.resolveAsset(audio.assetId)
   const duplicateAudioResolved = await store.resolveAsset(duplicateAudio.assetId)
+  const mp3Resolved = await store.resolveAsset(mp3Audio.assetId)
   assert.notEqual(duplicateAudioResolved.filePath, audioResolved.filePath)
+  assert.equal(mp3Resolved.mimeType, 'audio/mpeg', 'asset preview resolution retains the MPEG audio MIME type')
+  assert.match(mp3Resolved.filePath, /\.mp3$/u)
   assert.deepEqual(await fs.readFile((await store.resolveAsset(image.assetId)).filePath), imageBytes)
   assert.deepEqual(await fs.readFile(audioResolved.filePath), waveBytes)
   assert.deepEqual(await fs.readFile(duplicateAudioResolved.filePath), waveBytes)
+  assert.deepEqual(await fs.readFile(mp3Resolved.filePath), mp3Bytes)
 
   const database = new DatabaseSync(path.join(directory, '.vibepaper', 'project.sqlite'), { readOnly: true })
   try {
     const rows = database.prepare('SELECT id, sha256, mime_type, relative_path FROM assets ORDER BY mime_type').all()
-    assert.equal(rows.length, 3)
+    assert.equal(rows.length, 4)
     assert.equal(rows.find((row) => row.id === image.assetId).sha256, createHash('sha256').update(imageBytes).digest('hex'))
     assert.equal(rows.find((row) => row.id === audio.assetId).sha256, createHash('sha256').update(waveBytes).digest('hex'))
+    assert.equal(rows.find((row) => row.id === mp3Audio.assetId).sha256, createHash('sha256').update(mp3Bytes).digest('hex'))
     const duplicateAudioRow = rows.find((row) => row.id === duplicateAudio.assetId)
     const audioRow = rows.find((row) => row.id === audio.assetId)
     assert.equal(duplicateAudioRow.sha256, audioRow.sha256)
     assert.match(audioRow.relative_path, /\.wav$/u)
     assert.match(duplicateAudioRow.relative_path, /\.wav$/u)
     assert.notEqual(duplicateAudioRow.relative_path, audioRow.relative_path)
+    assert.match(rows.find((row) => row.id === mp3Audio.assetId).relative_path, /\.mp3$/u)
   } finally {
     database.close()
   }
@@ -203,10 +264,19 @@ test('local asset import detects image and WAV content, hashes it and tracks ref
     type: 'audio',
     params: { assetId: duplicateAudio.assetId },
   })
+  const mp3Node = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'imported-mp3-audio-node',
+    expectedVersion: 3,
+    type: 'audio',
+    params: { assetId: mp3Audio.assetId },
+  })
   const referencedAssets = await store.listAssets(project.projectId)
   assert.equal(referencedAssets.find((asset) => asset.assetId === image.assetId).referenceCount, 1)
   assert.equal(referencedAssets.find((asset) => asset.assetId === audio.assetId).referenceCount, 1)
   assert.equal(referencedAssets.find((asset) => asset.assetId === duplicateAudio.assetId).referenceCount, 1)
+  assert.equal(referencedAssets.find((asset) => asset.assetId === mp3Audio.assetId).referenceCount, 1)
 
   const deleted = await store.deleteAsset(project.projectId, audio.assetId)
   assert.deepEqual(deleted, {
@@ -223,11 +293,17 @@ test('local asset import detects image and WAV content, hashes it and tracks ref
   const restored = await store.restoreBackup(backup.directory, restoreParent)
   const restoredAssets = await store.listAssets(restored.project.projectId)
   assert.equal(restoredAssets.find((asset) => asset.assetId === duplicateAudio.assetId).referenceCount, 1)
+  assert.equal(restoredAssets.find((asset) => asset.assetId === mp3Audio.assetId).referenceCount, 1)
   const restoredAudioPath = (await store.resolveAsset(audio.assetId)).filePath
   const restoredDuplicateAudioPath = (await store.resolveAsset(duplicateAudio.assetId)).filePath
   assert.notEqual(restoredAudioPath, restoredDuplicateAudioPath)
   assert.deepEqual(await fs.readFile(restoredAudioPath), waveBytes)
   assert.deepEqual(await fs.readFile(restoredDuplicateAudioPath), waveBytes)
+  const restoredMp3 = await store.resolveAsset(mp3Audio.assetId)
+  assert.equal(restoredMp3.mimeType, 'audio/mpeg')
+  assert.match(restoredMp3.filePath, /\.mp3$/u)
+  assert.deepEqual(await fs.readFile(restoredMp3.filePath), mp3Bytes)
+  assert.ok(store.loadCanvas(restored.project.projectId, restored.project.canvasId).nodes.some((node) => node.id === mp3Node.node.id))
   assert.ok(store.loadCanvas(restored.project.projectId, restored.project.canvasId).nodes.some((node) => node.id === duplicateAudioNode.node.id))
 })
 
@@ -278,8 +354,98 @@ test('imported WAV assets and audio references survive project backup and restor
 test('local asset import rejects unsupported or disguised file contents', async (t) => {
   const { store, parentDirectory, project } = await openTestProject(t)
   const disguisedPath = await writeImage(parentDirectory, 'not-really-audio.wav', Buffer.from('not a RIFF WAV or image'))
+  const disguisedMp3Path = await writeImage(parentDirectory, 'not-really-audio.mp3', Buffer.from('not an MPEG audio stream'.padEnd(40, ' ')))
+  const truncatedFrame = Buffer.alloc(64)
+  Buffer.from([0xff, 0xfb, 0x90, 0x64]).copy(truncatedFrame)
+  const truncatedMp3Path = await writeImage(parentDirectory, 'truncated-frame.mp3', truncatedFrame)
+  const layerTwoFrame = Buffer.alloc(834)
+  Buffer.from([0xff, 0xfd, 0x90, 0x64]).copy(layerTwoFrame, 0)
+  Buffer.from([0xff, 0xfd, 0x90, 0x64]).copy(layerTwoFrame, 417)
+  const layerTwoPath = await writeImage(parentDirectory, 'mpeg-layer-two.mp3', layerTwoFrame)
+  const id3OnlyPath = await writeImage(parentDirectory, 'id3-only.mp3', Buffer.from([
+    0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ...Buffer.alloc(32),
+  ]))
+  const truncatedId3Path = await writeImage(parentDirectory, 'truncated-id3.mp3', Buffer.from([
+    0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+    ...Buffer.alloc(24),
+  ]))
   await assert.rejects(store.importAsset(disguisedPath, project.projectId, 'local'), /本地 WAV 素材/u)
+  await assert.rejects(store.importAsset(disguisedMp3Path, project.projectId, 'local'), /有效 MPEG 音频帧/u)
+  await assert.rejects(store.importAsset(truncatedMp3Path, project.projectId, 'local'), /MPEG 音频帧已截断/u)
+  await assert.rejects(store.importAsset(layerTwoPath, project.projectId, 'local'), /有效 MPEG 音频帧/u)
+  await assert.rejects(store.importAsset(id3OnlyPath, project.projectId, 'local'), /有效 MPEG 音频帧/u)
+  await assert.rejects(store.importAsset(truncatedId3Path, project.projectId, 'local'), /ID3v2 标记已截断/u)
   assert.deepEqual(await store.listAssets(project.projectId), [])
+})
+
+test('project schema v9 enables validated MP3 assets with a v9 rollback snapshot', async (t) => {
+  const { store, directory, parentDirectory, project } = await openTestProject(t)
+  const imagePath = await writeImage(parentDirectory, 'schema-v9-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' v9 image')]))
+  const wavePath = await writeImage(parentDirectory, 'schema-v9-audio.wav', minimalWave())
+  const mp3Path = await writeImage(parentDirectory, 'schema-v10-audio.mp3', id3Mp3())
+  const image = await store.importAsset(imagePath, project.projectId)
+  const audio = await store.importAsset(wavePath, project.projectId, 'local')
+  const imageNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'schema-v9-image-reference',
+    expectedVersion: 0,
+    type: 'image',
+    params: { assetId: image.assetId },
+  })
+  const audioNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'schema-v9-audio-reference',
+    expectedVersion: 1,
+    type: 'audio',
+    params: { assetId: audio.assetId },
+  })
+  await store.close()
+
+  const databasePath = path.join(directory, '.vibepaper', 'project.sqlite')
+  await mutateProjectToV9(databasePath)
+  await store.openProject(directory)
+  const importedMp3 = await store.importAsset(mp3Path, project.projectId, 'local')
+  assert.equal(importedMp3.mimeType, 'audio/mpeg')
+  assert.equal(importedMp3.referenceCount, 0)
+  const resolvedMp3 = await store.resolveAsset(importedMp3.assetId)
+  assert.equal(resolvedMp3.mimeType, 'audio/mpeg')
+  assert.deepEqual(await fs.readFile(resolvedMp3.filePath), await fs.readFile(mp3Path))
+  assert.equal((await store.listAssets(project.projectId)).find((entry) => entry.assetId === image.assetId).referenceCount, 1)
+  assert.equal((await store.listAssets(project.projectId)).find((entry) => entry.assetId === audio.assetId).referenceCount, 1)
+  assert.deepEqual(store.loadCanvas(project.projectId, project.canvasId).nodes.map((node) => node.id), [imageNode.node.id, audioNode.node.id])
+
+  const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
+  try {
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
+    assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
+    const schema = migratedDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql
+    assert.match(schema, /audio\/mpeg/u)
+    assert.equal(migratedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 2)
+  } finally {
+    migratedDatabase.close()
+  }
+
+  const backupDirectory = path.join(directory, '.vibepaper', 'backups')
+  const backupName = (await fs.readdir(backupDirectory)).find((name) => name.startsWith('project-schema-v9-'))
+  assert.ok(backupName, 'v9 SQLite snapshot exists before migration')
+  const backupPath = path.join(backupDirectory, backupName)
+  const backupStats = await fs.stat(backupPath)
+  assert.ok(backupStats.size > 0)
+  const backupDatabase = new DatabaseSync(backupPath, { readOnly: true })
+  try {
+    assert.equal(Number(backupDatabase.prepare('PRAGMA user_version').get().user_version), 9)
+    const oldSchema = backupDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql
+    assert.match(oldSchema, /audio\/wav/u)
+    assert.doesNotMatch(oldSchema, /audio\/mpeg/u)
+    assert.equal(backupDatabase.prepare('SELECT COUNT(*) AS count FROM assets').get().count, 2)
+    assert.equal(backupDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 2)
+    assert.deepEqual(backupDatabase.prepare('PRAGMA foreign_key_check').all(), [])
+  } finally {
+    backupDatabase.close()
+  }
 })
 
 test('image assets can be renamed, replaced in place and logically deleted with reference impact', async (t) => {
@@ -333,7 +499,7 @@ test('image assets can be renamed, replaced in place and logically deleted with 
   await assert.rejects(store.renameAsset(project.projectId, second.assetId, '   '), /素材名称/u)
 })
 
-test('WAV assets can be replaced in place and retain references through backup and restore', async (t) => {
+test('WAV assets can be replaced with validated MP3 in place and retain references through backup and restore', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
   const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-audio-replace-backup-'))
   const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-audio-replace-restore-'))
@@ -343,10 +509,9 @@ test('WAV assets can be replaced in place and retain references through backup a
   })
 
   const originalBytes = minimalWave()
-  const replacementBytes = minimalWave()
-  replacementBytes.writeInt16LE(-123, 44)
+  const replacementBytes = id3Mp3()
   const originalPath = await writeImage(parentDirectory, 'replace-original.wav', originalBytes)
-  const replacementPath = await writeImage(parentDirectory, 'replace-next.wav', replacementBytes)
+  const replacementPath = await writeImage(parentDirectory, 'replace-next.mp3', replacementBytes)
   const originalAsset = await store.importAsset(originalPath, project.projectId, 'local')
   const node = await store.createNode({
     projectId: project.projectId,
@@ -360,8 +525,8 @@ test('WAV assets can be replaced in place and retain references through backup a
   const replaced = await store.replaceAudioAsset(project.projectId, originalAsset.assetId, replacementPath)
   assert.equal(replaced.assetId, originalAsset.assetId)
   assert.equal(replaced.assetType, 'audio')
-  assert.equal(replaced.mimeType, 'audio/wav')
-  assert.equal(replaced.name, 'replace-next.wav')
+  assert.equal(replaced.mimeType, 'audio/mpeg')
+  assert.equal(replaced.name, 'replace-next.mp3')
   assert.equal(replaced.referenceCount, 1)
   assert.deepEqual(await fs.readFile((await store.resolveAsset(originalAsset.assetId)).filePath), replacementBytes)
   await assert.rejects(fs.access(oldFile.filePath))
@@ -372,8 +537,8 @@ test('WAV assets can be replaced in place and retain references through backup a
     const updated = database.prepare('SELECT sha256, mime_type, relative_path FROM assets WHERE id = ?')
       .get(originalAsset.assetId)
     assert.equal(updated.sha256, createHash('sha256').update(replacementBytes).digest('hex'))
-    assert.equal(updated.mime_type, 'audio/wav')
-    assert.match(updated.relative_path, new RegExp(`^assets/${updated.sha256}/${originalAsset.assetId}\\.wav$`, 'u'))
+    assert.equal(updated.mime_type, 'audio/mpeg')
+    assert.match(updated.relative_path, new RegExp(`^assets/${updated.sha256}/${originalAsset.assetId}\\.mp3$`, 'u'))
     assert.deepEqual(database.prepare('SELECT node_id, asset_id FROM asset_references').all().map((row) => ({ ...row })), [
       { node_id: node.node.id, asset_id: originalAsset.assetId },
     ])
@@ -385,17 +550,18 @@ test('WAV assets can be replaced in place and retain references through backup a
   const restored = await store.restoreBackup(backup.directory, restoreParent)
   const restoredAsset = (await store.listAssets(restored.project.projectId)).find((asset) => asset.assetId === originalAsset.assetId)
   assert.equal(restoredAsset.assetType, 'audio')
-  assert.equal(restoredAsset.mimeType, 'audio/wav')
+  assert.equal(restoredAsset.mimeType, 'audio/mpeg')
   assert.equal(restoredAsset.referenceCount, 1)
   assert.deepEqual(await fs.readFile((await store.resolveAsset(originalAsset.assetId)).filePath), replacementBytes)
   assert.deepEqual(store.loadCanvas(restored.project.projectId, restored.project.canvasId).nodes.map((entry) => entry.id), [node.node.id])
 })
 
-test('audio and image replacement routes reject the other asset type and invalid WAV bytes', async (t) => {
+test('audio and image replacement routes reject the other asset type and invalid WAV or MP3 bytes', async (t) => {
   const { store, parentDirectory, project } = await openTestProject(t)
   const imagePath = await writeImage(parentDirectory, 'replace-kind-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' image bytes')]))
   const wavePath = await writeImage(parentDirectory, 'replace-kind-audio.wav', minimalWave())
   const invalidWavePath = await writeImage(parentDirectory, 'replace-kind-invalid.wav', Buffer.concat([PNG_HEADER, Buffer.alloc(40, 1)]))
+  const invalidMp3Path = await writeImage(parentDirectory, 'replace-kind-invalid.mp3', Buffer.from('not an MP3 stream'.padEnd(40, ' ')))
   const image = await store.importAsset(imagePath, project.projectId)
   const audio = await store.importAsset(wavePath, project.projectId, 'local')
   const imageNode = await store.createNode({
@@ -415,9 +581,10 @@ test('audio and image replacement routes reject the other asset type and invalid
     params: { assetId: audio.assetId },
   })
 
-  await assert.rejects(store.replaceAudioAsset(project.projectId, image.assetId, wavePath), /只能替换 WAV 音频素材/u)
+  await assert.rejects(store.replaceAudioAsset(project.projectId, image.assetId, wavePath), /只能替换 WAV 或 MP3 音频素材/u)
   await assert.rejects(store.replaceAsset(project.projectId, audio.assetId, imagePath), /只能替换图片素材/u)
   await assert.rejects(store.replaceAudioAsset(project.projectId, audio.assetId, invalidWavePath), /本地 WAV 素材格式无效/u)
+  await assert.rejects(store.replaceAudioAsset(project.projectId, audio.assetId, invalidMp3Path), /有效 MPEG 音频帧/u)
   assert.deepEqual(await fs.readFile((await store.resolveAsset(image.assetId)).filePath), await fs.readFile(imagePath))
   assert.deepEqual(await fs.readFile((await store.resolveAsset(audio.assetId)).filePath), await fs.readFile(wavePath))
   const listed = await store.listAssets(project.projectId)
@@ -480,7 +647,7 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 9)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const columns = migratedDatabase.prepare('PRAGMA table_info(assets)').all().map((row) => row.name)
     assert.ok(columns.includes('updated_at'))
@@ -493,7 +660,7 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
   }
 })
 
-test('project schema v7 migrates image assets and references through v9 with rollback snapshots', async (t) => {
+test('project schema v7 migrates image assets and references through v10 with rollback snapshots', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
   const sourcePath = await writeImage(parentDirectory, 'v7-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' v7 payload')]))
   const asset = await store.importAsset(sourcePath, project.projectId)
@@ -543,7 +710,7 @@ test('project schema v7 migrates image assets and references through v9 with rol
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 9)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const backupName = (await fs.readdir(path.join(directory, '.vibepaper', 'backups')))
       .find((name) => name.startsWith('project-schema-v7-'))
@@ -570,7 +737,7 @@ test('project schema v8 backfills only legacy params asset references and preser
   const migratedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
   let v8BackupName
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 9)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
     assert.deepEqual(migratedDatabase.prepare(`
       SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ? ORDER BY node_id
     `).all(fixture.project.canvasId).map((row) => ({ ...row })), [
@@ -600,7 +767,7 @@ test('project schema v8 backfills only legacy params asset references and preser
   await fixture.store.openProject(fixture.directory)
   const reopenedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
   try {
-    assert.equal(Number(reopenedDatabase.prepare('PRAGMA user_version').get().user_version), 9)
+    assert.equal(Number(reopenedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
     assert.equal(reopenedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 2)
   } finally {
     reopenedDatabase.close()
@@ -712,7 +879,7 @@ test('project schema v8 refuses extra references for nodes without local assets'
   }
 })
 
-test('restoring a v8 backup with a missing legacy params reference migrates the staged project to v9', async (t) => {
+test('restoring a v8 backup with a missing legacy params reference migrates the staged project to v10', async (t) => {
   const { store, parentDirectory, project } = await openTestProject(t)
   const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-v8-restore-backup-'))
   const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-v8-restore-target-'))
@@ -769,7 +936,7 @@ test('restoring a v8 backup with a missing legacy params reference migrates the 
   const restoredDatabasePath = path.join(restored.directory, '.vibepaper', 'project.sqlite')
   const restoredDatabase = new DatabaseSync(restoredDatabasePath, { readOnly: true })
   try {
-    assert.equal(Number(restoredDatabase.prepare('PRAGMA user_version').get().user_version), 9)
+    assert.equal(Number(restoredDatabase.prepare('PRAGMA user_version').get().user_version), 10)
     assert.deepEqual(restoredDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     assert.deepEqual(restoredDatabase.prepare('SELECT node_id, asset_id FROM asset_references').all().map((row) => ({ ...row })), [
       { node_id: node.node.id, asset_id: asset.assetId },
@@ -797,9 +964,9 @@ test('asset operations are exposed through project-scoped IPC and a path-restric
   assert.match(localCore, /case 'asset:delete':\s+return store\.deleteAsset/u)
   assert.match(main, /desktop:asset:rename',[\s\S]*assertAssetId\(assetId\)[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:rename'/u)
   assert.match(main, /desktop:asset:replace-image',[\s\S]*dialog\.showOpenDialog[\s\S]*localCore\.request\('asset:replace'/u)
-  assert.match(main, /desktop:asset:replace-audio',[\s\S]*dialog\.showOpenDialog[\s\S]*extensions: \['wav'\][\s\S]*localCore\.request\('asset:replace-audio'/u)
+  assert.match(main, /desktop:asset:replace-audio',[\s\S]*dialog\.showOpenDialog[\s\S]*extensions: \['wav', 'mp3'\][\s\S]*localCore\.request\('asset:replace-audio'/u)
   assert.match(main, /desktop:asset:import-image',[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'image' \}/u)
-  assert.match(main, /desktop:asset:import-local',[\s\S]*assertTrustedSender\(event\)[\s\S]*extensions: \['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav'\][\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'local' \}/u)
+  assert.match(main, /desktop:asset:import-local',[\s\S]*assertTrustedSender\(event\)[\s\S]*extensions: \['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav', 'mp3'\][\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'local' \}/u)
   assert.match(main, /desktop:asset:delete',[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:delete'/u)
   assert.match(preload, /renameAsset: \(projectId, assetId, name\) => ipcRenderer\.invoke\('desktop:asset:rename'/u)
   assert.match(preload, /replaceImage: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace-image'/u)

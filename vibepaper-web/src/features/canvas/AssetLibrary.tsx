@@ -90,7 +90,7 @@ export function AssetLibrary({
         : null
       const importedAudio = resultAsset?.assetType === 'audio'
         || (typeof resultAsset?.mimeType === 'string' && resultAsset.mimeType.startsWith('audio/'))
-      toastSuccess(isDesktop ? (importedAudio ? 'WAV 音频已导入本地素材库' : '图片已导入本地素材库') : '上传成功')
+      toastSuccess(isDesktop ? (importedAudio ? 'WAV/MP3 音频已导入本地素材库' : '图片已导入本地素材库') : '上传成功')
     },
     onError: (e) => toastError((e as Error).message),
   })
@@ -242,7 +242,7 @@ export function AssetLibrary({
             type="button"
             disabled={!projectId || upload.isPending}
             onClick={() => upload.mutate(undefined)}
-            title={!projectId ? '本地项目未就绪' : '从本机导入图片或 WAV 音频'}
+            title={!projectId ? '本地项目未就绪' : '从本机导入图片或 WAV/MP3 音频'}
             className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Upload size={13} /> 上传

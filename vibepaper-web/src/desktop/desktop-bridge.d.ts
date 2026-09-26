@@ -164,7 +164,7 @@ export interface DesktopAsset {
   assetId: string
   assetType?: 'image' | 'audio'
   name: string
-  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'audio/wav'
+  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'audio/wav' | 'audio/mpeg'
   sizeBytes: number
   createdAt: string
   updatedAt?: string

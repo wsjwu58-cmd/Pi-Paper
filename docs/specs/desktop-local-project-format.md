@@ -1,6 +1,6 @@
 # 桌面本地数据格式（项目与模型设置）
 
-状态：Electron 项目引导、本地画布与六类节点存储、连线/分组/堆叠领域命令、原页面上的画布 JSON 导出、图片素材导入/引用/重命名/替换/软删除、任务状态、本地文本与合成执行、Agnes 文本/图像/视频任务，以及当前格式下的项目备份恢复切片已实现。旧版“导入为新画布”语义因当前单项目单画布模型而未实现；音频、完整素材与跨平台安装包验收仍有缺口。Agent Worker 已接入原 TypeScript 服务；动态项目 Skill 与完整跨版本恢复仍待迁移。
+状态：Electron 项目引导、本地画布与六类节点存储、连线/分组/堆叠领域命令、原页面上的画布 JSON 导出、图片及 WAV/MP3 素材导入/引用/重命名/替换/软删除、Windows SAPI 音频任务、任务状态、本地文本与合成执行、Agnes 文本/图像/视频任务，以及当前格式下的项目备份恢复切片已实现。旧版“导入为新画布”语义因当前单项目单画布模型而未实现；完整素材与跨平台安装包验收仍有缺口。Agent Worker 已接入原 TypeScript 服务；动态项目 Skill 与完整跨版本恢复仍待迁移。
 
 ## 项目目录
 
@@ -53,7 +53,7 @@ Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访�
 
 ## `project.sqlite`
 
-数据库使用 `PRAGMA user_version = 9` 标记当前存储结构版本，并以 WAL、外键和 `synchronous=FULL` 运行。v8→v9 升级先保存 SQLite 回退快照，再仅回填旧 `params.assetId` 图片/音频节点可核实的缺失素材引用；冲突、素材缺失和 MIME 不匹配会阻止升级。主要表为：
+数据库使用 `PRAGMA user_version = 10` 标记当前存储结构版本，并以 WAL、外键和 `synchronous=FULL` 运行。v8→v9 升级先保存 SQLite 回退快照，再仅回填旧 `params.assetId` 图片/音频节点可核实的缺失素材引用；冲突、素材缺失和 MIME 不匹配会阻止升级。v9→v10 升级在备份快照后扩展素材 MIME 约束以接纳 MP3，事务内检查外键。主要表为：
 
 | 表 | 内容 |
 | --- | --- |
@@ -61,7 +61,7 @@ Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访�
 | `canvases` | 画布 ID、乐观锁版本和更新时间 |
 | `nodes` | 画布 ID、节点 ID、有限位置及完整节点 JSON |
 | `edges` | 画布 ID、连线 ID、来源/目标及完整连线 JSON；外键要求两端节点存在 |
-| `assets` | 素材 ID、SHA-256、显示名、图片或 WAV 音频 MIME、大小和项目内相对路径 |
+| `assets` | 素材 ID、SHA-256、显示名、图片或 WAV/MP3 音频 MIME、大小和项目内相对路径 |
 | `asset_references` | 画布图片/音频节点与本地素材的关系；删除节点时级联清除引用 |
 | `tasks` | 本地/云端生成任务输入哈希、Idempotency-Key、画布版本、提供方/模型标识、状态、结果路径与哈希、错误码和时间 |
 | `task_events` | 任务状态事件的单调序号、类型、JSON 数据和时间 |
@@ -73,11 +73,11 @@ Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写�
 
 `exportCanvas(projectId, canvasId)` 在 Store 内只读生成 interchange JSON：顶层同时写入 `schema_version` 和 `schemaVersion`（当前均为 `1.0.0`），并包含画布、节点、边、groups 与 stacks。图片节点只导出其稳定 `assetId` 引用，不打包素材文件；导出方法目前不经 IPC/Renderer 调用。旧后端 `CanvasService.importCanvas` 会创建另一张新画布并重映射节点/边身份、重置执行状态，但当前 `project_metadata` 仅保存一个 `canvasId`；本地尚无等价导入命令。为防止覆盖当前画布或生成无法解析的跨项目素材引用，画布 JSON 导入保持未实现，等待多画布身份和素材包迁移契约。
 
-文本、图像与视频节点可将当前提示词提交给已配置的本地或 Agnes 模型；原合成节点按有序上游视频节点 ID 创建本地 `compose` 任务，由 Local Core 验证连线、最新成功视频结果与文件摘要，再交给 FFmpeg 统一转码并拼接。任务输入使用 `Idempotency-Key` 和画布版本；Worker 将输出写入该任务目录，Local Core 校验文件类型、路径、可读性、SHA-256 与大小后才提交 `succeeded`。原节点显示任务状态、历史和可预览结果；音频与其他尚未接入的模态仍待迁移。
+文本、图像与视频节点可将当前提示词提交给已配置的本地或 Agnes 模型；Windows 上原音频节点可提交本地 SAPI 语音任务。原合成节点按有序上游视频节点 ID 创建本地 `compose` 任务，由 Local Core 验证连线、最新成功视频结果与文件摘要，再交给 FFmpeg 统一转码并拼接。任务输入使用 `Idempotency-Key` 和画布版本；Worker 将输出写入该任务目录，Local Core 校验文件类型、路径、可读性、SHA-256 与大小后才提交 `succeeded`。原节点显示任务状态、历史和可预览结果；其他音频提供方及完整模态能力仍待迁移。
 
 ## 素材首个切片
 
-通过系统文件选择器导入 PNG、JPEG、GIF 或 WebP 图片（每个文件不超过 200 MB）。Local Core 以实际文件签名识别 MIME、流式计算 SHA-256 并复制到 `.vibepaper/assets/<sha256>/<assetId>.<ext>`；相同内容只登记一条素材记录。画布中的图片节点保存稳定 `assetId`，保存画布时素材存在性检查与引用更新位于同一 SQLite 事务。Renderer 只使用受限的 `vibe://app/assets/<assetId>` 资源 URL，Main 通过 Local Core 查到项目内文件后提供只读图片响应。
+通过原素材库和画布入口的系统文件选择器导入 PNG、JPEG、GIF、WebP 图片及 WAV/MP3 音频（每个文件不超过 200 MB）。Local Core 根据文件内容识别 MIME、流式计算 SHA-256 并复制到 `.vibepaper/assets/<sha256>/<assetId>.<ext>`；同一文件每次导入都有独立素材 ID，符合原 Java 上传语义。画布中的图片/音频节点保存稳定 `assetId`，保存画布时素材存在性检查与引用更新位于同一 SQLite 事务。Renderer 只使用受限的 `vibe://app/assets/<assetId>` 资源 URL，Main 通过 Local Core 查到项目内文件后提供只读媒体响应。
 
 `user_version = 1` 到 5 逐级增加素材、任务、画布命令、分组与堆叠；版本 6 增加素材软删除字段。版本 6 升级到 7 前在 `.vibepaper/backups/` 创建 SQLite 在线快照，再在事务中扩展任务表的 `compose` 模态并保留旧任务和事件。迁移失败时事务回滚，快照保留供恢复；项目备份经校验后逐级迁移到当前版本。
 

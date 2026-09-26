@@ -9,7 +9,7 @@ const { backup, DatabaseSync } = require('node:sqlite')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 9
+const PROJECT_DB_SCHEMA_VERSION = 10
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -42,7 +42,7 @@ const ASSET_DB_SCHEMA = `
     id TEXT PRIMARY KEY,
     sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
     original_name TEXT NOT NULL,
-    mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'audio/wav')),
+    mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'audio/wav', 'audio/mpeg')),
     size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
     relative_path TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
@@ -1636,7 +1636,7 @@ async function migrateDatabaseV7ToV8(database, dataDirectory) {
 
 async function migrateDatabaseV8ToV9(database, dataDirectory) {
   const version = databaseVersion(database)
-  if (version === PROJECT_DB_SCHEMA_VERSION) return
+  if (version === 9) return
   if (version !== 8) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 9。`)
 
   const backupDirectory = path.join(dataDirectory, 'backups')
@@ -1673,11 +1673,62 @@ async function migrateDatabaseV8ToV9(database, dataDirectory) {
     if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
       throw new Error('本地素材引用迁移后检测到无效引用。')
     }
-    database.exec(`PRAGMA user_version = ${PROJECT_DB_SCHEMA_VERSION}`)
+    database.exec('PRAGMA user_version = 9')
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
     throw error
+  }
+}
+
+async function migrateDatabaseV9ToV10(database, dataDirectory) {
+  const version = databaseVersion(database)
+  if (version === PROJECT_DB_SCHEMA_VERSION) return
+  if (version !== 9) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 10。`)
+
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v9-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(`
+      CREATE TABLE assets_v10 (
+        id TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'audio/wav', 'audio/mpeg')),
+        size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
+        relative_path TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))
+      ) STRICT;
+      INSERT INTO assets_v10 (id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted)
+        SELECT id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted FROM assets;
+      DROP TABLE assets;
+      ALTER TABLE assets_v10 RENAME TO assets;
+      CREATE INDEX assets_by_sha ON assets(sha256, deleted);
+      PRAGMA user_version = 10;
+    `)
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('MP3 素材迁移后检测到无效引用。')
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
   }
 }
 
@@ -1774,7 +1825,7 @@ async function copyAssetSource(sourcePath, temporaryPath) {
 async function copyProjectAssets(database, sourceDataDirectory, targetDataDirectory) {
   const assets = database.prepare('SELECT id, sha256, original_name, mime_type, size_bytes, relative_path FROM assets ORDER BY id').all()
   for (const asset of assets) {
-    if (!/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav)$/iu.test(asset.relative_path)) {
+    if (!/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav|mp3)$/iu.test(asset.relative_path)) {
       throw new Error('项目素材清单包含无效路径，无法安全备份。')
     }
     const sourcePath = path.resolve(sourceDataDirectory, asset.relative_path)
@@ -1883,7 +1934,7 @@ async function projectBackupPaths(database, dataDirectory, includeAgent = true) 
   const paths = ['project.json', 'project.sqlite']
   for (const row of assetRows) {
     if (typeof row.relative_path !== 'string'
-      || !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav)$/iu.test(row.relative_path)) {
+      || !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav|mp3)$/iu.test(row.relative_path)) {
       throw new Error('项目素材清单包含无效路径，无法备份或恢复。')
     }
     paths.push(row.relative_path)
@@ -2206,7 +2257,7 @@ async function safeBackupFilePath(dataDirectory, relativePath) {
     && taskOutputExtensions.includes(path.extname(taskOutputMatch[2]).toLowerCase())
   const isAgentFile = isValidAgentBackupRelativePath(relativePath)
   if (relativePath !== 'project.json' && relativePath !== 'project.sqlite'
-    && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav)$/iu.test(relativePath)
+    && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav|mp3)$/iu.test(relativePath)
     && !isTaskOutput && !isAgentFile) {
     throw new Error('备份包含无效文件路径。')
   }
@@ -2354,7 +2405,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (![2, 3, 4, 5, 6, 7, 8, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    if (![2, 3, 4, 5, 6, 7, 8, 9, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -2441,11 +2492,103 @@ async function detectWavMimeType(filePath) {
   }
 }
 
-async function detectAssetMimeType(filePath) {
+async function detectMp3MimeType(filePath) {
+  const handle = await fs.open(filePath, 'r')
+  try {
+    const info = await handle.stat()
+    if (info.size < 24 || info.size > MAX_ASSET_BYTES) throw new Error('本地 MP3 素材大小无效。')
+
+    const id3Header = Buffer.alloc(10)
+    const initialRead = await handle.read(id3Header, 0, id3Header.length, 0)
+    let audioOffset = 0
+    if (initialRead.bytesRead >= 3 && id3Header.toString('ascii', 0, 3) === 'ID3') {
+      if (initialRead.bytesRead !== id3Header.length) throw new Error('本地 MP3 ID3v2 标记已截断。')
+      const majorVersion = id3Header[3]
+      const revision = id3Header[4]
+      const flags = id3Header[5]
+      const encodedSize = id3Header.subarray(6, 10)
+      if (majorVersion < 2 || majorVersion > 4 || revision === 0xff
+        || encodedSize.some((byte) => (byte & 0x80) !== 0)) {
+        throw new Error('本地 MP3 ID3v2 标记无效。')
+      }
+      const tagSize = ((encodedSize[0] & 0x7f) << 21)
+        | ((encodedSize[1] & 0x7f) << 14)
+        | ((encodedSize[2] & 0x7f) << 7)
+        | (encodedSize[3] & 0x7f)
+      audioOffset = 10 + tagSize
+      if (audioOffset > info.size) throw new Error('本地 MP3 ID3v2 标记已截断。')
+      if (majorVersion === 4 && (flags & 0x10) !== 0) {
+        if (tagSize < 10) throw new Error('本地 MP3 ID3v2 尾标记无效。')
+        const footer = Buffer.alloc(10)
+        const footerRead = await handle.read(footer, 0, footer.length, audioOffset - footer.length)
+        if (footerRead.bytesRead !== footer.length || footer.toString('ascii', 0, 3) !== '3DI'
+          || !footer.subarray(3).equals(id3Header.subarray(3))) {
+          throw new Error('本地 MP3 ID3v2 尾标记无效。')
+        }
+      }
+    }
+
+    const scanLength = Math.min(info.size - audioOffset, 65_536)
+    const audioHeaders = Buffer.alloc(scanLength)
+    const scanRead = await handle.read(audioHeaders, 0, audioHeaders.length, audioOffset)
+    let foundTruncatedFrame = false
+    const mpeg1Bitrates = {
+      1: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],
+      2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0],
+      3: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0],
+    }
+    const mpeg2Bitrates = {
+      1: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+      2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0],
+      3: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0],
+    }
+    const baseSampleRates = [44_100, 48_000, 32_000]
+    for (let offset = 0; offset + 4 <= scanRead.bytesRead; offset += 1) {
+      const header = audioHeaders.readUInt32BE(offset)
+      if ((header >>> 21) !== 0x7ff) continue
+      const version = (header >>> 19) & 0x3
+      const layer = (header >>> 17) & 0x3
+      const bitrateIndex = (header >>> 12) & 0xf
+      const sampleRateIndex = (header >>> 10) & 0x3
+      if (version === 1 || layer !== 1 || bitrateIndex === 0 || bitrateIndex === 0xf || sampleRateIndex === 0x3) continue
+
+      const bitrateKbps = (version === 3 ? mpeg1Bitrates : mpeg2Bitrates)[layer][bitrateIndex]
+      const sampleRate = baseSampleRates[sampleRateIndex] / (version === 3 ? 1 : version === 2 ? 2 : 4)
+      const padding = (header >>> 9) & 1
+      const frameLength = Math.floor(((version === 3 ? 144 : 72) * bitrateKbps * 1000) / sampleRate + padding)
+      const absoluteOffset = audioOffset + offset
+      if (frameLength < 24 || absoluteOffset + frameLength > info.size) {
+        foundTruncatedFrame = true
+        continue
+      }
+      return 'audio/mpeg'
+    }
+    if (foundTruncatedFrame) throw new Error('本地 MP3 MPEG 音频帧已截断。')
+    throw new Error('本地 MP3 素材缺少有效 MPEG 音频帧。')
+  } finally {
+    await handle.close()
+  }
+}
+
+async function detectAudioMimeType(filePath, diagnosticPath = filePath) {
+  try {
+    return await detectWavMimeType(filePath)
+  } catch (wavError) {
+    try {
+      return await detectMp3MimeType(filePath)
+    } catch (mp3Error) {
+      const extension = path.extname(diagnosticPath).toLowerCase()
+      if (extension === '.wav') throw wavError
+      throw mp3Error
+    }
+  }
+}
+
+async function detectAssetMimeType(filePath, diagnosticPath = filePath) {
   try {
     return await detectImageMimeType(filePath)
   } catch {
-    return detectWavMimeType(filePath)
+    return detectAudioMimeType(filePath, diagnosticPath)
   }
 }
 
@@ -2456,6 +2599,7 @@ function extensionForAssetMimeType(mimeType) {
     'image/gif': 'gif',
     'image/webp': 'webp',
     'audio/wav': 'wav',
+    'audio/mpeg': 'mp3',
   })[mimeType]
 }
 
@@ -2636,6 +2780,7 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 6) await migrateDatabaseV6ToV7(database, dataDirectory)
       if (databaseVersion(database) === 7) await migrateDatabaseV7ToV8(database, dataDirectory)
       if (databaseVersion(database) === 8) await migrateDatabaseV8ToV9(database, dataDirectory)
+      if (databaseVersion(database) === 9) await migrateDatabaseV9ToV10(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
@@ -2890,7 +3035,7 @@ function createLocalProjectStore() {
         const copied = await copyAssetSource(sourcePath, temporaryPath)
         const mimeType = assetKind === 'image'
           ? await detectImageMimeType(temporaryPath)
-          : await detectAssetMimeType(temporaryPath)
+          : await detectAssetMimeType(temporaryPath, sourcePath)
         const assetId = randomUUID()
         const extension = extensionForAssetMimeType(mimeType)
         const relativePath = `assets/${copied.sha256}/${assetId}.${extension}`
@@ -3077,9 +3222,9 @@ function createLocalProjectStore() {
       const current = database.prepare('SELECT * FROM assets WHERE id = ? AND deleted = 0').get(assetId)
       if (!current) throw new Error('本地素材不存在。')
       const currentMatchesType = assetType === 'audio'
-        ? current.mime_type === 'audio/wav'
+        ? ['audio/wav', 'audio/mpeg'].includes(current.mime_type)
         : current.mime_type.startsWith('image/')
-      if (!currentMatchesType) throw new Error(assetType === 'audio' ? '只能替换 WAV 音频素材。' : '只能替换图片素材。')
+      if (!currentMatchesType) throw new Error(assetType === 'audio' ? '只能替换 WAV 或 MP3 音频素材。' : '只能替换图片素材。')
       assertAssetRowPath(current)
       const oldAssetFile = await resolveProjectAssetFile(active.directory, current, { allowMissing: true })
       const { assetsDirectory } = await projectAssetsDirectory(active.directory)
@@ -3090,7 +3235,7 @@ function createLocalProjectStore() {
       try {
         const copied = await copyAssetSource(sourcePath, temporaryPath)
         const mimeType = assetType === 'audio'
-          ? await detectWavMimeType(temporaryPath)
+          ? await detectAudioMimeType(temporaryPath, sourcePath)
           : await detectImageMimeType(temporaryPath)
         const extension = extensionForAssetMimeType(mimeType)
         const rawName = path.basename(path.resolve(sourcePath))

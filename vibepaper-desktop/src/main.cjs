@@ -1049,7 +1049,7 @@ function registerProjectIpc() {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: '导入本地素材',
       properties: ['openFile'],
-      filters: [{ name: '图片和 WAV 音频', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav'] }],
+      filters: [{ name: '图片、WAV 和 MP3 音频', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav', 'mp3'] }],
     })
     if (result.canceled || result.filePaths.length === 0) return null
     await assertActiveAssetProject(projectId)
@@ -1101,9 +1101,9 @@ function registerProjectIpc() {
     assertAssetId(assetId)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '替换本地 WAV 音频素材',
+      title: '替换本地音频素材',
       properties: ['openFile'],
-      filters: [{ name: 'WAV 音频', extensions: ['wav'] }],
+      filters: [{ name: 'WAV 和 MP3 音频', extensions: ['wav', 'mp3'] }],
     })
     if (result.canceled || result.filePaths.length === 0) return null
     await assertActiveAssetProject(projectId)
