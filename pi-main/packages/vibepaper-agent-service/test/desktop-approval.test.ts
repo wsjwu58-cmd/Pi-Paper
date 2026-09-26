@@ -41,7 +41,7 @@ function createGateway(options: { version?: number; failAfterFirstCreate?: boole
 			const created = {
 				taskId: `task-${creationWrites + 1}`,
 				status: "queued",
-				modality: "image",
+				modality: input.modelType === "local-sapi-tts" ? "audio" : "image",
 				nodeId: input.nodeId,
 			};
 			tasks.set(input.idempotencyKey, created);
@@ -316,6 +316,79 @@ describe("desktop persisted approvals", () => {
 			expect(gateway.creationWrites).toBe(0);
 			expect(changedGateway.creationWrites).toBe(0);
 			expect(expiredGateway.creationWrites).toBe(0);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("submits confirmed local SAPI audio actions once for both single and batch tools", async () => {
+		const { store } = await createStore();
+		const stores = createStores(store);
+		const confirmation = (action: Awaited<ReturnType<typeof createWaitingGeneration>>) => ({
+			projectId: "project-1",
+			canvasId: "canvas-1",
+			sessionId: action.run.sessionId,
+			actionId: action.action.actionId,
+			approvalToken: action.action.approvalToken!,
+			accept: true,
+			currentCanvasVersion: 4,
+		});
+		try {
+			const single = await createWaitingGeneration(store, {
+				toolName: "submit_generation",
+				params: {
+					nodeId: "audio-node-1",
+					modelType: "local-sapi-tts",
+					modelParams: { prompt: "朗读第一段。", voice: "female", language: "zh-CN", speed: 0.95 },
+					overwrite: false,
+				},
+			});
+			const singleGateway = createGateway();
+			expect(singleGateway.creationWrites).toBe(0);
+			expect(singleGateway.tasks.size).toBe(0);
+			await expect(
+				confirmDesktopGenerationAction(confirmation(single), stores, singleGateway.gateway),
+			).resolves.toMatchObject({ status: "accepted" });
+			expect(singleGateway.creationWrites).toBe(1);
+			expect([...singleGateway.tasks.values()]).toEqual([
+				{ taskId: "task-1", status: "queued", modality: "audio", nodeId: "audio-node-1" },
+			]);
+			await confirmDesktopGenerationAction(confirmation(single), stores, singleGateway.gateway);
+			expect(singleGateway.creationWrites).toBe(1);
+
+			const batch = await createWaitingGeneration(store, {
+				toolName: "submit_generation_batch",
+				sessionId: "session-audio-batch",
+				params: {
+					generations: [
+						{
+							nodeId: "audio-node-2",
+							modelType: "local-sapi-tts",
+							modelParams: { prompt: "朗读第二段。", voice: "female" },
+							overwrite: false,
+						},
+						{
+							nodeId: "audio-node-3",
+							modelType: "local-sapi-tts",
+							modelParams: { prompt: "朗读第三段。", voice: "male" },
+							overwrite: false,
+						},
+					],
+				},
+			});
+			const batchGateway = createGateway();
+			expect(batchGateway.creationWrites).toBe(0);
+			expect(batchGateway.tasks.size).toBe(0);
+			await expect(
+				confirmDesktopGenerationAction(confirmation(batch), stores, batchGateway.gateway),
+			).resolves.toMatchObject({ status: "accepted" });
+			expect(batchGateway.creationWrites).toBe(2);
+			expect([...batchGateway.tasks.values()].map((task) => [task.modality, task.nodeId])).toEqual([
+				["audio", "audio-node-2"],
+				["audio", "audio-node-3"],
+			]);
+			await confirmDesktopGenerationAction(confirmation(batch), stores, batchGateway.gateway);
+			expect(batchGateway.creationWrites).toBe(2);
 		} finally {
 			store.close();
 		}

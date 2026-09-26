@@ -73,7 +73,7 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 		const prompt = stringValue(input.modelParams.prompt)?.trim();
 		if (
 			!modality ||
-			!["text", "image", "video"].includes(modality) ||
+			!["text", "image", "video", "audio"].includes(modality) ||
 			!prompt ||
 			!providerId ||
 			!modelId ||

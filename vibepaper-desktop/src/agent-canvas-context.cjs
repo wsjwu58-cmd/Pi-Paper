@@ -14,7 +14,7 @@ function cleanText(value, maxLength = MAX_LABEL_CHARS) {
 
 function nodeLabel(node) {
   const type = cleanText(node?.type, 32) || '未知类型'
-  const typeLabel = ({ text: '文本', image: '图片', video: '视频' })[type] || type
+  const typeLabel = ({ text: '文本', image: '图片', audio: '音频', video: '视频' })[type] || type
   const textFields = getAgentNodeTextFields(node)
   const rawLabel = type === 'text'
     ? (textFields.output || textFields.storedContent || textFields.content || textFields.label)
@@ -108,7 +108,7 @@ function getAgentCanvasNodeReferences(canvas) {
     if (includedNodes >= MAX_NODE_COUNT) break
     const alias = `节点 ${index + 1}`
     const type = cleanText(node?.type, 32) || '未知类型'
-    const typeLabel = ({ text: '文本', image: '图片', video: '视频' })[type] || type
+    const typeLabel = ({ text: '文本', image: '图片', audio: '音频', video: '视频' })[type] || type
     const line = `- ${alias}（${typeLabel}）：${nodeLabel(node)}`
     if (used + line.length + 160 > MAX_CONTEXT_CHARS) break
     used += line.length + 1
@@ -141,7 +141,7 @@ function buildAgentCanvasContext(canvas) {
     if (includedNodes >= MAX_NODE_COUNT) break
     const alias = `节点 ${index + 1}`
     const type = cleanText(node?.type, 32) || '未知类型'
-    const typeLabel = ({ text: '文本', image: '图片', video: '视频' })[type] || type
+    const typeLabel = ({ text: '文本', image: '图片', audio: '音频', video: '视频' })[type] || type
     const line = `- ${alias}（${typeLabel}）：${nodeLabel(node)}`
     if (used + line.length + 160 > MAX_CONTEXT_CHARS) break
     lines.push(line)

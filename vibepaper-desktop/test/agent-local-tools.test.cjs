@@ -9,7 +9,14 @@ const {
   ALLOWED_AGENT_CORE_METHODS,
   createAgentLocalToolClient,
 } = require('../src/agent-local-tools.cjs')
-const { buildDesktopAgentModelDirectory } = require('../src/agent-model-directory.cjs')
+const {
+  buildDesktopAgentModelDirectory,
+  isDesktopAgentGenerationTarget,
+} = require('../src/agent-model-directory.cjs')
+const {
+  buildAgentCanvasContext,
+  getAgentCanvasNodeReferences,
+} = require('../src/agent-canvas-context.cjs')
 
 class FakeParentPort extends EventEmitter {
   postMessage(message) {
@@ -42,6 +49,8 @@ test('Main and Worker share the restricted agent:core method allowlist', () => {
   const mainSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.cjs'), 'utf8')
   assert.match(mainSource, /require\('\.\/agent-local-tools\.cjs'\)/u)
   assert.match(mainSource, /ALLOWED_AGENT_CORE_METHODS\.has\(method\)/u)
+  assert.match(mainSource, /buildDesktopAgentModelDirectory\(agnes, localTextModel, getLocalAudioModel\(\)\)/u)
+  assert.match(mainSource, /isDesktopAgentGenerationTarget\(targetNode, input\.modality\)/u)
 })
 
 test('Worker client correlates Main responses and rejects retired CJS tool methods', async () => {
@@ -83,11 +92,55 @@ test('model directory returns capability metadata without credentials or local e
   const models = buildDesktopAgentModelDirectory(
     { apiKeyConfigured: true, apiKey: 'cloud-secret' },
     { modelId: 'local-text-model', endpoint: 'http://127.0.0.1/private', apiKey: 'local-secret' },
+    { modelId: 'local-sapi-tts', providerId: 'local-sapi-tts', available: true },
   )
   const serialized = JSON.stringify(models)
 
-  assert.equal(models.length, 4)
+  assert.equal(models.length, 5)
   assert.equal(models.find((model) => model.providerType === 'local').name, 'local-text-model')
+  assert.deepEqual(models.find((model) => model.modelType === 'audio'), {
+    name: 'local-sapi-tts',
+    displayName: 'Windows SAPI 语音合成',
+    modelType: 'audio',
+    providerId: 'local-sapi-tts',
+    providerType: 'local',
+    enabled: true,
+    modalities: ['audio'],
+    inputModes: ['text'],
+    toolCalling: false,
+    streaming: false,
+    cancellation: false,
+  })
   assert.doesNotMatch(serialized, /secret|127\.0\.0\.1|endpoint/u)
   assert.equal(buildDesktopAgentModelDirectory({ apiKeyConfigured: false }, null)[0].enabled, false)
+
+  const unavailable = buildDesktopAgentModelDirectory(null, null, {
+    modelId: 'local-sapi-tts',
+    providerId: 'local-sapi-tts',
+    available: false,
+    unavailableReason: 'local-sapi-tts 仅支持 Windows。',
+  }).find((model) => model.modelType === 'audio')
+  assert.equal(unavailable.enabled, false)
+  assert.match(unavailable.unavailableReason, /Windows/u)
+})
+
+test('Agent generation targets must match the requested modality', () => {
+  assert.equal(isDesktopAgentGenerationTarget({ id: 'audio-1', type: 'audio' }, 'audio'), true)
+  assert.equal(isDesktopAgentGenerationTarget({ id: 'image-1', type: 'image' }, 'audio'), false)
+  assert.equal(isDesktopAgentGenerationTarget({ id: 'text-1', type: 'text' }, 'audio'), false)
+  assert.equal(isDesktopAgentGenerationTarget({ id: 'audio-1', type: 'audio' }, 'image'), false)
+})
+
+test('Agent canvas context labels audio nodes and retains their typed references', () => {
+  const audioNode = {
+    id: 'a12b3456-c789-4abc-8def-1234567890ab',
+    type: 'audio',
+    data: { name: '旁白' },
+  }
+  const canvas = { nodes: [audioNode], edges: [] }
+
+  assert.match(buildAgentCanvasContext(canvas), /节点 1（音频）：音频名称：旁白/u)
+  assert.deepEqual(getAgentCanvasNodeReferences(canvas), [
+    { nodeId: audioNode.id, nodeOrdinal: 1, type: 'audio' },
+  ])
 })

@@ -23,7 +23,7 @@ const { AGNES_MODELS, AGNES_PROVIDER_ID, getAgnesModelCatalog } = require('./agn
 const { COMPOSE_MODEL_ID, COMPOSE_PROVIDER_ID } = require('./compose-provider.cjs')
 const { MODEL_ID: SAPI_MODEL_ID, PROVIDER_ID: SAPI_PROVIDER_ID } = require('./sapi-tts.cjs')
 const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
-const { buildDesktopAgentModelDirectory } = require('./agent-model-directory.cjs')
+const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = require('./agent-model-directory.cjs')
 const { ALLOWED_AGENT_CORE_METHODS } = require('./agent-local-tools.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
 
@@ -327,10 +327,10 @@ function createAgentWorker() {
         return localCore.request('asset:list', { projectId: input.projectId }, 15_000)
       case 'agent:core:list-models': {
         const [agnes, localTextModel] = await Promise.all([getAgnesModelSettings(), getLocalTextModelConfig()])
-        return buildDesktopAgentModelDirectory(agnes, localTextModel)
+        return buildDesktopAgentModelDirectory(agnes, localTextModel, getLocalAudioModel())
       }
       case 'agent:core:create-generation-task': {
-        const modalities = ['text', 'image', 'video']
+        const modalities = ['text', 'image', 'video', 'audio']
         if (typeof input.canvasId !== 'string' || !input.canvasId
           || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
           || typeof input.nodeId !== 'string' || !input.nodeId
@@ -348,12 +348,16 @@ function createAgentWorker() {
           || !Array.isArray(canvas.nodes) || !canvas.nodes.some((node) => node.id === input.nodeId)) {
           throw new Error('AGENT_CANVAS_CHANGED')
         }
+        const targetNode = canvas.nodes.find((node) => node.id === input.nodeId)
+        if (!isDesktopAgentGenerationTarget(targetNode, input.modality)) {
+          throw new Error('AGENT_GENERATION_TARGET_MISMATCH')
+        }
         const [agnes, localTextModel] = await Promise.all([getAgnesModelSettings(), getLocalTextModelConfig()])
-        const model = buildDesktopAgentModelDirectory(agnes, localTextModel).find((entry) =>
+        const model = buildDesktopAgentModelDirectory(agnes, localTextModel, getLocalAudioModel()).find((entry) =>
           entry.enabled === true && entry.name === input.modelId && entry.modelType === input.modality
           && entry.providerType === input.providerType && entry.providerId === input.providerId)
         if (!model) throw new Error('AGENT_GENERATION_MODEL_UNAVAILABLE')
-        if ((input.providerType === 'local' && input.modality !== 'text')
+        if ((input.providerType === 'local' && !['text', 'audio'].includes(input.modality))
           || (input.providerType === 'cloud' && !agnes?.apiKeyConfigured)) {
           throw new Error(input.providerType === 'cloud' ? 'CLOUD_CREDENTIAL_MISSING' : 'UNSUPPORTED_MODALITY')
         }

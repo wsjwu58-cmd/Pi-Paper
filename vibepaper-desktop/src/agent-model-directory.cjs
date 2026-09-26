@@ -1,6 +1,6 @@
 const { AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
 
-function buildDesktopAgentModelDirectory(agnes, localTextModel) {
+function buildDesktopAgentModelDirectory(agnes, localTextModel, localAudioModel) {
   const models = []
   const cloudDefinitions = [
     ['text', AGNES_MODELS.text, ['text']],
@@ -39,7 +39,31 @@ function buildDesktopAgentModelDirectory(agnes, localTextModel) {
       cancellation: false,
     })
   }
+
+  if (localAudioModel && typeof localAudioModel.modelId === 'string' && localAudioModel.modelId.trim()) {
+    models.push({
+      name: localAudioModel.modelId,
+      displayName: 'Windows SAPI 语音合成',
+      modelType: 'audio',
+      providerId: localAudioModel.providerId,
+      providerType: 'local',
+      enabled: localAudioModel.available === true,
+      modalities: ['audio'],
+      inputModes: ['text'],
+      toolCalling: false,
+      streaming: false,
+      cancellation: false,
+      ...(typeof localAudioModel.unavailableReason === 'string' && localAudioModel.unavailableReason
+        ? { unavailableReason: localAudioModel.unavailableReason }
+        : {}),
+    })
+  }
   return models
 }
 
-module.exports = { buildDesktopAgentModelDirectory }
+function isDesktopAgentGenerationTarget(node, modality) {
+  return Boolean(node && typeof node === 'object' && !Array.isArray(node)
+    && ['text', 'image', 'video', 'audio'].includes(modality) && node.type === modality)
+}
+
+module.exports = { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget }
