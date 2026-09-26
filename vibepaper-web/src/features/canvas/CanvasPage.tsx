@@ -837,7 +837,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       const point = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       if (e.dataTransfer.files?.length) {
         if (window.vibepaperDesktop) {
-          toastError('桌面版文件拖放导入尚未接入，请使用画布上传入口选择图片。')
+          toastError('桌面版文件拖放导入尚未接入，请使用画布上传入口选择素材。')
           return
         }
         void (async () => {
@@ -902,9 +902,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           toastError('没有已打开的本地项目，无法导入素材。')
           return
         }
-        void window.vibepaperDesktop.importImage(desktopProjectId)
+        void window.vibepaperDesktop.importLocalAsset(desktopProjectId)
           .then((asset) => asset && addAssetNode(desktopAssetView(asset), flowX, flowY))
-          .catch((error: unknown) => toastError(error instanceof Error ? error.message : '无法导入本地图片。'))
+          .catch((error: unknown) => toastError(error instanceof Error ? error.message : '无法导入本地素材。'))
         setAddMenu(null)
         return
       }
