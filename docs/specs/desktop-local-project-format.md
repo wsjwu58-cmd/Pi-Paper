@@ -77,7 +77,7 @@ Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写�
 
 ## 素材首个切片
 
-通过原素材库和画布入口的系统文件选择器导入 PNG、JPEG、GIF、WebP 图片及 WAV/MP3 音频（每个文件不超过 200 MB）。Local Core 根据文件内容识别 MIME、流式计算 SHA-256 并复制到 `.vibepaper/assets/<sha256>/<assetId>.<ext>`；同一文件每次导入都有独立素材 ID，符合原 Java 上传语义。画布中的图片/音频节点保存稳定 `assetId`，保存画布时素材存在性检查与引用更新位于同一 SQLite 事务。Renderer 只使用受限的 `vibe://app/assets/<assetId>` 资源 URL，Main 通过 Local Core 查到项目内文件后提供只读媒体响应。
+通过原素材库和画布入口的系统文件选择器导入 PNG、JPEG、GIF、WebP 图片及 WAV/MP3 音频（每个文件不超过 200 MB）。原素材库上传可多选，Main 逐文件调用 Local Core，返回成功项与安全的失败摘要；单个文件失败不阻断其他文件，不向 Renderer 返回本机绝对路径。Local Core 根据文件内容识别 MIME、流式计算 SHA-256 并复制到 `.vibepaper/assets/<sha256>/<assetId>.<ext>`；同一文件每次导入都有独立素材 ID，符合原 Java 上传语义。画布中的图片/音频节点保存稳定 `assetId`，保存画布时素材存在性检查与引用更新位于同一 SQLite 事务。Renderer 只使用受限的 `vibe://app/assets/<assetId>` 资源 URL，Main 通过 Local Core 查到项目内文件后提供只读媒体响应；CSP 允许该受限协议，素材响应不缓存以便替换后即时显示。
 
 `user_version = 1` 到 5 逐级增加素材、任务、画布命令、分组与堆叠；版本 6 增加素材软删除字段。版本 6 升级到 7 前在 `.vibepaper/backups/` 创建 SQLite 在线快照，再在事务中扩展任务表的 `compose` 模态并保留旧任务和事件。迁移失败时事务回滚，快照保留供恢复；项目备份经校验后逐级迁移到当前版本。
 

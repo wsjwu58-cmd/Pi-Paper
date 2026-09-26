@@ -6,11 +6,20 @@ import { useAuth } from '@/lib/auth'
 import { useAuthedMediaUrl } from '@/lib/media'
 import { parseJsonPreserveIds, sid } from '@/lib/ids'
 import type { AssetView, Id, PageResult } from '@/lib/types'
+import type { DesktopAssetImportResult } from '@/desktop/desktop-bridge'
 import { desktopAssetView, isDesktopRuntime } from './canvasPort'
 import { useCanvasStore } from './canvasStore'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 
 type AssetLibraryItem = AssetView & { referenceCount?: number }
+
+function formatImportErrors(errors: Array<{ name: string; message: string }>) {
+  const first = errors[0]
+  if (!first) return ''
+  const message = first.message ? `：${first.message}` : ''
+  const remaining = errors.length > 1 ? `，另有 ${errors.length - 1} 个文件失败` : ''
+  return `${errors.length} 个文件导入失败：${first.name}${message}${remaining}`
+}
 
 async function replaceAsset(id: Id, file: File) {
   const fd = new FormData()
@@ -75,13 +84,33 @@ export function AssetLibrary({
       if (isDesktop) {
         const bridge = window.vibepaperDesktop
         if (!bridge || !projectId) throw new Error('本地项目未就绪，无法导入素材。')
-        if (!bridge.importLocalAsset) throw new Error('桌面本地素材导入服务尚未就绪。')
-        return bridge.importLocalAsset(projectId)
+        if (!bridge.importLocalAssets) throw new Error('桌面本地素材批量导入服务尚未就绪。')
+        return bridge.importLocalAssets(projectId)
       }
       if (!file) throw new Error('请选择要上传的素材。')
       return uploadAsset(file, undefined, canvas?.canvas.id)
     },
     onSuccess: (result) => {
+      if (isDesktop) {
+        const imported = result as DesktopAssetImportResult | null
+        if (!imported) return
+
+        const { assets, errors } = imported
+        if (assets.length > 0) {
+          qc.invalidateQueries({ queryKey: assetsQueryKey })
+          window.dispatchEvent(new Event('vp-assets-updated'))
+        }
+
+        if (errors.length === 0 && assets.length > 0) {
+          toastSuccess(`已导入 ${assets.length} 个素材到本地素材库`)
+        } else if (assets.length > 0) {
+          toastSuccess(`导入完成：${assets.length} 个成功，${errors.length} 个失败`)
+          toastError(formatImportErrors(errors))
+        } else if (errors.length > 0) {
+          toastError(formatImportErrors(errors))
+        }
+        return
+      }
       if (!result) return
       qc.invalidateQueries({ queryKey: assetsQueryKey })
       window.dispatchEvent(new Event('vp-assets-updated'))

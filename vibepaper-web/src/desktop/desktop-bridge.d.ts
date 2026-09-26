@@ -171,6 +171,11 @@ export interface DesktopAsset {
   referenceCount: number
 }
 
+export interface DesktopAssetImportResult {
+  assets: DesktopAsset[]
+  errors: Array<{ name: string; message: string }>
+}
+
 export interface DesktopAssetDeleteImpact {
   deletedAssetId: string
   references: Array<{ canvasId: string; nodeId: string; type: 'canvas' }>
@@ -369,6 +374,7 @@ export interface DesktopBridge {
   backupProject(projectId: string): Promise<{ name: string } | null>
   restoreBackup(): Promise<DesktopProject | null>
   importLocalAsset(projectId: string): Promise<DesktopAsset | null>
+  importLocalAssets(projectId: string): Promise<DesktopAssetImportResult | null>
   importImage(projectId: string): Promise<DesktopAsset | null>
   saveTaskOutputToLibrary(projectId: string, taskId: string): Promise<DesktopAsset>
   listAssets(projectId: string): Promise<DesktopAsset[]>

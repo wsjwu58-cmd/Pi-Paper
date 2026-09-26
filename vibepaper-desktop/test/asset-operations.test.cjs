@@ -5,6 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { DatabaseSync } = require('node:sqlite')
 const test = require('node:test')
+const vm = require('node:vm')
 const { createLocalProjectStore } = require('../src/project-store.cjs')
 
 const PNG_HEADER = Buffer.from('89504e470d0a1a0a', 'hex')
@@ -73,6 +74,55 @@ async function writeImage(parentDirectory, name, bytes) {
   const sourcePath = path.join(parentDirectory, name)
   await fs.writeFile(sourcePath, bytes)
   return sourcePath
+}
+
+async function createMainIpcHarness({ devServerUrl } = {}) {
+  const root = path.resolve(__dirname, '..', '..')
+  const source = await fs.readFile(path.join(root, 'vibepaper-desktop/src/main.cjs'), 'utf8')
+  const handlers = new Map()
+  const headerHandlers = []
+  const electron = {
+    app: { setName() {}, requestSingleInstanceLock: () => false, quit() {} },
+    BrowserWindow: class {},
+    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showMessageBox: async () => ({}) },
+    ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
+    net: {},
+    protocol: { registerSchemesAsPrivileged() {}, handle() {} },
+    safeStorage: {},
+    session: { defaultSession: { webRequest: { onHeadersReceived: (handler) => headerHandlers.push(handler) } } },
+    utilityProcess: {},
+  }
+  const mainRequire = (name) => {
+    if (name === 'electron') return electron
+    if (name.startsWith('.')) return {}
+    return require(name)
+  }
+  const context = vm.createContext({
+    require: mainRequire,
+    process: { env: devServerUrl ? { VITE_DEV_SERVER_URL: devServerUrl } : {} },
+    __dirname: path.join(root, 'vibepaper-desktop', 'src'),
+    URL,
+    Buffer,
+    console,
+  })
+  vm.runInContext(source, context, { filename: 'vibepaper-desktop/src/main.cjs' })
+  vm.runInContext('registerProjectIpc(); registerContentSecurityPolicy()', context)
+
+  const frame = { url: devServerUrl || 'vibe://app/' }
+  const sender = { mainFrame: frame }
+  context.__testSender = sender
+  vm.runInContext('mainWindow = { webContents: __testSender }', context)
+
+  return {
+    handlers,
+    headerHandlers,
+    electron,
+    event: { sender, senderFrame: frame },
+    setLocalCore(localCore) {
+      context.__testLocalCore = localCore
+      vm.runInContext('localCore = __testLocalCore', context)
+    },
+  }
 }
 
 async function createLegacyParamsReferenceFixture(t) {
@@ -967,11 +1017,14 @@ test('asset operations are exposed through project-scoped IPC and a path-restric
   assert.match(main, /desktop:asset:replace-audio',[\s\S]*dialog\.showOpenDialog[\s\S]*extensions: \['wav', 'mp3'\][\s\S]*localCore\.request\('asset:replace-audio'/u)
   assert.match(main, /desktop:asset:import-image',[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'image' \}/u)
   assert.match(main, /desktop:asset:import-local',[\s\S]*assertTrustedSender\(event\)[\s\S]*extensions: \['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav', 'mp3'\][\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'local' \}/u)
+  assert.match(main, /desktop:asset:import-local-assets', async \(event, projectId\) => \{[\s\S]*assertTrustedSender\(event\)[\s\S]*await assertActiveAssetProject\(projectId\)[\s\S]*properties: \['openFile', 'multiSelections'\][\s\S]*await assertActiveAssetProject\(projectId\)[\s\S]*for \(const sourcePath of result\.filePaths\)[\s\S]*safeLocalAssetImportError\(error\)[\s\S]*return \{ assets, errors \}/u)
+  assert.match(main, /function localAssetImportName\(sourcePath\)[\s\S]*path\.basename\(sourcePath\)/u)
   assert.match(main, /desktop:asset:delete',[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:delete'/u)
   assert.match(preload, /renameAsset: \(projectId, assetId, name\) => ipcRenderer\.invoke\('desktop:asset:rename'/u)
   assert.match(preload, /replaceImage: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace-image'/u)
   assert.match(preload, /replaceAudio: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace-audio'/u)
   assert.match(preload, /importLocalAsset: \(projectId\) => ipcRenderer\.invoke\('desktop:asset:import-local', projectId\)/u)
+  assert.match(preload, /importLocalAssets: \(projectId\) => ipcRenderer\.invoke\('desktop:asset:import-local-assets', projectId\)/u)
   assert.match(localCore, /case 'asset:import':[\s\S]*assetKind !== 'image' && assetKind !== 'local'[\s\S]*store\.importAsset\(payload\.sourcePath, payload\.projectId, assetKind\)/u)
   assert.match(preload, /deleteAsset: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:delete'/u)
   assert.match(main, /desktop:asset:save-task-output',[\s\S]*assertTrustedSender\(event\)[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:save-task-output', \{ projectId, taskId \}/u)
@@ -981,7 +1034,85 @@ test('asset operations are exposed through project-scoped IPC and a path-restric
   assert.match(bridgeTypes, /'audio\/wav'/u)
   assert.match(bridgeTypes, /renameAsset\(projectId: string, assetId: string, name: string\): Promise<DesktopAsset>/u)
   assert.match(bridgeTypes, /replaceImage\(projectId: string, assetId: string\): Promise<DesktopAsset \| null>/u)
+  assert.match(bridgeTypes, /importLocalAssets\(projectId: string\): Promise<DesktopAssetImportResult \| null>/u)
+  assert.match(bridgeTypes, /errors: Array<\{ name: string; message: string \}>/u)
   assert.match(bridgeTypes, /deleteAsset\(projectId: string, assetId: string\): Promise<DesktopAssetDeleteImpact>/u)
+})
+
+test('multi-file asset IPC continues after per-file failures, hides source paths, and rechecks the project', async () => {
+  const harness = await createMainIpcHarness()
+  const selectedPaths = [
+    path.join(os.tmpdir(), 'private-source', 'first.png'),
+    path.join(os.tmpdir(), 'private-source', 'blocked.wav'),
+    path.join(os.tmpdir(), 'private-source', 'last.mp3'),
+  ]
+  let selected = { canceled: false, filePaths: selectedPaths }
+  let activeProjectId = 'project-1'
+  let activeProjectChecks = 0
+  const importRequests = []
+  let pickerOptions
+  harness.electron.dialog.showOpenDialog = async (_window, options) => {
+    pickerOptions = options
+    return selected
+  }
+  harness.setLocalCore({
+    async request(method, payload) {
+      if (method === 'project:get-active') {
+        activeProjectChecks += 1
+        return { projectId: activeProjectId }
+      }
+      assert.equal(method, 'asset:import')
+      importRequests.push(payload)
+      if (payload.sourcePath === selectedPaths[1]) {
+        throw new Error(`EACCES: permission denied, open '${payload.sourcePath}'`)
+      }
+      return { assetId: `asset-${importRequests.length}`, name: path.basename(payload.sourcePath) }
+    },
+  })
+
+  const importMany = harness.handlers.get('desktop:asset:import-local-assets')
+  const result = JSON.parse(JSON.stringify(await importMany(harness.event, 'project-1')))
+  const plainPickerOptions = JSON.parse(JSON.stringify(pickerOptions))
+  assert.deepEqual(plainPickerOptions.properties, ['openFile', 'multiSelections'])
+  assert.deepEqual(plainPickerOptions.filters[0].extensions, ['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav', 'mp3'])
+  assert.equal(activeProjectChecks, 2, 'the project identity is checked before and after the picker')
+  assert.deepEqual(importRequests.map((request) => request.assetKind), ['local', 'local', 'local'])
+  assert.deepEqual(result.assets.map((asset) => asset.assetId), ['asset-1', 'asset-3'])
+  assert.deepEqual(result.errors, [{ name: 'blocked.wav', message: '文件读取或导入失败。' }])
+  assert.equal(JSON.stringify(result).includes(os.tmpdir()), false, 'source paths never cross the IPC boundary')
+
+  selected = { canceled: false, filePaths: [selectedPaths[0]] }
+  harness.electron.dialog.showOpenDialog = async (_window, options) => {
+    activeProjectId = 'different-project'
+    assert.ok(options.properties.includes('multiSelections'))
+    return selected
+  }
+  await assert.rejects(importMany(harness.event, 'project-1'), /当前项目已更改/u)
+  assert.equal(importRequests.length, 3, 'an identity change after selection prevents importing selected files')
+
+  activeProjectId = 'project-1'
+  selected = { canceled: true, filePaths: [] }
+  const canceled = await importMany(harness.event, 'project-1')
+  assert.equal(canceled, null)
+  assert.equal(importRequests.length, 3, 'canceling the picker does not create an asset')
+})
+
+test('desktop CSP permits the local vibe scheme for image and audio previews in dev and packaged modes', async () => {
+  for (const devServerUrl of [undefined, 'http://localhost:5173']) {
+    const harness = await createMainIpcHarness({ devServerUrl })
+    const url = devServerUrl || 'vibe://app/'
+    const response = await new Promise((resolve) => {
+      harness.headerHandlers[0]({
+        resourceType: 'mainFrame',
+        url,
+        responseHeaders: { 'Content-Security-Policy': ["default-src 'none'"] },
+      }, resolve)
+    })
+    const policy = response.responseHeaders['Content-Security-Policy'][0]
+    assert.match(policy, /img-src 'self' data: blob: vibe:/u)
+    assert.match(policy, /media-src 'self' data: blob: vibe:/u)
+    assert.match(policy, /connect-src 'self' vibe:/u)
+  }
 })
 
 test('successful verified task WAVs become separate audio assets with durable node references and backup restore', async (t) => {

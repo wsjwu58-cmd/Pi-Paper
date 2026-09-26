@@ -811,8 +811,8 @@ function registerContentSecurityPolicy() {
     }
 
     const policy = developmentUrl
-      ? "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'"
-      : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'"
+      ? "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: vibe:; media-src 'self' data: blob: vibe:; connect-src 'self' vibe: http://127.0.0.1:5173 ws://127.0.0.1:5173; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'"
+      : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: vibe:; media-src 'self' data: blob: vibe:; connect-src 'self' vibe:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'"
     const responseHeaders = Object.fromEntries(
       Object.entries(details.responseHeaders ?? {}).filter(([name]) => name.toLowerCase() !== 'content-security-policy'),
     )
@@ -891,7 +891,7 @@ function registerRendererProtocol() {
         const headers = new Headers(fileResponse.headers)
         headers.set('content-type', asset.mimeType)
         headers.set('x-content-type-options', 'nosniff')
-        headers.set('cache-control', 'private, max-age=3600, immutable')
+        headers.set('cache-control', 'private, no-store')
         return new Response(fileResponse.body, { status: 200, headers })
       } catch {
         return new Response('Asset not found', { status: 404, headers: { 'content-type': 'text/plain' } })
@@ -931,6 +931,41 @@ async function assertActiveAssetProject(projectId) {
   const active = await localCore.request('project:get-active')
   if (!active || active.projectId !== projectId) throw new Error('当前项目已更改，无法操作素材。')
   if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+}
+
+const SAFE_LOCAL_ASSET_IMPORT_ERRORS = new Set([
+  '当前项目已更改，无法导入素材。',
+  '所选素材文件无效。',
+  '请选择一个可读取的素材文件。',
+  '素材文件必须大于 0 字节且不超过 200 MB。',
+  '素材文件超过 200 MB 的本地素材上限。',
+  '素材文件写入失败。',
+  '所选素材文件为空。',
+  '当前本地素材切片只支持 PNG、JPEG、GIF 和 WebP 图片。',
+  '本地 WAV 素材大小无效。',
+  '本地 WAV 素材格式无效。',
+  '本地 WAV 素材块长度无效。',
+  '本地 WAV 素材块已截断。',
+  '本地 WAV 音频格式块无效。',
+  '本地 WAV 音频参数无效。',
+  '本地 WAV 音频数据为空。',
+  '本地 WAV 素材缺少音频格式或数据块。',
+  '本地 MP3 素材大小无效。',
+  '本地 MP3 ID3v2 标记已截断。',
+  '本地 MP3 ID3v2 标记无效。',
+  '本地 MP3 ID3v2 尾标记无效。',
+  '本地 MP3 MPEG 音频帧已截断。',
+  '本地 MP3 素材缺少有效 MPEG 音频帧。',
+])
+
+function safeLocalAssetImportError(error) {
+  const message = error && typeof error.message === 'string' ? error.message : ''
+  return SAFE_LOCAL_ASSET_IMPORT_ERRORS.has(message) ? message : '文件读取或导入失败。'
+}
+
+function localAssetImportName(sourcePath) {
+  const name = typeof sourcePath === 'string' ? path.basename(sourcePath) : ''
+  return name.replace(/[\u0000-\u001f]/gu, '_').slice(0, 255) || '未命名文件'
 }
 
 function registerProjectIpc() {
@@ -1054,6 +1089,33 @@ function registerProjectIpc() {
     if (result.canceled || result.filePaths.length === 0) return null
     await assertActiveAssetProject(projectId)
     return localCore.request('asset:import', { sourcePath: result.filePaths[0], projectId, assetKind: 'local' }, 5 * 60 * 1000)
+  })
+  ipcMain.handle('desktop:asset:import-local-assets', async (event, projectId) => {
+    assertTrustedSender(event)
+    await assertActiveAssetProject(projectId)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '批量导入本地素材',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '图片、WAV 和 MP3 音频', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav', 'mp3'] }],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    await assertActiveAssetProject(projectId)
+
+    const assets = []
+    const errors = []
+    for (const sourcePath of result.filePaths) {
+      try {
+        const asset = await localCore.request('asset:import', {
+          sourcePath,
+          projectId,
+          assetKind: 'local',
+        }, 5 * 60 * 1000)
+        assets.push(asset)
+      } catch (error) {
+        errors.push({ name: localAssetImportName(sourcePath), message: safeLocalAssetImportError(error) })
+      }
+    }
+    return { assets, errors }
   })
   ipcMain.handle('desktop:asset:list', async (event, projectId) => {
     assertTrustedSender(event)
