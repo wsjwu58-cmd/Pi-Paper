@@ -2891,16 +2891,6 @@ function createLocalProjectStore() {
         const mimeType = assetKind === 'image'
           ? await detectImageMimeType(temporaryPath)
           : await detectAssetMimeType(temporaryPath)
-        const existing = active.database.prepare(`
-          SELECT a.id, a.sha256, a.original_name, a.mime_type, a.size_bytes, a.created_at, a.updated_at,
-            (SELECT COUNT(*) FROM asset_references r WHERE r.asset_id = a.id) AS reference_count
-          FROM assets a WHERE a.sha256 = ? AND a.deleted = 0
-        `).get(copied.sha256)
-        if (existing) {
-          await fs.rm(temporaryPath, { force: true })
-          return publicAsset(existing)
-        }
-
         const assetId = randomUUID()
         const extension = extensionForAssetMimeType(mimeType)
         const relativePath = `assets/${copied.sha256}/${assetId}.${extension}`

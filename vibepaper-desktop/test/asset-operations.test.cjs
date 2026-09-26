@@ -134,6 +134,12 @@ async function mutateV8ProjectDatabase(databasePath, mutate) {
 
 test('local asset import detects image and WAV content, hashes it and tracks references', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
+  const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-duplicate-import-backup-'))
+  const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-duplicate-import-restore-'))
+  t.after(async () => {
+    await fs.rm(backupParent, { recursive: true, force: true })
+    await fs.rm(restoreParent, { recursive: true, force: true })
+  })
   const imageBytes = Buffer.concat([PNG_HEADER, Buffer.from(' imported png payload')])
   const waveBytes = minimalWave()
   const imagePath = await writeImage(parentDirectory, 'cover.png', imageBytes)
@@ -149,17 +155,26 @@ test('local asset import detects image and WAV content, hashes it and tracks ref
   assert.equal(audio.assetType, 'audio')
   assert.equal(audio.mimeType, 'audio/wav')
   assert.equal(audio.name, 'voice.wav')
-  assert.equal(duplicateAudio.assetId, audio.assetId, 'same-content import retains the existing SHA-256 deduplication behavior')
+  assert.notEqual(duplicateAudio.assetId, audio.assetId, 'each import creates an independent asset record')
+  const audioResolved = await store.resolveAsset(audio.assetId)
+  const duplicateAudioResolved = await store.resolveAsset(duplicateAudio.assetId)
+  assert.notEqual(duplicateAudioResolved.filePath, audioResolved.filePath)
   assert.deepEqual(await fs.readFile((await store.resolveAsset(image.assetId)).filePath), imageBytes)
-  assert.deepEqual(await fs.readFile((await store.resolveAsset(audio.assetId)).filePath), waveBytes)
+  assert.deepEqual(await fs.readFile(audioResolved.filePath), waveBytes)
+  assert.deepEqual(await fs.readFile(duplicateAudioResolved.filePath), waveBytes)
 
   const database = new DatabaseSync(path.join(directory, '.vibepaper', 'project.sqlite'), { readOnly: true })
   try {
     const rows = database.prepare('SELECT id, sha256, mime_type, relative_path FROM assets ORDER BY mime_type').all()
-    assert.equal(rows.length, 2)
+    assert.equal(rows.length, 3)
     assert.equal(rows.find((row) => row.id === image.assetId).sha256, createHash('sha256').update(imageBytes).digest('hex'))
     assert.equal(rows.find((row) => row.id === audio.assetId).sha256, createHash('sha256').update(waveBytes).digest('hex'))
-    assert.match(rows.find((row) => row.id === audio.assetId).relative_path, /\.wav$/u)
+    const duplicateAudioRow = rows.find((row) => row.id === duplicateAudio.assetId)
+    const audioRow = rows.find((row) => row.id === audio.assetId)
+    assert.equal(duplicateAudioRow.sha256, audioRow.sha256)
+    assert.match(audioRow.relative_path, /\.wav$/u)
+    assert.match(duplicateAudioRow.relative_path, /\.wav$/u)
+    assert.notEqual(duplicateAudioRow.relative_path, audioRow.relative_path)
   } finally {
     database.close()
   }
@@ -180,9 +195,40 @@ test('local asset import detects image and WAV content, hashes it and tracks ref
     type: 'audio',
     params: { assetId: audio.assetId },
   })
+  const duplicateAudioNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'imported-duplicate-audio-node',
+    expectedVersion: 2,
+    type: 'audio',
+    params: { assetId: duplicateAudio.assetId },
+  })
   const referencedAssets = await store.listAssets(project.projectId)
   assert.equal(referencedAssets.find((asset) => asset.assetId === image.assetId).referenceCount, 1)
   assert.equal(referencedAssets.find((asset) => asset.assetId === audio.assetId).referenceCount, 1)
+  assert.equal(referencedAssets.find((asset) => asset.assetId === duplicateAudio.assetId).referenceCount, 1)
+
+  const deleted = await store.deleteAsset(project.projectId, audio.assetId)
+  assert.deepEqual(deleted, {
+    deletedAssetId: audio.assetId,
+    references: [{ canvasId: project.canvasId, nodeId: audioNode.node.id, type: 'canvas' }],
+  })
+  const remainingAssets = await store.listAssets(project.projectId)
+  assert.equal(remainingAssets.some((asset) => asset.assetId === audio.assetId), false)
+  assert.equal(remainingAssets.find((asset) => asset.assetId === duplicateAudio.assetId).referenceCount, 1)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(duplicateAudio.assetId)).filePath), waveBytes)
+  assert.ok(store.loadCanvas(project.projectId, project.canvasId).nodes.some((node) => node.id === duplicateAudioNode.node.id))
+
+  const backup = await store.backupProject(backupParent, project.projectId)
+  const restored = await store.restoreBackup(backup.directory, restoreParent)
+  const restoredAssets = await store.listAssets(restored.project.projectId)
+  assert.equal(restoredAssets.find((asset) => asset.assetId === duplicateAudio.assetId).referenceCount, 1)
+  const restoredAudioPath = (await store.resolveAsset(audio.assetId)).filePath
+  const restoredDuplicateAudioPath = (await store.resolveAsset(duplicateAudio.assetId)).filePath
+  assert.notEqual(restoredAudioPath, restoredDuplicateAudioPath)
+  assert.deepEqual(await fs.readFile(restoredAudioPath), waveBytes)
+  assert.deepEqual(await fs.readFile(restoredDuplicateAudioPath), waveBytes)
+  assert.ok(store.loadCanvas(restored.project.projectId, restored.project.canvasId).nodes.some((node) => node.id === duplicateAudioNode.node.id))
 })
 
 test('imported WAV assets and audio references survive project backup and restore', async (t) => {
