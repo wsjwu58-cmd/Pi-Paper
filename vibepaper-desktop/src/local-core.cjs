@@ -44,11 +44,14 @@ async function dispatch(method, payload) {
         throw new Error('项目恢复请求无效。')
       }
       return store.restoreBackup(payload.sourceDirectory, payload.parentDirectory)
-    case 'asset:import':
+    case 'asset:import': {
       if (!payload || typeof payload.sourcePath !== 'string' || typeof payload.projectId !== 'string') {
         throw new Error('素材导入请求无效。')
       }
-      return store.importAsset(payload.sourcePath, payload.projectId)
+      const assetKind = payload.assetKind ?? 'image'
+      if (assetKind !== 'image' && assetKind !== 'local') throw new Error('素材导入类型无效。')
+      return store.importAsset(payload.sourcePath, payload.projectId, assetKind)
+    }
     case 'asset:save-task-output':
       if (!payload || typeof payload.projectId !== 'string' || typeof payload.taskId !== 'string') {
         throw new Error('任务素材保存请求无效。')

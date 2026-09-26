@@ -2,6 +2,8 @@
 
 > 状态：实施中（2026-09-25）。桌面壳、本地项目、画布与任务持久化、图片素材、备份恢复已有纵向链路；Renderer 已直接接入原 `WorkspacePage`、`HistoryPage`、`CanvasPage`、原节点和 `AgentPanel`。文本可调用本地 loopback 模型或 Agnes，图像/视频接 Agnes，原合成节点接本地 FFmpeg，原音频节点接 Windows SAPI 本地语音并可将成功 WAV 保存到本地素材库。普通云端调用不逐次弹确认，配置页披露供应商、发送范围和可能费用；Agent 生成动作保留原确认。Agent Worker 运行原 TypeScript 服务代码和“小P”角色，工具经本地网关访问画布/任务，具备本地会话、Skill、压缩与记忆链路。参考媒体输入、完整音视频素材、部分后处理、动态 Skill、多提供方、端到端同状态比对、原后端全部规则和多平台安装包仍有缺口，不能宣称 1:1 完成。当前契约以根目录 `AGENTS.md` 为准；项目格式见 `docs/specs/desktop-local-project-format.md`。
 
+2026-09-26 增量：原 Agent 的单个与批量 `submit_generation` 已可经持久化生成确认提交 Windows SAPI 本地音频任务，保持画布版本与幂等校验。原 `AssetLibrary` 的桌面上传入口接通本机图片和 WAV，图片专用入口仍拒绝 WAV；Local Core 按内容校验、SHA 去重并保持引用和备份恢复。桌面完整回归 68/68 通过，原前端生产构建通过。MP3/M4A、视频/文本及多选素材导入等仍是差距；这些增量不代表整体 1:1 验收完成。
+
 ## 1. 已确定的产品决策
 
 1. 首版同时交付 Windows、macOS、Linux 桌面安装包；单用户、单机项目，所有业务数据持久化在本机。

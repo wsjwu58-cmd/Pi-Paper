@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict')
+const { createHash } = require('node:crypto')
 const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
@@ -58,6 +59,110 @@ async function writeImage(parentDirectory, name, bytes) {
   await fs.writeFile(sourcePath, bytes)
   return sourcePath
 }
+
+test('local asset import detects image and WAV content, hashes it and tracks references', async (t) => {
+  const { store, directory, parentDirectory, project } = await openTestProject(t)
+  const imageBytes = Buffer.concat([PNG_HEADER, Buffer.from(' imported png payload')])
+  const waveBytes = minimalWave()
+  const imagePath = await writeImage(parentDirectory, 'cover.png', imageBytes)
+  const wavePath = await writeImage(parentDirectory, 'voice.wav', waveBytes)
+  const image = await store.importAsset(imagePath, project.projectId)
+  await assert.rejects(store.importAsset(wavePath, project.projectId), /PNG、JPEG、GIF 和 WebP 图片/u)
+  const audio = await store.importAsset(wavePath, project.projectId, 'local')
+  const duplicateAudio = await store.importAsset(wavePath, project.projectId, 'local')
+
+  assert.equal(image.assetType, 'image')
+  assert.equal(image.mimeType, 'image/png')
+  assert.equal(image.name, 'cover.png')
+  assert.equal(audio.assetType, 'audio')
+  assert.equal(audio.mimeType, 'audio/wav')
+  assert.equal(audio.name, 'voice.wav')
+  assert.equal(duplicateAudio.assetId, audio.assetId, 'same-content import retains the existing SHA-256 deduplication behavior')
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(image.assetId)).filePath), imageBytes)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(audio.assetId)).filePath), waveBytes)
+
+  const database = new DatabaseSync(path.join(directory, '.vibepaper', 'project.sqlite'), { readOnly: true })
+  try {
+    const rows = database.prepare('SELECT id, sha256, mime_type, relative_path FROM assets ORDER BY mime_type').all()
+    assert.equal(rows.length, 2)
+    assert.equal(rows.find((row) => row.id === image.assetId).sha256, createHash('sha256').update(imageBytes).digest('hex'))
+    assert.equal(rows.find((row) => row.id === audio.assetId).sha256, createHash('sha256').update(waveBytes).digest('hex'))
+    assert.match(rows.find((row) => row.id === audio.assetId).relative_path, /\.wav$/u)
+  } finally {
+    database.close()
+  }
+
+  const imageNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'imported-image-node',
+    expectedVersion: 0,
+    type: 'image',
+    params: { assetId: image.assetId },
+  })
+  const audioNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'imported-audio-node',
+    expectedVersion: 1,
+    type: 'audio',
+    params: { assetId: audio.assetId },
+  })
+  const referencedAssets = await store.listAssets(project.projectId)
+  assert.equal(referencedAssets.find((asset) => asset.assetId === image.assetId).referenceCount, 1)
+  assert.equal(referencedAssets.find((asset) => asset.assetId === audio.assetId).referenceCount, 1)
+})
+
+test('imported WAV assets and audio references survive project backup and restore', async (t) => {
+  const { store, parentDirectory, project } = await openTestProject(t)
+  const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-audio-import-backup-'))
+  const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-audio-import-restore-'))
+  t.after(async () => {
+    await fs.rm(backupParent, { recursive: true, force: true })
+    await fs.rm(restoreParent, { recursive: true, force: true })
+  })
+  const imageBytes = Buffer.concat([PNG_HEADER, Buffer.from(' imported backup image')])
+  const waveBytes = minimalWave()
+  const imagePath = await writeImage(parentDirectory, 'backup-image.png', imageBytes)
+  const wavePath = await writeImage(parentDirectory, 'restore-me.wav', waveBytes)
+  const image = await store.importAsset(imagePath, project.projectId)
+  const audio = await store.importAsset(wavePath, project.projectId, 'local')
+  const imageNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'imported-image-backup-node',
+    expectedVersion: 0,
+    type: 'image',
+    params: { assetId: image.assetId },
+  })
+  const audioNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'imported-audio-backup-node',
+    expectedVersion: 1,
+    type: 'audio',
+    params: { assetId: audio.assetId },
+  })
+
+  const backup = await store.backupProject(backupParent, project.projectId)
+  const restored = await store.restoreBackup(backup.directory, restoreParent)
+  const restoredAssets = await store.listAssets(restored.project.projectId)
+  assert.equal(restoredAssets.find((asset) => asset.assetId === image.assetId).referenceCount, 1)
+  assert.equal(restoredAssets.find((asset) => asset.assetId === audio.assetId).referenceCount, 1)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(image.assetId)).filePath), imageBytes)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(audio.assetId)).filePath), waveBytes)
+  assert.deepEqual(store.loadCanvas(restored.project.projectId, restored.project.canvasId).nodes.map((node) => node.id), [
+    imageNode.node.id,
+    audioNode.node.id,
+  ])
+})
+
+test('local asset import rejects unsupported or disguised file contents', async (t) => {
+  const { store, parentDirectory, project } = await openTestProject(t)
+  const disguisedPath = await writeImage(parentDirectory, 'not-really-audio.wav', Buffer.from('not a RIFF WAV or image'))
+  await assert.rejects(store.importAsset(disguisedPath, project.projectId, 'local'), /本地 WAV 素材/u)
+  assert.deepEqual(await store.listAssets(project.projectId), [])
+})
 
 test('image assets can be renamed, replaced in place and logically deleted with reference impact', async (t) => {
   const { store, parentDirectory, project } = await openTestProject(t)
@@ -259,9 +364,13 @@ test('asset operations are exposed through project-scoped IPC and a path-restric
   assert.match(localCore, /case 'asset:delete':\s+return store\.deleteAsset/u)
   assert.match(main, /desktop:asset:rename',[\s\S]*assertAssetId\(assetId\)[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:rename'/u)
   assert.match(main, /desktop:asset:replace-image',[\s\S]*dialog\.showOpenDialog[\s\S]*localCore\.request\('asset:replace'/u)
+  assert.match(main, /desktop:asset:import-image',[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'image' \}/u)
+  assert.match(main, /desktop:asset:import-local',[\s\S]*assertTrustedSender\(event\)[\s\S]*extensions: \['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav'\][\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'local' \}/u)
   assert.match(main, /desktop:asset:delete',[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:delete'/u)
   assert.match(preload, /renameAsset: \(projectId, assetId, name\) => ipcRenderer\.invoke\('desktop:asset:rename'/u)
   assert.match(preload, /replaceImage: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace-image'/u)
+  assert.match(preload, /importLocalAsset: \(projectId\) => ipcRenderer\.invoke\('desktop:asset:import-local', projectId\)/u)
+  assert.match(localCore, /case 'asset:import':[\s\S]*assetKind !== 'image' && assetKind !== 'local'[\s\S]*store\.importAsset\(payload\.sourcePath, payload\.projectId, assetKind\)/u)
   assert.match(preload, /deleteAsset: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:delete'/u)
   assert.match(main, /desktop:asset:save-task-output',[\s\S]*assertTrustedSender\(event\)[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:save-task-output', \{ projectId, taskId \}/u)
   assert.match(preload, /saveTaskOutputToLibrary: \(projectId, taskId\) => ipcRenderer\.invoke\('desktop:asset:save-task-output', projectId, taskId\)/u)

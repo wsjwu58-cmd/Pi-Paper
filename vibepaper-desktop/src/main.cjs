@@ -1041,7 +1041,19 @@ function registerProjectIpc() {
     })
     if (result.canceled || result.filePaths.length === 0) return null
     await assertActiveAssetProject(projectId)
-    return localCore.request('asset:import', { sourcePath: result.filePaths[0], projectId }, 5 * 60 * 1000)
+    return localCore.request('asset:import', { sourcePath: result.filePaths[0], projectId, assetKind: 'image' }, 5 * 60 * 1000)
+  })
+  ipcMain.handle('desktop:asset:import-local', async (event, projectId) => {
+    assertTrustedSender(event)
+    await assertActiveAssetProject(projectId)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '导入本地素材',
+      properties: ['openFile'],
+      filters: [{ name: '图片和 WAV 音频', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav'] }],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    await assertActiveAssetProject(projectId)
+    return localCore.request('asset:import', { sourcePath: result.filePaths[0], projectId, assetKind: 'local' }, 5 * 60 * 1000)
   })
   ipcMain.handle('desktop:asset:list', async (event, projectId) => {
     assertTrustedSender(event)

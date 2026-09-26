@@ -74,8 +74,9 @@ export function AssetLibrary({
     mutationFn: async (file?: File) => {
       if (isDesktop) {
         const bridge = window.vibepaperDesktop
-        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法导入图片。')
-        return bridge.importImage(projectId)
+        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法导入素材。')
+        if (!bridge.importLocalAsset) throw new Error('桌面本地素材导入服务尚未就绪。')
+        return bridge.importLocalAsset(projectId)
       }
       if (!file) throw new Error('请选择要上传的素材。')
       return uploadAsset(file, undefined, canvas?.canvas.id)
@@ -84,7 +85,12 @@ export function AssetLibrary({
       if (!result) return
       qc.invalidateQueries({ queryKey: assetsQueryKey })
       window.dispatchEvent(new Event('vp-assets-updated'))
-      toastSuccess(isDesktop ? '图片已导入本地素材库' : '上传成功')
+      const resultAsset = typeof result === 'object' && result !== null
+        ? result as { assetType?: unknown; mimeType?: unknown }
+        : null
+      const importedAudio = resultAsset?.assetType === 'audio'
+        || (typeof resultAsset?.mimeType === 'string' && resultAsset.mimeType.startsWith('audio/'))
+      toastSuccess(isDesktop ? (importedAudio ? 'WAV 音频已导入本地素材库' : '图片已导入本地素材库') : '上传成功')
     },
     onError: (e) => toastError((e as Error).message),
   })
@@ -232,10 +238,10 @@ export function AssetLibrary({
             type="button"
             disabled={!projectId || upload.isPending}
             onClick={() => upload.mutate(undefined)}
-            title={!projectId ? '本地项目未就绪' : '从本机导入图片'}
+            title={!projectId ? '本地项目未就绪' : '从本机导入图片或 WAV 音频'}
             className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Upload size={13} /> 导入图片
+            <Upload size={13} /> 上传
           </button>
         ) : (
           <label className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white">
@@ -251,11 +257,6 @@ export function AssetLibrary({
         )}
         <span className="text-[11px] text-[#999]">{data?.total ?? 0} 个素材</span>
       </div>
-      {isDesktop && (
-        <p className="mx-3 mb-1 rounded-lg bg-amber-50 px-2.5 py-2 text-[10px] leading-relaxed text-amber-800">
-          本地图片支持导入、替换和重命名。删除会将素材从列表隐藏，已有节点引用和文件仍保留。
-        </p>
-      )}
       <div className="flex-1 overflow-auto p-3">
         {isLoading ? (
           <p className="py-10 text-center text-[13px] text-[#999]">加载中…</p>

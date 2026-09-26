@@ -2826,14 +2826,17 @@ function createLocalProjectStore() {
     })
   }
 
-  function importAsset(sourcePath, projectId) {
+  function importAsset(sourcePath, projectId, assetKind = 'image') {
+    if (assetKind !== 'image' && assetKind !== 'local') throw new Error('素材导入类型无效。')
     return enqueue(async () => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法导入素材。')
       const { assetsDirectory } = await projectAssetsDirectory(active.directory)
       const temporaryPath = path.join(assetsDirectory, `.import-${randomUUID()}.tmp`)
       try {
         const copied = await copyAssetSource(sourcePath, temporaryPath)
-        const mimeType = await detectImageMimeType(temporaryPath)
+        const mimeType = assetKind === 'image'
+          ? await detectImageMimeType(temporaryPath)
+          : await detectAssetMimeType(temporaryPath)
         const existing = active.database.prepare(`
           SELECT a.id, a.sha256, a.original_name, a.mime_type, a.size_bytes, a.created_at, a.updated_at,
             (SELECT COUNT(*) FROM asset_references r WHERE r.asset_id = a.id) AS reference_count
@@ -2845,7 +2848,7 @@ function createLocalProjectStore() {
         }
 
         const assetId = randomUUID()
-        const extension = extensionForImageMimeType(mimeType)
+        const extension = extensionForAssetMimeType(mimeType)
         const relativePath = `assets/${copied.sha256}/${assetId}.${extension}`
         const assetDirectory = path.join(assetsDirectory, copied.sha256)
         await fs.mkdir(assetDirectory, { recursive: true })
@@ -2874,7 +2877,16 @@ function createLocalProjectStore() {
           await fs.rm(destination, { force: true }).catch(() => undefined)
           throw error
         }
-        return { assetId, assetType: 'image', name: originalName, mimeType, sizeBytes: copied.sizeBytes, createdAt, updatedAt: createdAt, referenceCount: 0 }
+        return publicAsset({
+          id: assetId,
+          sha256: copied.sha256,
+          original_name: originalName,
+          mime_type: mimeType,
+          size_bytes: copied.sizeBytes,
+          created_at: createdAt,
+          updated_at: createdAt,
+          reference_count: 0,
+        })
       } catch (error) {
         await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
         throw error

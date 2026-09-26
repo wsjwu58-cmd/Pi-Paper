@@ -368,6 +368,7 @@ export interface DesktopBridge {
   openProject(): Promise<DesktopProject | null>
   backupProject(projectId: string): Promise<{ name: string } | null>
   restoreBackup(): Promise<DesktopProject | null>
+  importLocalAsset(projectId: string): Promise<DesktopAsset | null>
   importImage(projectId: string): Promise<DesktopAsset | null>
   saveTaskOutputToLibrary(projectId: string, taskId: string): Promise<DesktopAsset>
   listAssets(projectId: string): Promise<DesktopAsset[]>
