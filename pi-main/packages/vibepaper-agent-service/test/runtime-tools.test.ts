@@ -870,6 +870,82 @@ describe("runtime tool integration", () => {
 		});
 	});
 
+	it("stages local SAPI audio single and batch tools for confirmation before any task write", async () => {
+		const requestedActions: Array<Record<string, unknown>> = [];
+		let taskWrites = 0;
+		const buildTools = (sessionId: string) =>
+			createRuntimeTools({
+				userId: "project-1",
+				sessionId,
+				canvasId: "canvas-audio",
+				canvasVersion: 4,
+				approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+				desktopMode: true,
+				gateway: {
+					resolveGenerationModel: async (_userId: string, requestedModel: string) => requestedModel,
+					getCanvasSummary: async () => ({ canvas: { version: 4 }, nodes: [], edges: [] }),
+					createGenerationTask: async () => {
+						taskWrites += 1;
+						return { taskId: "unexpected", status: "queued", modality: "audio", nodeId: "audio-node" };
+					},
+				} as never,
+				onApprovalRequired: (action) => requestedActions.push(action as unknown as Record<string, unknown>),
+			});
+		const single = buildTools("session-audio-single").find((tool) => tool.name === "submit_generation")!;
+		const batch = buildTools("session-audio-batch").find((tool) => tool.name === "submit_generation_batch")!;
+
+		const singleResult = await single.execute("audio-single", {
+			nodeId: "audio-node-1",
+			modelType: "local-sapi-tts",
+			modelParams: { prompt: "朗读第一段。", voice: "female", language: "zh-CN", speed: 0.9 },
+			overwrite: false,
+		});
+		expect(singleResult.terminate).toBe(true);
+		expect(singleResult.details).toMatchObject({
+			confirmation: {
+				toolName: "submit_generation",
+				estimatedCost: 0,
+				params: {
+					modelType: "local-sapi-tts",
+					modelParams: { prompt: "朗读第一段。", voice: "female", language: "zh-CN", speed: 0.9 },
+				},
+			},
+		});
+		expect(taskWrites).toBe(0);
+
+		const batchResult = await batch.execute("audio-batch", {
+			generations: [
+				{
+					nodeId: "audio-node-2",
+					modelType: "local-sapi-tts",
+					modelParams: { prompt: "朗读第二段。", voice: "female" },
+					overwrite: false,
+				},
+				{
+					nodeId: "audio-node-3",
+					modelType: "local-sapi-tts",
+					modelParams: { prompt: "朗读第三段。", voice: "male" },
+					overwrite: false,
+				},
+			],
+		});
+		expect(batchResult.terminate).toBe(true);
+		expect(batchResult.details).toMatchObject({
+			confirmation: {
+				toolName: "submit_generation_batch",
+				estimatedCost: 0,
+				params: {
+					generations: [
+						{ modelType: "local-sapi-tts", modelParams: { prompt: "朗读第二段。", voice: "female" } },
+						{ modelType: "local-sapi-tts", modelParams: { prompt: "朗读第三段。", voice: "male" } },
+					],
+				},
+			},
+		});
+		expect(requestedActions).toHaveLength(2);
+		expect(taskWrites).toBe(0);
+	});
+
 	it("blocks a canvas write queued after a confirmation request in the same turn", async () => {
 		const approvals = new ApprovalService(new InMemoryApprovalRepository(), "secret", 300);
 		const tools = createRuntimeTools({
