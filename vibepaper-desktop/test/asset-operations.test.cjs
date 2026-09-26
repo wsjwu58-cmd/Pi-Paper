@@ -287,6 +287,102 @@ test('image assets can be renamed, replaced in place and logically deleted with 
   await assert.rejects(store.renameAsset(project.projectId, second.assetId, '   '), /素材名称/u)
 })
 
+test('WAV assets can be replaced in place and retain references through backup and restore', async (t) => {
+  const { store, directory, parentDirectory, project } = await openTestProject(t)
+  const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-audio-replace-backup-'))
+  const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-audio-replace-restore-'))
+  t.after(async () => {
+    await fs.rm(backupParent, { recursive: true, force: true })
+    await fs.rm(restoreParent, { recursive: true, force: true })
+  })
+
+  const originalBytes = minimalWave()
+  const replacementBytes = minimalWave()
+  replacementBytes.writeInt16LE(-123, 44)
+  const originalPath = await writeImage(parentDirectory, 'replace-original.wav', originalBytes)
+  const replacementPath = await writeImage(parentDirectory, 'replace-next.wav', replacementBytes)
+  const originalAsset = await store.importAsset(originalPath, project.projectId, 'local')
+  const node = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'audio-replacement-reference-node',
+    expectedVersion: 0,
+    type: 'audio',
+    params: { assetId: originalAsset.assetId },
+  })
+  const oldFile = await store.resolveAsset(originalAsset.assetId)
+  const replaced = await store.replaceAudioAsset(project.projectId, originalAsset.assetId, replacementPath)
+  assert.equal(replaced.assetId, originalAsset.assetId)
+  assert.equal(replaced.assetType, 'audio')
+  assert.equal(replaced.mimeType, 'audio/wav')
+  assert.equal(replaced.name, 'replace-next.wav')
+  assert.equal(replaced.referenceCount, 1)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(originalAsset.assetId)).filePath), replacementBytes)
+  await assert.rejects(fs.access(oldFile.filePath))
+
+  const databasePath = path.join(directory, '.vibepaper', 'project.sqlite')
+  const database = new DatabaseSync(databasePath, { readOnly: true })
+  try {
+    const updated = database.prepare('SELECT sha256, mime_type, relative_path FROM assets WHERE id = ?')
+      .get(originalAsset.assetId)
+    assert.equal(updated.sha256, createHash('sha256').update(replacementBytes).digest('hex'))
+    assert.equal(updated.mime_type, 'audio/wav')
+    assert.match(updated.relative_path, new RegExp(`^assets/${updated.sha256}/${originalAsset.assetId}\\.wav$`, 'u'))
+    assert.deepEqual(database.prepare('SELECT node_id, asset_id FROM asset_references').all().map((row) => ({ ...row })), [
+      { node_id: node.node.id, asset_id: originalAsset.assetId },
+    ])
+  } finally {
+    database.close()
+  }
+
+  const backup = await store.backupProject(backupParent, project.projectId)
+  const restored = await store.restoreBackup(backup.directory, restoreParent)
+  const restoredAsset = (await store.listAssets(restored.project.projectId)).find((asset) => asset.assetId === originalAsset.assetId)
+  assert.equal(restoredAsset.assetType, 'audio')
+  assert.equal(restoredAsset.mimeType, 'audio/wav')
+  assert.equal(restoredAsset.referenceCount, 1)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(originalAsset.assetId)).filePath), replacementBytes)
+  assert.deepEqual(store.loadCanvas(restored.project.projectId, restored.project.canvasId).nodes.map((entry) => entry.id), [node.node.id])
+})
+
+test('audio and image replacement routes reject the other asset type and invalid WAV bytes', async (t) => {
+  const { store, parentDirectory, project } = await openTestProject(t)
+  const imagePath = await writeImage(parentDirectory, 'replace-kind-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' image bytes')]))
+  const wavePath = await writeImage(parentDirectory, 'replace-kind-audio.wav', minimalWave())
+  const invalidWavePath = await writeImage(parentDirectory, 'replace-kind-invalid.wav', Buffer.concat([PNG_HEADER, Buffer.alloc(40, 1)]))
+  const image = await store.importAsset(imagePath, project.projectId)
+  const audio = await store.importAsset(wavePath, project.projectId, 'local')
+  const imageNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'replace-kind-image-node',
+    expectedVersion: 0,
+    type: 'image',
+    params: { assetId: image.assetId },
+  })
+  const audioNode = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'replace-kind-audio-node',
+    expectedVersion: 1,
+    type: 'audio',
+    params: { assetId: audio.assetId },
+  })
+
+  await assert.rejects(store.replaceAudioAsset(project.projectId, image.assetId, wavePath), /只能替换 WAV 音频素材/u)
+  await assert.rejects(store.replaceAsset(project.projectId, audio.assetId, imagePath), /只能替换图片素材/u)
+  await assert.rejects(store.replaceAudioAsset(project.projectId, audio.assetId, invalidWavePath), /本地 WAV 素材格式无效/u)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(image.assetId)).filePath), await fs.readFile(imagePath))
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(audio.assetId)).filePath), await fs.readFile(wavePath))
+  const listed = await store.listAssets(project.projectId)
+  assert.equal(listed.find((asset) => asset.assetId === image.assetId).referenceCount, 1)
+  assert.equal(listed.find((asset) => asset.assetId === audio.assetId).referenceCount, 1)
+  assert.deepEqual(store.loadCanvas(project.projectId, project.canvasId).nodes.map((entry) => entry.id), [
+    imageNode.node.id,
+    audioNode.node.id,
+  ])
+})
+
 test('project schema v5 migrates assets and references to soft-delete metadata before operations', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
   const sourcePath = await writeImage(parentDirectory, 'legacy.png', Buffer.concat([PNG_HEADER, Buffer.from(' legacy payload')]))
@@ -651,14 +747,17 @@ test('asset operations are exposed through project-scoped IPC and a path-restric
 
   assert.match(localCore, /case 'asset:rename':\s+return store\.renameAsset/u)
   assert.match(localCore, /case 'asset:replace':\s+return store\.replaceAsset/u)
+  assert.match(localCore, /case 'asset:replace-audio':\s+return store\.replaceAudioAsset/u)
   assert.match(localCore, /case 'asset:delete':\s+return store\.deleteAsset/u)
   assert.match(main, /desktop:asset:rename',[\s\S]*assertAssetId\(assetId\)[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:rename'/u)
   assert.match(main, /desktop:asset:replace-image',[\s\S]*dialog\.showOpenDialog[\s\S]*localCore\.request\('asset:replace'/u)
+  assert.match(main, /desktop:asset:replace-audio',[\s\S]*dialog\.showOpenDialog[\s\S]*extensions: \['wav'\][\s\S]*localCore\.request\('asset:replace-audio'/u)
   assert.match(main, /desktop:asset:import-image',[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'image' \}/u)
   assert.match(main, /desktop:asset:import-local',[\s\S]*assertTrustedSender\(event\)[\s\S]*extensions: \['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav'\][\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'local' \}/u)
   assert.match(main, /desktop:asset:delete',[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:delete'/u)
   assert.match(preload, /renameAsset: \(projectId, assetId, name\) => ipcRenderer\.invoke\('desktop:asset:rename'/u)
   assert.match(preload, /replaceImage: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace-image'/u)
+  assert.match(preload, /replaceAudio: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace-audio'/u)
   assert.match(preload, /importLocalAsset: \(projectId\) => ipcRenderer\.invoke\('desktop:asset:import-local', projectId\)/u)
   assert.match(localCore, /case 'asset:import':[\s\S]*assetKind !== 'image' && assetKind !== 'local'[\s\S]*store\.importAsset\(payload\.sourcePath, payload\.projectId, assetKind\)/u)
   assert.match(preload, /deleteAsset: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:delete'/u)

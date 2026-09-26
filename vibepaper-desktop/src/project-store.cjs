@@ -2449,10 +2449,6 @@ async function detectAssetMimeType(filePath) {
   }
 }
 
-function extensionForImageMimeType(mimeType) {
-  return ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' })[mimeType]
-}
-
 function extensionForAssetMimeType(mimeType) {
   return ({
     'image/png': 'png',
@@ -3074,6 +3070,14 @@ function createLocalProjectStore() {
   }
 
   function replaceAsset(projectId, assetId, sourcePath) {
+    return replaceAssetByType(projectId, assetId, sourcePath, 'image')
+  }
+
+  function replaceAudioAsset(projectId, assetId, sourcePath) {
+    return replaceAssetByType(projectId, assetId, sourcePath, 'audio')
+  }
+
+  function replaceAssetByType(projectId, assetId, sourcePath, assetType) {
     return enqueue(async () => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法替换素材。')
       if (typeof assetId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(assetId)) {
@@ -3082,6 +3086,10 @@ function createLocalProjectStore() {
       const database = active.database
       const current = database.prepare('SELECT * FROM assets WHERE id = ? AND deleted = 0').get(assetId)
       if (!current) throw new Error('本地素材不存在。')
+      const currentMatchesType = assetType === 'audio'
+        ? current.mime_type === 'audio/wav'
+        : current.mime_type.startsWith('image/')
+      if (!currentMatchesType) throw new Error(assetType === 'audio' ? '只能替换 WAV 音频素材。' : '只能替换图片素材。')
       assertAssetRowPath(current)
       const oldAssetFile = await resolveProjectAssetFile(active.directory, current, { allowMissing: true })
       const { assetsDirectory } = await projectAssetsDirectory(active.directory)
@@ -3091,8 +3099,10 @@ function createLocalProjectStore() {
       let databaseCommitted = false
       try {
         const copied = await copyAssetSource(sourcePath, temporaryPath)
-        const mimeType = await detectImageMimeType(temporaryPath)
-        const extension = extensionForImageMimeType(mimeType)
+        const mimeType = assetType === 'audio'
+          ? await detectWavMimeType(temporaryPath)
+          : await detectImageMimeType(temporaryPath)
+        const extension = extensionForAssetMimeType(mimeType)
         const rawName = path.basename(path.resolve(sourcePath))
         const normalizedName = normalizeAssetName(rawName || current.original_name)
         const nextUpdatedAt = new Date().toISOString()
@@ -4781,6 +4791,7 @@ function createLocalProjectStore() {
     resolveAsset,
     renameAsset,
     replaceAsset,
+    replaceAudioAsset,
     deleteAsset,
     restoreBackup,
     saveCanvas,

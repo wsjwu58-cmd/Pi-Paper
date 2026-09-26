@@ -1096,6 +1096,23 @@ function registerProjectIpc() {
       sourcePath: result.filePaths[0],
     }, 5 * 60 * 1000)
   })
+  ipcMain.handle('desktop:asset:replace-audio', async (event, projectId, assetId) => {
+    assertTrustedSender(event)
+    assertAssetId(assetId)
+    await assertActiveAssetProject(projectId)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '替换本地 WAV 音频素材',
+      properties: ['openFile'],
+      filters: [{ name: 'WAV 音频', extensions: ['wav'] }],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    await assertActiveAssetProject(projectId)
+    return localCore.request('asset:replace-audio', {
+      projectId,
+      assetId,
+      sourcePath: result.filePaths[0],
+    }, 5 * 60 * 1000)
+  })
   ipcMain.handle('desktop:asset:delete', async (event, projectId, assetId) => {
     assertTrustedSender(event)
     assertAssetId(assetId)

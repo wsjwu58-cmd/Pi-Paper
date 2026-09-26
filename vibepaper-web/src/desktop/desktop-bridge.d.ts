@@ -374,6 +374,7 @@ export interface DesktopBridge {
   listAssets(projectId: string): Promise<DesktopAsset[]>
   renameAsset(projectId: string, assetId: string, name: string): Promise<DesktopAsset>
   replaceImage(projectId: string, assetId: string): Promise<DesktopAsset | null>
+  replaceAudio(projectId: string, assetId: string): Promise<DesktopAsset | null>
   deleteAsset(projectId: string, assetId: string): Promise<DesktopAssetDeleteImpact>
   loadCanvas(projectId: string, canvasId: string): Promise<DesktopCanvas>
   exportCanvas(projectId: string, canvasId: string): Promise<DesktopCanvasExportDocument>

@@ -63,6 +63,8 @@ async function dispatch(method, payload) {
       return store.renameAsset(payload?.projectId, payload?.assetId, payload?.name)
     case 'asset:replace':
       return store.replaceAsset(payload?.projectId, payload?.assetId, payload?.sourcePath)
+    case 'asset:replace-audio':
+      return store.replaceAudioAsset(payload?.projectId, payload?.assetId, payload?.sourcePath)
     case 'asset:delete':
       return store.deleteAsset(payload?.projectId, payload?.assetId)
     case 'asset:resolve':

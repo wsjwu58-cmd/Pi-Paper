@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   listAssets: (projectId) => ipcRenderer.invoke('desktop:asset:list', projectId),
   renameAsset: (projectId, assetId, name) => ipcRenderer.invoke('desktop:asset:rename', projectId, assetId, name),
   replaceImage: (projectId, assetId) => ipcRenderer.invoke('desktop:asset:replace-image', projectId, assetId),
+  replaceAudio: (projectId, assetId) => ipcRenderer.invoke('desktop:asset:replace-audio', projectId, assetId),
   deleteAsset: (projectId, assetId) => ipcRenderer.invoke('desktop:asset:delete', projectId, assetId),
   loadCanvas: (projectId, canvasId) => ipcRenderer.invoke('desktop:canvas:load', projectId, canvasId),
   exportCanvas: (projectId, canvasId) => ipcRenderer.invoke('desktop:canvas:export', projectId, canvasId),

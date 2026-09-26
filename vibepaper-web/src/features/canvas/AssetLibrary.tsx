@@ -122,10 +122,14 @@ export function AssetLibrary({
   })
 
   const replace = useMutation({
-    mutationFn: ({ id, file }: { id: Id; file?: File }) => {
+    mutationFn: ({ id, assetType, file }: { id: Id; assetType?: AssetView['assetType']; file?: File }) => {
       if (isDesktop) {
         const bridge = window.vibepaperDesktop
         if (!bridge || !projectId) throw new Error('本地项目未就绪，无法替换素材。')
+        if (assetType === 'audio') {
+          if (!bridge.replaceAudio) throw new Error('桌面本地音频替换服务尚未就绪。')
+          return bridge.replaceAudio(projectId, sid(id))
+        }
         return bridge.replaceImage(projectId, sid(id))
       }
       if (!file) throw new Error('请选择要替换的素材。')
@@ -188,9 +192,9 @@ export function AssetLibrary({
     toastSuccess('正在导入画布…')
   }
 
-  const startReplace = (id: Id) => {
+  const startReplace = (id: Id, assetType?: AssetView['assetType']) => {
     if (isDesktop) {
-      replace.mutate({ id })
+      replace.mutate({ id, assetType })
       return
     }
     setReplaceId(id)
@@ -278,9 +282,9 @@ export function AssetLibrary({
                     <Download size={11} />
                   </MiniBtn>
                   <MiniBtn
-                    disabled={replace.isPending || (isDesktop && a.assetType === 'audio')}
-                    title={isDesktop && a.assetType === 'audio' ? '桌面本地暂未接通音频素材替换' : '替换素材'}
-                    onClick={() => startReplace(a.id)}
+                    disabled={replace.isPending}
+                    title="替换素材"
+                    onClick={() => startReplace(a.id, a.assetType)}
                   >
                     <RefreshCw size={11} />
                   </MiniBtn>
@@ -332,10 +336,10 @@ export function AssetLibrary({
                   <Download size={12} />
                 </button>
                 <button
-                  disabled={replace.isPending || (isDesktop && a.assetType === 'audio')}
-                  onClick={() => startReplace(a.id)}
+                  disabled={replace.isPending}
+                  onClick={() => startReplace(a.id, a.assetType)}
                   className="rounded p-1 text-[#888] hover:text-[#111] disabled:cursor-not-allowed disabled:opacity-40"
-                  title={isDesktop && a.assetType === 'audio' ? '桌面本地暂未接通音频素材替换' : '替换'}
+                  title="替换"
                 >
                   <RefreshCw size={12} />
                 </button>
