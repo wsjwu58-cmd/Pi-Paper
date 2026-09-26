@@ -9,7 +9,7 @@ const { backup, DatabaseSync } = require('node:sqlite')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 8
+const PROJECT_DB_SCHEMA_VERSION = 9
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -849,8 +849,9 @@ function insertAssetReferences(database, canvasId, graph) {
   }
 }
 
-function validateAssetReferences(database, canvasId, graph) {
+function validateAssetReferences(database, canvasId, graph, { allowLegacyParamsGaps = false } = {}) {
   const expected = new Map()
+  const legacyParamsReferences = new Set()
   for (const node of graph.nodes) {
     if (!['image', 'audio'].includes(node.type)) continue
     const params = isRecord(node.data.params) ? node.data.params : {}
@@ -863,11 +864,18 @@ function validateAssetReferences(database, canvasId, graph) {
       ? '项目画布中的图片节点引用了不存在的本地素材。' : '项目画布中的音频节点引用了不存在的本地素材。')
     if (!asset.mime_type.startsWith(expectedMimePrefix)) throw new Error('项目画布中的本地素材引用类型不匹配。')
     expected.set(node.id, assetId)
+    if (node.data.assetId === undefined || node.data.assetId === null) legacyParamsReferences.add(node.id)
   }
   const actualRows = database.prepare('SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ?').all(canvasId)
-  if (actualRows.length !== expected.size || actualRows.some((row) => expected.get(row.node_id) !== row.asset_id)) {
-    throw new Error('项目画布与本地素材引用记录不一致。')
+  const hasConflictingOrExtraRows = actualRows.some((row) => expected.get(row.node_id) !== row.asset_id)
+  const actualNodeIds = new Set(actualRows.map((row) => row.node_id))
+  const missingRows = [...expected].filter(([nodeId]) => !actualNodeIds.has(nodeId))
+  if (!hasConflictingOrExtraRows && missingRows.length === 0) return []
+  if (allowLegacyParamsGaps && !hasConflictingOrExtraRows
+    && missingRows.every(([nodeId]) => legacyParamsReferences.has(nodeId))) {
+    return missingRows.map(([nodeId, assetId]) => ({ canvasId, nodeId, assetId }))
   }
+  throw new Error('项目画布与本地素材引用记录不一致。')
 }
 
 function normalizeCreateNodeInput(input) {
@@ -1626,7 +1634,54 @@ async function migrateDatabaseV7ToV8(database, dataDirectory) {
   }
 }
 
-function readDatabaseCanvas(database, metadata) {
+async function migrateDatabaseV8ToV9(database, dataDirectory) {
+  const version = databaseVersion(database)
+  if (version === PROJECT_DB_SCHEMA_VERSION) return
+  if (version !== 8) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 9。`)
+
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v8-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  const canvases = database.prepare('SELECT id FROM canvases ORDER BY id').all()
+  const selectNodes = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? ORDER BY rowid')
+  const insertReference = database.prepare(`
+    INSERT INTO asset_references (canvas_id, node_id, asset_id) VALUES (?, ?, ?)
+  `)
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    const canvasGraphs = canvases.map(({ id: canvasId }) => ({
+      canvasId,
+      nodes: selectNodes.all(canvasId).map((row) => JSON.parse(row.payload_json)),
+    }))
+
+    const missingRows = canvasGraphs.flatMap(({ canvasId, nodes }) =>
+      validateAssetReferences(database, canvasId, { nodes }, { allowLegacyParamsGaps: true }))
+    for (const row of missingRows) insertReference.run(row.canvasId, row.nodeId, row.assetId)
+
+    for (const { canvasId, nodes } of canvasGraphs) {
+      validateAssetReferences(database, canvasId, { nodes })
+    }
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('本地素材引用迁移后检测到无效引用。')
+    }
+    database.exec(`PRAGMA user_version = ${PROJECT_DB_SCHEMA_VERSION}`)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+function readDatabaseCanvas(database, metadata, { allowLegacyParamsAssetReferenceGaps = false } = {}) {
   const projectId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('projectId')
   const canvasId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('canvasId')
   if (projectId?.value !== metadata.projectId || canvasId?.value !== metadata.canvasId) {
@@ -1664,7 +1719,9 @@ function readDatabaseCanvas(database, metadata) {
     })))
     : []
   const graph = validateGraph(nodes, edges)
-  validateAssetReferences(database, metadata.canvasId, graph)
+  validateAssetReferences(database, metadata.canvasId, graph, {
+    allowLegacyParamsGaps: allowLegacyParamsAssetReferenceGaps,
+  })
   return {
     schemaVersion: CANVAS_SCHEMA_VERSION,
     projectId: metadata.projectId,
@@ -2297,7 +2354,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (![2, 3, 4, 5, 6, 7, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    if (![2, 3, 4, 5, 6, 7, 8, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -2307,7 +2364,7 @@ async function validateRestorableProject(projectDirectory) {
     if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
       throw new Error('备份项目数据库存在无效引用。')
     }
-    readDatabaseCanvas(database, metadata)
+    readDatabaseCanvas(database, metadata, { allowLegacyParamsAssetReferenceGaps: schemaVersion === 8 })
     const backupSchemaVersion = await verifyBackupManifest(dataDirectory, metadata, database)
     return { directory, dataDirectory, metadata, database, backupSchemaVersion }
   } catch (error) {
@@ -2582,6 +2639,7 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 5) await migrateDatabaseV5ToV6(database, dataDirectory)
       if (databaseVersion(database) === 6) await migrateDatabaseV6ToV7(database, dataDirectory)
       if (databaseVersion(database) === 7) await migrateDatabaseV7ToV8(database, dataDirectory)
+      if (databaseVersion(database) === 8) await migrateDatabaseV8ToV9(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }

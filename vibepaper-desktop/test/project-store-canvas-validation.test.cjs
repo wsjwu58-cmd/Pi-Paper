@@ -1030,7 +1030,7 @@ test('deleteNode replays its durable impact snapshot before version and node che
   }), /Idempotency-Key 已用于其他画布命令/u)
 })
 
-test('project schema v3 migrates through v8 with a v3 backup and keeps existing canvas data', async (t) => {
+test('project schema v3 migrates through v9 with a v3 backup and keeps existing canvas data', async (t) => {
   const { store, directory, project } = await openTestProject(t)
   await saveNodes(store, project, [node('existing-text', 'text')])
   await store.close()
@@ -1279,7 +1279,7 @@ test('project backup and restore retain group and stack tables and node membersh
   assert.equal(loaded.nodes.find((entry) => entry.id === 'backup-a').data.stackId, stack.id)
 })
 
-test('project schema v4 migrates through v8 after creating a rollback snapshot', async (t) => {
+test('project schema v4 migrates through v9 after creating a rollback snapshot', async (t) => {
   const { store, directory, project } = await openTestProject(t)
   await saveNodes(store, project, [node('v4-existing-node', 'text')])
   await store.close()

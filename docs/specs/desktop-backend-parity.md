@@ -17,7 +17,7 @@
 
 本地音频沿用原 SAPI 的文本、voice、language、speed、tone 归一化、速率范围与哈希；输入经 PowerShell stdin 传递，真实 WAV 先写临时文件并校验后进入任务结果，`voiceId`、时长和采样率随成功事件持久化。修复了原 PowerShell 正则把 `female` 中的 `male` 误判为男性声音的问题。测试覆盖真实 Windows 合成、失败码、结果预览、重启与幂等。此链路仅覆盖原项目的 Windows SAPI 提供方；其他音频模型与素材链路仍是迁移缺口。
 
-音频生成结果保存素材沿用原 Web 的每次点击独立上传语义；Renderer 只提交项目与任务 ID，Local Core 核对成功任务的 WAV、哈希及 200 MB 素材上限，复制成独立原件。项目 SQLite v7→v8 扩展音频 MIME 并先生成回退副本；备份和恢复校验 WAV 内容、路径、哈希及节点引用。通用文件上传和音频替换仍需按原 `AssetService` 迁移。
+音频生成结果保存素材沿用原 Web 的每次点击独立上传语义；Renderer 只提交项目与任务 ID，Local Core 核对成功任务的 WAV、哈希及 200 MB 素材上限，复制成独立原件。项目 SQLite v7→v8 扩展音频 MIME，v8→v9 为旧 `params.assetId` 节点补齐可核实的素材引用；两次升级均先生成回退副本。备份和恢复校验 WAV 内容、路径、哈希及节点引用。原素材库上传入口已接图片与 WAV；MP3/M4A、视频、文本、多选上传和音频替换仍需按原 `AssetService` 迁移。
 
 ### 画布 JSON 导入/导出
 

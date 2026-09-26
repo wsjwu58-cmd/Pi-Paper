@@ -60,6 +60,78 @@ async function writeImage(parentDirectory, name, bytes) {
   return sourcePath
 }
 
+async function createLegacyParamsReferenceFixture(t) {
+  const context = await openTestProject(t)
+  const imagePath = await writeImage(context.parentDirectory, 'legacy-reference.png', Buffer.concat([PNG_HEADER, Buffer.from(' legacy image')]))
+  const alternateImagePath = await writeImage(context.parentDirectory, 'alternate-reference.png', Buffer.concat([PNG_HEADER, Buffer.from(' alternate image')]))
+  const wavePath = await writeImage(context.parentDirectory, 'legacy-reference.wav', minimalWave())
+  const image = await context.store.importAsset(imagePath, context.project.projectId)
+  const alternateImage = await context.store.importAsset(alternateImagePath, context.project.projectId)
+  const audio = await context.store.importAsset(wavePath, context.project.projectId, 'local')
+  const imageNode = await context.store.createNode({
+    projectId: context.project.projectId,
+    canvasId: context.project.canvasId,
+    idempotencyKey: 'legacy-params-image-reference',
+    expectedVersion: 0,
+    type: 'image',
+    params: { assetId: image.assetId },
+  })
+  const audioNode = await context.store.createNode({
+    projectId: context.project.projectId,
+    canvasId: context.project.canvasId,
+    idempotencyKey: 'legacy-params-audio-reference',
+    expectedVersion: 1,
+    type: 'audio',
+  })
+  const textNode = await context.store.createNode({
+    projectId: context.project.projectId,
+    canvasId: context.project.canvasId,
+    idempotencyKey: 'legacy-params-unreferenced-text',
+    expectedVersion: 2,
+    type: 'text',
+  })
+  await context.store.close()
+
+  const databasePath = path.join(context.directory, '.vibepaper', 'project.sqlite')
+  const database = new DatabaseSync(databasePath)
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    const legacyAudioPayload = JSON.parse(database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+      .get(context.project.canvasId, audioNode.node.id).payload_json)
+    legacyAudioPayload.data.params = { assetId: audio.assetId }
+    database.prepare('UPDATE nodes SET payload_json = ? WHERE canvas_id = ? AND id = ?')
+      .run(JSON.stringify(legacyAudioPayload), context.project.canvasId, audioNode.node.id)
+    const legacyImagePayload = JSON.parse(database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+      .get(context.project.canvasId, imageNode.node.id).payload_json)
+    delete legacyImagePayload.data.assetId
+    database.prepare('UPDATE nodes SET payload_json = ? WHERE canvas_id = ? AND id = ?')
+      .run(JSON.stringify(legacyImagePayload), context.project.canvasId, imageNode.node.id)
+    database.prepare('DELETE FROM asset_references WHERE canvas_id = ? AND node_id IN (?, ?)')
+      .run(context.project.canvasId, imageNode.node.id, audioNode.node.id)
+    database.exec('PRAGMA user_version = 8; COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.close()
+  }
+  return { ...context, databasePath, image, alternateImage, audio, imageNode, audioNode, textNode }
+}
+
+async function mutateV8ProjectDatabase(databasePath, mutate) {
+  const database = new DatabaseSync(databasePath)
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    await mutate(database)
+    database.exec('PRAGMA user_version = 8; COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.close()
+  }
+}
+
 test('local asset import detects image and WAV content, hashes it and tracks references', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
   const imageBytes = Buffer.concat([PNG_HEADER, Buffer.from(' imported png payload')])
@@ -266,7 +338,7 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 8)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 9)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const columns = migratedDatabase.prepare('PRAGMA table_info(assets)').all().map((row) => row.name)
     assert.ok(columns.includes('updated_at'))
@@ -279,7 +351,7 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
   }
 })
 
-test('project schema v7 migrates image assets and references to v8 with a rollback snapshot', async (t) => {
+test('project schema v7 migrates image assets and references through v9 with rollback snapshots', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
   const sourcePath = await writeImage(parentDirectory, 'v7-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' v7 payload')]))
   const asset = await store.importAsset(sourcePath, project.projectId)
@@ -329,7 +401,7 @@ test('project schema v7 migrates image assets and references to v8 with a rollba
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 8)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 9)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const backupName = (await fs.readdir(path.join(directory, '.vibepaper', 'backups')))
       .find((name) => name.startsWith('project-schema-v7-'))
@@ -347,6 +419,224 @@ test('project schema v7 migrates image assets and references to v8 with a rollba
   } finally {
     migratedDatabase.close()
   }
+})
+
+test('project schema v8 backfills only legacy params asset references and preserves a v8 rollback snapshot', async (t) => {
+  const fixture = await createLegacyParamsReferenceFixture(t)
+  await fixture.store.openProject(fixture.directory)
+
+  const migratedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
+  let v8BackupName
+  try {
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 9)
+    assert.deepEqual(migratedDatabase.prepare(`
+      SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ? ORDER BY node_id
+    `).all(fixture.project.canvasId).map((row) => ({ ...row })), [
+      { node_id: fixture.audioNode.node.id, asset_id: fixture.audio.assetId },
+      { node_id: fixture.imageNode.node.id, asset_id: fixture.image.assetId },
+    ].sort((left, right) => left.node_id.localeCompare(right.node_id)))
+    assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
+  } finally {
+    migratedDatabase.close()
+  }
+  assert.equal(fixture.store.loadCanvas(fixture.project.projectId, fixture.project.canvasId).nodes.length, 3)
+  assert.equal((await fixture.store.listAssets(fixture.project.projectId)).find((asset) => asset.assetId === fixture.image.assetId).referenceCount, 1)
+  assert.equal((await fixture.store.listAssets(fixture.project.projectId)).find((asset) => asset.assetId === fixture.audio.assetId).referenceCount, 1)
+
+  const backupDirectory = path.join(fixture.directory, '.vibepaper', 'backups')
+  v8BackupName = (await fs.readdir(backupDirectory)).find((name) => name.startsWith('project-schema-v8-'))
+  assert.ok(v8BackupName, 'v8 database snapshot exists before migration')
+  const backupDatabase = new DatabaseSync(path.join(backupDirectory, v8BackupName), { readOnly: true })
+  try {
+    assert.equal(Number(backupDatabase.prepare('PRAGMA user_version').get().user_version), 8)
+    assert.equal(backupDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 0)
+  } finally {
+    backupDatabase.close()
+  }
+
+  await fixture.store.close()
+  await fixture.store.openProject(fixture.directory)
+  const reopenedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
+  try {
+    assert.equal(Number(reopenedDatabase.prepare('PRAGMA user_version').get().user_version), 9)
+    assert.equal(reopenedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 2)
+  } finally {
+    reopenedDatabase.close()
+  }
+  assert.deepEqual((await fs.readdir(backupDirectory)).filter((name) => /^project-schema-v8-.*\.sqlite$/u.test(name)), [v8BackupName])
+})
+
+test('project schema v8 refuses conflicting legacy references without changing the database', async (t) => {
+  const fixture = await createLegacyParamsReferenceFixture(t)
+  await mutateV8ProjectDatabase(fixture.databasePath, (database) => {
+    database.prepare(`
+      INSERT INTO asset_references (canvas_id, node_id, asset_id) VALUES (?, ?, ?)
+    `).run(fixture.project.canvasId, fixture.imageNode.node.id, fixture.alternateImage.assetId)
+  })
+
+  await assert.rejects(fixture.store.openProject(fixture.directory), /项目画布与本地素材引用记录不一致/u)
+  const unchangedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
+  try {
+    assert.equal(Number(unchangedDatabase.prepare('PRAGMA user_version').get().user_version), 8)
+    assert.deepEqual(unchangedDatabase.prepare(`
+      SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ?
+    `).all(fixture.project.canvasId).map((row) => ({ ...row })), [
+      { node_id: fixture.imageNode.node.id, asset_id: fixture.alternateImage.assetId },
+    ])
+    assert.deepEqual(unchangedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
+  } finally {
+    unchangedDatabase.close()
+  }
+})
+
+test('project schema v8 does not backfill missing references for nodes that already use data.assetId', async (t) => {
+  const fixture = await createLegacyParamsReferenceFixture(t)
+  await mutateV8ProjectDatabase(fixture.databasePath, (database) => {
+    const row = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+      .get(fixture.project.canvasId, fixture.imageNode.node.id)
+    const payload = JSON.parse(row.payload_json)
+    payload.data.assetId = fixture.image.assetId
+    database.prepare('UPDATE nodes SET payload_json = ? WHERE canvas_id = ? AND id = ?')
+      .run(JSON.stringify(payload), fixture.project.canvasId, fixture.imageNode.node.id)
+  })
+
+  await assert.rejects(fixture.store.openProject(fixture.directory), /项目画布与本地素材引用记录不一致/u)
+  const unchangedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
+  try {
+    assert.equal(Number(unchangedDatabase.prepare('PRAGMA user_version').get().user_version), 8)
+    assert.equal(unchangedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 0)
+  } finally {
+    unchangedDatabase.close()
+  }
+})
+
+test('project schema v8 refuses legacy references with missing or mismatched assets before backfilling', async (t) => {
+  await t.test('missing asset', async (t) => {
+    const fixture = await createLegacyParamsReferenceFixture(t)
+    await mutateV8ProjectDatabase(fixture.databasePath, (database) => {
+      database.prepare('DELETE FROM assets WHERE id = ?').run(fixture.image.assetId)
+    })
+    await assert.rejects(fixture.store.openProject(fixture.directory), /引用了不存在的本地素材/u)
+    const database = new DatabaseSync(fixture.databasePath, { readOnly: true })
+    try {
+      assert.equal(Number(database.prepare('PRAGMA user_version').get().user_version), 8)
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 0)
+    } finally {
+      database.close()
+    }
+  })
+
+  await t.test('MIME mismatch', async (t) => {
+    const fixture = await createLegacyParamsReferenceFixture(t)
+    await mutateV8ProjectDatabase(fixture.databasePath, (database) => {
+      const row = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+        .get(fixture.project.canvasId, fixture.audioNode.node.id)
+      const payload = JSON.parse(row.payload_json)
+      payload.data.params.assetId = fixture.image.assetId
+      database.prepare('UPDATE nodes SET payload_json = ? WHERE canvas_id = ? AND id = ?')
+        .run(JSON.stringify(payload), fixture.project.canvasId, fixture.audioNode.node.id)
+    })
+    await assert.rejects(fixture.store.openProject(fixture.directory), /素材引用类型不匹配/u)
+    const database = new DatabaseSync(fixture.databasePath, { readOnly: true })
+    try {
+      assert.equal(Number(database.prepare('PRAGMA user_version').get().user_version), 8)
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 0,
+        'the valid image candidate is not inserted before all legacy references are checked')
+    } finally {
+      database.close()
+    }
+  })
+})
+
+test('project schema v8 refuses extra references for nodes without local assets', async (t) => {
+  const fixture = await createLegacyParamsReferenceFixture(t)
+  await mutateV8ProjectDatabase(fixture.databasePath, (database) => {
+    database.prepare(`
+      INSERT INTO asset_references (canvas_id, node_id, asset_id) VALUES (?, ?, ?)
+    `).run(fixture.project.canvasId, fixture.textNode.node.id, fixture.image.assetId)
+  })
+
+  await assert.rejects(fixture.store.openProject(fixture.directory), /项目画布与本地素材引用记录不一致/u)
+  const unchangedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
+  try {
+    assert.equal(Number(unchangedDatabase.prepare('PRAGMA user_version').get().user_version), 8)
+    assert.deepEqual(unchangedDatabase.prepare(`
+      SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ?
+    `).all(fixture.project.canvasId).map((row) => ({ ...row })), [
+      { node_id: fixture.textNode.node.id, asset_id: fixture.image.assetId },
+    ])
+  } finally {
+    unchangedDatabase.close()
+  }
+})
+
+test('restoring a v8 backup with a missing legacy params reference migrates the staged project to v9', async (t) => {
+  const { store, parentDirectory, project } = await openTestProject(t)
+  const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-v8-restore-backup-'))
+  const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-v8-restore-target-'))
+  t.after(async () => {
+    await fs.rm(backupParent, { recursive: true, force: true })
+    await fs.rm(restoreParent, { recursive: true, force: true })
+  })
+
+  const sourcePath = await writeImage(parentDirectory, 'restore-v8-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' restore v8')]))
+  const asset = await store.importAsset(sourcePath, project.projectId)
+  const node = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'restore-v8-legacy-reference',
+    expectedVersion: 0,
+    type: 'image',
+    params: { assetId: asset.assetId },
+  })
+  const backup = await store.backupProject(backupParent, project.projectId)
+  const backupDataDirectory = path.join(backup.directory, '.vibepaper')
+  const backupDatabasePath = path.join(backupDataDirectory, 'project.sqlite')
+  const backupDatabase = new DatabaseSync(backupDatabasePath)
+  try {
+    backupDatabase.exec('BEGIN IMMEDIATE')
+    backupDatabase.prepare('DELETE FROM asset_references WHERE canvas_id = ? AND node_id = ?')
+      .run(project.canvasId, node.node.id)
+    const legacyPayload = JSON.parse(backupDatabase.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
+      .get(project.canvasId, node.node.id).payload_json)
+    delete legacyPayload.data.assetId
+    backupDatabase.prepare('UPDATE nodes SET payload_json = ? WHERE canvas_id = ? AND id = ?')
+      .run(JSON.stringify(legacyPayload), project.canvasId, node.node.id)
+    backupDatabase.exec('PRAGMA user_version = 8; COMMIT')
+  } catch (error) {
+    backupDatabase.exec('ROLLBACK')
+    throw error
+  } finally {
+    backupDatabase.close()
+  }
+
+  const manifestPath = path.join(backupDataDirectory, 'backup-manifest.json')
+  const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'))
+  const databaseBytes = await fs.readFile(backupDatabasePath)
+  const databaseEntry = manifest.files.find((entry) => entry.path === 'project.sqlite')
+  assert.ok(databaseEntry, 'the backup manifest includes its SQLite database')
+  databaseEntry.sha256 = createHash('sha256').update(databaseBytes).digest('hex')
+  databaseEntry.sizeBytes = databaseBytes.length
+  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+
+  const restored = await store.restoreBackup(backup.directory, restoreParent)
+  const restoredAssets = await store.listAssets(restored.project.projectId)
+  assert.equal(restoredAssets.find((entry) => entry.assetId === asset.assetId).referenceCount, 1)
+  assert.deepEqual(store.loadCanvas(restored.project.projectId, restored.project.canvasId).nodes.map((entry) => entry.id), [node.node.id])
+
+  const restoredDatabasePath = path.join(restored.directory, '.vibepaper', 'project.sqlite')
+  const restoredDatabase = new DatabaseSync(restoredDatabasePath, { readOnly: true })
+  try {
+    assert.equal(Number(restoredDatabase.prepare('PRAGMA user_version').get().user_version), 9)
+    assert.deepEqual(restoredDatabase.prepare('PRAGMA foreign_key_check').all(), [])
+    assert.deepEqual(restoredDatabase.prepare('SELECT node_id, asset_id FROM asset_references').all().map((row) => ({ ...row })), [
+      { node_id: node.node.id, asset_id: asset.assetId },
+    ])
+  } finally {
+    restoredDatabase.close()
+  }
+  assert.ok((await fs.readdir(path.join(restored.directory, '.vibepaper', 'backups')))
+    .some((name) => name.startsWith('project-schema-v8-')))
 })
 
 test('asset operations are exposed through project-scoped IPC and a path-restricted preload bridge', async () => {

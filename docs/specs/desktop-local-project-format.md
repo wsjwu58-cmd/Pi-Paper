@@ -53,7 +53,7 @@ Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访�
 
 ## `project.sqlite`
 
-数据库使用 `PRAGMA user_version = 5` 标记存储结构版本，并以 WAL、外键和 `synchronous=FULL` 运行。主要表为：
+数据库使用 `PRAGMA user_version = 9` 标记当前存储结构版本，并以 WAL、外键和 `synchronous=FULL` 运行。v8→v9 升级先保存 SQLite 回退快照，再仅回填旧 `params.assetId` 图片/音频节点可核实的缺失素材引用；冲突、素材缺失和 MIME 不匹配会阻止升级。主要表为：
 
 | 表 | 内容 |
 | --- | --- |
@@ -61,8 +61,8 @@ Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访�
 | `canvases` | 画布 ID、乐观锁版本和更新时间 |
 | `nodes` | 画布 ID、节点 ID、有限位置及完整节点 JSON |
 | `edges` | 画布 ID、连线 ID、来源/目标及完整连线 JSON；外键要求两端节点存在 |
-| `assets` | 素材 ID、SHA-256、显示名、图片 MIME、大小和项目内相对路径 |
-| `asset_references` | 画布图片节点与本地素材的关系；删除节点时级联清除引用 |
+| `assets` | 素材 ID、SHA-256、显示名、图片或 WAV 音频 MIME、大小和项目内相对路径 |
+| `asset_references` | 画布图片/音频节点与本地素材的关系；删除节点时级联清除引用 |
 | `tasks` | 本地/云端生成任务输入哈希、Idempotency-Key、画布版本、提供方/模型标识、状态、结果路径与哈希、错误码和时间 |
 | `task_events` | 任务状态事件的单调序号、类型、JSON 数据和时间 |
 | `canvas_graph_commands` | 画布增量命令的 `Idempotency-Key`、操作类型、结果快照和提交版本；用于节点创建/更新/删除与连接命令 |
