@@ -139,6 +139,21 @@ test('image creation stops after five attempts and preserves the final provider 
   assert.deepEqual(delays, [3_000, 6_000, 12_000, 24_000])
 })
 
+test('Agnes rate limiting remains visible after retries are exhausted', async () => {
+  let attempts = 0
+  await assert.rejects(
+    runVideoTask(jobFor('video'), {
+      postJson: async () => {
+        attempts += 1
+        throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'mock rate limit', 429)
+      },
+      sleep: async () => {},
+    }),
+    (error) => error.code === 'CLOUD_RATE_LIMITED' && error.statusCode === 429,
+  )
+  assert.equal(attempts, 5)
+})
+
 test('Agnes media URLs must use HTTPS and cannot target private or local addresses', () => {
   assert.equal(isPublicAddress('8.8.8.8'), true)
   assert.equal(isPublicAddress('2001:4860:4860::8888'), true)

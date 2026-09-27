@@ -26,14 +26,10 @@ import { ModelPicker } from '@/components/ui/ModelPicker'
 import { useCanvasStore, type FlowNode } from '../canvasStore'
 import { isDesktopRuntime } from '../canvasPort'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
+import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoFrameReferences, resolveNodeResolution } from './videoNodeParameters'
 
 const STYLE_PRESETS = ['赛博朋克', '水彩', '写实', '动漫', '电影感', '产品渲染', '三视图']
 const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4']
-const RES_MAP: Record<string, string> = {
-  '1K': '1024x1024',
-  '2K': '2048x2048',
-  '4K': '3840x2160',
-}
 
 const LEGACY_REFERENCE_FIDELITY_PROMPTS = [
   '严格参考输入图片的主体、构图与风格，仅按提示词做有限调整，勿整体重绘成另一张图。',
@@ -532,7 +528,7 @@ export function NodeEditorDialog({
               name,
               modelType: modality,
               displayName: `Agnes · ${modality === 'text' ? '文本' : modality === 'image' ? '图片' : '视频'}（云端）`,
-              description: '云端模型。点击生成会发送提示词和文本参考；供应商可能收费。',
+              description: '云端模型。点击生成会发送提示词、文本参考及已选媒体参考；供应商可能收费。',
               provider: 'agnes',
               enabled: true,
               basePrice: null as unknown as number,
@@ -581,7 +577,7 @@ export function NodeEditorDialog({
   const [prompt, setPrompt] = useState(stripLegacyReferenceFidelity((node.params.prompt as string) ?? ''))
   const [model, setModel] = useState((node.params.model as string) ?? '')
   const [aspect, setAspect] = useState((node.params.aspect as string) || '1:1')
-  const [resKey, setResKey] = useState((node.params.resKey as string) || '2K')
+  const [resKey, setResKey] = useState((node.params.resKey as string) || (node.type === 'video' && desktopMode ? '720P' : '2K'))
   const [style, setStyle] = useState((node.params.style as string) ?? '')
   const [camera, setCamera] = useState((node.params.camera as string) ?? '')
   const [count, setCount] = useState(Number(node.params.count) || 1)
@@ -603,6 +599,10 @@ export function NodeEditorDialog({
     typeModels.find((m) => /agnes-image|agnes-video/i.test(m.name))?.name ??
     typeModels.find((m) => /agnes|seedream|seedance/i.test(m.name))?.name ??
     typeModels[0]?.name
+  const selectedModel = typeModels.find((item) => item.name === (model || preferred))
+  const resolutionMap = getNodeResolutionMap(node.type, selectedModel, desktopMode)
+  const selectedResKey = resolutionMap[resKey] ? resKey : Object.keys(resolutionMap)[0] ?? resKey
+  const resolutionKeys = Object.keys(resolutionMap)
 
   // 上游变化时合并进参考（保留本地上传；尊重用户删除的上游）
   useEffect(() => {
@@ -645,8 +645,7 @@ export function NodeEditorDialog({
     return localRefs
   }, [frameOrder, localRefs, node.type])
 
-  const firstFrame = refsForUi.find((r) => r.kind === 'image' || r.kind === 'video')
-  const lastFrame = refsForUi.filter((r) => r.kind === 'image' || r.kind === 'video')[1]
+  const { firstFrame, lastFrame } = getVideoFrameReferences(refsForUi)
 
   const persistPrompt = (value: string) => {
     setPrompt(value)
@@ -710,10 +709,8 @@ export function NodeEditorDialog({
     setErr('')
     try {
       const { submitNodeTask } = await import('./taskActions')
-      const refUrls = refsForUi.map((r) => r.url).filter(Boolean)
-      const refTexts = refsForUi
-        .map((r) => r.text)
-        .filter((t): t is string => Boolean(t && String(t).trim()))
+      const referenceParameters = buildMediaReferenceParameters(refsForUi, node.type)
+      const refTexts = referenceParameters.referenceTexts
       const trimmedPrompt = stripLegacyReferenceFidelity(prompt)
       const effectivePrompt =
         trimmedPrompt && refTexts.length
@@ -724,12 +721,11 @@ export function NodeEditorDialog({
         setBusy(false)
         return
       }
-      const resolution = RES_MAP[resKey] || '1024x1024'
+      const resolutionParameters = resolveNodeResolution(node.type, selectedModel, selectedResKey, desktopMode)
       const outputCount = isSplitLayout && node.type === 'text' ? count : 1
-      if (desktopMode && refsForUi.some((ref) => Boolean(ref.url))) {
-        throw new Error('桌面本地生成尚未接入图片、视频或音频参考输入。请移除媒体参考后重试。')
+      if (desktopMode && !['image', 'video'].includes(node.type) && refsForUi.some((ref) => Boolean(ref.url))) {
+        throw new Error('当前桌面模型尚未接入媒体参考输入，请移除媒体参考后重试。')
       }
-      const selectedModel = typeModels.find((item) => item.name === (model || preferred))
       const audioParams = desktopMode && node.type === 'audio'
         ? {
             ...(typeof node.params.voice === 'string' && node.params.voice ? { voice: node.params.voice } : {}),
@@ -745,18 +741,12 @@ export function NodeEditorDialog({
           // References are supplied as separate model inputs. Never append
           // hidden fidelity instructions to the creator's prompt.
           prompt: effectivePrompt,
-          resolution,
+          ...resolutionParameters,
           aspect,
           style,
           camera,
           count: outputCount,
-          referenceUrls: refUrls,
-          referenceImages: refUrls.filter(Boolean),
-          referenceTexts: refTexts,
-          firstFrameUrl: firstFrame?.url,
-          lastFrameUrl: lastFrame?.url,
-          imageUrl: firstFrame?.kind === 'image' ? firstFrame.url : undefined,
-          upstreamNodeIds: refsForUi.map((r) => r.sourceNodeId).filter(Boolean),
+          ...referenceParameters,
           ...audioParams,
         },
         10,
@@ -768,9 +758,8 @@ export function NodeEditorDialog({
           ...(current?.params ?? node.params),
           prompt: trimmedPrompt || effectivePrompt,
           model: model || preferred,
-          resolution,
+          ...resolutionParameters,
           aspect,
-          resKey,
           style,
           camera,
           ...audioParams,
@@ -957,14 +946,14 @@ export function NodeEditorDialog({
     <div
       className={
         isSplitLayout
-          ? 'flex items-center gap-2 border-t border-white/10 bg-[#1a1a1a] px-3.5 py-2.5'
+          ? 'flex flex-wrap items-center gap-2 border-t border-white/10 bg-[#1a1a1a] px-3.5 py-2.5'
           : 'flex flex-wrap items-center gap-1.5 border-t border-black/6 pt-2'
       }
     >
       <ModelPicker
         dark={isSplitLayout}
         compact={!isSplitLayout}
-        className="max-w-[200px]"
+        className={isSplitLayout ? 'min-w-[140px] max-w-[200px] flex-[1_1_160px]' : 'max-w-[200px]'}
         models={typeModels}
         value={model || preferred || ''}
         onChange={(v) => {
@@ -976,7 +965,7 @@ export function NodeEditorDialog({
         }}
       />
       {desktopMode && (
-        <span className={`max-w-[210px] text-[9px] leading-tight ${isSplitLayout ? 'text-white/50' : 'text-[#999]'}`}>
+        <span className={`min-w-[140px] max-w-[210px] flex-[1_1_160px] text-[9px] leading-tight ${isSplitLayout ? 'text-white/50' : 'text-[#999]'}`}>
           {node.type === 'audio'
             ? !desktopModelsFetched
               ? '正在检查本地语音模型…'
@@ -988,7 +977,7 @@ export function NodeEditorDialog({
               : model || preferred
                 ? typeModels.find((item) => item.name === (model || preferred))?.provider === 'local'
                   ? '本地模型，请求留在本机。'
-                  : 'Agnes 云端模型；提示词和文本参考会发送至供应商，可能产生费用。'
+              : 'Agnes 云端模型；提示词及已选文本/媒体参考会发送至供应商，可能产生费用。'
                 : '当前节点类型暂无桌面模型。'}
         </span>
       )}
@@ -1017,8 +1006,8 @@ export function NodeEditorDialog({
             className="max-w-[72px]"
           />
           <SplitFooterSelect
-            value={resKey}
-            options={Object.keys(RES_MAP).map((k) => ({ value: k, label: k }))}
+            value={selectedResKey}
+            options={resolutionKeys.map((k) => ({ value: k, label: k }))}
             onChange={setResKey}
             className="max-w-[56px]"
           />
@@ -1033,8 +1022,8 @@ export function NodeEditorDialog({
               </option>
             ))}
           </select>
-          <select className={splitCtrl} value={resKey} onChange={(e) => setResKey(e.target.value)}>
-            {Object.keys(RES_MAP).map((k) => (
+          <select className={splitCtrl} value={selectedResKey} onChange={(e) => setResKey(e.target.value)}>
+            {resolutionKeys.map((k) => (
               <option key={k} value={k}>
                 {k}
               </option>

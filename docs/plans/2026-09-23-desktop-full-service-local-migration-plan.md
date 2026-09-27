@@ -1,6 +1,6 @@
 # VibePaper 全服务本地桌面化实施方案
 
-> 状态：实施中（2026-09-25）。桌面壳、本地项目、画布与任务持久化、图片素材、备份恢复已有纵向链路；Renderer 已直接接入原 `WorkspacePage`、`HistoryPage`、`CanvasPage`、原节点和 `AgentPanel`。文本可调用本地 loopback 模型或 Agnes，图像/视频接 Agnes，原合成节点接本地 FFmpeg，原音频节点接 Windows SAPI 本地语音并可将成功 WAV 保存到本地素材库。普通云端调用不逐次弹确认，配置页披露供应商、发送范围和可能费用；Agent 生成动作保留原确认。Agent Worker 运行原 TypeScript 服务代码和“小P”角色，工具经本地网关访问画布/任务，具备本地会话、Skill、压缩与记忆链路。参考媒体输入、完整音视频素材、部分后处理、动态 Skill、多提供方、端到端同状态比对、原后端全部规则和多平台安装包仍有缺口，不能宣称 1:1 完成。当前契约以根目录 `AGENTS.md` 为准；项目格式见 `docs/specs/desktop-local-project-format.md`。
+> 状态：实施中（2026-09-27）。桌面壳、本地项目、画布与任务持久化、图片素材、备份恢复已有纵向链路；Renderer 已直接接入原 `WorkspacePage`、`HistoryPage`、`CanvasPage`、原节点和 `AgentPanel`。文本可调用本地 loopback 模型或 Agnes，图像/视频接 Agnes，原合成节点接本地 FFmpeg，原音频节点接 Windows SAPI 本地语音并可将成功 WAV 保存到本地素材库。普通云端调用不逐次弹确认，配置页披露供应商、发送范围和可能费用；Agent 生成动作保留原确认。Agent Worker 运行原 TypeScript 服务代码和“小P”角色，工具经本地网关访问画布/任务，具备本地会话、Skill、压缩与记忆链路。非图片媒体参考、完整音视频素材、部分后处理、动态 Skill、多提供方、端到端同状态比对、原后端全部规则和多平台安装包仍有缺口，不能宣称 1:1 完成。当前契约以根目录 `AGENTS.md` 为准；项目格式见 `docs/specs/desktop-local-project-format.md`。
 
 2026-09-26 增量：原 Agent 的单个与批量 `submit_generation` 已可经持久化生成确认提交 Windows SAPI 本地音频任务，保持画布版本与幂等校验。原 `AssetLibrary` 的桌面上传入口接通本机图片和 WAV，图片专用入口仍拒绝 WAV；Local Core 按内容校验与 SHA 记录并保持引用和备份恢复。桌面完整回归 68/68 通过，原前端生产构建通过。MP3/M4A、视频/文本及多选素材导入等仍是差距；这些增量不代表整体 1:1 验收完成。
 
@@ -105,6 +105,8 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 提供方覆盖范围、当前实现状态与逐家验收项见 [桌面模型提供方接入契约](../specs/desktop-provider-registry.md)。当前 Agnes 联调结果不能替代其他提供方验收。
 
 模型与任务进展（2026-09-24）：本地文本目录仍只接受 `localhost`、`127.0.0.1`、`::1` 和有限 API 路径，不含凭据，且只在用户点击后发现。Agnes 目录固定为文本 `agnes-2.5-flash`、图像 `agnes-image-2.5-flash`、视频 `agnes-video-2.5-flash`，地址固定为 `https://apihub.agnes-ai.com/v1`。Key 经 Renderer 密码框传给 Electron Main 后，由 `safeStorage` 使用 OS 密钥能力加密保存为独立凭据文件；它不进入 `settings.json`、项目、SQLite、日志或 Worker 请求记录。用户从节点选择云端模态时，配置页预先披露提示词数据范围、供应商和可能费用；手工点击节点生成后任务写入本地 TaskStore，独立 Worker 调用 Agnes，不再弹逐次数据发送确认。Agent 发起的生成任务仍需沿用原版系统生成确认，确认后才写入 TaskStore，桌面版不显示点数与冻结。媒体输出下载到任务目录并由 Local Core 校验后登记成功。项目恢复仅领取 `queued`，进程退出时遗留 `running` 转为 `interrupted`，不盲重放。图像/视频当前只发送提示词和参数，不传本地参考素材；视频调用使用 720P、4–12 秒文本生成。Agent 已有 Agnes 文本对话原型，但完整工具链仍在迁移；音频、生成任务流式输出和运行中取消尚未接入。
+
+模型与任务补充（2026-09-27）：原节点的本地图片素材与成功图片任务结果已可作为 Agnes 图片/视频的图片参考，由 Main 经 Local Core 校验后转为图片 data URL；图片端按原 Python 适配器发送裸 Base64，视频端发送 data URL。图片/视频节点移除了图片参考预检阻断，Agnes 视频分辨率显示 720P，底栏在窄宽度下换行。真实 Key 已生成两份 PNG；一次 4 秒首帧视频创建在 5 次尝试后仍遇 HTTP 429，视频真实生成尚未通过。供应商限流在节点显示专用错误码。其他媒体参考与未列能力仍待迁移。
 
 ## 6. 实施顺序与每阶段完成条件
 

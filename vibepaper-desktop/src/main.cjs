@@ -26,6 +26,7 @@ const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = require('./agent-model-directory.cjs')
 const { ALLOWED_AGENT_CORE_METHODS } = require('./agent-local-tools.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
+const { resolveGenerationImageReferences } = require('./reference-media.cjs')
 
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
@@ -539,6 +540,21 @@ async function drainTaskQueue(projectId) {
       } else {
         throw codedError('PROVIDER_TYPE_UNSUPPORTED')
       }
+      let workerParameters = parameters
+      if (task.providerType === 'cloud' && ['image', 'video'].includes(task.modality)) {
+        const taskProjectDirectory = activeProjectDirectory
+        const activeProject = await localCore.request('project:get-active')
+        if (!taskProjectDirectory || activeProject?.projectId !== projectId
+          || activeProjectDirectory !== taskProjectDirectory) {
+          throw codedError('TASK_PROJECT_CONTEXT_CHANGED')
+        }
+        workerParameters = await resolveGenerationImageReferences(parameters, {
+          localCore,
+          projectId,
+          projectDirectory: taskProjectDirectory,
+        })
+        if (activeProjectDirectory !== taskProjectDirectory) throw codedError('TASK_PROJECT_CONTEXT_CHANGED')
+      }
       const worker = startGenerationWorker()
       const result = await worker.request(`generate:${task.modality}`, {
         taskId: task.taskId,
@@ -549,7 +565,7 @@ async function drainTaskQueue(projectId) {
         endpoint: model.endpoint,
         modelId: model.modelId,
         apiKey: model.apiKey,
-        parameters,
+        parameters: workerParameters,
         ...(inputPaths ? { inputPaths } : {}),
         outputDirectory,
       })

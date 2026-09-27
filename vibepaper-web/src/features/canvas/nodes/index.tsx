@@ -160,7 +160,11 @@ async function loadDesktopTask(
     actualCost: 0,
     status,
     errorCode: task.errorCode ?? undefined,
-    errorMessage: task.errorCode ? `本地任务失败：${task.errorCode}` : undefined,
+    errorMessage: task.errorCode === 'CLOUD_RATE_LIMITED'
+      ? 'Agnes 请求过于频繁，请稍后重试。'
+      : task.errorCode === 'CLOUD_REFERENCE_UNAVAILABLE'
+        ? '本地参考媒体暂不可用于当前模型。'
+        : task.errorCode ? `本地任务失败：${task.errorCode}` : undefined,
     retryable: ['failed', 'interrupted'].includes(task.status),
     source: 'desktop',
     outputs,

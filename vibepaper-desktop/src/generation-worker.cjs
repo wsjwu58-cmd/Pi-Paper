@@ -4,6 +4,7 @@ const { randomUUID } = require('node:crypto')
 const dns = require('node:dns').promises
 const net = require('node:net')
 const parentPort = process.parentPort
+const { imageMimeFromBytes, MAX_REFERENCE_IMAGE_BYTES, MAX_REFERENCE_PAYLOAD_BYTES } = require('./reference-media.cjs')
 const { normalizeLocalTextModelConfig } = require('./local-model-catalog.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
 const { composeVideos: runComposeVideos, ComposeFailure } = require('./compose-provider.cjs')
@@ -92,7 +93,12 @@ async function postAgnesJson(endpoint, payload, apiKey, timeoutMs, dependencies 
       return await requestJson(endpoint, payload, apiKey, timeoutMs)
     } catch (error) {
       lastError = error
-      if (!retryStatuses.has(error?.statusCode) || attempt === 5) throw error
+      if (!retryStatuses.has(error?.statusCode) || attempt === 5) {
+        if (error?.statusCode === 429) {
+          throw new WorkerFailure('CLOUD_RATE_LIMITED', 'Agnes 请求过于频繁，请稍后重试。', 429)
+        }
+        throw error
+      }
       await sleep(delayMs)
       delayMs = Math.min(delayMs * 2, 30_000)
     }
@@ -468,13 +474,13 @@ function normalizeAgnesVideoReference(value) {
   }
   if (reference.startsWith('data:')) {
     const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/iu.exec(reference)
-    if (!match || match[2].length > Math.ceil((20 * 1024 * 1024 * 4) / 3)) {
+    if (!match || match[2].length > Math.ceil((MAX_REFERENCE_IMAGE_BYTES * 4) / 3)) {
       throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes 视频图片参考数据无效或过大。')
     }
     const encoded = match[2].replace(/=+$/u, '')
     const decoded = Buffer.from(encoded, 'base64')
-    if (encoded.length % 4 === 1 || decoded.length > 20 * 1024 * 1024
-      || decoded.toString('base64').replace(/=+$/u, '') !== encoded) {
+    if (encoded.length % 4 === 1 || decoded.length === 0 || decoded.length > MAX_REFERENCE_IMAGE_BYTES
+      || decoded.toString('base64').replace(/=+$/u, '') !== encoded || imageMimeFromBytes(decoded) !== match[1].toLowerCase()) {
       throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes 视频图片参考数据无效或过大。')
     }
     return reference
@@ -495,9 +501,33 @@ function normalizeAgnesVideoReference(value) {
   return url.toString()
 }
 
-async function runImageTask(job, dependencies = {}) {
-  assertAgnesJob(job, 'image')
-  assertTaskOutputTarget(job)
+function normalizeAgnesImageReference(value) {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const normalized = normalizeAgnesVideoReference(value)
+  if (!normalized) return null
+  if (!normalized.startsWith('data:')) return normalized
+  return normalized.slice(normalized.indexOf(',') + 1)
+}
+
+function normalizeReferenceList(value) {
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
+  if (!Array.isArray(value)) return []
+  return value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim())
+}
+
+function firstAgnesImageReference(parameters) {
+  for (const key of ['image', 'imageUrl', 'image_url', 'referenceUrl', 'sourceUrl', 'firstFrameUrl']) {
+    const value = parameters[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  for (const key of ['referenceImages', 'reference_images', 'referenceUrls']) {
+    const first = normalizeReferenceList(parameters[key])[0]
+    if (first) return first
+  }
+  return null
+}
+
+function buildAgnesImageRequest(job) {
   const prompt = typeof job.prompt === 'string' ? job.prompt.trim() : ''
   if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new WorkerFailure('CLOUD_INPUT_INVALID', '图像生成提示词无效。')
   const parameters = job.parameters && typeof job.parameters === 'object' ? job.parameters : {}
@@ -506,15 +536,45 @@ async function runImageTask(job, dependencies = {}) {
   if (!['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', '2:3', '3:2'].includes(ratio)) {
     throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes 图像比例无效。')
   }
-  const downloadOutput = dependencies.downloadAgnesOutput || downloadAgnesOutput
-  const response = await postAgnesJson(`${AGNES_API_BASE_URL}/images/generations`, {
+
+  const images = []
+  let dataImageBytes = 0
+  const append = (value) => {
+    const image = normalizeAgnesImageReference(value)
+    if (!image || images.includes(image)) return
+    if (value.trim().startsWith('data:')) {
+      const encoded = value.slice(value.indexOf(',') + 1)
+      dataImageBytes += Buffer.from(encoded, 'base64').length
+    }
+    images.push(image)
+  }
+  const primary = firstAgnesImageReference(parameters)
+  if (primary) append(primary)
+  for (const key of ['referenceImages', 'reference_images', 'referenceUrls']) {
+    for (const item of normalizeReferenceList(parameters[key])) append(item)
+  }
+  if (dataImageBytes > MAX_REFERENCE_PAYLOAD_BYTES) {
+    throw new WorkerFailure('CLOUD_INPUT_INVALID', '图片参考总大小超过本地请求上限。')
+  }
+
+  const extraBody = { response_format: 'url' }
+  if (images.length) extraBody.image = images
+  return {
     model: AGNES_MODELS.image,
     prompt: prompt.slice(0, 2000),
     n: 1,
     size,
     ratio,
-    extra_body: { response_format: 'url' },
-  }, job.apiKey, 6 * 60 * 1000, dependencies)
+    extra_body: extraBody,
+  }
+}
+
+async function runImageTask(job, dependencies = {}) {
+  assertAgnesJob(job, 'image')
+  assertTaskOutputTarget(job)
+  const downloadOutput = dependencies.downloadAgnesOutput || downloadAgnesOutput
+  const response = await postAgnesJson(`${AGNES_API_BASE_URL}/images/generations`,
+    buildAgnesImageRequest(job), job.apiKey, 6 * 60 * 1000, dependencies)
   const candidates = [response?.data?.[0], response?.data, response]
   let url = null
   for (const candidate of candidates) {
@@ -556,6 +616,14 @@ function buildAgnesVideoRequest(job) {
   const extraBody = firstFrame
     ? { image: [firstFrame, ...(lastFrame ? [lastFrame] : [])], mode: 'keyframes' }
     : references.length ? { image: references, mode: 'reference' } : null
+  const requestImages = extraBody?.image ?? []
+  const dataImageBytes = requestImages.reduce((total, image) => {
+    if (!image.startsWith('data:')) return total
+    return total + Buffer.from(image.slice(image.indexOf(',') + 1), 'base64').length
+  }, 0)
+  if (dataImageBytes > MAX_REFERENCE_PAYLOAD_BYTES) {
+    throw new WorkerFailure('CLOUD_INPUT_INVALID', '视频图片参考总大小超过本地请求上限。')
+  }
   const body = {
     model: AGNES_MODELS.video,
     prompt: prompt.slice(0, 2000),
@@ -704,6 +772,7 @@ if (parentPort) parentPort.on('message', async (event) => {
 module.exports = {
   WorkerFailure,
   agnesMediaUrl,
+  buildAgnesImageRequest,
   buildAgnesVideoRequest,
   downloadAgnesOutput,
   extensionForMediaType,

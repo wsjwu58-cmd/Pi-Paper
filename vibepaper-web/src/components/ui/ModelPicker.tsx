@@ -43,7 +43,7 @@ export function ModelPicker({
   const triggerClass = composer
     ? 'flex h-8 min-w-0 max-w-[180px] items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-[var(--canvas-muted)] transition-colors hover:bg-[var(--canvas-hover)] hover:text-[var(--canvas-text)]'
     : dark
-    ? 'flex h-8 max-w-[200px] items-center gap-1.5 rounded-lg bg-white/10 px-2 text-[11px] font-bold text-white/90 hover:bg-white/15'
+    ? 'flex h-8 w-full min-w-0 max-w-[200px] items-center gap-1.5 rounded-lg bg-white/10 px-2 text-[11px] font-bold text-white/90 hover:bg-white/15'
     : compact
       ? 'flex h-8 max-w-[200px] items-center gap-1.5 rounded-lg bg-black/[0.04] px-2 text-[11px] font-bold text-[#333] hover:bg-black/[0.06]'
       : 'flex h-10 w-full items-center gap-2 rounded-lg border border-black/10 bg-white px-2.5 text-[13px] font-semibold text-[#222] hover:bg-black/[0.02]'
