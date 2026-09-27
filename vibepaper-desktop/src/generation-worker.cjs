@@ -1,13 +1,15 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
+const dns = require('node:dns').promises
+const net = require('node:net')
 const parentPort = process.parentPort
 const { normalizeLocalTextModelConfig } = require('./local-model-catalog.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
 const { composeVideos: runComposeVideos, ComposeFailure } = require('./compose-provider.cjs')
 const { MODEL_ID: SAPI_MODEL_ID, PROVIDER_ID: SAPI_PROVIDER_ID, runWindowsSapiTts, SapiFailure } = require('./sapi-tts.cjs')
 
-if (!parentPort) throw new Error('Generation Worker must run as an Electron utility process.')
+if (!parentPort && require.main === module) throw new Error('Generation Worker must run as an Electron utility process.')
 
 const MAX_PROMPT_CHARS = 200_000
 const MAX_OUTPUT_CHARS = 20_000
@@ -17,11 +19,13 @@ const REQUEST_TIMEOUT_MS = 3 * 60 * 1000
 const AGNES_VIDEO_POLL_INTERVAL_MS = 10_000
 const AGNES_VIDEO_TIMEOUT_MS = 15 * 60 * 1000
 const MAX_MEDIA_OUTPUT_BYTES = 4 * 1024 * 1024 * 1024
+const MAX_AGNES_MEDIA_REDIRECTS = 5
 
 class WorkerFailure extends Error {
-  constructor(code, message) {
+  constructor(code, message, statusCode = undefined) {
     super(message)
     this.code = code
+    if (Number.isInteger(statusCode)) this.statusCode = statusCode
   }
 }
 
@@ -42,8 +46,9 @@ function postJson(endpoint, payload, apiKey = null, timeoutMs = REQUEST_TIMEOUT_
       timeout: timeoutMs,
     }, (response) => {
       if (response.statusCode !== 200 && response.statusCode !== 201 && response.statusCode !== 202) {
+        const statusCode = response.statusCode
         response.resume()
-        reject(new WorkerFailure(apiKey ? 'CLOUD_REQUEST_FAILED' : 'LOCAL_MODEL_REQUEST_FAILED', `模型服务返回 HTTP ${response.statusCode ?? '错误'}。`))
+        reject(new WorkerFailure(apiKey ? 'CLOUD_REQUEST_FAILED' : 'LOCAL_MODEL_REQUEST_FAILED', `模型服务返回 HTTP ${statusCode ?? '错误'}。`, statusCode))
         return
       }
 
@@ -74,6 +79,25 @@ function postJson(endpoint, payload, apiKey = null, timeoutMs = REQUEST_TIMEOUT_
     })
     request.end(body)
   })
+}
+
+async function postAgnesJson(endpoint, payload, apiKey, timeoutMs, dependencies = {}) {
+  const requestJson = dependencies.postJson || postJson
+  const sleep = dependencies.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
+  const retryStatuses = new Set([429, 502, 503, 504])
+  let delayMs = 3_000
+  let lastError
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    try {
+      return await requestJson(endpoint, payload, apiKey, timeoutMs)
+    } catch (error) {
+      lastError = error
+      if (!retryStatuses.has(error?.statusCode) || attempt === 5) throw error
+      await sleep(delayMs)
+      delayMs = Math.min(delayMs * 2, 30_000)
+    }
+  }
+  throw lastError
 }
 
 function extractText(response) {
@@ -127,6 +151,22 @@ async function writeOutput(outputDirectory, taskId, fileName, output) {
 
 async function writeTextOutput(outputDirectory, taskId, text) {
   return writeOutput(outputDirectory, taskId, 'result.txt', Buffer.from(text, 'utf8'))
+}
+
+function hasMediaSignature(extension, bytes) {
+  if (!Buffer.isBuffer(bytes)) return false
+  if (extension === 'png') return bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  if (extension === 'jpg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+  if (extension === 'webp') return bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+  if (extension === 'mp4') return bytes.length >= 8 && bytes.toString('ascii', 4, 8) === 'ftyp'
+  if (extension === 'webm') return bytes.length >= 4 && bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
+  return false
+}
+
+function assertMediaSignature(extension, bytes) {
+  if (!hasMediaSignature(extension, bytes)) {
+    throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回的媒体内容格式无效。')
+  }
 }
 
 async function runTextTask(job) {
@@ -198,18 +238,58 @@ function agnesMediaUrl(value) {
   } catch {
     throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回的媒体地址无效。')
   }
+  const hostname = url.hostname.replace(/^\[|\]$/gu, '').toLowerCase().replace(/\.$/u, '')
   if (url.protocol !== 'https:' || url.username || url.password || url.port
-    || !(url.hostname === 'apihub.agnes-ai.com' || url.hostname.endsWith('.agnes-ai.com'))) {
+    || !hostname || hostname === 'localhost' || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local') || hostname.endsWith('.internal')
+    || (net.isIP(hostname) && !isPublicAddress(hostname))) {
     throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回了不受信任的媒体地址。')
   }
   return url.toString()
 }
 
-function getAgnesResponse(urlValue, apiKey, timeoutMs = 60_000) {
-  const url = new URL(agnesMediaUrl(urlValue))
-  const headers = apiKey ? { authorization: `Bearer ${apiKey}`, accept: 'application/json' } : { accept: '*/*' }
+function isPublicAddress(address) {
+  const family = net.isIP(address)
+  if (family === 4) {
+    const octets = address.split('.').map(Number)
+    const [a, b, c] = octets
+    if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return false
+    if (a === 100 && b >= 64 && b <= 127) return false
+    if (a === 169 && b === 254) return false
+    if (a === 172 && b >= 16 && b <= 31) return false
+    if (a === 192 && (b === 0 || b === 168 || (b === 88 && c === 99))) return false
+    if (a === 192 && b === 0 && c === 2) return false
+    if (a === 198 && ((b === 18 || b === 19) || (b === 51 && c === 100))) return false
+    if (a === 203 && b === 0 && c === 113) return false
+    return true
+  }
+  if (family === 6) {
+    const normalized = address.toLowerCase().split('%', 1)[0]
+    const first = Number.parseInt(normalized.split(':', 1)[0] || '0', 16)
+    // Only global unicast (2000::/3) is valid for provider media. This also
+    // rejects loopback, link-local, unique-local, mapped IPv4, and multicast.
+    if (first < 0x2000 || first > 0x3fff) return false
+    if (normalized.startsWith('2001:db8:') || normalized.startsWith('2001:0000:') || normalized.startsWith('2001:0:')) return false
+    return true
+  }
+  return false
+}
+
+async function resolvePublicAddress(hostname) {
+  const literal = hostname.replace(/^\[|\]$/gu, '')
+  const addresses = net.isIP(literal)
+    ? [{ address: literal, family: net.isIP(literal) }]
+    : await dns.lookup(literal, { all: true, verbatim: true })
+  if (addresses.length === 0 || addresses.some((entry) => !isPublicAddress(entry.address))) {
+    throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回了不受信任的媒体地址。')
+  }
+  return addresses
+}
+
+function requestAgnesUrl(url, options) {
   return new Promise((resolve, reject) => {
-    const request = require('node:https').get(url, { headers, timeout: timeoutMs }, (response) => resolve(response))
+    const request = require('node:https').get(url, options, (response) => resolve(response))
     request.on('timeout', () => request.destroy(new WorkerFailure('CLOUD_REQUEST_TIMEOUT', 'Agnes 请求超时。')))
     request.on('error', (error) => reject(error instanceof WorkerFailure
       ? error
@@ -217,7 +297,55 @@ function getAgnesResponse(urlValue, apiKey, timeoutMs = 60_000) {
   })
 }
 
-async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality) {
+async function getAgnesResponse(urlValue, apiKey, timeoutMs = 60_000, dependencies = {}) {
+  const requestUrl = dependencies.requestAgnesUrl || requestAgnesUrl
+  const resolveAddress = dependencies.resolvePublicAddress || resolvePublicAddress
+  let url = new URL(agnesMediaUrl(urlValue))
+  const initialHost = url.host
+  for (let redirects = 0; ; redirects += 1) {
+    let addresses
+    try {
+      addresses = await resolveAddress(url.hostname)
+    } catch (error) {
+      if (error instanceof WorkerFailure) throw error
+      throw new WorkerFailure(apiKey ? 'CLOUD_PROVIDER_UNAVAILABLE' : 'CLOUD_MEDIA_DOWNLOAD_FAILED', '无法连接 Agnes 服务。')
+    }
+    const sendCredentials = Boolean(apiKey) && redirects === 0 && url.host === initialHost
+    const headers = { accept: sendCredentials ? 'application/json' : '*/*' }
+    // Redirected responses never receive the Agnes API Key, even if they
+    // point back to the initial host.
+    if (sendCredentials) headers.authorization = `Bearer ${apiKey}`
+    const response = await requestUrl(url, {
+      headers,
+      timeout: timeoutMs,
+      lookup: (_hostname, options, callback) => {
+        if (options?.all) callback(null, addresses)
+        else {
+          const selected = addresses.find((entry) => !options?.family || entry.family === options.family)
+          if (!selected) callback(new Error('No public address for requested address family'))
+          else callback(null, selected.address, selected.family)
+        }
+      },
+    })
+    const location = response.headers?.location
+    if (![301, 302, 303, 307, 308].includes(response.statusCode) || typeof location !== 'string' || !location.trim()) {
+      return response
+    }
+    response.resume()
+    if (redirects >= MAX_AGNES_MEDIA_REDIRECTS) {
+      throw new WorkerFailure(apiKey ? 'CLOUD_REQUEST_FAILED' : 'CLOUD_MEDIA_DOWNLOAD_FAILED', 'Agnes 媒体地址重定向次数过多。')
+    }
+    let redirectedUrl
+    try {
+      redirectedUrl = new URL(location, url)
+    } catch {
+      throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回了无效的媒体重定向地址。')
+    }
+    url = new URL(agnesMediaUrl(redirectedUrl.toString()))
+  }
+}
+
+async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality, dependencies = {}) {
   const mediaUrl = agnesMediaUrl(urlValue)
   if (mediaUrl.startsWith('data:')) {
     const match = /^data:(image\/(?:png|jpeg|webp)|video\/(?:mp4|webm));base64,([A-Za-z0-9+/=]+)$/iu.exec(mediaUrl)
@@ -228,10 +356,12 @@ async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality) 
       throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回了无效的媒体数据。')
     }
     const ext = extensionForMediaType(match[1], modality)
+    assertMediaSignature(ext, buffer)
     return writeOutput(outputDirectory, taskId, `result.${ext}`, buffer)
   }
 
-  const response = await getAgnesResponse(mediaUrl, null, 180_000)
+  const getResponse = dependencies.getAgnesResponse || getAgnesResponse
+  const response = await getResponse(mediaUrl, null, 180_000, dependencies.getAgnesResponseDependencies)
   if (response.statusCode !== 200) {
     response.resume()
     throw new WorkerFailure('CLOUD_MEDIA_DOWNLOAD_FAILED', '无法从 Agnes 下载生成结果。')
@@ -252,6 +382,7 @@ async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality) 
   const temporaryPath = path.join(directory, `.result.${randomUUID()}.tmp`)
   let handle
   let totalBytes = 0
+  let signatureBytes = Buffer.alloc(0)
   try {
     handle = await fs.open(temporaryPath, 'wx', 0o600)
     for await (const chunkValue of response) {
@@ -261,6 +392,9 @@ async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality) 
         response.destroy()
         throw new WorkerFailure('CLOUD_OUTPUT_TOO_LARGE', 'Agnes 媒体结果超过本地保存上限。')
       }
+      if (signatureBytes.length < 12) {
+        signatureBytes = Buffer.concat([signatureBytes, chunk.subarray(0, 12 - signatureBytes.length)])
+      }
       let offset = 0
       while (offset < chunk.length) {
         const write = await handle.write(chunk, offset, chunk.length - offset)
@@ -268,6 +402,7 @@ async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality) 
       }
     }
     if (totalBytes === 0) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回了空媒体文件。')
+    assertMediaSignature(extension, signatureBytes)
     await handle.sync()
     await handle.close()
     handle = undefined
@@ -284,37 +419,102 @@ async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality) 
 function extensionForMediaType(contentType, modality, fallbackUrl = '') {
   const type = typeof contentType === 'string' ? contentType.split(';', 1)[0].trim().toLowerCase() : ''
   if (modality === 'image') {
-    if (type === 'image/png' || (!type && /\.png(?:$|[?#])/iu.test(fallbackUrl))) return 'png'
-    if (type === 'image/jpeg' || (!type && /\.jpe?g(?:$|[?#])/iu.test(fallbackUrl))) return 'jpg'
-    if (type === 'image/webp' || (!type && /\.webp(?:$|[?#])/iu.test(fallbackUrl))) return 'webp'
+    if (type === 'image/png') return 'png'
+    if (type === 'image/jpeg' || type === 'image/jpg') return 'jpg'
+    if (type === 'image/webp') return 'webp'
   }
   if (modality === 'video') {
-    if (type === 'video/mp4' || (!type && /\.mp4(?:$|[?#])/iu.test(fallbackUrl))) return 'mp4'
-    if (type === 'video/webm' || (!type && /\.webm(?:$|[?#])/iu.test(fallbackUrl))) return 'webm'
+    if (type === 'video/mp4') return 'mp4'
+    if (type === 'video/webm') return 'webm'
+  }
+  if (!type || ['application/octet-stream', 'binary/octet-stream', 'application/download'].includes(type)) {
+    if (modality === 'image' && /\.png(?:$|[?#])/iu.test(fallbackUrl)) return 'png'
+    if (modality === 'image' && /\.jpe?g(?:$|[?#])/iu.test(fallbackUrl)) return 'jpg'
+    if (modality === 'image' && /\.webp(?:$|[?#])/iu.test(fallbackUrl)) return 'webp'
+    if (modality === 'video' && /\.mp4(?:$|[?#])/iu.test(fallbackUrl)) return 'mp4'
+    if (modality === 'video' && /\.webm(?:$|[?#])/iu.test(fallbackUrl)) return 'webm'
+    // Match the legacy Agnes adapter's output defaults for opaque signed URLs.
+    if (modality === 'image') return 'jpg'
+    if (modality === 'video') return 'mp4'
   }
   throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回了不支持的媒体格式。')
 }
 
-async function runImageTask(job) {
+function sizeFromImageParameters(parameters) {
+  const explicit = String(parameters.size ?? parameters.resKey ?? '').toUpperCase()
+  if (['1K', '2K', '3K', '4K'].includes(explicit)) return explicit
+  const resolution = String(parameters.resolution ?? '').toLowerCase()
+  const resolutionSize = {
+    '512x512': '1K',
+    '768x768': '1K',
+    '1024x1024': '1K',
+    '1280x720': '2K',
+    '1920x1080': '2K',
+    '2048x2048': '2K',
+    '3840x2160': '4K',
+  }[resolution]
+  return resolutionSize || '2K'
+}
+
+function ratioFromParameters(parameters, fallback = '1:1') {
+  return parameters.ratio ?? parameters.aspectRatio ?? parameters.aspect ?? fallback
+}
+
+function normalizeAgnesVideoReference(value) {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const reference = value.trim()
+  if (/^(?:vibe|file|blob):/iu.test(reference)) {
+    throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', '本地画布媒体参考尚未接入 Agnes 视频输入，请移除首尾帧或图片参考后重试。')
+  }
+  if (reference.startsWith('data:')) {
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/iu.exec(reference)
+    if (!match || match[2].length > Math.ceil((20 * 1024 * 1024 * 4) / 3)) {
+      throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes 视频图片参考数据无效或过大。')
+    }
+    const encoded = match[2].replace(/=+$/u, '')
+    const decoded = Buffer.from(encoded, 'base64')
+    if (encoded.length % 4 === 1 || decoded.length > 20 * 1024 * 1024
+      || decoded.toString('base64').replace(/=+$/u, '') !== encoded) {
+      throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes 视频图片参考数据无效或过大。')
+    }
+    return reference
+  }
+  let url
+  try {
+    url = new URL(reference)
+  } catch {
+    throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', 'Agnes 视频参考必须是可公开访问的媒体 URL。')
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/gu, '').toLowerCase().replace(/\.$/u, '')
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password
+    || !hostname || hostname === 'localhost' || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local') || hostname.endsWith('.internal')
+    || (net.isIP(hostname) && !isPublicAddress(hostname))) {
+    throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', 'Agnes 视频参考必须是可公开访问的媒体 URL。')
+  }
+  return url.toString()
+}
+
+async function runImageTask(job, dependencies = {}) {
   assertAgnesJob(job, 'image')
   assertTaskOutputTarget(job)
   const prompt = typeof job.prompt === 'string' ? job.prompt.trim() : ''
   if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new WorkerFailure('CLOUD_INPUT_INVALID', '图像生成提示词无效。')
   const parameters = job.parameters && typeof job.parameters === 'object' ? job.parameters : {}
-  const size = ['1K', '2K', '3K', '4K'].includes(String(parameters.size ?? '').toUpperCase())
-    ? String(parameters.size).toUpperCase() : '2K'
-  const ratio = parameters.ratio ?? parameters.aspectRatio ?? '1:1'
+  const size = sizeFromImageParameters(parameters)
+  const ratio = ratioFromParameters(parameters)
   if (!['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', '2:3', '3:2'].includes(ratio)) {
     throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes 图像比例无效。')
   }
-  const response = await postJson(`${AGNES_API_BASE_URL}/images/generations`, {
+  const downloadOutput = dependencies.downloadAgnesOutput || downloadAgnesOutput
+  const response = await postAgnesJson(`${AGNES_API_BASE_URL}/images/generations`, {
     model: AGNES_MODELS.image,
     prompt: prompt.slice(0, 2000),
     n: 1,
     size,
     ratio,
     extra_body: { response_format: 'url' },
-  }, job.apiKey, 6 * 60 * 1000)
+  }, job.apiKey, 6 * 60 * 1000, dependencies)
   const candidates = [response?.data?.[0], response?.data, response]
   let url = null
   for (const candidate of candidates) {
@@ -329,7 +529,7 @@ async function runImageTask(job) {
     }
   }
   if (!url) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 未返回图像结果。')
-  return { outputPath: await downloadAgnesOutput(url, job.outputDirectory, job.taskId, 'image') }
+  return { outputPath: await downloadOutput(url, job.outputDirectory, job.taskId, 'image') }
 }
 
 function buildAgnesVideoRequest(job) {
@@ -339,19 +539,34 @@ function buildAgnesVideoRequest(job) {
   const rawSeconds = Number(parameters.seconds ?? parameters.duration ?? 5)
   const seconds = Number.isFinite(rawSeconds) ? Math.floor(rawSeconds) : 0
   if (seconds < 4 || seconds > 12) throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes 视频时长必须在 4 到 12 秒之间。')
-  const aspectRatio = parameters.aspect_ratio ?? parameters.aspectRatio ?? parameters.ratio ?? '16:9'
-  if (!['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'].includes(aspectRatio)) {
+  const aspectRatio = ratioFromParameters(parameters, '16:9')
+  const aspect_ratio = parameters.aspect_ratio ?? aspectRatio
+  if (!['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'].includes(aspect_ratio)) {
     throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes 视频比例无效。')
   }
-  return {
+  const firstFrame = normalizeAgnesVideoReference(parameters.firstFrameUrl)
+  const lastFrame = normalizeAgnesVideoReference(parameters.lastFrameUrl)
+  const rawReferences = parameters.referenceImages || parameters.reference_images || parameters.referenceUrls || []
+  const references = Array.isArray(rawReferences)
+    ? [...new Set(rawReferences.map(normalizeAgnesVideoReference).filter(Boolean))]
+    : typeof rawReferences === 'string' ? [normalizeAgnesVideoReference(rawReferences)].filter(Boolean) : []
+  if (references.length > 5) throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes Video 2.5 Flash 最多支持 5 张参考图。')
+
+  const mode = firstFrame ? 'keyframe' : references.length ? 'reference' : 'text'
+  const extraBody = firstFrame
+    ? { image: [firstFrame, ...(lastFrame ? [lastFrame] : [])], mode: 'keyframes' }
+    : references.length ? { image: references, mode: 'reference' } : null
+  const body = {
     model: AGNES_MODELS.video,
     prompt: prompt.slice(0, 2000),
-    mode: 'text',
+    mode,
     seconds: String(seconds),
     size: '720P',
-    aspect_ratio: aspectRatio,
+    aspect_ratio,
     n: 1,
   }
+  if (extraBody) body.extra_body = extraBody
+  return body
 }
 
 function extractVideoUrl(payload) {
@@ -379,34 +594,43 @@ function extractVideoUrl(payload) {
   return null
 }
 
-async function runVideoTask(job) {
+async function runVideoTask(job, dependencies = {}) {
   assertAgnesJob(job, 'video')
   assertTaskOutputTarget(job)
   const body = buildAgnesVideoRequest(job)
-  const created = await postJson(`${AGNES_API_BASE_URL}/videos`, body, job.apiKey, 60_000)
+  const getResponse = dependencies.getAgnesResponse || getAgnesResponse
+  const downloadOutput = dependencies.downloadAgnesOutput || downloadAgnesOutput
+  const sleep = dependencies.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
+  const now = dependencies.now || Date.now
+  const pollIntervalMs = dependencies.pollIntervalMs ?? AGNES_VIDEO_POLL_INTERVAL_MS
+  const timeoutMs = dependencies.timeoutMs ?? AGNES_VIDEO_TIMEOUT_MS
+  const created = await postAgnesJson(`${AGNES_API_BASE_URL}/videos`, body, job.apiKey, 60_000, dependencies)
   const videoId = created?.video_id ?? created?.id ?? created?.task_id
   if (typeof videoId !== 'string' && typeof videoId !== 'number') {
     throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 未返回视频任务标识。')
   }
-  const deadline = Date.now() + AGNES_VIDEO_TIMEOUT_MS
+  const deadline = now() + timeoutMs
   let lastStatus = ''
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, AGNES_VIDEO_POLL_INTERVAL_MS))
+  let nextPollDelayMs = pollIntervalMs
+  while (now() < deadline) {
+    await sleep(nextPollDelayMs)
     const pollUrl = `https://apihub.agnes-ai.com/agnesapi?video_id=${encodeURIComponent(String(videoId))}&model_name=${encodeURIComponent(AGNES_MODELS.video)}`
     let status
     try {
-      status = await getAgnesResponse(pollUrl, job.apiKey, 60_000)
+      status = await getResponse(pollUrl, job.apiKey, 60_000)
     } catch {
       continue
     }
-    if (status.statusCode === 429 || (status.statusCode >= 500 && status.statusCode < 600)) {
+    if (status.statusCode === 429) {
       status.resume()
+      nextPollDelayMs = Math.min(60_000, Math.max(nextPollDelayMs * 2, pollIntervalMs * 2))
       continue
     }
-    if (status.statusCode !== 200) {
+    if (status.statusCode < 200 || status.statusCode >= 300) {
       status.resume()
       throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'Agnes 视频状态查询失败。')
     }
+    nextPollDelayMs = pollIntervalMs
     const chunks = []
     let size = 0
     for await (const chunk of status) {
@@ -427,7 +651,7 @@ async function runVideoTask(job) {
     if (['completed', 'succeeded', 'success', 'done'].includes(lastStatus)) {
       const videoUrl = extractVideoUrl(payload)
       if (!videoUrl) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 视频任务已完成，但没有返回视频地址。')
-      return { outputPath: await downloadAgnesOutput(videoUrl, job.outputDirectory, job.taskId, 'video') }
+      return { outputPath: await downloadOutput(videoUrl, job.outputDirectory, job.taskId, 'video') }
     }
   }
   throw new WorkerFailure('CLOUD_REQUEST_TIMEOUT', `Agnes 视频任务超时（最后状态：${lastStatus || '未知'}）。`)
@@ -449,7 +673,7 @@ function assertTaskOutputTarget(job) {
 }
 
 let running = false
-parentPort.on('message', async (event) => {
+if (parentPort) parentPort.on('message', async (event) => {
   const request = event?.data ?? event
   if (!request || !Number.isSafeInteger(request.id)
     || !['generate:text', 'generate:image', 'generate:audio', 'generate:video', 'generate:compose'].includes(request.method)) return
@@ -476,3 +700,18 @@ parentPort.on('message', async (event) => {
     running = false
   }
 })
+
+module.exports = {
+  WorkerFailure,
+  agnesMediaUrl,
+  buildAgnesVideoRequest,
+  downloadAgnesOutput,
+  extensionForMediaType,
+  getAgnesResponse,
+  hasMediaSignature,
+  isPublicAddress,
+  normalizeAgnesVideoReference,
+  runImageTask,
+  runVideoTask,
+  sizeFromImageParameters,
+}
