@@ -417,6 +417,7 @@ export interface DesktopBridge {
     projectId: string
     canvasId: string
     expectedVersion: number
+    idempotencyKey?: string
     nodes: Node[]
     edges: Edge[]
     groups?: DesktopCanvasGroup[] | null

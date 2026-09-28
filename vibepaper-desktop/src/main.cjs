@@ -963,10 +963,10 @@ function registerRendererProtocol() {
         return new Response('Task output not found', { status: 404, headers: { 'content-type': 'text/plain' } })
       }
     }
-    const assetMatch = /^\/assets\/([a-f0-9-]{36})$/iu.exec(requestedPath)
+    const assetMatch = /^\/assets\/([a-f0-9-]{36})(\/thumbnail)?$/iu.exec(requestedPath)
     if (assetMatch && !url.search && !url.hash) {
       try {
-        const asset = await localCore.request('asset:resolve', { assetId: assetMatch[1] })
+        const asset = await localCore.request(assetMatch[2] ? 'asset:resolve-thumbnail' : 'asset:resolve', { assetId: assetMatch[1] })
         const sizeBytes = asset.sizeBytes
         if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) throw new Error('Invalid asset size')
         const rangeHeader = request.headers.get('range')

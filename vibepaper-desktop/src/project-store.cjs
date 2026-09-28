@@ -5,6 +5,7 @@ const { createHash, randomUUID } = require('node:crypto')
 const { Readable } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 const { backup, DatabaseSync } = require('node:sqlite')
+const { imageThumbnail } = require('./asset-thumbnail.cjs')
 
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
@@ -3895,6 +3896,19 @@ function createLocalProjectStore() {
     })
   }
 
+  function resolveAssetThumbnail(assetId) {
+    return enqueue(async () => {
+      if (!active || typeof assetId !== 'string') throw new Error('本地素材不可用。')
+      const asset = active.database.prepare('SELECT id, sha256, mime_type, relative_path FROM assets WHERE id = ?').get(assetId)
+      if (!asset || !asset.mime_type.startsWith('image/')) throw new Error('图片素材不存在。')
+      const resolved = await resolveProjectAssetFile(active.directory, asset)
+      const thumbnail = await imageThumbnail(active.directory, asset, resolved.filePath)
+      if (thumbnail) return thumbnail
+      const info = await fs.stat(resolved.filePath)
+      return { filePath: resolved.filePath, mimeType: asset.mime_type, sizeBytes: info.size }
+    })
+  }
+
   async function resolveComposeSourceTaskIds(database, canvasId, composeNodeId, inputNodeIds) {
     const target = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?')
       .get(canvasId, composeNodeId)
@@ -5652,6 +5666,7 @@ function createLocalProjectStore() {
     recordTaskSucceeded,
     retryTask,
     resolveAsset,
+    resolveAssetThumbnail,
     renameAsset,
     replaceAsset,
     replaceAssetFile,

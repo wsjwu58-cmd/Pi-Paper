@@ -30,7 +30,7 @@ export function desktopAssetView(asset: DesktopAsset): AssetView {
     mimeType: asset.mimeType,
     sizeBytes: asset.sizeBytes,
     url,
-    ...(assetType === 'image' ? { thumbnailUrl: url } : {}),
+    ...(assetType === 'image' ? { thumbnailUrl: `${url}/thumbnail` } : {}),
     status: 'ready',
     certificationStatus: 'not_required',
     createdAt: asset.createdAt,
@@ -176,6 +176,7 @@ export async function saveCanvasPort(input: {
   projectId: string
   canvasId: string
   expectedVersion: number
+  idempotencyKey?: string
   nodes: Node[]
   edges: Edge[]
   groups: GroupPayload[]
@@ -185,6 +186,7 @@ export async function saveCanvasPort(input: {
   if (!bridge) throw new Error('本地画布保存接口不可用。')
   return bridge.saveCanvas({
     ...input,
+    idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
     nodes: input.nodes.map(desktopFlowNode),
     edges: input.edges.map(desktopFlowEdge),
     groups: input.groups.map((group): DesktopCanvasGroup => ({

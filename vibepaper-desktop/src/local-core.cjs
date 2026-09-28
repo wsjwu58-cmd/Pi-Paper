@@ -81,6 +81,8 @@ async function dispatch(method, payload) {
       return store.deleteAsset(payload?.projectId, payload?.assetId)
     case 'asset:resolve':
       return store.resolveAsset(payload?.assetId)
+    case 'asset:resolve-thumbnail':
+      return store.resolveAssetThumbnail(payload?.assetId)
     case 'canvas:load':
       return store.loadCanvas(payload?.projectId, payload?.canvasId)
     case 'canvas:export':

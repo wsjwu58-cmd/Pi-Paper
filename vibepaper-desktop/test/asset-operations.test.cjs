@@ -1389,11 +1389,14 @@ test('local asset preview IPC serves detected MIME with nosniff and supports byt
   const { store, parentDirectory, project } = await openTestProject(t)
   const textPath = await writeImage(parentDirectory, 'preview.md', Buffer.from('# Local preview\n'))
   const videoPath = await writeImage(parentDirectory, 'preview.mp4', minimalFtyp('isom'))
+  const imagePath = await writeImage(parentDirectory, 'preview.png', Buffer.concat([PNG_HEADER, Buffer.from(' thumbnail fallback')]))
   const text = await store.importAsset(textPath, project.projectId, 'local')
   const video = await store.importAsset(videoPath, project.projectId, 'local')
+  const image = await store.importAsset(imagePath, project.projectId, 'local')
   const harness = await createMainIpcHarness()
   harness.setLocalCore({
     async request(method, payload) {
+      if (method === 'asset:resolve-thumbnail') return store.resolveAssetThumbnail(payload.assetId)
       assert.equal(method, 'asset:resolve')
       return store.resolveAsset(payload.assetId)
     },
@@ -1409,6 +1412,15 @@ test('local asset preview IPC serves detected MIME with nosniff and supports byt
   assert.equal(textResponse.headers.get('content-type'), 'text/markdown')
   assert.equal(textResponse.headers.get('x-content-type-options'), 'nosniff')
   assert.equal(await textResponse.text(), '# Local preview\n')
+
+  const thumbnailResponse = await handler({
+    url: `vibe://app/assets/${image.assetId}/thumbnail`,
+    method: 'GET',
+    headers: new Headers(),
+  })
+  assert.equal(thumbnailResponse.status, 200)
+  assert.equal(thumbnailResponse.headers.get('content-type'), 'image/png')
+  assert.deepEqual(Buffer.from(await thumbnailResponse.arrayBuffer()), Buffer.concat([PNG_HEADER, Buffer.from(' thumbnail fallback')]))
 
   const rangeResponse = await handler(makeRequest(video.assetId, 'bytes=4-7'))
   assert.equal(rangeResponse.status, 206)

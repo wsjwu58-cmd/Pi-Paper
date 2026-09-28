@@ -179,6 +179,15 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   }, [models, setNodes])
 
   const desktopSaveInFlight = useRef<Promise<void> | null>(null)
+  const desktopSaveIntent = useRef<{
+    canvasId: string
+    version: number
+    nodes: typeof nodes
+    edges: typeof edges
+    groups: typeof groups
+    stacks: typeof stacks
+    key: string
+  } | null>(null)
 
   const persistDesktopChanges = useCallback(async () => {
     if (!window.vibepaperDesktop) return
@@ -194,10 +203,29 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       const pending = (async () => {
         setSaving(true)
         try {
+          const canvasId = sid(snapshot.canvas!.canvas.id)
+          const priorIntent = desktopSaveIntent.current
+          const sameIntent = priorIntent?.canvasId === canvasId
+            && priorIntent.version === snapshot.canvas!.canvas.version
+            && priorIntent.nodes === snapshot.nodes
+            && priorIntent.edges === snapshot.edges
+            && priorIntent.groups === snapshot.groups
+            && priorIntent.stacks === snapshot.stacks
+          const key = sameIntent ? priorIntent.key : crypto.randomUUID()
+          if (!sameIntent) desktopSaveIntent.current = {
+            canvasId,
+            version: snapshot.canvas!.canvas.version,
+            nodes: snapshot.nodes,
+            edges: snapshot.edges,
+            groups: snapshot.groups,
+            stacks: snapshot.stacks,
+            key,
+          }
           const result = await saveCanvasPort({
             projectId: desktopProjectId,
-            canvasId: sid(snapshot.canvas!.canvas.id),
+            canvasId,
             expectedVersion: snapshot.canvas!.canvas.version,
+            idempotencyKey: key,
             nodes: snapshot.nodes,
             edges: snapshot.edges,
             groups: snapshot.groups,
@@ -215,6 +243,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             setSavedVersion(version)
           }
           setDirty(sameGraph ? false : true)
+          if (desktopSaveIntent.current?.key === key) desktopSaveIntent.current = null
         } catch (error) {
           setDirty(true)
           throw error
