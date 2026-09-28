@@ -10,7 +10,7 @@ import { Field, Input } from '@/components/ui/Input'
 import { ConfirmDialog, Modal } from '@/components/ui/Modal'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
-import type { DesktopProject } from '@/desktop/desktop-bridge'
+import type { DesktopCanvasExportDocument, DesktopCanvasImportResult, DesktopProject } from '@/desktop/desktop-bridge'
 
 export interface WorkspaceDesktopProject {
   projectId: string
@@ -20,12 +20,16 @@ export interface WorkspaceDesktopProject {
 
 export interface WorkspaceDesktopAdapter {
   projects: WorkspaceDesktopProject[]
+  activeProjectId?: string | null
   isLoading: boolean
   error: string
   onSelectProject: (project: WorkspaceDesktopProject) => Promise<void>
   onOpenExistingProject: () => Promise<void>
   onCreateProject: (name: string) => Promise<void>
   onExportProject?: (project: WorkspaceDesktopProject) => Promise<void>
+  onImportCanvasDocument?: (document: DesktopCanvasExportDocument) => Promise<DesktopCanvasImportResult | null>
+  onRenameProject?: (project: WorkspaceDesktopProject, name: string) => Promise<void>
+  onDeleteProject?: (project: WorkspaceDesktopProject) => Promise<boolean>
 }
 
 export function WorkspacePage({ desktopAdapter }: { desktopAdapter?: WorkspaceDesktopAdapter } = {}) {
@@ -37,6 +41,7 @@ export function WorkspacePage({ desktopAdapter }: { desktopAdapter?: WorkspaceDe
 function WorkspacePageDesktop() {
   const navigate = useNavigate()
   const [projects, setProjects] = useState<DesktopProject[]>([])
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -46,7 +51,9 @@ function WorkspacePageDesktop() {
     try {
       const bridge = window.vibepaperDesktop
       if (!bridge) throw new Error('桌面项目接口不可用。')
-      setProjects(await bridge.listRecentProjects())
+      const [recent, active] = await Promise.all([bridge.listRecentProjects(), bridge.getActiveProject()])
+      setProjects(recent)
+      setActiveProjectId(active?.projectId ?? null)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '无法读取本地项目列表。')
     } finally {
@@ -104,14 +111,45 @@ function WorkspacePageDesktop() {
     }
   }
 
+  const importCanvasDocument = async (document: DesktopCanvasExportDocument) => {
+    const bridge = window.vibepaperDesktop
+    if (!bridge) throw new Error('桌面画布导入接口不可用。')
+    const result = await bridge.importCanvasDocument(document)
+    if (result) {
+      if (result.warnings.length > 0) toastError(result.warnings.join('；'))
+      enterProject(result.project)
+    }
+    return result
+  }
+
+  const renameProject = async (project: WorkspaceDesktopProject, name: string) => {
+    const bridge = window.vibepaperDesktop
+    if (!bridge) throw new Error('桌面项目接口不可用。')
+    await bridge.renameProject(project.projectId, name)
+    await loadProjects()
+  }
+
+  const deleteProject = async (project: WorkspaceDesktopProject) => {
+    const bridge = window.vibepaperDesktop
+    if (!bridge) throw new Error('桌面项目接口不可用。')
+    const deleted = await bridge.deleteProject(project.projectId)
+    if (!deleted) return false
+    await loadProjects()
+    return true
+  }
+
   return <DesktopWorkspacePage adapter={{
     projects,
+    activeProjectId,
     isLoading,
     error,
     onSelectProject: selectProject,
     onOpenExistingProject: openExistingProject,
     onCreateProject: createProject,
     onExportProject: exportProject,
+    onImportCanvasDocument: importCanvasDocument,
+    onRenameProject: renameProject,
+    onDeleteProject: deleteProject,
   }} />
 }
 
@@ -376,7 +414,13 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
   const [keyword, setKeyword] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [newName, setNewName] = useState('我的项目')
+  const [renameTarget, setRenameTarget] = useState<WorkspaceDesktopProject | null>(null)
+  const [renameName, setRenameName] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<WorkspaceDesktopProject | null>(null)
   const [busy, setBusy] = useState(false)
+  const [operationError, setOperationError] = useState('')
+  const [operationNotice, setOperationNotice] = useState('')
+  const importFileRef = useRef<HTMLInputElement>(null)
   const filteredProjects = useMemo(() => {
     const normalized = keyword.trim().toLocaleLowerCase()
     return adapter.projects.filter((project) => !normalized || project.name.toLocaleLowerCase().includes(normalized))
@@ -387,10 +431,13 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
     const name = newName.trim()
     if (!name || busy) return
     setBusy(true)
+    setOperationError('')
     try {
       await adapter.onCreateProject(name)
       setCreateOpen(false)
       setNewName('我的项目')
+    } catch (cause) {
+      setOperationError(cause instanceof Error ? cause.message : '无法创建本地项目。')
     } finally {
       setBusy(false)
     }
@@ -399,8 +446,66 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
   const openExisting = async () => {
     if (busy) return
     setBusy(true)
+    setOperationError('')
     try {
       await adapter.onOpenExistingProject()
+    } catch (cause) {
+      setOperationError(cause instanceof Error ? cause.message : '无法打开本地项目。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const importCanvasFile = async (file?: File) => {
+    if (!file || !adapter.onImportCanvasDocument || busy) return
+    setBusy(true)
+    setOperationError('')
+    setOperationNotice('')
+    try {
+      if (file.size > 32 * 1024 * 1024) throw new Error('画布 JSON 文件不能超过 32 MB。')
+      const parsed = JSON.parse(await file.text()) as unknown
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON 文件内容无效。')
+      const result = await adapter.onImportCanvasDocument(parsed as DesktopCanvasExportDocument)
+      if (result) {
+        setOperationNotice(result.warnings.length ? `画布已导入。${result.warnings.join('；')}` : '画布已导入。')
+      }
+    } catch (cause) {
+      setOperationError(cause instanceof Error ? cause.message : '无法导入画布 JSON。')
+    } finally {
+      setBusy(false)
+      if (importFileRef.current) importFileRef.current.value = ''
+    }
+  }
+
+  const rename = async (event: React.FormEvent) => {
+    event.preventDefault()
+    const target = renameTarget
+    const name = renameName.trim()
+    if (!target || !name || !adapter.onRenameProject || busy) return
+    setBusy(true)
+    setOperationError('')
+    setOperationNotice('')
+    try {
+      await adapter.onRenameProject(target, name)
+      setRenameTarget(null)
+      setOperationNotice('项目已重命名。')
+    } catch (cause) {
+      setOperationError(cause instanceof Error ? cause.message : '无法重命名本地项目。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const deleteProject = async (target: WorkspaceDesktopProject) => {
+    if (!adapter.onDeleteProject || busy) return
+    setBusy(true)
+    setOperationError('')
+    setOperationNotice('')
+    try {
+      const deleted = await adapter.onDeleteProject(target)
+      if (deleted) setOperationNotice('项目已移至系统回收站。')
+    } catch (cause) {
+      setOperationError(cause instanceof Error ? cause.message : '无法删除本地项目。')
     } finally {
       setBusy(false)
     }
@@ -432,10 +537,26 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
           <Button variant="secondary" leftIcon={<FolderOpen size={16} />} onClick={() => void openExisting()} disabled={busy}>
             打开已有项目
           </Button>
+          {adapter.onImportCanvasDocument && (
+            <>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => { void importCanvasFile(event.target.files?.[0]) }}
+              />
+              <Button variant="secondary" leftIcon={<Upload size={16} />} onClick={() => importFileRef.current?.click()} disabled={busy}>
+                导入画布 JSON
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
       {adapter.error && <p role="alert" className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-[13px] text-red-700">{adapter.error}</p>}
+      {operationError && <p role="alert" className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-[13px] text-red-700">{operationError}</p>}
+      {operationNotice && <p role="status" className="mb-4 rounded-xl bg-emerald-50 px-4 py-3 text-[13px] text-emerald-700">{operationNotice}</p>}
       {adapter.isLoading ? (
         <div className="flex justify-center py-24"><Spinner className="h-8 w-8" /></div>
       ) : filteredProjects.length === 0 ? (
@@ -451,18 +572,24 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
               key={project.projectId}
               role="button"
               tabIndex={busy ? -1 : 0}
-              onClick={() => { if (!busy) void adapter.onSelectProject(project) }}
-              onKeyDown={(event) => { if (!busy && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void adapter.onSelectProject(project) } }}
+              onClick={() => { if (!busy) void adapter.onSelectProject(project).catch((cause) => setOperationError(cause instanceof Error ? cause.message : '无法打开本地项目。')) }}
+              onKeyDown={(event) => { if (!busy && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void adapter.onSelectProject(project).catch((cause) => setOperationError(cause instanceof Error ? cause.message : '无法打开本地项目。')) } }}
               aria-disabled={busy}
               className="group relative aspect-[4/3] cursor-pointer overflow-hidden rounded-[18px] text-left shadow-[0_2px_12px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_40px_rgba(15,23,42,0.12)] aria-disabled:cursor-wait aria-disabled:opacity-60"
             >
               <div className="absolute inset-0 bg-gradient-to-b from-[#ececee] via-[#e4e4e8] to-[#c8c8ce]" />
               <div className="absolute inset-0 flex items-center justify-center"><OrigamiIcon /></div>
               <div className="absolute left-3 top-3 rounded-md bg-[#111] px-2 py-0.5 text-[11px] font-bold text-white">本地项目</div>
-              {adapter.onExportProject && <span className="absolute right-2.5 top-2.5 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
-                <IconBtn title="下载 JSON" onClick={(event) => { event.stopPropagation(); void adapter.onExportProject?.(project) }}>
+              {(adapter.onExportProject || adapter.onRenameProject || adapter.onDeleteProject) && <span className="absolute right-2.5 top-2.5 flex gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                {adapter.onRenameProject && <IconBtn title="重命名项目" onClick={(event) => { event.stopPropagation(); setRenameTarget(project); setRenameName(project.name); setOperationError(''); setOperationNotice('') }}>
+                  <Pencil size={13} />
+                </IconBtn>}
+                {adapter.onExportProject && <IconBtn title="下载 JSON" onClick={(event) => { event.stopPropagation(); void adapter.onExportProject?.(project).catch((cause) => setOperationError(cause instanceof Error ? cause.message : '无法导出本地画布。')) }}>
                   <Download size={13} />
-                </IconBtn>
+                </IconBtn>}
+                {adapter.onDeleteProject && <IconBtn title={project.projectId === adapter.activeProjectId ? '当前项目不能删除' : '删除项目'} danger disabled={project.projectId === adapter.activeProjectId || busy} onClick={(event) => { event.stopPropagation(); if (project.projectId !== adapter.activeProjectId) setDeleteTarget(project) }}>
+                  <Trash2 size={13} />
+                </IconBtn>}
               </span>}
               <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/55 to-transparent" />
               <div className="absolute bottom-0 left-0 right-0 px-4 pb-3.5">
@@ -483,6 +610,24 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
           <Button type="submit" disabled={busy || !newName.trim()}>{busy ? '正在创建…' : '创建并进入'}</Button>
         </form>
       </Modal>
+      <Modal open={!!renameTarget} onClose={() => { if (!busy) setRenameTarget(null) }} title="重命名项目">
+        <form className="flex flex-col gap-4" onSubmit={(event) => { void rename(event) }}>
+          <Field label="项目名称">
+            <Input value={renameName} onChange={(event) => setRenameName(event.target.value)} autoFocus />
+          </Field>
+          <Button type="submit" disabled={busy || !renameName.trim()}>{busy ? '正在保存…' : '保存'}</Button>
+        </form>
+      </Modal>
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => { if (!busy) setDeleteTarget(null) }}
+        onConfirm={() => { if (deleteTarget) void deleteProject(deleteTarget); setDeleteTarget(null) }}
+        title="删除本地项目"
+        message={deleteTarget?.projectId === adapter.activeProjectId
+          ? '当前打开的项目不能删除。'
+          : `确定删除「${deleteTarget?.name ?? ''}」吗？整个本地项目文件夹会移到系统回收站/废纸篓，可从那里恢复，不会立即物理删除。`}
+        danger
+      />
     </div>
   )
 }
@@ -492,18 +637,21 @@ function IconBtn({
   onClick,
   title,
   danger,
+  disabled,
 }: {
   children: React.ReactNode
   onClick: (e: React.MouseEvent) => void
   title: string
   danger?: boolean
+  disabled?: boolean
 }) {
   return (
     <button
       type="button"
       title={title}
+      disabled={disabled}
       onClick={onClick}
-      className={`flex h-8 w-8 items-center justify-center rounded-full bg-white/95 shadow-sm ${
+      className={`flex h-8 w-8 items-center justify-center rounded-full bg-white/95 shadow-sm disabled:cursor-not-allowed disabled:opacity-40 ${
         danger ? 'text-red-500 hover:text-red-600' : 'text-[#555] hover:text-[#111]'
       }`}
     >

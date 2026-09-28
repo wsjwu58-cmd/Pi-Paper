@@ -38,6 +38,11 @@ export interface DesktopCanvasExportDocument {
   stacks: DesktopCanvasStack[]
 }
 
+export interface DesktopCanvasImportResult {
+  project: DesktopProject
+  warnings: string[]
+}
+
 export interface DesktopCanvasGroup {
   id: string
   name: string
@@ -162,9 +167,12 @@ export interface DesktopDeleteNodeResult {
 
 export interface DesktopAsset {
   assetId: string
-  assetType?: 'image' | 'audio'
+  assetType: 'image' | 'video' | 'audio' | 'text'
   name: string
-  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'audio/wav' | 'audio/mpeg'
+  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+    | 'video/mp4' | 'video/quicktime' | 'video/webm'
+    | 'audio/wav' | 'audio/mpeg' | 'audio/ogg' | 'audio/mp4'
+    | 'text/plain' | 'text/markdown'
   sizeBytes: number
   createdAt: string
   updatedAt?: string
@@ -212,6 +220,7 @@ export interface DesktopTask {
   status: DesktopTaskStatus
   attemptCount: number
   errorCode: string | null
+  errorMessage: string | null
   createdAt: string
   updatedAt: string
   startedAt: string | null
@@ -219,6 +228,13 @@ export interface DesktopTask {
   outputPath?: string | null
   outputSizeBytes?: number | null
   outputMeta?: DesktopAudioOutputMeta
+  outputs?: DesktopTaskOutput[]
+}
+
+export interface DesktopTaskOutput {
+  index: number
+  url?: string
+  outputMeta: Record<string, unknown> | null
 }
 
 export interface DesktopAudioOutputMeta {
@@ -369,6 +385,8 @@ export interface DesktopBridge {
   getActiveProject(): Promise<DesktopProject | null>
   listRecentProjects(): Promise<DesktopProject[]>
   openRecentProject(projectId: string): Promise<DesktopProject>
+  renameProject(projectId: string, name: string): Promise<DesktopProject>
+  deleteProject(projectId: string): Promise<boolean>
   createProject(name: string): Promise<DesktopProject | null>
   openProject(): Promise<DesktopProject | null>
   backupProject(projectId: string): Promise<{ name: string } | null>
@@ -381,9 +399,11 @@ export interface DesktopBridge {
   renameAsset(projectId: string, assetId: string, name: string): Promise<DesktopAsset>
   replaceImage(projectId: string, assetId: string): Promise<DesktopAsset | null>
   replaceAudio(projectId: string, assetId: string): Promise<DesktopAsset | null>
+  replaceAsset(projectId: string, assetId: string): Promise<DesktopAsset | null>
   deleteAsset(projectId: string, assetId: string): Promise<DesktopAssetDeleteImpact>
   loadCanvas(projectId: string, canvasId: string): Promise<DesktopCanvas>
   exportCanvas(projectId: string, canvasId: string): Promise<DesktopCanvasExportDocument>
+  importCanvasDocument(document: DesktopCanvasExportDocument): Promise<DesktopCanvasImportResult | null>
   createNode(input: DesktopCreateNodeInput): Promise<DesktopCreateNodeResult>
   updateNode(input: DesktopUpdateNodeInput): Promise<DesktopUpdateNodeResult>
   deleteNode(input: {
@@ -426,6 +446,7 @@ export interface DesktopBridge {
   getTask(projectId: string, taskId: string): Promise<DesktopTask | null>
   getTaskInput(projectId: string, taskId: string): Promise<DesktopTaskInputSnapshot | null>
   cancelTask(projectId: string, taskId: string): Promise<DesktopTask>
+  retryTask(projectId: string, taskId: string): Promise<DesktopTask>
   createGenerationTask(input: DesktopCreateGenerationTaskInput): Promise<DesktopTask | null>
   composeVideos(input: DesktopComposeTaskInput): Promise<DesktopTask>
   readTaskOutput(projectId: string, taskId: string): Promise<string>

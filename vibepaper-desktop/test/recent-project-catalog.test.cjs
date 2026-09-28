@@ -81,3 +81,19 @@ test('malformed legacy recent-project file does not hide a valid catalog or get 
   ])
   assert.equal(await fs.readFile(legacyPath, 'utf8'), '{broken json')
 })
+
+test('forget removes a trashed project from recents and points startup at the next project', async (t) => {
+  const { catalog, userData, projectDirectory, otherDirectory } = await setup(t)
+  await catalog.record(projectDirectory)
+  await catalog.record(otherDirectory)
+  assert.equal(await catalog.forget('project-two-id'), true)
+  assert.deepEqual(await catalog.listRecentProjects(), [
+    { projectId: 'project-one-id', canvasId: 'canvas-one-id', name: '项目一' },
+  ])
+  const legacy = JSON.parse(await fs.readFile(path.join(userData, 'recent-project.json'), 'utf8'))
+  assert.equal(legacy.projectDirectory, projectDirectory)
+  assert.equal(await catalog.forget('project-one-id'), true)
+  assert.deepEqual(await catalog.listRecentProjects(), [])
+  await assert.rejects(fs.stat(path.join(userData, 'recent-project.json')), { code: 'ENOENT' })
+  assert.equal(await catalog.forget('project-one-id'), false)
+})

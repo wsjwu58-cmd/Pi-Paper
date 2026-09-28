@@ -16,7 +16,12 @@ export function isDesktopRuntime(): boolean {
 
 export function desktopAssetView(asset: DesktopAsset): AssetView {
   const url = `vibe://app/assets/${asset.assetId}`
-  const assetType = asset.assetType === 'audio' || asset.mimeType.startsWith('audio/') ? 'audio' : 'image'
+  const assetType = asset.assetType ?? (
+    asset.mimeType.startsWith('video/') ? 'video'
+      : asset.mimeType.startsWith('audio/') ? 'audio'
+        : asset.mimeType.startsWith('text/') ? 'text'
+          : 'image'
+  )
   return {
     id: asset.assetId,
     ownerId: 'local',

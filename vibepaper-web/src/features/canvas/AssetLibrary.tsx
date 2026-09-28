@@ -102,7 +102,7 @@ export function AssetLibrary({
         }
 
         if (errors.length === 0 && assets.length > 0) {
-          toastSuccess(`已导入 ${assets.length} 个素材到本地素材库`)
+          toastSuccess(`已导入 ${assets.length} 个本地素材`)
         } else if (assets.length > 0) {
           toastSuccess(`导入完成：${assets.length} 个成功，${errors.length} 个失败`)
           toastError(formatImportErrors(errors))
@@ -151,15 +151,12 @@ export function AssetLibrary({
   })
 
   const replace = useMutation({
-    mutationFn: ({ id, assetType, file }: { id: Id; assetType?: AssetView['assetType']; file?: File }) => {
+    mutationFn: ({ id, file }: { id: Id; assetType?: AssetView['assetType']; file?: File }) => {
       if (isDesktop) {
         const bridge = window.vibepaperDesktop
         if (!bridge || !projectId) throw new Error('本地项目未就绪，无法替换素材。')
-        if (assetType === 'audio') {
-          if (!bridge.replaceAudio) throw new Error('桌面本地音频替换服务尚未就绪。')
-          return bridge.replaceAudio(projectId, sid(id))
-        }
-        return bridge.replaceImage(projectId, sid(id))
+        if (!bridge.replaceAsset) throw new Error('桌面本地素材替换服务尚未就绪。')
+        return bridge.replaceAsset(projectId, sid(id))
       }
       if (!file) throw new Error('请选择要替换的素材。')
       return replaceAsset(id, file)
@@ -271,7 +268,7 @@ export function AssetLibrary({
             type="button"
             disabled={!projectId || upload.isPending}
             onClick={() => upload.mutate(undefined)}
-            title={!projectId ? '本地项目未就绪' : '从本机导入图片或 WAV/MP3 音频'}
+            title={!projectId ? '本地项目未就绪' : '从本机导入图片、视频、音频或文本素材'}
             className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Upload size={13} /> 上传
@@ -518,6 +515,9 @@ function AssetThumb({
 function PreviewMedia({ asset }: { asset: AssetView }) {
   const url = useAuthedMediaUrl(asset.url)
   if (!url) return <p className="text-white">无法预览</p>
+  if (asset.assetType === 'text') {
+    return <TextAssetPreview url={url} name={asset.name} local={asset.url?.startsWith('vibe://') ?? false} />
+  }
   if (asset.assetType === 'video') {
     return <video src={url} controls autoPlay className="max-h-full max-w-full rounded-xl" onClick={(e) => e.stopPropagation()} />
   }
@@ -531,5 +531,96 @@ function PreviewMedia({ asset }: { asset: AssetView }) {
       className="max-h-full max-w-full rounded-xl object-contain"
       onClick={(e) => e.stopPropagation()}
     />
+  )
+}
+
+const LOCAL_TEXT_PREVIEW_LIMIT = 1024 * 1024
+
+async function readTextPreview(response: Response, local: boolean) {
+  if (!local) return { content: await response.text(), truncated: false }
+  const reader = response.body?.getReader()
+  if (!reader) return { content: '', truncated: false }
+
+  const chunks: Uint8Array[] = []
+  let size = 0
+  let truncated = false
+  while (size < LOCAL_TEXT_PREVIEW_LIMIT) {
+    const { value, done } = await reader.read()
+    if (done) break
+    const length = Math.min(value.byteLength, LOCAL_TEXT_PREVIEW_LIMIT - size)
+    chunks.push(value.slice(0, length))
+    size += length
+    if (length < value.byteLength) {
+      truncated = true
+      await reader.cancel().catch(() => undefined)
+    }
+  }
+
+  const totalBytes = Number(/\/(\d+)$/u.exec(response.headers.get('content-range') ?? '')?.[1])
+  if (Number.isSafeInteger(totalBytes) && totalBytes > size) truncated = true
+  if (!truncated && size === LOCAL_TEXT_PREVIEW_LIMIT) {
+    const { done } = await reader.read()
+    if (!done) {
+      truncated = true
+      await reader.cancel().catch(() => undefined)
+    }
+  }
+  reader.releaseLock()
+
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return { content: new TextDecoder().decode(bytes), truncated }
+}
+
+function TextAssetPreview({ url, name, local }: { url: string; name: string; local: boolean }) {
+  const [content, setContent] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [truncated, setTruncated] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    setTruncated(false)
+    void fetch(url, local ? { headers: { Range: `bytes=0-${LOCAL_TEXT_PREVIEW_LIMIT - 1}` } } : undefined)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`读取文本失败（${response.status}）`)
+        return readTextPreview(response, local)
+      })
+      .then((preview) => {
+        if (!cancelled) {
+          setContent(preview.content)
+          setTruncated(preview.truncated)
+        }
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : '无法读取文本素材。')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [local, url])
+
+  return (
+    <div className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-white text-[#222]" onClick={(event) => event.stopPropagation()}>
+      <div className="flex items-center justify-between gap-3 border-b border-black/8 px-4 py-3">
+        <p className="min-w-0 truncate text-[13px] font-semibold">{name}</p>
+        <a href={url} download={name} className="shrink-0 rounded-lg bg-[#111] px-3 py-1.5 text-[12px] font-bold text-white">下载</a>
+      </div>
+      <div className="min-h-24 overflow-auto p-4">
+        {loading ? <p className="text-[13px] text-[#888]">读取中…</p>
+          : error ? <p role="alert" className="text-[13px] text-red-600">{error}</p>
+            : <>
+              {truncated && <p className="mb-3 text-[12px] text-[#888]">预览仅显示前 1 MB，下载可获取完整文本。</p>}
+              <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed [overflow-wrap:anywhere]">{content}</pre>
+            </>}
+      </div>
+    </div>
   )
 }

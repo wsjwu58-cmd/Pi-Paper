@@ -4,7 +4,7 @@ import { Search, Copy, RotateCcw, RefreshCw } from 'lucide-react'
 import { api, assetUrl } from '@/lib/api'
 import type { GenerationTask, PageResult } from '@/lib/types'
 import { Input, Select } from '@/components/ui/Input'
-import { toastSuccess } from '@/components/ui/Toast'
+import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
 import { Modal } from '@/components/ui/Modal'
 import type {
@@ -391,6 +391,16 @@ function DesktopHistoryPage({ adapter }: { adapter: HistoryDesktopAdapter }) {
     }
   }
 
+  const copyPrompt = async (prompt: string) => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('当前环境不支持剪贴板。')
+      await navigator.clipboard.writeText(prompt)
+      toastSuccess('提示词已复制')
+    } catch (cause) {
+      toastError(cause instanceof Error ? cause.message : '复制提示词失败。')
+    }
+  }
+
   return (
     <div className="w-full">
       <div className="mb-5 flex items-center justify-between">
@@ -480,10 +490,25 @@ function DesktopHistoryPage({ adapter }: { adapter: HistoryDesktopAdapter }) {
                       <td className="px-3 py-2.5">{result}</td>
                       <td className="px-3 py-2.5 font-semibold text-[#555]">{task.modality}</td>
                       <td className="px-3 py-2.5 text-[#555]">{taskDetails?.providerId || task.providerType}{taskDetails?.modelId ? ` · ${taskDetails.modelId}` : ''}</td>
-                      <td className="max-w-56 px-3 py-2.5"><span className="truncate text-[#666]">{prompt || (adapter.getTaskInput ? (Object.hasOwn(inputs, task.taskId) ? '—' : '读取中…') : '任务输入详情未提供')}</span></td>
+                      <td className="max-w-56 px-3 py-2.5">
+                        <div className="flex min-w-0 items-center gap-1">
+                          <span className="truncate text-[#666]">{prompt || (adapter.getTaskInput ? (Object.hasOwn(inputs, task.taskId) ? '—' : '读取中…') : '任务输入详情未提供')}</span>
+                          {prompt && (
+                            <button
+                              type="button"
+                              title="复制提示词"
+                              aria-label="复制提示词"
+                              onClick={() => void copyPrompt(prompt)}
+                              className="shrink-0 rounded p-1 text-[#999] hover:text-[#111]"
+                            >
+                              <Copy size={12} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-3 py-2.5">
                         <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${statusView.cls}`}>{statusView.text}</span>
-                        {task.status === 'failed' && task.errorCode && <p className="mt-0.5 max-w-32 truncate text-[10px] text-red-400">{task.errorCode}</p>}
+                        {task.status === 'failed' && (task.errorMessage || task.errorCode) && <p title={task.errorMessage || task.errorCode || undefined} className="mt-0.5 max-w-48 truncate text-[10px] text-red-500">{task.errorMessage || task.errorCode}</p>}
                       </td>
                     </tr>
                   )

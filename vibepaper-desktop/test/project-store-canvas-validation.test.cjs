@@ -335,6 +335,83 @@ test('exportCanvas emits legacy schema aliases, node/edge DTOs, groups, stacks a
   assert.deepEqual(document.stacks, [stack])
 })
 
+test('importCanvasDocument creates a separate project and preserves CanvasService import semantics', async (t) => {
+  const parentDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-canvas-import-'))
+  const store = createLocalProjectStore()
+  t.after(async () => {
+    await store.close()
+    await fs.rm(parentDirectory, { recursive: true, force: true })
+  })
+  const original = await store.createProject(parentDirectory, 'Existing Project')
+  const document = {
+    schemaVersion: '1.3.0',
+    canvas: { name: 'Imported Canvas' },
+    nodes: [
+      { id: 100, type: 'text', x: 0, y: 12, params: { prompt: 'keep this prompt' }, status: 'succeeded', stale: true, creative_type: 'story' },
+      { id: 200, type: 'image', params: { prompt: 'image prompt', assetId: 'asset-from-another-project', name: 'reference.png' } },
+    ],
+    edges: [
+      { id: 1, sourceNodeId: 100, targetNodeId: 200, dependency_type: 'input' },
+      { id: 2, sourceNodeId: 200, targetNodeId: 100 },
+      { id: 3, sourceNodeId: 100, targetNodeId: 999 },
+    ],
+    groups: [{ id: 'legacy-group', nodeIds: [100, 200] }],
+    stacks: [{ id: 'legacy-stack', nodeIds: [100, 200] }],
+  }
+
+  const imported = await store.importCanvasDocument(parentDirectory, document)
+  assert.notEqual(imported.project.projectId, original.project.projectId)
+  assert.notEqual(imported.project.canvasId, original.project.canvasId)
+  assert.equal(imported.project.name, 'Imported Canvas')
+  assert.deepEqual(imported.warnings, [
+    '有 1 个素材引用不在导入文件中，已从新项目节点移除；请在素材库中重新选择本地素材。',
+  ])
+  const canvas = store.loadCanvas(imported.project.projectId, imported.project.canvasId)
+  assert.equal(canvas.version, 1)
+  assert.equal(canvas.nodes.length, 2)
+  assert.notEqual(canvas.nodes[0].id, '100')
+  assert.notEqual(canvas.nodes[1].id, '200')
+  assert.deepEqual(canvas.nodes[0].data.params, { prompt: 'keep this prompt' })
+  assert.equal(canvas.nodes[0].data.creativeType, 'story')
+  assert.equal(canvas.nodes[0].data.status, 'idle')
+  assert.equal(canvas.nodes[0].data.stale, false)
+  assert.deepEqual(canvas.nodes[1].data.params, { prompt: 'image prompt', name: 'reference.png' })
+  assert.deepEqual(canvas.groups, [])
+  assert.deepEqual(canvas.stacks, [])
+  assert.equal(canvas.edges.length, 2, 'the dangling edge is skipped while incompatible edges remain visible')
+  assert.notEqual(canvas.edges[0].id, '1')
+  assert.equal(canvas.edges[0].sourceHandle, 'output')
+  assert.equal(canvas.edges[0].targetHandle, 'input')
+  assert.equal(canvas.edges[0].data.edge.dependencyType, 'input')
+  assert.equal(canvas.edges[0].data.edge.valid, true)
+  assert.equal(canvas.edges[1].data.edge.valid, false)
+
+  await store.openProject(original.directory, { projectId: original.project.projectId, canvasId: original.project.canvasId })
+  assert.equal(store.loadCanvas(original.project.projectId, original.project.canvasId).nodes.length, 0,
+    'import does not modify the project that was active before import')
+})
+
+test('importCanvasDocument rejects incompatible schemas and never overwrites a same-name project', async (t) => {
+  const parentDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-canvas-import-errors-'))
+  const store = createLocalProjectStore()
+  t.after(async () => {
+    await store.close()
+    await fs.rm(parentDirectory, { recursive: true, force: true })
+  })
+  const existing = await store.createProject(parentDirectory, 'Existing Canvas')
+  await assert.rejects(store.importCanvasDocument(parentDirectory, {
+    schema_version: '0.9.0', canvas: { name: 'Wrong Schema' }, nodes: [], edges: [],
+  }), /画布版本不兼容/u)
+  await assert.rejects(store.importCanvasDocument(parentDirectory, {
+    canvas: { name: 'Existing Canvas' }, nodes: [], edges: [],
+  }), /缺少 schema_version/u)
+  await assert.rejects(store.importCanvasDocument(parentDirectory, {
+    schema_version: '1.0.0', canvas: { name: 'Existing Canvas' }, nodes: [], edges: [],
+  }), /该位置已存在同名文件夹/u)
+  assert.deepEqual(store.getActiveProject(), existing.project)
+  assert.equal(store.loadCanvas(existing.project.projectId, existing.project.canvasId).version, 0)
+})
+
 test('connectEdge enforces identity, version, endpoints, self-connection and compatibility', async (t) => {
   const { store, project } = await openTestProject(t)
   await saveNodes(store, project, [node('text-node', 'text'), node('video-node', 'video')])
@@ -1030,7 +1107,7 @@ test('deleteNode replays its durable impact snapshot before version and node che
   }), /Idempotency-Key 已用于其他画布命令/u)
 })
 
-test('project schema v3 migrates through v10 with a v3 backup and keeps existing canvas data', async (t) => {
+test('project schema v3 migrates through v12 with a v3 backup and keeps existing canvas data', async (t) => {
   const { store, directory, project } = await openTestProject(t)
   await saveNodes(store, project, [node('existing-text', 'text')])
   await store.close()
@@ -1279,7 +1356,7 @@ test('project backup and restore retain group and stack tables and node membersh
   assert.equal(loaded.nodes.find((entry) => entry.id === 'backup-a').data.stackId, stack.id)
 })
 
-test('project schema v4 migrates through v10 after creating a rollback snapshot', async (t) => {
+test('project schema v4 migrates through v12 after creating a rollback snapshot', async (t) => {
   const { store, directory, project } = await openTestProject(t)
   await saveNodes(store, project, [node('v4-existing-node', 'text')])
   await store.close()

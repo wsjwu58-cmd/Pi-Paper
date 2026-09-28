@@ -142,11 +142,23 @@ async function loadDesktopTask(
         meta: { ...task.outputMeta, outputType: 'audio' },
       }]
     } else if (task.modality === 'image' || task.modality === 'video' || task.modality === 'compose') {
-      outputs = [{
-        id: task.taskId,
-        outputType: task.modality === 'compose' ? 'video' : task.modality,
-        url: `vibe://app/tasks/${task.taskId}/output`,
-      }]
+      const taskOutputs = task.outputs?.length
+        ? [...task.outputs].sort((a, b) => a.index - b.index)
+        : [{ index: 0, url: undefined, outputMeta: task.outputMeta ?? null }]
+      outputs = taskOutputs.map((output) => {
+        const outputType = typeof output.outputMeta?.outputType === 'string'
+          ? output.outputMeta.outputType
+          : task.modality === 'video' && parameters.operation === '提帧'
+            ? 'image'
+            : task.modality === 'compose' ? 'video' : task.modality
+        const index = output.index
+        return {
+          id: `${task.taskId}-${index}`,
+          outputType,
+          url: output.url ?? `vibe://app/tasks/${task.taskId}/output${index > 0 ? `?index=${index}` : ''}`,
+          meta: { ...(output.outputMeta ?? {}), outputType },
+        }
+      })
     }
   }
   return {
@@ -160,12 +172,14 @@ async function loadDesktopTask(
     actualCost: 0,
     status,
     errorCode: task.errorCode ?? undefined,
-    errorMessage: task.errorCode === 'CLOUD_RATE_LIMITED'
+    errorMessage: task.status === 'interrupted' && task.providerType === 'cloud'
+      ? '云端请求中断，结果未知。请确认结果后再手动重试。'
+      : task.errorMessage || (task.errorCode === 'CLOUD_RATE_LIMITED'
       ? 'Agnes 请求过于频繁，请稍后重试。'
       : task.errorCode === 'CLOUD_REFERENCE_UNAVAILABLE'
         ? '本地参考媒体暂不可用于当前模型。'
-        : task.errorCode ? `本地任务失败：${task.errorCode}` : undefined,
-    retryable: ['failed', 'interrupted'].includes(task.status),
+        : task.errorCode ? `本地任务失败：${task.errorCode}` : undefined),
+    retryable: task.status === 'failed' || (task.status === 'interrupted' && task.providerType === 'local'),
     source: 'desktop',
     outputs,
     createdAt: task.createdAt,
@@ -370,24 +384,14 @@ function TaskHistoryBar({
         if (!bridge) throw new Error('本地任务接口不可用。')
         const project = await bridge.getActiveProject()
         if (!project) throw new Error('没有打开的本地项目，无法重试任务。')
-        const snapshot = await bridge.getTaskInput(project.projectId, sid(latest.taskId))
-        if (!snapshot) throw new Error('本地任务输入已不可用，无法重试。')
-        if (snapshot.task.modality === 'compose') {
-          const inputNodeIds = Array.isArray(snapshot.parameters.inputNodeIds)
-            ? snapshot.parameters.inputNodeIds.filter((id): id is string => typeof id === 'string')
-            : []
-          await submitComposeNodeTask(nodeId, inputNodeIds)
-        } else {
-          await submitNodeTask(
-            nodeId,
-            snapshot.task.modelId ?? latest.modelType,
-            snapshot.parameters,
-            0,
-            { providerType: snapshot.task.providerType },
-          )
-        }
+        const retried = await bridge.retryTask(project.projectId, sid(latest.taskId))
+        if (sid(retried.taskId) !== sid(latest.taskId)) throw new Error('本地重试返回了不同的任务，画布状态未更新。')
+        useCanvasStore.getState().updateNodePayload(nodeId, {
+          ...syncExecFields(retried.status),
+          currentOutputId: latest.taskId,
+        })
         toastSuccess('已重新提交')
-        window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId) } }))
+        window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId) } }))
       } catch (e) {
         toastError((e as Error).message)
       }
@@ -422,10 +426,12 @@ function TaskHistoryBar({
   return (
     <div className="mt-2 space-y-1.5">
       {failed && (
-        <div className="rounded-lg bg-red-50 px-2 py-1.5 text-[11px] font-semibold text-red-700">
-          {latest?.errorMessage || latest?.errorCode || '生成失败'}
+        <div className="flex flex-wrap items-start gap-x-2 gap-y-1 rounded-lg bg-red-50 px-2 py-1.5 text-[11px] font-semibold text-red-700">
+          <span className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]">
+            {latest?.errorMessage || latest?.errorCode || '生成失败'}
+          </span>
           {latest?.retryable !== false && (
-            <button type="button" onClick={() => void retry()} className="ml-2 inline-flex items-center gap-0.5 underline">
+            <button type="button" onClick={() => void retry()} className="inline-flex shrink-0 items-center gap-0.5 underline">
               <RotateCcw size={11} /> 重试
             </button>
           )}
@@ -753,7 +759,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
               <MediaContent
                 url={out?.url ?? assetFallback}
                 meta={out?.meta as Record<string, unknown>}
-                outputType="video"
+                outputType={out?.outputType === 'image' ? 'image' : 'video'}
                 naturalSize
               />
             ) : (

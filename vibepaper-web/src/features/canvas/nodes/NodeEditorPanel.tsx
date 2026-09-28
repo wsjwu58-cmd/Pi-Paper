@@ -29,6 +29,7 @@ import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoFrameReferences, resolveNodeResolution } from './videoNodeParameters'
 
 const STYLE_PRESETS = ['赛博朋克', '水彩', '写实', '动漫', '电影感', '产品渲染', '三视图']
+const DESKTOP_MEDIA_TOOL_MODEL_ID = 'ffmpeg-media-1'
 const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4']
 
 const LEGACY_REFERENCE_FIDELITY_PROMPTS = [
@@ -213,16 +214,38 @@ export function NodeFloatingToolbar({
 
   const runOp = async (op: string, extra: Record<string, unknown> = {}) => {
     if (busy) return
-    if (desktopMode) {
-      toastError('桌面本地尚未接入裁剪、扩图、超分和视频剪辑工具。')
+    const localPostprocess = desktopMode && (
+      node.type === 'image' && ['裁剪', '三视图'].includes(op)
+      || node.type === 'video' && ['剪辑', '提帧', '超分'].includes(op)
+    )
+    if (desktopMode && !localPostprocess && !['扩图', '超分'].includes(op)) {
+      toastError('桌面本地暂不支持此媒体操作。')
       return
     }
     setBusy(true)
     try {
       const { submitNodeTask } = await import('./taskActions')
-      const model = node.type === 'video' ? videoModel : imageModel
+      let model = node.type === 'video' ? videoModel : imageModel
+      if (localPostprocess) {
+        if (!mediaUrl?.startsWith('vibe://')) {
+          throw new Error('本地后处理需要当前项目中的素材或已完成任务结果。')
+        }
+        model = DESKTOP_MEDIA_TOOL_MODEL_ID
+      } else if (desktopMode) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge) throw new Error('桌面本地模型接口不可用。')
+        const catalog = await bridge.getAgnesModels()
+        if (!catalog.apiKeyConfigured) throw new Error('请先配置 Agnes API Key。')
+        model = catalog.models.image
+      }
       if (!model) throw new Error('无可用模型')
-      await submitNodeTask(node.id, model, { operation: op, count: 1, sourceUrl: mediaUrl, ...extra }, 8)
+      await submitNodeTask(
+        node.id,
+        model,
+        { operation: op, count: 1, sourceUrl: mediaUrl, ...extra },
+        desktopMode ? 0 : 8,
+        desktopMode ? { providerType: localPostprocess ? 'local' : 'cloud' } : undefined,
+      )
       toastSuccess(`${op}已提交`)
       setMenu(null)
     } catch (e) {
@@ -241,29 +264,29 @@ export function NodeFloatingToolbar({
     >
       {node.type === 'image' && (
         <>
-          <ToolIcon title={desktopMode ? '桌面本地未接入：裁剪' : '裁剪'} disabled={desktopMode} active={menu === 'crop'} onClick={() => setMenu(menu === 'crop' ? null : 'crop')}>
+          <ToolIcon title={desktopMode ? '桌面本地裁剪' : '裁剪'} disabled={busy || desktopMode && !mediaUrl} active={menu === 'crop'} onClick={() => setMenu(menu === 'crop' ? null : 'crop')}>
             <Crop size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地未接入：扩图' : '扩图'} disabled={desktopMode || busy} onClick={() => void runOp('扩图')}>
+          <ToolIcon title={desktopMode ? '桌面本地扩图' : '扩图'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('扩图')}>
             <Expand size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地未接入：超分' : '超分'} disabled={desktopMode} active={menu === 'upscale'} onClick={() => setMenu(menu === 'upscale' ? null : 'upscale')}>
+          <ToolIcon title={desktopMode ? '桌面本地超分' : '超分'} disabled={busy} active={menu === 'upscale'} onClick={() => setMenu(menu === 'upscale' ? null : 'upscale')}>
             <Scan size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地未接入：三视图' : '三视图'} disabled={desktopMode} active={menu === 'three'} onClick={() => setMenu(menu === 'three' ? null : 'three')}>
+          <ToolIcon title={desktopMode ? '桌面本地三视图' : '三视图'} disabled={busy || desktopMode && !mediaUrl} active={menu === 'three'} onClick={() => setMenu(menu === 'three' ? null : 'three')}>
             <Ratio size={15} />
           </ToolIcon>
         </>
       )}
       {node.type === 'video' && (
         <>
-          <ToolIcon title={desktopMode ? '桌面本地未接入：剪辑' : '剪辑'} disabled={desktopMode} onClick={() => void runOp('剪辑', { start: 0, end: 5 })}>
+          <ToolIcon title={desktopMode ? '桌面本地剪辑' : '剪辑'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('剪辑', { start: 0, end: 5 })}>
             <Crop size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地未接入：提帧' : '提帧'} disabled={desktopMode} onClick={() => void runOp('提帧', { frameAt: 1 })}>
+          <ToolIcon title={desktopMode ? '桌面本地提帧' : '提帧'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('提帧', { frameAt: 1 })}>
             <Film size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地未接入：超分' : '超分'} disabled={desktopMode} onClick={() => void runOp('超分', { resolution: '1920x1080' })}>
+          <ToolIcon title={desktopMode ? '桌面本地视频超分' : '超分'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('超分', { resolution: '1920x1080' })}>
             <Expand size={15} />
           </ToolIcon>
           <ToolIcon
@@ -505,7 +528,7 @@ export function NodeEditorDialog({
 }) {
   const nodeId = sid(node.id)
   const desktopMode = Boolean(window.vibepaperDesktop)
-  const { data: desktopCatalog = { models: [] as ModelInfo[], localAudio: null as DesktopLocalAudioModel | null }, isFetched: desktopModelsFetched } = useQuery({
+  const { data: desktopCatalog = { models: [] as ModelInfo[], localAudio: null as DesktopLocalAudioModel | null } } = useQuery({
     queryKey: ['desktop-node-models'],
     enabled: desktopMode,
     staleTime: 5_000,
@@ -527,8 +550,7 @@ export function NodeEditorDialog({
               id: name,
               name,
               modelType: modality,
-              displayName: `Agnes · ${modality === 'text' ? '文本' : modality === 'image' ? '图片' : '视频'}（云端）`,
-              description: '云端模型。点击生成会发送提示词、文本参考及已选媒体参考；供应商可能收费。',
+              displayName: name,
               provider: 'agnes',
               enabled: true,
               basePrice: null as unknown as number,
@@ -542,8 +564,7 @@ export function NodeEditorDialog({
           id: local.modelId,
           name: local.modelId,
           modelType: 'text',
-          displayName: `本地 · ${local.modelId}`,
-          description: '本地模型，请求留在本机。',
+          displayName: local.modelId,
           provider: 'local',
           enabled: true,
           basePrice: null as unknown as number,
@@ -555,8 +576,7 @@ export function NodeEditorDialog({
           id: localAudio.modelId,
           name: localAudio.modelId,
           modelType: 'audio',
-          displayName: '本地 · Windows SAPI 离线语音',
-          description: 'Windows SAPI 离线语音合成；输入和结果保存在本机。',
+          displayName: localAudio.modelId,
           provider: 'local',
           enabled: true,
           basePrice: null as unknown as number,
@@ -580,7 +600,9 @@ export function NodeEditorDialog({
   const [resKey, setResKey] = useState((node.params.resKey as string) || (node.type === 'video' && desktopMode ? '720P' : '2K'))
   const [style, setStyle] = useState((node.params.style as string) ?? '')
   const [camera, setCamera] = useState((node.params.camera as string) ?? '')
-  const [count, setCount] = useState(Number(node.params.count) || 1)
+  const storedCount = Number(node.params.count)
+  const initialCount = Number.isSafeInteger(storedCount) && storedCount > 0 ? storedCount : 1
+  const [count, setCount] = useState(desktopMode && node.type === 'image' ? Math.min(initialCount, 4) : initialCount)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const promptRef = useRef<HTMLTextAreaElement>(null)
@@ -621,6 +643,12 @@ export function NodeEditorDialog({
     const allowed = typeModels.some((m) => m.name === raw) ? raw : preferred || ''
     setModel(allowed)
   }, [node.id, node.params.prompt, node.params.model, preferred, typeModels])
+
+  useEffect(() => {
+    const next = Number(node.params.count)
+    if (!Number.isSafeInteger(next) || next < 1) return
+    setCount(desktopMode && node.type === 'image' ? Math.min(next, 4) : next)
+  }, [desktopMode, node.id, node.params.count, node.type])
 
   useEffect(() => {
     if (!autoFocusPrompt) return
@@ -672,11 +700,38 @@ export function NodeEditorDialog({
     setLocalRefs((prev) => prev.filter((x) => x.id !== ref.id))
   }
 
-  const onUploadRef = async (file: File) => {
+  const onUploadRef = async (file?: File) => {
     try {
       if (isDesktopRuntime()) {
-        throw new Error('桌面本地尚未接入节点参考媒体上传；请使用文本参考或移除媒体连线。')
+        if (!['image', 'video'].includes(node.type)) {
+          throw new Error('桌面版目前只支持为图片和视频节点添加图片参考。')
+        }
+        const bridge = window.vibepaperDesktop
+        if (!bridge) throw new Error('桌面本地素材接口不可用。')
+        const project = await bridge.getActiveProject()
+        const canvasId = useCanvasStore.getState().canvas?.canvas.id
+        if (!project || (canvasId && project.canvasId !== sid(canvasId))) {
+          throw new Error('没有匹配的本地项目，无法添加节点参考。')
+        }
+        const asset = await bridge.importImage(project.projectId)
+        if (!asset) return
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(asset.mimeType)) {
+          throw new Error('当前 Agnes 图片参考仅支持 PNG、JPEG 或 WebP。')
+        }
+        setLocalRefs((prev) => [
+          ...prev,
+          {
+            id: `local-${asset.assetId}`,
+            sourceNodeId: '',
+            kind: 'image',
+            label: asset.name || '图片参考',
+            url: `vibe://app/assets/${asset.assetId}`,
+            local: true,
+          },
+        ])
+        return
       }
+      if (!file) return
       const canvasId = useCanvasStore.getState().canvas?.canvas.id
       const asset = (await uploadAsset(file, undefined, canvasId, node.id)) as {
         id?: Id
@@ -722,7 +777,7 @@ export function NodeEditorDialog({
         return
       }
       const resolutionParameters = resolveNodeResolution(node.type, selectedModel, selectedResKey, desktopMode)
-      const outputCount = isSplitLayout && node.type === 'text' ? count : 1
+      const outputCount = (isSplitLayout && node.type === 'text') || (desktopMode && node.type === 'image') ? count : 1
       if (desktopMode && !['image', 'video'].includes(node.type) && refsForUi.some((ref) => Boolean(ref.url))) {
         throw new Error('当前桌面模型尚未接入媒体参考输入，请移除媒体参考后重试。')
       }
@@ -762,6 +817,7 @@ export function NodeEditorDialog({
           aspect,
           style,
           camera,
+          count: outputCount,
           ...audioParams,
         },
       })
@@ -817,7 +873,22 @@ export function NodeEditorDialog({
     <>
       <p className="mb-1.5 text-[12px] font-bold text-[#333]">{refTitle}</p>
       <div className="flex flex-wrap items-center gap-2">
-        <label className="flex h-14 w-14 cursor-pointer flex-col items-center justify-center rounded-xl bg-[#f0f0f2] text-[#888] ring-1 ring-black/6 hover:bg-[#e8e8ec]">
+        <label
+          title={desktopMode
+            ? ['image', 'video'].includes(node.type) ? '添加本地图片参考；云端生成会向所选模型供应商发送参考图片。' : '桌面版目前只支持为图片和视频节点添加图片参考。'
+            : '上传参考媒体'}
+          aria-label="添加参考媒体"
+          role={desktopMode ? 'button' : undefined}
+          tabIndex={desktopMode ? 0 : undefined}
+          onClick={desktopMode ? (event) => { event.preventDefault(); void onUploadRef() } : undefined}
+          onKeyDown={desktopMode ? (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              void onUploadRef()
+            }
+          } : undefined}
+          className={`flex h-14 w-14 flex-col items-center justify-center rounded-xl bg-[#f0f0f2] text-[#888] ring-1 ring-black/6 ${desktopMode ? ['image', 'video'].includes(node.type) ? 'cursor-pointer hover:bg-[#e8e8ec]' : 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-[#e8e8ec]'}`}
+        >
           <ArrowUpFromLine size={16} />
           <input
             type="file"
@@ -830,11 +901,6 @@ export function NodeEditorDialog({
             }}
           />
         </label>
-        {desktopMode && (
-          <span className="max-w-[180px] text-[10px] leading-relaxed text-[#999]">
-            桌面本地未接入节点参考媒体上传；可添加文本参考。
-          </span>
-        )}
         {node.type !== 'video' && (
           <button
             type="button"
@@ -964,26 +1030,9 @@ export function NodeEditorDialog({
           })
         }}
       />
-      {desktopMode && (
-        <span className={`min-w-[140px] max-w-[210px] flex-[1_1_160px] text-[9px] leading-tight ${isSplitLayout ? 'text-white/50' : 'text-[#999]'}`}>
-          {node.type === 'audio'
-            ? !desktopModelsFetched
-              ? '正在检查本地语音模型…'
-              : typeModels.some((item) => item.name === 'local-sapi-tts')
-              ? 'Windows SAPI 离线语音；输入和结果保存在本机。'
-              : desktopCatalog.localAudio?.unavailableReason || 'Windows SAPI 本地语音模型在当前平台不可用。'
-            : !desktopModels.length && desktopModelsFetched
-              ? '未配置可用模型。请在桌面模型设置中配置本地文本模型或 Agnes API Key。'
-              : model || preferred
-                ? typeModels.find((item) => item.name === (model || preferred))?.provider === 'local'
-                  ? '本地模型，请求留在本机。'
-              : 'Agnes 云端模型；提示词及已选文本/媒体参考会发送至供应商，可能产生费用。'
-                : '当前节点类型暂无桌面模型。'}
-        </span>
-      )}
-      {isSplitLayout && node.type === 'text' && (
+      {isSplitLayout && (node.type === 'text' || desktopMode && node.type === 'image') && (
         <div className="flex shrink-0 overflow-hidden rounded-lg bg-white/10 p-0.5">
-          {([1, 2, 4] as const).map((n) => (
+          {(desktopMode && node.type === 'image' ? [1, 2, 3, 4] : [1, 2, 4]).map((n) => (
             <button
               key={n}
               type="button"

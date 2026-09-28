@@ -214,6 +214,31 @@ function createRecentProjectCatalog({ catalogFile, legacyFile, inspectProject })
         return { project: entry.project, directory: entry.directory }
       })
     },
+    forget(projectId) {
+      return enqueue(async () => {
+        if (typeof projectId !== 'string' || !projectId || projectId.length > 200) {
+          throw new Error('最近项目标识无效。')
+        }
+        const { entries } = await readCatalog()
+        const removed = entries.find((entry) => entry.projectId === projectId)
+        if (!removed) return false
+        const remaining = entries.filter((entry) => entry.projectId !== projectId)
+        await writeEntries(remaining)
+
+        const legacyDirectory = await readLegacyDirectory().catch(() => null)
+        if (legacyDirectory && path.resolve(legacyDirectory) === removed.directory) {
+          if (remaining.length > 0) {
+            await writeJsonAtomically(legacyFile, {
+              schemaVersion: 1,
+              projectDirectory: remaining[0].directory,
+            }, 'recent-project')
+          } else {
+            await fs.rm(legacyFile, { force: true })
+          }
+        }
+        return true
+      })
+    },
   }
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { assetUrl, getAccessToken } from './api'
 
-const LOCAL_MEDIA_PROTOCOL = /^vibe:\/\/app\/(?:assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|tasks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/output)$/iu
+const LOCAL_MEDIA_PROTOCOL = /^vibe:\/\/app\/(?:assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|tasks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/output(?:\?index=[0-3])?)$/iu
 
 function resolveRendererMediaUrl(url?: string): string | undefined {
   if (!url) return undefined

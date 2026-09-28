@@ -9,7 +9,7 @@ const { backup, DatabaseSync } = require('node:sqlite')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 10
+const PROJECT_DB_SCHEMA_VERSION = 12
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -36,13 +36,25 @@ const EDGE_COMPATIBLE_TARGET_TYPES = Object.freeze({
   compose: new Set(['video', 'compose']),
   director: new Set(['image', 'video']),
 })
+const ASSET_NODE_MIME_PREFIX = Object.freeze({
+  image: 'image/',
+  video: 'video/',
+  audio: 'audio/',
+  text: 'text/',
+})
+const ASSET_NODE_LABEL = Object.freeze({ image: '图片', video: '视频', audio: '音频', text: '文本' })
 
 const ASSET_DB_SCHEMA = `
   CREATE TABLE assets (
     id TEXT PRIMARY KEY,
     sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
     original_name TEXT NOT NULL,
-    mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'audio/wav', 'audio/mpeg')),
+    mime_type TEXT NOT NULL CHECK (mime_type IN (
+      'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+      'video/mp4', 'video/quicktime', 'video/webm',
+      'audio/wav', 'audio/mpeg', 'audio/ogg', 'audio/mp4',
+      'text/plain', 'text/markdown'
+    )),
     size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
     relative_path TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
@@ -105,6 +117,21 @@ const TASK_DB_SCHEMA = `
     created_at TEXT NOT NULL,
     UNIQUE (task_id, event_seq)
   ) STRICT;
+`
+
+const TASK_OUTPUTS_DB_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS task_outputs (
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    output_index INTEGER NOT NULL CHECK (output_index >= 0 AND output_index < 4),
+    output_path TEXT NOT NULL,
+    output_sha256 TEXT NOT NULL CHECK (length(output_sha256) = 64),
+    output_size_bytes INTEGER NOT NULL CHECK (output_size_bytes > 0),
+    output_metadata_json TEXT CHECK (output_metadata_json IS NULL OR json_valid(output_metadata_json)),
+    PRIMARY KEY (task_id, output_index),
+    UNIQUE (task_id, output_path)
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS task_outputs_by_task ON task_outputs(task_id, output_index);
 `
 
 const CANVAS_GRAPH_COMMANDS_DB_SCHEMA = `
@@ -180,6 +207,7 @@ const PROJECT_DB_SCHEMA = `
   CREATE INDEX edges_by_target ON edges(canvas_id, target_node_id);
   ${ASSET_DB_SCHEMA}
   ${TASK_DB_SCHEMA}
+  ${TASK_OUTPUTS_DB_SCHEMA}
   ${CANVAS_GRAPH_COMMANDS_DB_SCHEMA}
   ${CANVAS_GROUP_STACK_DB_SCHEMA}
 `
@@ -244,6 +272,35 @@ async function writeJsonAtomically(filePath, value) {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
     throw error
   }
+}
+
+async function publishStagedDirectory(stagingPath, destinationPath) {
+  const staging = path.resolve(stagingPath)
+  const destination = path.resolve(destinationPath)
+  if (path.dirname(staging) !== path.dirname(destination)) {
+    throw new Error('备份发布路径必须位于同一父目录。')
+  }
+
+  let lastError
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      await fs.lstat(destination).then(() => {
+        const error = new Error('发布目标已存在，未覆盖现有目录。')
+        error.code = 'EEXIST'
+        throw error
+      }, (error) => {
+        if (nodeErrorCode(error) !== 'ENOENT') throw error
+      })
+      await fs.rename(staging, destination)
+      return
+    } catch (error) {
+      lastError = error
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(nodeErrorCode(error)) || attempt === 3) throw error
+      // Windows security scanners can briefly hold a newly written SQLite backup directory.
+      await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)))
+    }
+  }
+  throw lastError
 }
 
 function validateGraph(nodes, edges) {
@@ -351,6 +408,23 @@ function databaseVersion(database) {
 }
 
 function taskFromRow(row) {
+  let outputs = []
+  if (typeof row.outputs_json === 'string') {
+    try {
+      outputs = JSON.parse(row.outputs_json)
+    } catch {
+      outputs = []
+    }
+  }
+  if (outputs.length === 0 && row.status === 'succeeded' && typeof row.output_path === 'string') {
+    outputs = [{
+      index: 0,
+      outputPath: row.output_path,
+      sha256: row.output_sha256,
+      sizeBytes: row.output_size_bytes,
+      outputMeta: null,
+    }]
+  }
   return {
     taskId: row.task_id,
     idempotencyKey: row.idempotency_key,
@@ -368,10 +442,12 @@ function taskFromRow(row) {
     outputSha256: row.output_sha256,
     outputSizeBytes: row.output_size_bytes,
     errorCode: row.error_code,
+    errorMessage: row.error_message ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+    outputs,
     ...(typeof row.output_metadata === 'string' ? { outputMeta: JSON.parse(row.output_metadata) } : {}),
   }
 }
@@ -381,7 +457,25 @@ const TASKS_WITH_OUTPUT_METADATA = `
     (SELECT json_extract(events.data_json, '$.outputMeta')
       FROM task_events AS events
       WHERE events.task_id = tasks.task_id AND events.type = 'succeeded'
-      ORDER BY events.event_seq DESC LIMIT 1) AS output_metadata
+      ORDER BY events.event_seq DESC LIMIT 1) AS output_metadata,
+    CASE WHEN tasks.status = 'failed' THEN (
+      SELECT json_extract(events.data_json, '$.errorMessage')
+      FROM task_events AS events
+      WHERE events.task_id = tasks.task_id AND events.type = 'failed'
+      ORDER BY events.event_seq DESC LIMIT 1
+    ) ELSE NULL END AS error_message,
+    (SELECT COALESCE(json_group_array(json(output_json)), '[]') FROM (
+      SELECT json_object(
+        'index', task_outputs.output_index,
+        'outputPath', task_outputs.output_path,
+        'sha256', task_outputs.output_sha256,
+        'sizeBytes', task_outputs.output_size_bytes,
+        'outputMeta', CASE WHEN task_outputs.output_metadata_json IS NULL
+          THEN NULL ELSE json(task_outputs.output_metadata_json) END
+      ) AS output_json
+      FROM task_outputs WHERE task_outputs.task_id = tasks.task_id
+      ORDER BY task_outputs.output_index
+    )) AS outputs_json
   FROM tasks
 `
 
@@ -407,6 +501,24 @@ function normalizeAudioOutputMeta(value) {
     durationMs: value.durationMs,
     sampleRate: value.sampleRate,
     provider: 'local-sapi-tts',
+  }
+}
+
+function normalizeLocalMediaOutputMeta(value, task, parameters) {
+  if (task.provider_type !== 'local' || task.provider_id !== 'local-media-tools') return null
+  const operation = typeof parameters?.operation === 'string' ? parameters.operation : ''
+  const allowed = task.modality === 'image'
+    ? new Set(['裁剪', '三视图'])
+    : task.modality === 'video' ? new Set(['剪辑', '提帧', '超分']) : new Set()
+  const outputType = operation === '提帧' ? 'image' : task.modality
+  if (!allowed.has(operation) || !isRecord(value) || value.index !== 0
+    || value.operation !== operation || value.outputType !== outputType) return null
+  if (operation === '三视图' && !['人物', '场景', '产品'].includes(value.category)) return null
+  return {
+    index: 0,
+    operation,
+    outputType,
+    ...(operation === '三视图' ? { category: value.category } : {}),
   }
 }
 
@@ -469,6 +581,11 @@ function normalizeTaskInput(input) {
       || Object.hasOwn(input.parameters, 'inputTaskIds')) {
       throw new Error('合成任务输入无效：至少选择 2 个已连接的本地视频节点。')
     }
+  }
+  const requestedCount = input.parameters?.count
+  if (requestedCount !== undefined && (!Number.isSafeInteger(requestedCount) || requestedCount < 1
+    || (input.modality === 'image' ? requestedCount > 4 : requestedCount !== 1))) {
+    throw new Error(input.modality === 'image' ? '图片生成数量必须为 1–4。' : '当前任务模态只支持生成 1 个结果。')
   }
   const parametersJson = JSON.stringify(input.parameters ?? {})
   if (Buffer.byteLength(parametersJson, 'utf8') > MAX_TASK_INPUT_BYTES) {
@@ -554,7 +671,17 @@ function pickLatestNodeTask(tasks, currentOutputId) {
   return inflight ?? succeeded ?? tasks[0] ?? null
 }
 
-function validateTaskOutputRelativePath(taskId, modality, relativePath) {
+function taskOperationFromInput(inputJson) {
+  if (typeof inputJson !== 'string') return ''
+  try {
+    const parameters = JSON.parse(inputJson)
+    return typeof parameters?.operation === 'string' ? parameters.operation : ''
+  } catch {
+    return ''
+  }
+}
+
+function validateTaskOutputRelativePath(taskId, modality, relativePath, operation = '') {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(taskId)) {
     throw new Error('任务结果标识无效。')
   }
@@ -567,13 +694,16 @@ function validateTaskOutputRelativePath(taskId, modality, relativePath) {
     throw new Error('生成结果文件名无效。')
   }
   const extension = path.extname(fileName).toLowerCase()
-  const allowed = {
+  let allowed = {
     text: ['.txt', '.md', '.json'],
     image: ['.png', '.jpg', '.jpeg', '.webp'],
     audio: ['.mp3', '.wav', '.ogg', '.m4a'],
     video: ['.mp4', '.webm', '.mov'],
     compose: ['.mp4'],
   }[modality]
+  if (modality === 'video' && operation === '提帧') {
+    allowed = ['.png', '.jpg', '.jpeg', '.webp']
+  }
   if (!allowed?.includes(extension)) throw new Error('生成结果文件格式与任务模态不匹配。')
   return relativePath
 }
@@ -582,8 +712,8 @@ function taskOutputFingerprint(info) {
   return `${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.ino}`
 }
 
-async function resolveTaskOutputFile(dataDirectory, taskId, modality, relativePath, cached = null) {
-  validateTaskOutputRelativePath(taskId, modality, relativePath)
+async function resolveTaskOutputFile(dataDirectory, taskId, modality, relativePath, cached = null, operation = '') {
+  validateTaskOutputRelativePath(taskId, modality, relativePath, operation)
   const generatedDirectory = path.join(dataDirectory, 'generated')
   const taskDirectory = path.join(generatedDirectory, taskId)
   for (const [directory, label] of [[generatedDirectory, '生成结果目录'], [taskDirectory, '任务结果目录']]) {
@@ -632,31 +762,39 @@ async function ensureTaskOutputDirectory(dataDirectory, taskId) {
 async function copyProjectTaskOutputs(database, sourceDataDirectory, targetDataDirectory) {
   if (databaseVersion(database) < 3) return
   const tasks = database.prepare(`
-    SELECT task_id, modality, output_path, output_sha256, output_size_bytes
+    SELECT task_id, modality, input_json, output_path, output_sha256, output_size_bytes
     FROM tasks WHERE status = 'succeeded' ORDER BY task_id
   `).all()
   for (const task of tasks) {
-    const source = await resolveTaskOutputFile(sourceDataDirectory, task.task_id, task.modality, task.output_path)
-    if (source.sha256 !== task.output_sha256 || source.sizeBytes !== task.output_size_bytes) {
-      throw new Error(`生成任务“${task.task_id}”的结果校验失败，项目备份未完成。`)
-    }
-    const targetPath = path.resolve(targetDataDirectory, ...task.output_path.split('/'))
-    const relativeToTarget = path.relative(targetDataDirectory, targetPath)
-    if (!relativeToTarget || relativeToTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToTarget)) {
-      throw new Error('生成任务结果路径越界，无法备份。')
-    }
-    const targetTaskDirectory = path.dirname(targetPath)
-    await fs.mkdir(targetTaskDirectory, { recursive: true })
-    const targetDirectoryInfo = await fs.lstat(targetTaskDirectory)
-    if (!targetDirectoryInfo.isDirectory() || targetDirectoryInfo.isSymbolicLink()
-      || path.relative(targetTaskDirectory, await fs.realpath(targetTaskDirectory)) !== '') {
-      throw new Error('项目备份中的任务结果目录无效。')
-    }
-    await fs.copyFile(source.filePath, targetPath)
-    const copied = await resolveTaskOutputFile(targetDataDirectory, task.task_id, task.modality, task.output_path)
-    if (copied.sha256 !== task.output_sha256 || copied.sizeBytes !== task.output_size_bytes) {
-      await fs.rm(targetPath, { force: true }).catch(() => undefined)
-      throw new Error(`生成任务“${task.task_id}”的结果复制校验失败，项目备份未完成。`)
+    const operation = taskOperationFromInput(task.input_json)
+    const rows = databaseVersion(database) >= 12
+      ? database.prepare(`SELECT output_path, output_sha256, output_size_bytes, output_metadata_json FROM task_outputs
+          WHERE task_id = ? ORDER BY output_index`).all(task.task_id)
+      : []
+    const outputs = rows.length > 0 ? rows : [task]
+    for (const output of outputs) {
+      const source = await resolveTaskOutputFile(sourceDataDirectory, task.task_id, task.modality, output.output_path, null, operation)
+      if (source.sha256 !== output.output_sha256 || source.sizeBytes !== output.output_size_bytes) {
+        throw new Error(`生成任务“${task.task_id}”的结果校验失败，项目备份未完成。`)
+      }
+      const targetPath = path.resolve(targetDataDirectory, ...output.output_path.split('/'))
+      const relativeToTarget = path.relative(targetDataDirectory, targetPath)
+      if (!relativeToTarget || relativeToTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToTarget)) {
+        throw new Error('生成任务结果路径越界，无法备份。')
+      }
+      const targetTaskDirectory = path.dirname(targetPath)
+      await fs.mkdir(targetTaskDirectory, { recursive: true })
+      const targetDirectoryInfo = await fs.lstat(targetTaskDirectory)
+      if (!targetDirectoryInfo.isDirectory() || targetDirectoryInfo.isSymbolicLink()
+        || path.relative(targetTaskDirectory, await fs.realpath(targetTaskDirectory)) !== '') {
+        throw new Error('项目备份中的任务结果目录无效。')
+      }
+      await fs.copyFile(source.filePath, targetPath)
+      const copied = await resolveTaskOutputFile(targetDataDirectory, task.task_id, task.modality, output.output_path, null, operation)
+      if (copied.sha256 !== output.output_sha256 || copied.sizeBytes !== output.output_size_bytes) {
+        await fs.rm(targetPath, { force: true }).catch(() => undefined)
+        throw new Error(`生成任务“${task.task_id}”的结果复制校验失败，项目备份未完成。`)
+      }
     }
   }
 }
@@ -834,16 +972,15 @@ function insertAssetReferences(database, canvasId, graph) {
   const findAsset = database.prepare('SELECT id, mime_type FROM assets WHERE id = ?')
   const insertReference = database.prepare('INSERT INTO asset_references (canvas_id, node_id, asset_id) VALUES (?, ?, ?)')
   for (const node of graph.nodes) {
-    if (!['image', 'audio'].includes(node.type)) continue
+    const expectedMimePrefix = ASSET_NODE_MIME_PREFIX[node.type]
+    if (!expectedMimePrefix) continue
     const params = isRecord(node.data.params) ? node.data.params : {}
     const assetId = node.data.assetId ?? params.assetId
     if (assetId === undefined || assetId === null || assetId === '') continue
     const asset = typeof assetId === 'string' ? findAsset.get(assetId) : null
-    const expectedMimePrefix = node.type === 'image' ? 'image/' : 'audio/'
-    if (!asset) throw new Error(node.type === 'image'
-      ? '画布图片节点引用了不存在的本地素材。' : '画布音频节点引用了不存在的本地素材。')
+    if (!asset) throw new Error(`画布${ASSET_NODE_LABEL[node.type]}节点引用了不存在的本地素材。`)
     if (!asset.mime_type.startsWith(expectedMimePrefix)) {
-      throw new Error(`画布${node.type === 'image' ? '图片' : '音频'}节点引用了类型不匹配的本地素材。`)
+      throw new Error(`画布${ASSET_NODE_LABEL[node.type]}节点引用了类型不匹配的本地素材。`)
     }
     insertReference.run(canvasId, node.id, assetId)
   }
@@ -853,15 +990,14 @@ function validateAssetReferences(database, canvasId, graph, { allowLegacyParamsG
   const expected = new Map()
   const legacyParamsReferences = new Set()
   for (const node of graph.nodes) {
-    if (!['image', 'audio'].includes(node.type)) continue
+    const expectedMimePrefix = ASSET_NODE_MIME_PREFIX[node.type]
+    if (!expectedMimePrefix) continue
     const params = isRecord(node.data.params) ? node.data.params : {}
     const assetId = node.data.assetId ?? params.assetId
     if (assetId === undefined || assetId === null || assetId === '') continue
-    if (typeof assetId !== 'string') throw new Error(`项目画布中的${node.type === 'image' ? '图片' : '音频'}节点素材标识无效。`)
+    if (typeof assetId !== 'string') throw new Error(`项目画布中的${ASSET_NODE_LABEL[node.type]}节点素材标识无效。`)
     const asset = database.prepare('SELECT mime_type FROM assets WHERE id = ?').get(assetId)
-    const expectedMimePrefix = node.type === 'image' ? 'image/' : 'audio/'
-    if (!asset) throw new Error(node.type === 'image'
-      ? '项目画布中的图片节点引用了不存在的本地素材。' : '项目画布中的音频节点引用了不存在的本地素材。')
+    if (!asset) throw new Error(`项目画布中的${ASSET_NODE_LABEL[node.type]}节点引用了不存在的本地素材。`)
     if (!asset.mime_type.startsWith(expectedMimePrefix)) throw new Error('项目画布中的本地素材引用类型不匹配。')
     expected.set(node.id, assetId)
     if (node.data.assetId === undefined || node.data.assetId === null) legacyParamsReferences.add(node.id)
@@ -1130,7 +1266,7 @@ function nodePayloadFromFlowNode(node) {
   const data = isRecord(node.data) ? node.data : {}
   const nested = isRecord(data.node) ? data.node : {}
   let params = isRecord(data.params) ? data.params : isRecord(nested.params) ? nested.params : {}
-  if (['image', 'audio'].includes(node.type) && typeof data.assetId === 'string' && params.assetId === undefined) {
+  if (Object.hasOwn(ASSET_NODE_MIME_PREFIX, node.type) && typeof data.assetId === 'string' && params.assetId === undefined) {
     params = { ...params, assetId: data.assetId }
   }
   return {
@@ -1158,7 +1294,7 @@ function nodePayloadFromFlowNode(node) {
 function canvasNodeExportPayload(node) {
   const payload = nodePayloadFromFlowNode(node)
   const data = isRecord(node.data) ? node.data : {}
-  if (['image', 'audio'].includes(node.type) && typeof data.assetId === 'string'
+  if (Object.hasOwn(ASSET_NODE_MIME_PREFIX, node.type) && typeof data.assetId === 'string'
     && payload.params.assetId === undefined) {
     payload.params.assetId = data.assetId
   }
@@ -1227,6 +1363,146 @@ function canvasEdgeExportPayload(edge) {
     targetPort: payload.targetPort ?? edge.targetHandle ?? 'input',
     valid: payload.valid ?? data.valid ?? true,
     dependencyType: payload.dependencyType ?? edge.dependencyType ?? 'reference',
+  }
+}
+
+function importCanvasId(value, label) {
+  if (typeof value === 'string' && value.length > 0 && value.length <= 256) return value
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
+  throw new Error(`${label}标识无效。`)
+}
+
+function importedProjectName(value) {
+  const source = typeof value === 'string' && value.trim() ? value.trim() : '导入的画布'
+  const safe = source.replace(/[<>:"/\\|?*\u0000-\u001f]/gu, '_').replace(/[. ]+$/gu, '').trim().slice(0, 60)
+  try {
+    return validateProjectName(safe || '导入的画布')
+  } catch {
+    return '导入的画布'
+  }
+}
+
+function normalizeCanvasImportDocument(document) {
+  if (!isRecord(document)) throw new Error('画布 JSON 格式错误：根节点必须是对象。')
+  let schemaVersion = document.schema_version
+  if (schemaVersion === undefined || schemaVersion === null) schemaVersion = document.schemaVersion
+  if (schemaVersion === undefined || schemaVersion === null) throw new Error('缺少 schema_version，导入拒绝。')
+  const versionText = String(schemaVersion)
+  const versionMatch = /^(\d+)(?:\.\d+)*$/u.exec(versionText)
+  if (!versionMatch || Number(versionMatch[1]) < 1) {
+    throw new Error(`画布版本不兼容：导入版本 ${versionText}，当前最低兼容 ${CANVAS_EXPORT_SCHEMA_VERSION}。`)
+  }
+
+  const nodes = document.nodes ?? []
+  const edges = document.edges ?? []
+  if (!Array.isArray(nodes) || nodes.length > MAX_NODES) throw new Error('画布节点数据无效或超过上限。')
+  if (!Array.isArray(edges) || edges.length > MAX_EDGES) throw new Error('画布连线数据无效或超过上限。')
+  const oldToNewNodeId = new Map()
+  const importedNodes = []
+  const importedNodeTypes = new Map()
+  const warnings = []
+  let droppedAssetReferenceCount = 0
+
+  for (const rawNode of nodes) {
+    if (!isRecord(rawNode) || typeof rawNode.type !== 'string'
+      || !Object.hasOwn(EDGE_COMPATIBLE_TARGET_TYPES, rawNode.type)) {
+      throw new Error(`非法节点类型: ${String(rawNode?.type)}`)
+    }
+    const oldId = importCanvasId(rawNode.id, '节点')
+    if (oldToNewNodeId.has(oldId)) throw new Error('画布包含重复的节点。')
+    const params = rawNode.params === undefined || rawNode.params === null
+      ? {} : cloneJsonRecord(rawNode.params, '节点参数')
+    const originalAssetId = params.assetId
+    if (['image', 'audio', 'video', 'text'].includes(rawNode.type)
+      && originalAssetId !== undefined && originalAssetId !== null && originalAssetId !== '') {
+      // CanvasService.importCanvas copies params verbatim. Local assets are scoped
+      // to their project, so an ID from a foreign project cannot be made valid
+      // in the fresh project created for this import.
+      delete params.assetId
+      droppedAssetReferenceCount += 1
+    }
+    const numberField = (key, fallback) => {
+      const value = rawNode[key]
+      if (value === undefined || value === null) return fallback
+      if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`画布节点 ${key} 无效。`)
+      return value
+    }
+    const creativeType = rawNode.creativeType ?? rawNode.creative_type ?? null
+    if (creativeType !== null && typeof creativeType !== 'string') throw new Error('画布节点 creativeType 无效。')
+    const newId = randomUUID()
+    oldToNewNodeId.set(oldId, newId)
+    importedNodeTypes.set(newId, rawNode.type)
+    importedNodes.push(flowNodeFromPayload({
+      id: newId,
+      type: rawNode.type,
+      x: numberField('x', 100),
+      y: numberField('y', 100),
+      width: numberField('width', 260),
+      height: numberField('height', 200),
+      params,
+      status: 'idle',
+      currentOutputId: null,
+      groupId: null,
+      stackId: null,
+      creativeType,
+      stale: false,
+      modelRef: null,
+      prompt: null,
+      output: null,
+      execStatus: 'idle',
+    }))
+  }
+  if (droppedAssetReferenceCount > 0) {
+    warnings.push(`有 ${droppedAssetReferenceCount} 个素材引用不在导入文件中，已从新项目节点移除；请在素材库中重新选择本地素材。`)
+  }
+
+  const importedEdges = []
+  for (const rawEdge of edges) {
+    if (!isRecord(rawEdge)) throw new Error('画布包含无效连线。')
+    const sourceValue = rawEdge.sourceNodeId ?? rawEdge.source_node_id
+    const targetValue = rawEdge.targetNodeId ?? rawEdge.target_node_id
+    const oldSource = importCanvasId(sourceValue, '连线源节点')
+    const oldTarget = importCanvasId(targetValue, '连线目标节点')
+    const source = oldToNewNodeId.get(oldSource)
+    const target = oldToNewNodeId.get(oldTarget)
+    if (!source || !target) continue
+    const compatible = EDGE_COMPATIBLE_TARGET_TYPES[importedNodeTypes.get(source)].has(importedNodeTypes.get(target))
+    const sourcePort = rawEdge.sourcePort ?? rawEdge.source_port ?? 'output'
+    const targetPort = rawEdge.targetPort ?? rawEdge.target_port ?? 'input'
+    let dependencyType = rawEdge.dependencyType ?? rawEdge.dependency_type ?? 'reference'
+    if (typeof dependencyType !== 'string') dependencyType = String(dependencyType)
+    if (typeof sourcePort !== 'string' || typeof targetPort !== 'string') throw new Error('画布连线端口无效。')
+    const id = randomUUID()
+    importedEdges.push({
+      id,
+      source,
+      sourceHandle: sourcePort,
+      target,
+      targetHandle: targetPort,
+      data: {
+        valid: compatible,
+        edge: {
+          id,
+          sourceNodeId: source,
+          sourcePort,
+          targetNodeId: target,
+          targetPort,
+          valid: compatible,
+          dependencyType,
+        },
+      },
+    })
+  }
+  const graph = validateGraph(importedNodes, importedEdges)
+  let canvasName = '导入的画布'
+  if (isRecord(document.canvas) && document.canvas.name !== undefined && document.canvas.name !== null) {
+    if (typeof document.canvas.name !== 'string') throw new Error('画布名称无效。')
+    canvasName = document.canvas.name
+  }
+  return {
+    name: importedProjectName(canvasName),
+    graph: { ...graph, groups: [], stacks: [] },
+    warnings,
   }
 }
 
@@ -1683,7 +1959,7 @@ async function migrateDatabaseV8ToV9(database, dataDirectory) {
 
 async function migrateDatabaseV9ToV10(database, dataDirectory) {
   const version = databaseVersion(database)
-  if (version === PROJECT_DB_SCHEMA_VERSION) return
+  if (version === 10) return
   if (version !== 9) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 10。`)
 
   const backupDirectory = path.join(dataDirectory, 'backups')
@@ -1729,6 +2005,108 @@ async function migrateDatabaseV9ToV10(database, dataDirectory) {
     throw error
   } finally {
     database.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+async function migrateDatabaseV10ToV11(database, dataDirectory) {
+  const version = databaseVersion(database)
+  if (version === PROJECT_DB_SCHEMA_VERSION) return
+  if (version !== 10) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 11。`)
+
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v10-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(`
+      CREATE TABLE assets_v11 (
+        id TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL CHECK (mime_type IN (
+          'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+          'video/mp4', 'video/quicktime', 'video/webm',
+          'audio/wav', 'audio/mpeg', 'audio/ogg', 'audio/mp4',
+          'text/plain', 'text/markdown'
+        )),
+        size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
+        relative_path TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))
+      ) STRICT;
+      INSERT INTO assets_v11 (id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted)
+        SELECT id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted FROM assets;
+      DROP TABLE assets;
+      ALTER TABLE assets_v11 RENAME TO assets;
+      CREATE INDEX assets_by_sha ON assets(sha256, deleted);
+      PRAGMA user_version = 11;
+    `)
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('素材类型迁移后检测到无效引用。')
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+async function migrateDatabaseV11ToV12(database, dataDirectory) {
+  const version = databaseVersion(database)
+  if (version === PROJECT_DB_SCHEMA_VERSION) return
+  if (version !== 11) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 12。`)
+
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v11-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    // Schema migration tests and interrupted migrations can arrive here with
+    // the table already present. Keep the migration idempotent and backfill
+    // any succeeded legacy task that has not yet been indexed.
+    database.exec(TASK_OUTPUTS_DB_SCHEMA)
+    database.exec(`
+      INSERT INTO task_outputs (
+        task_id, output_index, output_path, output_sha256, output_size_bytes, output_metadata_json
+      )
+      SELECT tasks.task_id, 0, tasks.output_path, tasks.output_sha256, tasks.output_size_bytes,
+        (SELECT json_extract(events.data_json, '$.outputMeta')
+          FROM task_events AS events
+          WHERE events.task_id = tasks.task_id AND events.type = 'succeeded'
+          ORDER BY events.event_seq DESC LIMIT 1)
+      FROM tasks WHERE tasks.status = 'succeeded'
+      ON CONFLICT(task_id, output_index) DO NOTHING
+    `)
+    database.exec('PRAGMA user_version = 12')
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('任务多结果迁移后检测到无效引用。')
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
   }
 }
 
@@ -1825,7 +2203,7 @@ async function copyAssetSource(sourcePath, temporaryPath) {
 async function copyProjectAssets(database, sourceDataDirectory, targetDataDirectory) {
   const assets = database.prepare('SELECT id, sha256, original_name, mime_type, size_bytes, relative_path FROM assets ORDER BY id').all()
   for (const asset of assets) {
-    if (!/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav|mp3)$/iu.test(asset.relative_path)) {
+    if (!/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|mp4|mov|webm|wav|mp3|ogg|m4a|txt|md)$/iu.test(asset.relative_path)) {
       throw new Error('项目素材清单包含无效路径，无法安全备份。')
     }
     const sourcePath = path.resolve(sourceDataDirectory, asset.relative_path)
@@ -1934,23 +2312,50 @@ async function projectBackupPaths(database, dataDirectory, includeAgent = true) 
   const paths = ['project.json', 'project.sqlite']
   for (const row of assetRows) {
     if (typeof row.relative_path !== 'string'
-      || !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav|mp3)$/iu.test(row.relative_path)) {
+      || !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|mp4|mov|webm|wav|mp3|ogg|m4a|txt|md)$/iu.test(row.relative_path)) {
       throw new Error('项目素材清单包含无效路径，无法备份或恢复。')
     }
     paths.push(row.relative_path)
   }
   if (databaseVersion(database) >= 3) {
     const taskRows = database.prepare(`
-      SELECT task_id, modality, output_path, output_sha256, output_size_bytes
+        SELECT task_id, modality, provider_type, provider_id, input_json, output_path, output_sha256, output_size_bytes
       FROM tasks WHERE status = 'succeeded' ORDER BY task_id
     `).all()
     for (const task of taskRows) {
-      validateTaskOutputRelativePath(task.task_id, task.modality, task.output_path)
-      if (!/^[a-f0-9]{64}$/u.test(task.output_sha256)
-        || !Number.isSafeInteger(task.output_size_bytes) || task.output_size_bytes <= 0) {
-        throw new Error(`生成任务“${task.task_id}”的结果索引无效，无法备份或恢复。`)
+      const operation = taskOperationFromInput(task.input_json)
+      const outputRows = databaseVersion(database) >= 12
+        ? database.prepare(`SELECT output_path, output_sha256, output_size_bytes, output_metadata_json FROM task_outputs
+            WHERE task_id = ? ORDER BY output_index`).all(task.task_id)
+        : []
+      const outputs = outputRows.length > 0 ? outputRows : [task]
+      for (const output of outputs) {
+        validateTaskOutputRelativePath(task.task_id, task.modality, output.output_path, operation)
+        if (task.provider_type === 'local' && task.provider_id === 'local-media-tools') {
+          let outputMeta = null
+          try {
+            outputMeta = typeof output.output_metadata_json === 'string'
+              ? JSON.parse(output.output_metadata_json)
+              : null
+          } catch {
+            outputMeta = null
+          }
+          let parameters = null
+          try {
+            parameters = JSON.parse(task.input_json)
+          } catch {
+            parameters = null
+          }
+          if (!normalizeLocalMediaOutputMeta(outputMeta, task, parameters)) {
+            throw new Error(`生成任务“${task.task_id}”的本地媒体结果元数据无效，无法备份或恢复。`)
+          }
+        }
+        if (!/^[a-f0-9]{64}$/u.test(output.output_sha256)
+          || !Number.isSafeInteger(output.output_size_bytes) || output.output_size_bytes <= 0) {
+          throw new Error(`生成任务“${task.task_id}”的结果索引无效，无法备份或恢复。`)
+        }
+        paths.push(output.output_path)
       }
-      paths.push(task.output_path)
     }
   }
   if (includeAgent) {
@@ -2257,7 +2662,7 @@ async function safeBackupFilePath(dataDirectory, relativePath) {
     && taskOutputExtensions.includes(path.extname(taskOutputMatch[2]).toLowerCase())
   const isAgentFile = isValidAgentBackupRelativePath(relativePath)
   if (relativePath !== 'project.json' && relativePath !== 'project.sqlite'
-    && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|wav|mp3)$/iu.test(relativePath)
+    && !/^assets\/[a-f0-9]{64}\/[a-f0-9-]{36}\.(?:png|jpg|gif|webp|mp4|mov|webm|wav|mp3|ogg|m4a|txt|md)$/iu.test(relativePath)
     && !isTaskOutput && !isAgentFile) {
     throw new Error('备份包含无效文件路径。')
   }
@@ -2405,7 +2810,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (![2, 3, 4, 5, 6, 7, 8, 9, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -2571,6 +2976,9 @@ async function detectMp3MimeType(filePath) {
 }
 
 async function detectAudioMimeType(filePath, diagnosticPath = filePath) {
+  const extension = path.extname(diagnosticPath).toLowerCase()
+  if (extension === '.m4a') return detectContainerMimeType(filePath, diagnosticPath)
+  if (extension === '.ogg') return detectOggMimeType(filePath)
   try {
     return await detectWavMimeType(filePath)
   } catch (wavError) {
@@ -2584,12 +2992,88 @@ async function detectAudioMimeType(filePath, diagnosticPath = filePath) {
   }
 }
 
-async function detectAssetMimeType(filePath, diagnosticPath = filePath) {
+async function detectOggMimeType(filePath) {
+  const handle = await fs.open(filePath, 'r')
   try {
-    return await detectImageMimeType(filePath)
-  } catch {
-    return detectAudioMimeType(filePath, diagnosticPath)
+    const info = await handle.stat()
+    const header = Buffer.alloc(4)
+    const { bytesRead } = await handle.read(header, 0, header.length, 0)
+    if (info.size > MAX_ASSET_BYTES || bytesRead !== 4 || header.toString('ascii') !== 'OggS') {
+      throw new Error('本地 OGG 音频素材格式无效。')
+    }
+    return 'audio/ogg'
+  } finally {
+    await handle.close()
   }
+}
+
+async function detectContainerMimeType(filePath, diagnosticPath = filePath) {
+  const handle = await fs.open(filePath, 'r')
+  try {
+    const info = await handle.stat()
+    if (info.size < 12 || info.size > MAX_ASSET_BYTES) throw new Error('本地视频或 M4A 素材大小无效。')
+    const header = Buffer.alloc(16)
+    const { bytesRead } = await handle.read(header, 0, header.length, 0)
+    if (bytesRead < 12 || header.toString('ascii', 4, 8) !== 'ftyp') {
+      throw new Error(path.extname(diagnosticPath).toLowerCase() === '.m4a'
+        ? '本地 M4A 音频素材格式无效。' : '本地 MP4/MOV 视频素材格式无效。')
+    }
+    const boxSize = header.readUInt32BE(0)
+    if (boxSize < 16 || boxSize > info.size) throw new Error('本地 MP4/MOV 素材容器长度无效。')
+    const brand = header.toString('ascii', 8, 12)
+    const extension = path.extname(diagnosticPath).toLowerCase()
+    if (extension === '.m4a' || /^M4[ABP ]$/u.test(brand)) return 'audio/mp4'
+    if (extension === '.mov' || brand === 'qt  ') return 'video/quicktime'
+    return 'video/mp4'
+  } finally {
+    await handle.close()
+  }
+}
+
+async function detectVideoMimeType(filePath, diagnosticPath = filePath) {
+  const extension = path.extname(diagnosticPath).toLowerCase()
+  const handle = await fs.open(filePath, 'r')
+  try {
+    const info = await handle.stat()
+    if (info.size < 4 || info.size > MAX_ASSET_BYTES) throw new Error('本地视频素材大小无效。')
+    const header = Buffer.alloc(16)
+    const { bytesRead } = await handle.read(header, 0, header.length, 0)
+    if (extension === '.webm') {
+      if (bytesRead >= 4 && header.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) return 'video/webm'
+      throw new Error('本地 WebM 视频素材格式无效。')
+    }
+  } finally {
+    await handle.close()
+  }
+  return detectContainerMimeType(filePath, diagnosticPath)
+}
+
+async function detectTextMimeType(filePath, diagnosticPath = filePath) {
+  const extension = path.extname(diagnosticPath).toLowerCase()
+  if (!['.txt', '.md'].includes(extension)) throw new Error('文本素材只支持 TXT 和 Markdown 文件。')
+  const info = await fs.stat(filePath)
+  if (info.size <= 0 || info.size > MAX_ASSET_BYTES) throw new Error('本地文本素材大小无效。')
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  try {
+    for await (const chunk of nativeFs.createReadStream(filePath)) {
+      if (chunk.includes(0)) throw new Error('本地文本素材包含二进制数据。')
+      decoder.decode(chunk, { stream: true })
+    }
+    decoder.decode()
+  } catch (error) {
+    if (error instanceof Error && error.message === '本地文本素材包含二进制数据。') throw error
+    throw new Error('本地文本素材不是有效的 UTF-8 文件。')
+  }
+  return extension === '.md' ? 'text/markdown' : 'text/plain'
+}
+
+async function detectAssetMimeType(filePath, diagnosticPath = filePath) {
+  const extension = path.extname(diagnosticPath).toLowerCase()
+  if (['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(extension)) return detectImageMimeType(filePath)
+  if (['.wav', '.mp3', '.ogg', '.m4a'].includes(extension)) return detectAudioMimeType(filePath, diagnosticPath)
+  if (['.mp4', '.mov', '.webm'].includes(extension)) return detectVideoMimeType(filePath, diagnosticPath)
+  if (['.txt', '.md'].includes(extension)) return detectTextMimeType(filePath, diagnosticPath)
+  throw new Error('素材类型必须是 PNG/JPEG/GIF/WebP 图片、MP4/MOV/WebM 视频、WAV/MP3/OGG/M4A 音频或 TXT/MD 文本。')
 }
 
 function extensionForAssetMimeType(mimeType) {
@@ -2598,8 +3082,15 @@ function extensionForAssetMimeType(mimeType) {
     'image/jpeg': 'jpg',
     'image/gif': 'gif',
     'image/webp': 'webp',
+    'video/mp4': 'mp4',
+    'video/quicktime': 'mov',
+    'video/webm': 'webm',
     'audio/wav': 'wav',
     'audio/mpeg': 'mp3',
+    'audio/ogg': 'ogg',
+    'audio/mp4': 'm4a',
+    'text/plain': 'txt',
+    'text/markdown': 'md',
   })[mimeType]
 }
 
@@ -2781,6 +3272,8 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 7) await migrateDatabaseV7ToV8(database, dataDirectory)
       if (databaseVersion(database) === 8) await migrateDatabaseV8ToV9(database, dataDirectory)
       if (databaseVersion(database) === 9) await migrateDatabaseV9ToV10(database, dataDirectory)
+      if (databaseVersion(database) === 10) await migrateDatabaseV10ToV11(database, dataDirectory)
+      if (databaseVersion(database) === 11) await migrateDatabaseV11ToV12(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
@@ -2849,7 +3342,7 @@ function createLocalProjectStore() {
     return enqueue(() => inspectProjectDirectory(projectDirectory, expectedIdentity))
   }
 
-  async function createProject(parentDirectory, nameValue) {
+  async function createProject(parentDirectory, nameValue, importedCanvas = null) {
     const name = validateProjectName(nameValue)
     const parent = path.resolve(parentDirectory)
     const destination = path.join(parent, name)
@@ -2876,9 +3369,11 @@ function createLocalProjectStore() {
         schemaVersion: CANVAS_SCHEMA_VERSION,
         projectId: metadata.projectId,
         canvasId: metadata.canvasId,
-        version: 0,
-        nodes: [],
-        edges: [],
+        version: importedCanvas ? 1 : 0,
+        nodes: importedCanvas?.nodes ?? [],
+        edges: importedCanvas?.edges ?? [],
+        groups: importedCanvas?.groups ?? [],
+        stacks: importedCanvas?.stacks ?? [],
       }
       await writeJsonAtomically(path.join(staging, 'project.json'), metadata)
 
@@ -2905,6 +3400,46 @@ function createLocalProjectStore() {
     }
 
     return openProject(destination)
+  }
+
+  async function importCanvasDocument(parentDirectory, document) {
+    const imported = normalizeCanvasImportDocument(document)
+    const created = await createProject(parentDirectory, imported.name, imported.graph)
+    return { ...created, warnings: imported.warnings }
+  }
+
+  function renameProject(projectId, directoryValue, nameValue) {
+    return enqueue(async () => {
+      if (typeof projectId !== 'string' || !projectId || projectId.length > 200) {
+        throw new Error('本地项目标识无效。')
+      }
+      const name = validateProjectName(nameValue)
+      if (typeof directoryValue !== 'string' || !directoryValue.trim()) throw new Error('项目目录无效。')
+      const directory = await fs.realpath(path.resolve(directoryValue))
+      let target = active?.directory === directory ? active : null
+      let opened = null
+      if (!target) {
+        const dataDirectory = path.join(directory, '.vibepaper')
+        const metadata = await readProjectMetadata(dataDirectory)
+        validateMetadata(metadata)
+        if (metadata.projectId !== projectId) throw new Error('最近项目身份已变化，请从项目目录重新打开。')
+        opened = await openProjectData(directory, { projectId, canvasId: metadata.canvasId })
+        target = opened
+      }
+      try {
+        if (target.metadata.projectId !== projectId) throw new Error('最近项目身份已变化，请从项目目录重新打开。')
+        if (target.metadata.name !== name) {
+          const dataDirectory = path.join(directory, '.vibepaper')
+          await invalidateBackupManifest(dataDirectory)
+          const metadata = { ...target.metadata, name }
+          await writeJsonAtomically(path.join(dataDirectory, 'project.json'), metadata)
+          target.metadata = metadata
+        }
+        return { project: publicProject(target.metadata), directory }
+      } finally {
+        if (opened) await closeProjectData(opened)
+      }
+    })
   }
 
   function backupProject(parentDirectory, projectId) {
@@ -2942,7 +3477,7 @@ function createLocalProjectStore() {
         }))
         const manifest = await createBackupManifest(stagingData, active.metadata, active.database)
         await writeJsonAtomically(path.join(stagingData, 'backup-manifest.json'), manifest)
-        await fs.rename(staging, destination)
+        await publishStagedDirectory(staging, destination)
       } catch (error) {
         await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined)
         throw error
@@ -3008,7 +3543,7 @@ function createLocalProjectStore() {
 
         const stagedProject = await openProjectData(staging)
         await closeProjectData(stagedProject)
-        await fs.rename(staging, destination)
+        await publishStagedDirectory(staging, destination)
         published = true
 
         const next = await openProjectData(destination)
@@ -3026,16 +3561,22 @@ function createLocalProjectStore() {
   }
 
   function importAsset(sourcePath, projectId, assetKind = 'image') {
-    if (assetKind !== 'image' && assetKind !== 'local') throw new Error('素材导入类型无效。')
+    if (!['image', 'video', 'audio', 'text', 'local'].includes(assetKind)) throw new Error('素材导入类型无效。')
     return enqueue(async () => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法导入素材。')
       const { assetsDirectory } = await projectAssetsDirectory(active.directory)
       const temporaryPath = path.join(assetsDirectory, `.import-${randomUUID()}.tmp`)
       try {
         const copied = await copyAssetSource(sourcePath, temporaryPath)
-        const mimeType = assetKind === 'image'
-          ? await detectImageMimeType(temporaryPath)
-          : await detectAssetMimeType(temporaryPath, sourcePath)
+        const mimeType = assetKind === 'local'
+          ? await detectAssetMimeType(temporaryPath, sourcePath)
+          : assetKind === 'image'
+            ? await detectImageMimeType(temporaryPath)
+            : assetKind === 'video'
+              ? await detectVideoMimeType(temporaryPath, sourcePath)
+              : assetKind === 'audio'
+                ? await detectAudioMimeType(temporaryPath, sourcePath)
+                : await detectTextMimeType(temporaryPath, sourcePath)
         const assetId = randomUUID()
         const extension = extensionForAssetMimeType(mimeType)
         const relativePath = `assets/${copied.sha256}/${assetId}.${extension}`
@@ -3052,7 +3593,7 @@ function createLocalProjectStore() {
         await fs.rename(temporaryPath, destination)
 
         const rawName = path.basename(path.resolve(sourcePath))
-        const originalName = rawName.replace(/[\u0000-\u001f]/gu, '_').slice(0, 255) || `image.${extension}`
+        const originalName = rawName.replace(/[\u0000-\u001f]/gu, '_').slice(0, 255) || `asset.${extension}`
         const createdAt = new Date().toISOString()
         try {
           active.database.exec('BEGIN IMMEDIATE')
@@ -3212,6 +3753,10 @@ function createLocalProjectStore() {
     return replaceAssetByType(projectId, assetId, sourcePath, 'audio')
   }
 
+  function replaceAssetFile(projectId, assetId, sourcePath) {
+    return replaceAssetByType(projectId, assetId, sourcePath, 'any')
+  }
+
   function replaceAssetByType(projectId, assetId, sourcePath, assetType) {
     return enqueue(async () => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法替换素材。')
@@ -3221,10 +3766,10 @@ function createLocalProjectStore() {
       const database = active.database
       const current = database.prepare('SELECT * FROM assets WHERE id = ? AND deleted = 0').get(assetId)
       if (!current) throw new Error('本地素材不存在。')
-      const currentMatchesType = assetType === 'audio'
-        ? ['audio/wav', 'audio/mpeg'].includes(current.mime_type)
-        : current.mime_type.startsWith('image/')
-      if (!currentMatchesType) throw new Error(assetType === 'audio' ? '只能替换 WAV 或 MP3 音频素材。' : '只能替换图片素材。')
+      const currentMatchesType = assetType === 'any'
+        || assetType === 'audio' && current.mime_type.startsWith('audio/')
+        || assetType === 'image' && current.mime_type.startsWith('image/')
+      if (!currentMatchesType) throw new Error(assetType === 'audio' ? '只能替换音频素材。' : '只能替换图片素材。')
       assertAssetRowPath(current)
       const oldAssetFile = await resolveProjectAssetFile(active.directory, current, { allowMissing: true })
       const { assetsDirectory } = await projectAssetsDirectory(active.directory)
@@ -3236,13 +3781,18 @@ function createLocalProjectStore() {
         const copied = await copyAssetSource(sourcePath, temporaryPath)
         const mimeType = assetType === 'audio'
           ? await detectAudioMimeType(temporaryPath, sourcePath)
-          : await detectImageMimeType(temporaryPath)
+          : assetType === 'image'
+            ? await detectImageMimeType(temporaryPath)
+            : await detectAssetMimeType(temporaryPath, sourcePath)
+        if (assetType === 'any' && !mimeType.startsWith(current.mime_type.split('/')[0] + '/')) {
+          throw new Error('替换素材必须与原素材保持相同的类型。')
+        }
         const extension = extensionForAssetMimeType(mimeType)
         const rawName = path.basename(path.resolve(sourcePath))
         const normalizedName = normalizeAssetName(rawName || current.original_name)
         const nextUpdatedAt = new Date().toISOString()
 
-        if (copied.sha256 !== current.sha256 || !oldAssetFile) {
+        if (copied.sha256 !== current.sha256 || mimeType !== current.mime_type || !oldAssetFile) {
           const relativePath = `assets/${copied.sha256}/${assetId}.${extension}`
           const assetDirectory = path.join(assetsDirectory, copied.sha256)
           await fs.mkdir(assetDirectory, { recursive: true })
@@ -3340,7 +3890,8 @@ function createLocalProjectStore() {
       const asset = active.database.prepare('SELECT id, sha256, mime_type, relative_path FROM assets WHERE id = ?').get(assetId)
       if (!asset) throw new Error('本地素材不存在。')
       const resolved = await resolveProjectAssetFile(active.directory, asset)
-      return { filePath: resolved.filePath, mimeType: asset.mime_type }
+      const info = await fs.stat(resolved.filePath)
+      return { filePath: resolved.filePath, mimeType: asset.mime_type, sizeBytes: info.size }
     })
   }
 
@@ -3636,23 +4187,55 @@ function createLocalProjectStore() {
     })
   }
 
-  function resolveTaskOutputForPreview(projectId, taskId) {
+  function resolveTaskOutputForPreview(projectId, taskId, outputIndex = 0) {
     return enqueue(async () => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务结果。')
-      if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
-      const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (typeof taskId !== 'string' || !taskId || !Number.isSafeInteger(outputIndex)
+        || outputIndex < 0 || outputIndex > 3) throw new Error('任务结果查询参数无效。')
+      const row = active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId)
       if (!row || row.status !== 'succeeded' || !['image', 'audio', 'video', 'compose'].includes(row.modality)) {
         throw new Error('此任务没有可预览的媒体结果。')
       }
-      const cacheKey = `${projectId}:${taskId}`
+      const operation = taskOperationFromInput(row.input_json)
+      const indexedOutput = active.database.prepare(`SELECT output_path, output_sha256, output_size_bytes, output_metadata_json
+        FROM task_outputs WHERE task_id = ? AND output_index = ?`).get(taskId, outputIndex)
+      const outputRow = indexedOutput ?? (outputIndex === 0 ? {
+        output_path: row.output_path,
+        output_sha256: row.output_sha256,
+        output_size_bytes: row.output_size_bytes,
+        output_metadata_json: null,
+      } : null)
+      if (!outputRow) throw new Error('任务没有此序号的结果。')
+      let rawOutputMeta = null
+      try {
+        rawOutputMeta = typeof outputRow.output_metadata_json === 'string'
+          ? JSON.parse(outputRow.output_metadata_json)
+          : typeof row.output_metadata === 'string' ? JSON.parse(row.output_metadata) : null
+      } catch {
+        rawOutputMeta = null
+      }
+      let outputType = row.modality
+      if (row.provider_type === 'local' && row.provider_id === 'local-media-tools') {
+        let parameters
+        try {
+          parameters = JSON.parse(row.input_json)
+        } catch {
+          throw new Error('本地媒体任务输入无效。')
+        }
+        const outputMeta = normalizeLocalMediaOutputMeta(rawOutputMeta, row, parameters)
+        if (!outputMeta) throw new Error('LOCAL_MEDIA_OUTPUT_METADATA_INVALID')
+        outputType = outputMeta.outputType
+      }
+      const cacheKey = `${projectId}:${taskId}:${outputIndex}`
       const output = await resolveTaskOutputFile(
         path.join(active.directory, '.vibepaper'),
         row.task_id,
         row.modality,
-        row.output_path,
+        outputRow.output_path,
         previewDigestCache.get(cacheKey),
+        operation,
       )
-      if (output.sha256 !== row.output_sha256 || output.sizeBytes !== row.output_size_bytes) {
+      if (output.sha256 !== outputRow.output_sha256 || output.sizeBytes !== outputRow.output_size_bytes) {
         previewDigestCache.delete(cacheKey)
         throw new Error('任务结果校验失败。')
       }
@@ -3672,11 +4255,13 @@ function createLocalProjectStore() {
         '.ogg': 'audio/ogg',
         '.m4a': 'audio/mp4',
         '.mp4': 'video/mp4',
+        '.mov': 'video/quicktime',
         '.webm': 'video/webm',
       }[extension]
-      if (!mimeType || (row.modality === 'image' && !mimeType.startsWith('image/'))
-        || (row.modality === 'audio' && !mimeType.startsWith('audio/'))
-        || (['video', 'compose'].includes(row.modality) && !mimeType.startsWith('video/'))) {
+      if (!mimeType || (outputType === 'image' && !mimeType.startsWith('image/'))
+        || (outputType === 'audio' && !mimeType.startsWith('audio/'))
+        || (['video', 'compose'].includes(outputType) && !mimeType.startsWith('video/'))
+        || !['image', 'audio', 'video', 'compose'].includes(outputType)) {
         throw new Error('任务结果格式与模态不匹配。')
       }
       return { filePath: output.filePath, mimeType, sizeBytes: output.sizeBytes }
@@ -3735,21 +4320,53 @@ function createLocalProjectStore() {
     })
   }
 
-  function recordTaskSucceeded(projectId, taskId, outputPath, rawOutputMeta = null) {
+  function recordTaskSucceeded(projectId, taskId, outputPath, rawOutputMeta = null, rawOutputPaths = null) {
     return enqueue(async () => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法完成任务。')
       if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
       const current = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
       if (!current) throw new Error('TASK_NOT_FOUND')
-      const output = await resolveTaskOutputFile(
-        path.join(active.directory, '.vibepaper'),
-        current.task_id,
-        current.modality,
-        outputPath,
-      )
+      const outputPaths = rawOutputPaths === null || rawOutputPaths === undefined ? [outputPath] : rawOutputPaths
+      if (!Array.isArray(outputPaths) || outputPaths.length < 1 || outputPaths.length > 4
+        || outputPaths.some((item) => typeof item !== 'string') || outputPaths[0] !== outputPath) {
+        throw new Error('TASK_RESULT_OUTPUTS_INVALID')
+      }
+      let parameters
+      try {
+        parameters = JSON.parse(current.input_json)
+      } catch {
+        throw new Error('TASK_INPUT_INVALID')
+      }
+      const expectedOutputCount = current.modality === 'image' ? (parameters.count ?? 1) : 1
+      if (outputPaths.length !== expectedOutputCount) throw new Error('TASK_RESULT_OUTPUT_COUNT_MISMATCH')
+      const outputs = []
+      const operation = typeof parameters.operation === 'string' ? parameters.operation : ''
+      for (const resultPath of outputPaths) {
+        outputs.push(await resolveTaskOutputFile(
+          path.join(active.directory, '.vibepaper'),
+          current.task_id,
+          current.modality,
+          resultPath,
+          null,
+          operation,
+        ))
+      }
       if (current.status === 'succeeded') {
-        if (current.output_path !== outputPath || current.output_sha256 !== output.sha256
-          || current.output_size_bytes !== output.sizeBytes) throw new Error('TASK_RESULT_CONFLICT')
+        const saved = active.database.prepare(`SELECT output_index, output_path, output_sha256, output_size_bytes
+          FROM task_outputs WHERE task_id = ? ORDER BY output_index`).all(taskId)
+        const savedOutputs = saved.length > 0 ? saved : [{
+          output_index: 0,
+          output_path: current.output_path,
+          output_sha256: current.output_sha256,
+          output_size_bytes: current.output_size_bytes,
+        }]
+        if (savedOutputs.length !== outputs.length || outputs.some((output, index) => {
+          const savedOutput = savedOutputs[index]
+          return !savedOutput || savedOutput.output_index !== index
+            || savedOutput.output_path !== outputPaths[index]
+            || savedOutput.output_sha256 !== output.sha256
+            || savedOutput.output_size_bytes !== output.sizeBytes
+        })) throw new Error('TASK_RESULT_CONFLICT')
         const row = active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId)
         const succeeded = taskFromRow(row)
         if (current.modality === 'audio' && current.provider_type === 'local'
@@ -3760,16 +4377,35 @@ function createLocalProjectStore() {
             throw new Error('TASK_RESULT_CONFLICT')
           }
         }
+        if (current.provider_type === 'local' && current.provider_id === 'local-media-tools') {
+          const retryMeta = normalizeLocalMediaOutputMeta(rawOutputMeta, current, parameters)
+          if (!retryMeta || JSON.stringify(retryMeta) !== JSON.stringify(succeeded.outputMeta)) {
+            throw new Error('TASK_RESULT_CONFLICT')
+          }
+        }
         return succeeded
       }
       if (current.status !== 'running') throw new Error('TASK_STATE_CONFLICT')
       const outputMeta = current.modality === 'audio' && current.provider_type === 'local'
         && current.provider_id === 'local-sapi-tts'
-        ? normalizeAudioOutputMeta(rawOutputMeta) : null
+        ? normalizeAudioOutputMeta(rawOutputMeta)
+        : current.provider_type === 'local' && current.provider_id === 'local-media-tools'
+          ? normalizeLocalMediaOutputMeta(rawOutputMeta, current, parameters)
+          : null
       if (current.modality === 'audio' && current.provider_type === 'local'
         && current.provider_id === 'local-sapi-tts' && !outputMeta) {
         throw new Error('AUDIO_OUTPUT_METADATA_INVALID')
       }
+      if (current.provider_type === 'local' && current.provider_id === 'local-media-tools' && !outputMeta) {
+        throw new Error('LOCAL_MEDIA_OUTPUT_METADATA_INVALID')
+      }
+      const outputInserts = outputs.map((output, index) => ({
+        index,
+        outputPath: outputPaths[index],
+        sha256: output.sha256,
+        sizeBytes: output.sizeBytes,
+        outputMeta: index === 0 && outputMeta ? outputMeta : null,
+      }))
       const now = new Date().toISOString()
       await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
       active.database.exec('BEGIN IMMEDIATE')
@@ -3778,12 +4414,22 @@ function createLocalProjectStore() {
           UPDATE tasks SET status = 'succeeded', output_path = ?, output_sha256 = ?, output_size_bytes = ?,
             error_code = NULL, updated_at = ?, completed_at = ?
           WHERE task_id = ? AND status = 'running'
-        `).run(outputPath, output.sha256, output.sizeBytes, now, now, taskId)
+        `).run(outputPath, outputs[0].sha256, outputs[0].sizeBytes, now, now, taskId)
         if (update.changes !== 1) throw new Error('TASK_STATE_CONFLICT')
+        const insertOutput = active.database.prepare(`INSERT INTO task_outputs (
+          task_id, output_index, output_path, output_sha256, output_size_bytes, output_metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?)`)
+        for (const output of outputInserts) {
+          insertOutput.run(taskId, output.index, output.outputPath, output.sha256, output.sizeBytes,
+            output.outputMeta ? JSON.stringify(output.outputMeta) : null)
+        }
         appendTaskEvent(active.database, taskId, 'succeeded', {
           outputPath,
-          outputSha256: output.sha256,
-          outputSizeBytes: output.sizeBytes,
+          outputSha256: outputs[0].sha256,
+          outputSizeBytes: outputs[0].sizeBytes,
+          outputs: outputInserts.map(({ index, outputPath: resultPath, sha256, sizeBytes }) => ({
+            index, outputPath: resultPath, outputSha256: sha256, outputSizeBytes: sizeBytes,
+          })),
           ...(outputMeta ? { outputMeta } : {}),
         }, now)
         active.database.exec('COMMIT')
@@ -3796,14 +4442,20 @@ function createLocalProjectStore() {
     })
   }
 
-  function recordTaskFailed(projectId, taskId, errorCode) {
+  function recordTaskFailed(projectId, taskId, errorCode, rawErrorMessage = null) {
     return enqueue(async () => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法更新任务。')
       if (typeof taskId !== 'string' || !taskId || typeof errorCode !== 'string'
         || !/^[A-Z0-9_]{1,120}$/u.test(errorCode)) throw new Error('任务失败信息无效。')
+      const errorMessage = typeof rawErrorMessage === 'string'
+        ? rawErrorMessage.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 1000)
+        : ''
+      const visibleErrorMessage = errorMessage || `生成任务失败（${errorCode}）。`
       const current = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
       if (!current) throw new Error('TASK_NOT_FOUND')
-      if (current.status === 'failed' && current.error_code === errorCode) return taskFromRow(current)
+      if (current.status === 'failed' && current.error_code === errorCode) {
+        return taskFromRow(active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId))
+      }
       if (current.status !== 'running') throw new Error('TASK_STATE_CONFLICT')
       const now = new Date().toISOString()
       await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
@@ -3814,9 +4466,9 @@ function createLocalProjectStore() {
           WHERE task_id = ? AND status = 'running'
         `).run(errorCode, now, now, taskId)
         if (update.changes !== 1) throw new Error('TASK_STATE_CONFLICT')
-        appendTaskEvent(active.database, taskId, 'failed', { errorCode }, now)
+        appendTaskEvent(active.database, taskId, 'failed', { errorCode, errorMessage: visibleErrorMessage }, now)
         active.database.exec('COMMIT')
-        return taskFromRow(active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId))
+        return taskFromRow(active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId))
       } catch (error) {
         active.database.exec('ROLLBACK')
         throw error
@@ -3831,19 +4483,92 @@ function createLocalProjectStore() {
       const current = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
       if (!current) throw new Error('TASK_NOT_FOUND')
       if (current.status === 'cancelled') return taskFromRow(current)
-      if (current.status !== 'queued') throw new Error('TASK_CANCELLATION_REQUIRES_WORKER')
+      if (!['queued', 'running'].includes(current.status)) throw new Error('TASK_CANCELLATION_REQUIRES_ACTIVE_TASK')
       const now = new Date().toISOString()
       await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
       active.database.exec('BEGIN IMMEDIATE')
       try {
         const update = active.database.prepare(`
           UPDATE tasks SET status = 'cancelled', error_code = NULL, updated_at = ?, completed_at = ?
-          WHERE task_id = ? AND status = 'queued'
+          WHERE task_id = ? AND status IN ('queued', 'running')
         `).run(now, now, taskId)
         if (update.changes !== 1) throw new Error('TASK_STATE_CONFLICT')
-        appendTaskEvent(active.database, taskId, 'cancelled', {}, now)
+        appendTaskEvent(active.database, taskId, 'cancelled', { fromStatus: current.status }, now)
         active.database.exec('COMMIT')
-        return taskFromRow(active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId))
+        return taskFromRow(active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId))
+      } catch (error) {
+        active.database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
+  function cleanupCancelledTaskOutput(projectId, taskId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法清理任务结果。')
+      if (typeof taskId !== 'string' || !taskId
+        || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(taskId)) {
+        throw new Error('任务标识无效。')
+      }
+      const task = active.database.prepare('SELECT status FROM tasks WHERE task_id = ?').get(taskId)
+      if (!task) throw new Error('TASK_NOT_FOUND')
+      if (task.status !== 'cancelled') throw new Error('TASK_OUTPUT_CLEANUP_REQUIRES_CANCELLED_TASK')
+      const dataDirectory = path.join(active.directory, '.vibepaper')
+      const generatedDirectory = path.join(dataDirectory, 'generated')
+      const generatedInfo = await fs.lstat(generatedDirectory).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
+      if (!generatedInfo) return false
+      if (!generatedInfo.isDirectory() || generatedInfo.isSymbolicLink()
+        || path.relative(generatedDirectory, await fs.realpath(generatedDirectory)) !== '') {
+        throw new Error('任务结果目录无效，无法清理。')
+      }
+      const taskDirectory = path.join(generatedDirectory, taskId)
+      const taskInfo = await fs.lstat(taskDirectory).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
+      if (!taskInfo) return false
+      if (!taskInfo.isDirectory() || taskInfo.isSymbolicLink()
+        || path.relative(taskDirectory, await fs.realpath(taskDirectory)) !== '') {
+        throw new Error('任务结果目录无效，无法清理。')
+      }
+      await invalidateBackupManifest(dataDirectory)
+      await fs.rm(taskDirectory, { recursive: true, force: true })
+      for (const cacheKey of previewDigestCache.keys()) {
+        if (cacheKey.startsWith(`${projectId}:${taskId}:`)) previewDigestCache.delete(cacheKey)
+      }
+      return true
+    })
+  }
+
+  function retryTask(projectId, taskId) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法重试任务。')
+      if (typeof taskId !== 'string' || !taskId) throw new Error('任务标识无效。')
+      const current = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (!current) throw new Error('TASK_NOT_FOUND')
+      if (current.status === 'queued' || current.status === 'running') {
+        return taskFromRow(active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId))
+      }
+      if (current.status === 'interrupted' && current.provider_type === 'cloud') {
+        throw new Error('云端任务中断后结果未知，当前无法安全自动重试。')
+      }
+      if (current.status !== 'failed' && !(current.status === 'interrupted' && current.provider_type === 'local')) {
+        throw new Error('任务不可重试。')
+      }
+      const now = new Date().toISOString()
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      active.database.exec('BEGIN IMMEDIATE')
+      try {
+        const update = active.database.prepare(`
+          UPDATE tasks SET status = 'queued', error_code = NULL, started_at = NULL,
+            completed_at = NULL, updated_at = ?
+          WHERE task_id = ? AND status = ?
+        `).run(now, taskId, current.status)
+        if (update.changes !== 1) throw new Error('TASK_STATE_CONFLICT')
+        appendTaskEvent(active.database, taskId, 'created', {
+          retry: true,
+          previousStatus: current.status,
+          previousErrorCode: current.error_code,
+        }, now)
+        active.database.exec('COMMIT')
+        return taskFromRow(active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId))
       } catch (error) {
         active.database.exec('ROLLBACK')
         throw error
@@ -3921,7 +4646,7 @@ function createLocalProjectStore() {
           } catch {
             throw new Error('画布命令结果快照损坏。')
           }
-          const localAsset = ['image', 'audio'].includes(payload.type) && typeof payload.params.assetId === 'string'
+          const localAsset = Object.hasOwn(ASSET_NODE_MIME_PREFIX, payload.type) && typeof payload.params.assetId === 'string'
             ? database.prepare('SELECT id FROM assets WHERE id = ?').get(payload.params.assetId)?.id
             : undefined
           const node = flowNodeFromPayload(payload, localAsset)
@@ -3970,7 +4695,7 @@ function createLocalProjectStore() {
           output: null,
           execStatus: 'idle',
         }
-        const localAssetId = ['image', 'audio'].includes(payload.type) && typeof payload.params.assetId === 'string'
+        const localAssetId = Object.hasOwn(ASSET_NODE_MIME_PREFIX, payload.type) && typeof payload.params.assetId === 'string'
           ? database.prepare('SELECT id FROM assets WHERE id = ?').get(payload.params.assetId)?.id
           : undefined
         const node = flowNodeFromPayload(payload, localAssetId)
@@ -4895,6 +5620,7 @@ function createLocalProjectStore() {
     addStack,
     backupProject,
     cancelTask,
+    cleanupCancelledTaskOutput,
     claimNextTask,
     close,
     connectEdge,
@@ -4911,6 +5637,7 @@ function createLocalProjectStore() {
     getTask,
     getTaskInput,
     inspectProject,
+    importCanvasDocument,
     importAsset,
     saveTaskOutputToLibrary,
     listAssets,
@@ -4923,12 +5650,15 @@ function createLocalProjectStore() {
     openProject,
     recordTaskFailed,
     recordTaskSucceeded,
+    retryTask,
     resolveAsset,
     renameAsset,
     replaceAsset,
+    replaceAssetFile,
     replaceAudioAsset,
     deleteAsset,
     restoreBackup,
+    renameProject,
     saveCanvas,
     searchTasks,
     updateGroup,
@@ -4939,9 +5669,10 @@ function createLocalProjectStore() {
 
 function publicAsset(row) {
   const mimeType = row.mime_type ?? row.mimeType
+  const assetType = typeof mimeType === 'string' ? mimeType.split('/', 1)[0] : ''
   return {
     assetId: row.id ?? row.assetId,
-    assetType: typeof mimeType === 'string' && mimeType.startsWith('audio/') ? 'audio' : 'image',
+    assetType: ['image', 'video', 'audio', 'text'].includes(assetType) ? assetType : 'image',
     name: row.original_name ?? row.name,
     mimeType,
     sizeBytes: Number(row.size_bytes ?? row.sizeBytes),

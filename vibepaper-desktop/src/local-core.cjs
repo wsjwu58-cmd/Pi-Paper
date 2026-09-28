@@ -12,6 +12,16 @@ async function dispatch(method, payload) {
     case 'project:create':
       if (!payload || typeof payload.parentDirectory !== 'string') throw new Error('新项目保存位置无效。')
       return store.createProject(payload.parentDirectory, payload.name)
+    case 'project:rename':
+      if (!payload || typeof payload.directory !== 'string' || typeof payload.projectId !== 'string') {
+        throw new Error('项目重命名请求无效。')
+      }
+      return store.renameProject(payload.projectId, payload.directory, payload.name)
+    case 'canvas:import':
+      if (!payload || typeof payload.parentDirectory !== 'string' || !payload.document || typeof payload.document !== 'object') {
+        throw new Error('画布导入请求无效。')
+      }
+      return store.importCanvasDocument(payload.parentDirectory, payload.document)
     case 'project:open':
       if (!payload || typeof payload.directory !== 'string') throw new Error('项目目录无效。')
       if ((payload.expectedProjectId === undefined) !== (payload.expectedCanvasId === undefined)
@@ -49,7 +59,7 @@ async function dispatch(method, payload) {
         throw new Error('素材导入请求无效。')
       }
       const assetKind = payload.assetKind ?? 'image'
-      if (assetKind !== 'image' && assetKind !== 'local') throw new Error('素材导入类型无效。')
+      if (!['image', 'video', 'audio', 'text', 'local'].includes(assetKind)) throw new Error('素材导入类型无效。')
       return store.importAsset(payload.sourcePath, payload.projectId, assetKind)
     }
     case 'asset:save-task-output':
@@ -65,6 +75,8 @@ async function dispatch(method, payload) {
       return store.replaceAsset(payload?.projectId, payload?.assetId, payload?.sourcePath)
     case 'asset:replace-audio':
       return store.replaceAudioAsset(payload?.projectId, payload?.assetId, payload?.sourcePath)
+    case 'asset:replace-file':
+      return store.replaceAssetFile(payload?.projectId, payload?.assetId, payload?.sourcePath)
     case 'asset:delete':
       return store.deleteAsset(payload?.projectId, payload?.assetId)
     case 'asset:resolve':
@@ -134,6 +146,10 @@ async function dispatch(method, payload) {
       return store.createTask(payload)
     case 'task:cancel':
       return store.cancelTask(payload?.projectId, payload?.taskId)
+    case 'task:cleanup-cancelled-output':
+      return store.cleanupCancelledTaskOutput(payload?.projectId, payload?.taskId)
+    case 'task:retry':
+      return store.retryTask(payload?.projectId, payload?.taskId)
     case 'task:list':
       return store.listTasks(payload?.projectId, payload?.limit)
     case 'task:search':
@@ -147,15 +163,15 @@ async function dispatch(method, payload) {
     case 'task:read-output':
       return store.readTaskOutputText(payload?.projectId, payload?.taskId)
     case 'task:resolve-output-preview':
-      return store.resolveTaskOutputForPreview(payload?.projectId, payload?.taskId)
+      return store.resolveTaskOutputForPreview(payload?.projectId, payload?.taskId, payload?.outputIndex)
     case 'task:events':
       return store.listTaskEvents(payload?.projectId, payload?.taskId, payload?.afterSeq)
     case 'task:claim-next':
       return store.claimNextTask(payload?.projectId)
     case 'task:succeeded':
-      return store.recordTaskSucceeded(payload?.projectId, payload?.taskId, payload?.outputPath, payload?.outputMeta)
+      return store.recordTaskSucceeded(payload?.projectId, payload?.taskId, payload?.outputPath, payload?.outputMeta, payload?.outputPaths)
     case 'task:failed':
-      return store.recordTaskFailed(payload?.projectId, payload?.taskId, payload?.errorCode)
+      return store.recordTaskFailed(payload?.projectId, payload?.taskId, payload?.errorCode, payload?.errorMessage)
     case 'core:close':
       await store.close()
       return null

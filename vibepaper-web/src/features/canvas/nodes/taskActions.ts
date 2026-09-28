@@ -57,7 +57,25 @@ export async function submitNodeTask(
         throw new Error('Windows SAPI 本地语音模型在当前平台不可用。')
       }
     }
-    const prompt = typeof modelParams.prompt === 'string' ? modelParams.prompt.trim() : ''
+    const rawPrompt = typeof modelParams.prompt === 'string' ? modelParams.prompt.trim() : ''
+    const operation = typeof modelParams.operation === 'string' ? modelParams.operation.trim() : ''
+    const imageOperationPrompt = modality === 'image' && (operation === '扩图' || operation === 'outpaint_image')
+      ? '扩展画面边缘，保持主体完整'
+      : modality === 'image' && (operation === '超分' || operation === 'upscale_image')
+        ? '提升清晰度与细节'
+        : ''
+    const localOperationPrompt = modality === 'image' && operation === '裁剪'
+      ? '对输入图片执行裁剪'
+      : modality === 'image' && operation === '三视图'
+        ? '基于输入图片制作三视图'
+        : modality === 'video' && operation === '剪辑'
+          ? '按指定起止时间剪辑输入视频'
+          : modality === 'video' && operation === '提帧'
+            ? '从输入视频提取指定时间的画面'
+            : modality === 'video' && operation === '超分'
+              ? '将输入视频缩放到指定分辨率'
+              : ''
+    const prompt = rawPrompt || imageOperationPrompt || localOperationPrompt
     if (!prompt) throw new Error('请先填写生成提示词。')
 
     const { prompt: _prompt, ...parameters } = modelParams

@@ -9,6 +9,7 @@ const { normalizeLocalTextModelConfig } = require('./local-model-catalog.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
 const { composeVideos: runComposeVideos, ComposeFailure } = require('./compose-provider.cjs')
 const { MODEL_ID: SAPI_MODEL_ID, PROVIDER_ID: SAPI_PROVIDER_ID, runWindowsSapiTts, SapiFailure } = require('./sapi-tts.cjs')
+const { MediaOperationFailure, runLocalMediaOperation } = require('./media-postprocess.cjs')
 
 if (!parentPort && require.main === module) throw new Error('Generation Worker must run as an Electron utility process.')
 
@@ -16,6 +17,8 @@ const MAX_PROMPT_CHARS = 200_000
 const MAX_OUTPUT_CHARS = 20_000
 const MAX_OUTPUT_BYTES = 1024 * 1024
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+const MAX_PROVIDER_ERROR_BYTES = 16 * 1024
+const MAX_PROVIDER_ERROR_MESSAGE_CHARS = 800
 const REQUEST_TIMEOUT_MS = 3 * 60 * 1000
 const AGNES_VIDEO_POLL_INTERVAL_MS = 10_000
 const AGNES_VIDEO_TIMEOUT_MS = 15 * 60 * 1000
@@ -48,8 +51,32 @@ function postJson(endpoint, payload, apiKey = null, timeoutMs = REQUEST_TIMEOUT_
     }, (response) => {
       if (response.statusCode !== 200 && response.statusCode !== 201 && response.statusCode !== 202) {
         const statusCode = response.statusCode
-        response.resume()
-        reject(new WorkerFailure(apiKey ? 'CLOUD_REQUEST_FAILED' : 'LOCAL_MODEL_REQUEST_FAILED', `模型服务返回 HTTP ${statusCode ?? '错误'}。`, statusCode))
+        const chunks = []
+        let size = 0
+        response.on('data', (chunk) => {
+          if (size >= MAX_PROVIDER_ERROR_BYTES) return
+          const bytes = Buffer.from(chunk)
+          const remaining = MAX_PROVIDER_ERROR_BYTES - size
+          chunks.push(bytes.subarray(0, remaining))
+          size += Math.min(bytes.length, remaining)
+        })
+        response.on('error', () => reject(new WorkerFailure(
+          apiKey ? 'CLOUD_REQUEST_FAILED' : 'LOCAL_MODEL_REQUEST_FAILED',
+          `模型服务返回 HTTP ${statusCode ?? '错误'}。`,
+          statusCode,
+        )))
+        response.on('end', () => {
+          const detail = providerErrorDetail(Buffer.concat(chunks).toString('utf8'), apiKey)
+          const provider = apiKey ? 'Agnes' : '本地模型服务'
+          const message = detail
+            ? `${provider}请求失败 HTTP ${statusCode ?? '错误'}：${detail}`
+            : `${provider}请求失败 HTTP ${statusCode ?? '错误'}。`
+          reject(new WorkerFailure(
+            apiKey ? 'CLOUD_REQUEST_FAILED' : 'LOCAL_MODEL_REQUEST_FAILED',
+            message,
+            statusCode,
+          ))
+        })
         return
       }
 
@@ -82,6 +109,58 @@ function postJson(endpoint, payload, apiKey = null, timeoutMs = REQUEST_TIMEOUT_
   })
 }
 
+function providerErrorDetail(body, apiKey = null) {
+  const clean = (value) => {
+    if (typeof value !== 'string') return ''
+    let message = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, ' ').trim()
+    if (apiKey) message = message.split(apiKey).join('[已隐藏凭据]')
+    message = message.replace(/\bBearer\s+[^\s"'<>]+/giu, 'Bearer [已隐藏凭据]')
+    return message.slice(0, MAX_PROVIDER_ERROR_MESSAGE_CHARS)
+  }
+
+  const text = clean(body)
+  if (!text) return ''
+  try {
+    const payload = JSON.parse(text)
+    const candidates = [
+      payload?.error?.message,
+      payload?.error?.detail,
+      typeof payload?.error === 'string' ? payload.error : null,
+      payload?.message,
+      payload?.detail,
+      payload?.msg,
+      payload?.error_description,
+      payload?.reason,
+      payload?.errors?.[0]?.message,
+    ]
+    for (const candidate of candidates) {
+      const message = clean(candidate)
+      if (message) return message
+    }
+    return clean(JSON.stringify(payload))
+  } catch {
+    return text.replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, MAX_PROVIDER_ERROR_MESSAGE_CHARS)
+  }
+}
+
+async function readResponseErrorDetail(response, apiKey = null) {
+  const chunks = []
+  let size = 0
+  try {
+    for await (const chunk of response) {
+      if (size >= MAX_PROVIDER_ERROR_BYTES) continue
+      const bytes = Buffer.from(chunk)
+      const remaining = MAX_PROVIDER_ERROR_BYTES - size
+      chunks.push(bytes.subarray(0, remaining))
+      size += Math.min(bytes.length, remaining)
+    }
+  } catch {
+    response.resume?.()
+  }
+  response.resume?.()
+  return providerErrorDetail(Buffer.concat(chunks).toString('utf8'), apiKey)
+}
+
 async function postAgnesJson(endpoint, payload, apiKey, timeoutMs, dependencies = {}) {
   const requestJson = dependencies.postJson || postJson
   const sleep = dependencies.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
@@ -95,7 +174,7 @@ async function postAgnesJson(endpoint, payload, apiKey, timeoutMs, dependencies 
       lastError = error
       if (!retryStatuses.has(error?.statusCode) || attempt === 5) {
         if (error?.statusCode === 429) {
-          throw new WorkerFailure('CLOUD_RATE_LIMITED', 'Agnes 请求过于频繁，请稍后重试。', 429)
+          throw new WorkerFailure('CLOUD_RATE_LIMITED', error.message || 'Agnes 请求过于频繁，请稍后重试。', 429)
         }
         throw error
       }
@@ -129,7 +208,7 @@ async function writeOutput(outputDirectory, taskId, fileName, output) {
     throw new WorkerFailure('LOCAL_MODEL_OUTPUT_INVALID', '本地任务输出目录缺失或路径无效。')
   }
 
-  if (!/^(?:result\.txt|result\.(?:png|jpg|webp|mp4|webm))$/u.test(fileName)
+  if (!/^(?:result\.txt|result(?:-[1-3])?\.(?:png|jpg|webp|mp4|webm))$/u.test(fileName)
     || !Buffer.isBuffer(output) || output.length === 0 || output.length > MAX_MEDIA_OUTPUT_BYTES) {
     throw new WorkerFailure('MODEL_OUTPUT_INVALID', '模型结果为空、格式无效或超过本地保存上限。')
   }
@@ -351,8 +430,12 @@ async function getAgnesResponse(urlValue, apiKey, timeoutMs = 60_000, dependenci
   }
 }
 
-async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality, dependencies = {}) {
+async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality, dependencies = {}, outputIndex = 0) {
   const mediaUrl = agnesMediaUrl(urlValue)
+  if (!Number.isSafeInteger(outputIndex) || outputIndex < 0 || outputIndex > 3) {
+    throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回了无效的结果序号。')
+  }
+  const fileName = (extension) => `result${outputIndex === 0 ? '' : `-${outputIndex}`}.${extension}`
   if (mediaUrl.startsWith('data:')) {
     const match = /^data:(image\/(?:png|jpeg|webp)|video\/(?:mp4|webm));base64,([A-Za-z0-9+/=]+)$/iu.exec(mediaUrl)
     if (!match) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 返回了无法保存的媒体数据。')
@@ -363,7 +446,7 @@ async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality, 
     }
     const ext = extensionForMediaType(match[1], modality)
     assertMediaSignature(ext, buffer)
-    return writeOutput(outputDirectory, taskId, `result.${ext}`, buffer)
+    return writeOutput(outputDirectory, taskId, fileName(ext), buffer)
   }
 
   const getResponse = dependencies.getAgnesResponse || getAgnesResponse
@@ -384,7 +467,7 @@ async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality, 
     response.destroy()
     throw new WorkerFailure('MODEL_OUTPUT_INVALID', '本地任务输出目录无效。')
   }
-  const finalPath = path.join(directory, `result.${extension}`)
+  const finalPath = path.join(directory, fileName(extension))
   const temporaryPath = path.join(directory, `.result.${randomUUID()}.tmp`)
   let handle
   let totalBytes = 0
@@ -528,9 +611,33 @@ function firstAgnesImageReference(parameters) {
 }
 
 function buildAgnesImageRequest(job) {
-  const prompt = typeof job.prompt === 'string' ? job.prompt.trim() : ''
-  if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new WorkerFailure('CLOUD_INPUT_INVALID', '图像生成提示词无效。')
   const parameters = job.parameters && typeof job.parameters === 'object' ? job.parameters : {}
+  const operation = typeof parameters.operation === 'string' ? parameters.operation.trim() : ''
+  if (['裁剪', '三视图', 'crop_image', 'three_view'].includes(operation)) {
+    throw new WorkerFailure('UNSUPPORTED_IMAGE_OPERATION', '桌面本地暂不支持图片裁剪或三视图处理。')
+  }
+  const operationPrompts = {
+    '扩图': '扩展画面边缘，保持主体完整',
+    outpaint_image: '扩展画面边缘，保持主体完整',
+    '超分': '提升清晰度与细节',
+    upscale_image: '提升清晰度与细节',
+  }
+  if (operation && !Object.hasOwn(operationPrompts, operation)) {
+    throw new WorkerFailure('UNSUPPORTED_IMAGE_OPERATION', '桌面本地暂不支持此图片处理操作。')
+  }
+  const rawPrompt = typeof job.prompt === 'string' ? job.prompt.trim() : ''
+  let prompt = rawPrompt
+  if (operation === '扩图' || operation === 'outpaint_image') {
+    prompt = `${prompt || operationPrompts[operation]}，outpainting，扩图`
+  } else if (operation === '超分' || operation === 'upscale_image') {
+    prompt = `${prompt || operationPrompts[operation]}，高清超分，保留原构图`
+  }
+  if (typeof parameters.style === 'string' && parameters.style.trim()) {
+    prompt = `${prompt}\n风格：${parameters.style.trim()}`
+  }
+  if (!prompt.trim() || prompt.length > MAX_PROMPT_CHARS) {
+    throw new WorkerFailure('CLOUD_INPUT_INVALID', '图像生成提示词无效。')
+  }
   const size = sizeFromImageParameters(parameters)
   const ratio = ratioFromParameters(parameters)
   if (!['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', '2:3', '3:2'].includes(ratio)) {
@@ -573,23 +680,43 @@ async function runImageTask(job, dependencies = {}) {
   assertAgnesJob(job, 'image')
   assertTaskOutputTarget(job)
   const downloadOutput = dependencies.downloadAgnesOutput || downloadAgnesOutput
-  const response = await postAgnesJson(`${AGNES_API_BASE_URL}/images/generations`,
-    buildAgnesImageRequest(job), job.apiKey, 6 * 60 * 1000, dependencies)
-  const candidates = [response?.data?.[0], response?.data, response]
-  let url = null
-  for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== 'object') continue
-    if (typeof candidate.url === 'string') {
-      url = candidate.url
-      break
-    }
-    if (typeof candidate.b64_json === 'string') {
-      url = `data:image/jpeg;base64,${candidate.b64_json}`
-      break
-    }
+  const parameters = job.parameters && typeof job.parameters === 'object' ? job.parameters : {}
+  const count = parameters.count === undefined ? 1 : parameters.count
+  if (!Number.isSafeInteger(count) || count < 1 || count > 4) {
+    throw new WorkerFailure('CLOUD_INPUT_INVALID', '图片生成数量必须为 1–4。')
   }
-  if (!url) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 未返回图像结果。')
-  return { outputPath: await downloadOutput(url, job.outputDirectory, job.taskId, 'image') }
+  const request = buildAgnesImageRequest(job)
+  const outputPaths = []
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const response = await postAgnesJson(`${AGNES_API_BASE_URL}/images/generations`,
+        request, job.apiKey, 6 * 60 * 1000, dependencies)
+      const candidates = [response?.data?.[0], response?.data, response]
+      let url = null
+      for (const candidate of candidates) {
+        if (!candidate || typeof candidate !== 'object') continue
+        if (typeof candidate.url === 'string') {
+          url = candidate.url
+          break
+        }
+        if (typeof candidate.b64_json === 'string') {
+          url = `data:image/jpeg;base64,${candidate.b64_json}`
+          break
+        }
+      }
+      if (!url) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', `Agnes 未返回第 ${index + 1} 张图像结果。`)
+      outputPaths.push(await downloadOutput(url, job.outputDirectory, job.taskId, 'image', dependencies, index))
+    }
+  } catch (error) {
+    for (const outputPath of outputPaths) {
+      const resolvedOutput = path.resolve(job.outputDirectory, path.basename(outputPath))
+      if (path.dirname(resolvedOutput) === path.resolve(job.outputDirectory)) {
+        await fs.rm(resolvedOutput, { force: true }).catch(() => undefined)
+      }
+    }
+    throw error
+  }
+  return { outputPath: outputPaths[0], outputPaths }
 }
 
 function buildAgnesVideoRequest(job) {
@@ -695,8 +822,10 @@ async function runVideoTask(job, dependencies = {}) {
       continue
     }
     if (status.statusCode < 200 || status.statusCode >= 300) {
-      status.resume()
-      throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'Agnes 视频状态查询失败。')
+      const detail = await readResponseErrorDetail(status, job.apiKey)
+      throw new WorkerFailure('CLOUD_REQUEST_FAILED', detail
+        ? `Agnes 视频状态查询失败 HTTP ${status.statusCode}：${detail}`
+        : `Agnes 视频状态查询失败 HTTP ${status.statusCode}。`, status.statusCode)
     }
     nextPollDelayMs = pollIntervalMs
     const chunks = []
@@ -714,7 +843,10 @@ async function runVideoTask(job, dependencies = {}) {
     }
     lastStatus = typeof payload?.status === 'string' ? payload.status.toLowerCase() : ''
     if (['failed', 'error', 'cancelled', 'canceled'].includes(lastStatus)) {
-      throw new WorkerFailure('CLOUD_GENERATION_FAILED', 'Agnes 视频生成失败。')
+      const detail = providerErrorDetail(JSON.stringify(payload), job.apiKey)
+      throw new WorkerFailure('CLOUD_GENERATION_FAILED', detail
+        ? `Agnes 视频生成失败：${detail}`
+        : 'Agnes 视频生成失败。')
     }
     if (['completed', 'succeeded', 'success', 'done'].includes(lastStatus)) {
       const videoUrl = extractVideoUrl(payload)
@@ -744,7 +876,7 @@ let running = false
 if (parentPort) parentPort.on('message', async (event) => {
   const request = event?.data ?? event
   if (!request || !Number.isSafeInteger(request.id)
-    || !['generate:text', 'generate:image', 'generate:audio', 'generate:video', 'generate:compose'].includes(request.method)) return
+    || !['generate:text', 'generate:image', 'generate:audio', 'generate:video', 'generate:compose', 'postprocess:image', 'postprocess:video'].includes(request.method)) return
   if (running) {
     parentPort.postMessage({ id: request.id, ok: false, errorCode: 'WORKER_BUSY' })
     return
@@ -754,20 +886,34 @@ if (parentPort) parentPort.on('message', async (event) => {
     const result = request.method === 'generate:text' ? await runTextTask(request.payload)
       : request.method === 'generate:image' ? await runImageTask(request.payload)
         : request.method === 'generate:audio' ? await runAudioTask(request.payload)
-        : request.method === 'generate:video' ? await runVideoTask(request.payload)
-          : await runComposeVideos(request.payload)
+          : request.method === 'generate:video' ? await runVideoTask(request.payload)
+            : request.method === 'generate:compose' ? await runComposeVideos(request.payload)
+              : await runLocalMediaOperation(request.payload)
     parentPort.postMessage({ id: request.id, ok: true, result })
   } catch (error) {
+    const errorCode = error instanceof WorkerFailure || error instanceof ComposeFailure || error instanceof SapiFailure
+      || error instanceof MediaOperationFailure
+      ? error.code : 'LOCAL_MODEL_EXECUTION_FAILED'
+    const apiKey = typeof request.payload?.apiKey === 'string' ? request.payload.apiKey : ''
     parentPort.postMessage({
       id: request.id,
       ok: false,
-      errorCode: error instanceof WorkerFailure || error instanceof ComposeFailure || error instanceof SapiFailure
-        ? error.code : 'LOCAL_MODEL_EXECUTION_FAILED',
+      errorCode,
+      errorMessage: sanitizeWorkerErrorMessage(error?.message, apiKey, errorCode),
     })
   } finally {
     running = false
   }
 })
+
+function sanitizeWorkerErrorMessage(value, apiKey = '', fallback = '生成任务执行失败。') {
+  let message = typeof value === 'string' ? value : ''
+  if (apiKey) message = message.split(apiKey).join('[已隐藏凭据]')
+  message = message.replace(/\bBearer\s+[^\s"'<>]+/giu, 'Bearer [已隐藏凭据]')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, ' ')
+    .replace(/\s+/gu, ' ').trim()
+  return (message || fallback).slice(0, MAX_PROVIDER_ERROR_MESSAGE_CHARS)
+}
 
 module.exports = {
   WorkerFailure,
@@ -780,6 +926,8 @@ module.exports = {
   hasMediaSignature,
   isPublicAddress,
   normalizeAgnesVideoReference,
+  postJson,
+  providerErrorDetail,
   runImageTask,
   runVideoTask,
   sizeFromImageParameters,

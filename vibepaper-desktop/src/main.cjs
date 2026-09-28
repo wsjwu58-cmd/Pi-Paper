@@ -17,11 +17,19 @@ const {
   protocol,
   safeStorage,
   session,
+  shell,
   utilityProcess,
 } = require('electron')
 const { AGNES_MODELS, AGNES_PROVIDER_ID, getAgnesModelCatalog } = require('./agnes-model-catalog.cjs')
 const { COMPOSE_MODEL_ID, COMPOSE_PROVIDER_ID } = require('./compose-provider.cjs')
 const { MODEL_ID: SAPI_MODEL_ID, PROVIDER_ID: SAPI_PROVIDER_ID } = require('./sapi-tts.cjs')
+const {
+  LOCAL_MEDIA_MODEL_ID,
+  LOCAL_MEDIA_PROVIDER_ID,
+  isLocalMediaOperation,
+  parseLocalMediaReference,
+  resolveLocalMediaOperationSource,
+} = require('./media-postprocess.cjs')
 const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = require('./agent-model-directory.cjs')
 const { ALLOWED_AGENT_CORE_METHODS } = require('./agent-local-tools.cjs')
@@ -45,6 +53,7 @@ let agnesCredentialFile = null
 let quittingAfterCoreClose = false
 let stopping = false
 let generationWorker = null
+let activeGenerationExecution = null
 let agentWorker = null
 let agentProjectId = null
 let activeProjectDirectory = null
@@ -177,8 +186,8 @@ function startLocalCore() {
   }
 }
 
-function codedError(code) {
-  const error = new Error(code)
+function codedError(code, message = code) {
+  const error = new Error(message)
   error.code = code
   return error
 }
@@ -207,10 +216,12 @@ function startGenerationWorker() {
       return new Promise((resolve, reject) => {
         const composeInputCount = payload?.modality === 'compose' && Array.isArray(payload?.parameters?.inputNodeIds)
           ? payload.parameters.inputNodeIds.length : 0
+        const imageCount = payload?.modality === 'image' && Number.isSafeInteger(payload?.parameters?.count)
+          ? Math.max(1, Math.min(4, payload.parameters.count)) : 1
         const timeout = payload?.modality === 'compose'
           ? Math.min(24 * 60 * 60 * 1000, composeInputCount * 4 * 60 * 1000 + 8 * 60 * 1000)
           : payload?.modality === 'video' ? 17 * 60 * 1000
-          : payload?.providerType === 'cloud' && payload?.modality === 'image' ? 10 * 60 * 1000
+          : payload?.providerType === 'cloud' && payload?.modality === 'image' ? imageCount * 10 * 60 * 1000
             : payload?.providerType === 'cloud' ? 8 * 60 * 1000
             : 4 * 60 * 1000
         const timer = setTimeout(() => {
@@ -218,7 +229,7 @@ function startGenerationWorker() {
           child.kill()
           reject(codedError(payload?.providerType === 'cloud' ? 'CLOUD_REQUEST_TIMEOUT' : 'LOCAL_MODEL_UNAVAILABLE'))
         }, timeout)
-        pending.set(id, { resolve, reject, timer })
+        pending.set(id, { resolve, reject, timer, apiKey: payload?.apiKey })
         try {
           child.postMessage({ id, method, payload })
         } catch {
@@ -257,7 +268,16 @@ function startGenerationWorker() {
     clearTimeout(request.timer)
     pending.delete(message.id)
     if (message.ok) request.resolve(message.result)
-    else request.reject(codedError(typeof message.errorCode === 'string' ? message.errorCode : 'LOCAL_MODEL_EXECUTION_FAILED'))
+    else {
+      const errorCode = typeof message.errorCode === 'string' ? message.errorCode : 'LOCAL_MODEL_EXECUTION_FAILED'
+      let errorMessage = typeof message.errorMessage === 'string' ? message.errorMessage : errorCode
+      const apiKey = typeof request.apiKey === 'string' ? request.apiKey : ''
+      if (apiKey) errorMessage = errorMessage.split(apiKey).join('[已隐藏凭据]')
+      errorMessage = errorMessage.replace(/\bBearer\s+[^\s"'<>]+/giu, 'Bearer [已隐藏凭据]')
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, ' ')
+        .replace(/\s+/gu, ' ').trim().slice(0, 800)
+      request.reject(codedError(errorCode, errorMessage || errorCode))
+    }
   })
   child.on('error', () => {
     failWorker(codedError('LOCAL_MODEL_UNAVAILABLE'))
@@ -493,9 +513,13 @@ async function drainTaskQueue(projectId) {
     if (!claimed) return
     if (stopping) return
     const { task, parameters, outputDirectory } = claimed
+    let taskWorker = null
+    let taskCredential = ''
+    let workerMethod = null
     try {
       let model
       let inputPaths
+      let workerParameters = parameters
       if (task.modality === 'compose') {
         if (task.providerType !== 'local' || task.providerId !== COMPOSE_PROVIDER_ID
           || task.modelId !== COMPOSE_MODEL_ID) throw codedError('MODEL_UNAVAILABLE')
@@ -508,6 +532,29 @@ async function drainTaskQueue(projectId) {
           providerType: 'local',
           modelId: COMPOSE_MODEL_ID,
         }
+      } else if (task.providerType === 'local' && task.providerId === LOCAL_MEDIA_PROVIDER_ID) {
+        if (task.modelId !== LOCAL_MEDIA_MODEL_ID || !isLocalMediaOperation(task.modality, parameters?.operation)) {
+          throw codedError('UNSUPPORTED_MEDIA_OPERATION')
+        }
+        model = {
+          providerId: LOCAL_MEDIA_PROVIDER_ID,
+          providerType: 'local',
+          modelId: LOCAL_MEDIA_MODEL_ID,
+        }
+        const taskProjectDirectory = activeProjectDirectory
+        const activeProject = await localCore.request('project:get-active')
+        if (!taskProjectDirectory || activeProject?.projectId !== projectId
+          || activeProjectDirectory !== taskProjectDirectory) {
+          throw codedError('TASK_PROJECT_CONTEXT_CHANGED')
+        }
+        const sourcePath = await resolveLocalMediaOperationSource(parameters?.sourceUrl, {
+          localCore,
+          projectId,
+          projectDirectory: taskProjectDirectory,
+          modality: task.modality,
+        })
+        workerMethod = `postprocess:${task.modality}`
+        workerParameters = { ...parameters, sourcePath }
       } else if (task.providerType === 'local' && task.modality === 'audio') {
         if (task.providerId !== SAPI_PROVIDER_ID || task.modelId !== SAPI_MODEL_ID) {
           throw codedError('MODEL_UNAVAILABLE')
@@ -530,6 +577,7 @@ async function drainTaskQueue(projectId) {
         }
         const apiKey = await getAgnesApiKey()
         if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
+        taskCredential = apiKey
         model = {
           providerId: AGNES_PROVIDER_ID,
           providerType: 'cloud',
@@ -540,7 +588,6 @@ async function drainTaskQueue(projectId) {
       } else {
         throw codedError('PROVIDER_TYPE_UNSUPPORTED')
       }
-      let workerParameters = parameters
       if (task.providerType === 'cloud' && ['image', 'video'].includes(task.modality)) {
         const taskProjectDirectory = activeProjectDirectory
         const activeProject = await localCore.request('project:get-active')
@@ -555,8 +602,9 @@ async function drainTaskQueue(projectId) {
         })
         if (activeProjectDirectory !== taskProjectDirectory) throw codedError('TASK_PROJECT_CONTEXT_CHANGED')
       }
-      const worker = startGenerationWorker()
-      const result = await worker.request(`generate:${task.modality}`, {
+      taskWorker = startGenerationWorker()
+      activeGenerationExecution = { projectId, taskId: task.taskId, worker: taskWorker }
+      const result = await taskWorker.request(workerMethod ?? `generate:${task.modality}`, {
         taskId: task.taskId,
         modality: task.modality,
         providerType: task.providerType,
@@ -575,16 +623,28 @@ async function drainTaskQueue(projectId) {
         taskId: task.taskId,
         outputPath: result?.outputPath,
         outputMeta: result?.outputMeta,
+        outputPaths: result?.outputPaths,
       })
     } catch (error) {
       if (stopping) return
+      const currentTask = await localCore.request('task:get', { projectId, taskId: task.taskId }).catch(() => null)
+      if (currentTask?.status === 'cancelled') continue
       const errorCode = typeof error?.code === 'string' && /^[A-Z0-9_]{1,120}$/u.test(error.code)
         ? error.code
         : 'LOCAL_MODEL_EXECUTION_FAILED'
+      let errorMessage = typeof error?.message === 'string' ? error.message : errorCode
+      if (taskCredential) errorMessage = errorMessage.split(taskCredential).join('[已隐藏凭据]')
+      errorMessage = errorMessage.replace(/\bBearer\s+[^\s"'<>]+/giu, 'Bearer [已隐藏凭据]')
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, ' ')
+        .replace(/\s+/gu, ' ').trim().slice(0, 800) || errorCode
       try {
-        await localCore.request('task:failed', { projectId, taskId: task.taskId, errorCode })
+        await localCore.request('task:failed', { projectId, taskId: task.taskId, errorCode, errorMessage })
       } catch {
         return
+      }
+    } finally {
+      if (activeGenerationExecution?.taskId === task.taskId && activeGenerationExecution.projectId === projectId) {
+        activeGenerationExecution = null
       }
     }
   }
@@ -851,13 +911,17 @@ function registerRendererProtocol() {
       return new Response('Bad path', { status: 400, headers: { 'content-type': 'text/plain' } })
     }
     const taskOutputMatch = /^\/tasks\/([a-f0-9-]{36})\/output$/iu.exec(requestedPath)
-    if (taskOutputMatch && !url.search && !url.hash) {
+    const hasValidTaskOutputQuery = !url.search
+      || url.searchParams.size === 1 && url.searchParams.has('index')
+        && /^[0-3]$/u.test(url.searchParams.get('index') ?? '')
+    if (taskOutputMatch && hasValidTaskOutputQuery && !url.hash) {
       try {
         const activeProject = await localCore.request('project:get-active')
         if (!activeProject) throw new Error('NO_ACTIVE_PROJECT')
         const output = await localCore.request('task:resolve-output-preview', {
           projectId: activeProject.projectId,
           taskId: taskOutputMatch[1],
+          outputIndex: url.search ? Number(url.searchParams.get('index')) : 0,
         })
         const rangeHeader = request.headers.get('range')
         let start = 0
@@ -903,12 +967,44 @@ function registerRendererProtocol() {
     if (assetMatch && !url.search && !url.hash) {
       try {
         const asset = await localCore.request('asset:resolve', { assetId: assetMatch[1] })
-        const fileResponse = await net.fetch(pathToFileURL(asset.filePath).toString())
-        const headers = new Headers(fileResponse.headers)
-        headers.set('content-type', asset.mimeType)
-        headers.set('x-content-type-options', 'nosniff')
-        headers.set('cache-control', 'private, no-store')
-        return new Response(fileResponse.body, { status: 200, headers })
+        const sizeBytes = asset.sizeBytes
+        if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) throw new Error('Invalid asset size')
+        const rangeHeader = request.headers.get('range')
+        let start = 0
+        let end = sizeBytes - 1
+        let status = 200
+        const headers = new Headers({
+          'content-type': asset.mimeType,
+          'x-content-type-options': 'nosniff',
+          'cache-control': 'private, no-store',
+          'accept-ranges': 'bytes',
+        })
+        if (rangeHeader) {
+          const match = /^bytes=(\d*)-(\d*)$/iu.exec(rangeHeader.trim())
+          if (!match || (!match[1] && !match[2])) {
+            return new Response(null, { status: 416, headers: { 'content-range': `bytes */${sizeBytes}` } })
+          }
+          if (!match[1]) {
+            const suffixLength = Number(match[2])
+            if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+              return new Response(null, { status: 416, headers: { 'content-range': `bytes */${sizeBytes}` } })
+            }
+            start = Math.max(0, sizeBytes - suffixLength)
+          } else {
+            start = Number(match[1])
+            end = match[2] ? Number(match[2]) : end
+          }
+          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+            || start < 0 || end < start || start >= sizeBytes) {
+            return new Response(null, { status: 416, headers: { 'content-range': `bytes */${sizeBytes}` } })
+          }
+          end = Math.min(end, sizeBytes - 1)
+          status = 206
+          headers.set('content-range', `bytes ${start}-${end}/${sizeBytes}`)
+        }
+        headers.set('content-length', String(end - start + 1))
+        const fileStream = nativeFs.createReadStream(asset.filePath, { start, end })
+        return new Response(Readable.toWeb(fileStream), { status, headers })
       } catch {
         return new Response('Asset not found', { status: 404, headers: { 'content-type': 'text/plain' } })
       }
@@ -958,6 +1054,7 @@ const SAFE_LOCAL_ASSET_IMPORT_ERRORS = new Set([
   '素材文件写入失败。',
   '所选素材文件为空。',
   '当前本地素材切片只支持 PNG、JPEG、GIF 和 WebP 图片。',
+  '素材类型必须是 PNG/JPEG/GIF/WebP 图片、MP4/MOV/WebM 视频、WAV/MP3/OGG/M4A 音频或 TXT/MD 文本。',
   '本地 WAV 素材大小无效。',
   '本地 WAV 素材格式无效。',
   '本地 WAV 素材块长度无效。',
@@ -972,6 +1069,17 @@ const SAFE_LOCAL_ASSET_IMPORT_ERRORS = new Set([
   '本地 MP3 ID3v2 尾标记无效。',
   '本地 MP3 MPEG 音频帧已截断。',
   '本地 MP3 素材缺少有效 MPEG 音频帧。',
+  '本地 OGG 音频素材格式无效。',
+  '本地视频或 M4A 素材大小无效。',
+  '本地 M4A 音频素材格式无效。',
+  '本地 MP4/MOV 视频素材格式无效。',
+  '本地 MP4/MOV 素材容器长度无效。',
+  '本地视频素材大小无效。',
+  '本地 WebM 视频素材格式无效。',
+  '文本素材只支持 TXT 和 Markdown 文件。',
+  '本地文本素材大小无效。',
+  '本地文本素材包含二进制数据。',
+  '本地文本素材不是有效的 UTF-8 文件。',
 ])
 
 function safeLocalAssetImportError(error) {
@@ -1023,6 +1131,45 @@ function registerProjectIpc() {
     }))
     await writeRecentProjectDirectory(created.directory)
     return created.project
+  })
+  ipcMain.handle('desktop:project:rename', async (event, projectId, name) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || !projectId || projectId.length > 200
+      || typeof name !== 'string' || !name.trim() || name.length > 60) {
+      throw new Error('项目重命名请求无效。')
+    }
+    projectTransitionCount += 1
+    try {
+      const selected = await recentProjectCatalog.resolve(projectId)
+      const renamed = await localCore.request('project:rename', {
+        directory: selected.directory,
+        projectId,
+        name,
+      })
+      await writeRecentProjectDirectory(renamed.directory)
+      return renamed.project
+    } finally {
+      projectTransitionCount -= 1
+    }
+  })
+  ipcMain.handle('desktop:project:delete', async (event, projectId) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || !projectId || projectId.length > 200) throw new Error('项目标识无效。')
+    projectTransitionCount += 1
+    try {
+      const selected = await recentProjectCatalog.resolve(projectId)
+      const activeProject = await localCore.request('project:get-active')
+      if (activeProject?.projectId === projectId) throw new Error('当前打开的项目不能删除，请先切换到其他项目。')
+      const directory = await fs.realpath(selected.directory)
+      if (directory === path.parse(directory).root) throw new Error('系统根目录不能作为项目移除。')
+      await shell.trashItem(directory)
+      await recentProjectCatalog.forget(projectId)
+      return true
+    } finally {
+      projectTransitionCount -= 1
+    }
   })
   ipcMain.handle('desktop:project:open', async (event) => {
     assertTrustedSender(event)
@@ -1100,7 +1247,7 @@ function registerProjectIpc() {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: '导入本地素材',
       properties: ['openFile'],
-      filters: [{ name: '图片、WAV 和 MP3 音频', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav', 'mp3'] }],
+      filters: [{ name: '图片、视频、音频和文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'] }],
     })
     if (result.canceled || result.filePaths.length === 0) return null
     await assertActiveAssetProject(projectId)
@@ -1112,7 +1259,7 @@ function registerProjectIpc() {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: '批量导入本地素材',
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: '图片、WAV 和 MP3 音频', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav', 'mp3'] }],
+      filters: [{ name: '图片、视频、音频和文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'] }],
     })
     if (result.canceled || result.filePaths.length === 0) return null
     await assertActiveAssetProject(projectId)
@@ -1181,11 +1328,28 @@ function registerProjectIpc() {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: '替换本地音频素材',
       properties: ['openFile'],
-      filters: [{ name: 'WAV 和 MP3 音频', extensions: ['wav', 'mp3'] }],
+      filters: [{ name: 'WAV、MP3、OGG 和 M4A 音频', extensions: ['wav', 'mp3', 'ogg', 'm4a'] }],
     })
     if (result.canceled || result.filePaths.length === 0) return null
     await assertActiveAssetProject(projectId)
     return localCore.request('asset:replace-audio', {
+      projectId,
+      assetId,
+      sourcePath: result.filePaths[0],
+    }, 5 * 60 * 1000)
+  })
+  ipcMain.handle('desktop:asset:replace', async (event, projectId, assetId) => {
+    assertTrustedSender(event)
+    assertAssetId(assetId)
+    await assertActiveAssetProject(projectId)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '替换本地素材',
+      properties: ['openFile'],
+      filters: [{ name: '图片、视频、音频和文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'] }],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    await assertActiveAssetProject(projectId)
+    return localCore.request('asset:replace-file', {
       projectId,
       assetId,
       sourcePath: result.filePaths[0],
@@ -1209,6 +1373,32 @@ function registerProjectIpc() {
       throw new Error('画布导出请求无效。')
     }
     return localCore.request('canvas:export', { projectId, canvasId })
+  })
+  ipcMain.handle('desktop:canvas:import', async (event, document) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    let serialized
+    try {
+      serialized = JSON.stringify(document)
+    } catch {
+      throw new Error('画布 JSON 格式错误。')
+    }
+    if (!document || typeof document !== 'object' || Array.isArray(document)
+      || typeof serialized !== 'string' || Buffer.byteLength(serialized, 'utf8') > 32 * 1024 * 1024) {
+      throw new Error('画布导入请求无效或超过本地画布数据上限。')
+    }
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择导入画布的新项目保存位置',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const created = await runProjectTransition(() => localCore.request('canvas:import', {
+      parentDirectory: result.filePaths[0],
+      document,
+    }, 5 * 60 * 1000))
+    await writeRecentProjectDirectory(created.directory)
+    void scheduleTaskPump(created.project.projectId)
+    return { project: created.project, warnings: created.warnings }
   })
   ipcMain.handle('desktop:canvas:create-node', (event, input) => {
     assertTrustedSender(event)
@@ -1423,6 +1613,11 @@ function registerProjectIpc() {
     }
 
     const result = await localCore.request('task:search', { projectId, query })
+    const outputSummaries = (task) => task.outputs.map((output) => ({
+      index: output.index,
+      url: `vibe://app/tasks/${task.taskId}/output${output.index === 0 ? '' : `?index=${output.index}`}`,
+      outputMeta: output.outputMeta,
+    }))
     return {
       items: result.items.map((task) => ({
         taskId: task.taskId,
@@ -1432,10 +1627,12 @@ function registerProjectIpc() {
         status: task.status,
         attemptCount: task.attemptCount,
         errorCode: task.errorCode,
+        errorMessage: task.errorMessage,
         createdAt: task.createdAt,
         updatedAt: task.updatedAt,
         startedAt: task.startedAt,
         completedAt: task.completedAt,
+        outputs: outputSummaries(task),
         ...(task.outputMeta ? { outputMeta: task.outputMeta } : {}),
       })),
       total: result.total,
@@ -1461,10 +1658,16 @@ function registerProjectIpc() {
       status: task.status,
       attemptCount: task.attemptCount,
       errorCode: task.errorCode,
+      errorMessage: task.errorMessage,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
       startedAt: task.startedAt,
       completedAt: task.completedAt,
+      outputs: task.outputs.map((output) => ({
+        index: output.index,
+        url: `vibe://app/tasks/${task.taskId}/output${output.index === 0 ? '' : `?index=${output.index}`}`,
+        outputMeta: output.outputMeta,
+      })),
       ...(task.outputMeta ? { outputMeta: task.outputMeta } : {}),
     }
   })
@@ -1497,9 +1700,31 @@ function registerProjectIpc() {
       parameters: result.parameters,
     }
   })
-  ipcMain.handle('desktop:task:cancel', (event, projectId, taskId) => {
+  ipcMain.handle('desktop:task:cancel', async (event, projectId, taskId) => {
     assertTrustedSender(event)
-    return localCore.request('task:cancel', { projectId, taskId })
+    const task = await localCore.request('task:cancel', { projectId, taskId })
+    if (task?.status === 'cancelled' && activeGenerationExecution?.projectId === projectId
+      && activeGenerationExecution.taskId === taskId) {
+      await stopGenerationWorker()
+      await localCore.request('task:cleanup-cancelled-output', { projectId, taskId })
+    }
+    return task
+  })
+  ipcMain.handle('desktop:task:retry', async (event, projectId, taskId) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || !projectId || projectId.length > 200
+      || typeof taskId !== 'string' || !taskId || taskId.length > 200) {
+      throw new Error('任务重试请求无效。')
+    }
+    beginTaskCreation()
+    try {
+      const task = await localCore.request('task:retry', { projectId, taskId })
+      if (task?.status === 'queued') void scheduleTaskPump(projectId)
+      return task
+    } finally {
+      finishTaskCreation()
+    }
   })
   ipcMain.handle('desktop:task:create-generation', async (event, input) => {
     assertTrustedSender(event)
@@ -1523,6 +1748,13 @@ function registerProjectIpc() {
         if (input.modality === 'audio') {
           providerId = SAPI_PROVIDER_ID
           modelId = SAPI_MODEL_ID
+        } else if (['image', 'video'].includes(input.modality)
+          && isLocalMediaOperation(input.modality, input.parameters?.operation)) {
+          if (!parseLocalMediaReference(input.parameters?.sourceUrl)) {
+            throw codedError('LOCAL_MEDIA_SOURCE_INVALID')
+          }
+          providerId = LOCAL_MEDIA_PROVIDER_ID
+          modelId = LOCAL_MEDIA_MODEL_ID
         } else {
           if (input.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
           const model = await getLocalTextModelConfig()

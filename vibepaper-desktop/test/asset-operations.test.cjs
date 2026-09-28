@@ -44,6 +44,34 @@ function id3Mp3() {
   return Buffer.concat([id3Header, tagBody, minimalMp3()])
 }
 
+function minimalFtyp(brand = 'isom') {
+  const buffer = Buffer.alloc(24)
+  buffer.writeUInt32BE(buffer.length, 0)
+  buffer.write('ftyp', 4, 'ascii')
+  buffer.write(brand, 8, 'ascii')
+  buffer.writeUInt32BE(0, 12)
+  buffer.write('isom', 16, 'ascii')
+  buffer.write('mp42', 20, 'ascii')
+  return buffer
+}
+
+function minimalWebm() {
+  return Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from('webm test payload')])
+}
+
+function minimalWebp() {
+  const buffer = Buffer.alloc(16)
+  buffer.write('RIFF', 0, 'ascii')
+  buffer.writeUInt32LE(buffer.length - 8, 4)
+  buffer.write('WEBP', 8, 'ascii')
+  buffer.write('VP8 ', 12, 'ascii')
+  return buffer
+}
+
+function minimalOgg() {
+  return Buffer.concat([Buffer.from('OggS'), Buffer.alloc(24)])
+}
+
 function audioOutputMeta() {
   return {
     index: 0,
@@ -80,6 +108,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
   const root = path.resolve(__dirname, '..', '..')
   const source = await fs.readFile(path.join(root, 'vibepaper-desktop/src/main.cjs'), 'utf8')
   const handlers = new Map()
+  const protocolHandlers = new Map()
   const headerHandlers = []
   const electron = {
     app: { setName() {}, requestSingleInstanceLock: () => false, quit() {} },
@@ -87,7 +116,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showMessageBox: async () => ({}) },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     net: {},
-    protocol: { registerSchemesAsPrivileged() {}, handle() {} },
+    protocol: { registerSchemesAsPrivileged() {}, handle: (scheme, handler) => protocolHandlers.set(scheme, handler) },
     safeStorage: {},
     session: { defaultSession: { webRequest: { onHeadersReceived: (handler) => headerHandlers.push(handler) } } },
     utilityProcess: {},
@@ -102,11 +131,14 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
     process: { env: devServerUrl ? { VITE_DEV_SERVER_URL: devServerUrl } : {} },
     __dirname: path.join(root, 'vibepaper-desktop', 'src'),
     URL,
+    Request,
+    Response,
+    Headers,
     Buffer,
     console,
   })
   vm.runInContext(source, context, { filename: 'vibepaper-desktop/src/main.cjs' })
-  vm.runInContext('registerProjectIpc(); registerContentSecurityPolicy()', context)
+  vm.runInContext('registerProjectIpc(); registerContentSecurityPolicy(); registerRendererProtocol()', context)
 
   const frame = { url: devServerUrl || 'vibe://app/' }
   const sender = { mainFrame: frame }
@@ -115,6 +147,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
 
   return {
     handlers,
+    protocolHandlers,
     headerHandlers,
     electron,
     event: { sender, senderFrame: frame },
@@ -220,6 +253,42 @@ async function mutateProjectToV9(databasePath) {
       ALTER TABLE assets_v9 RENAME TO assets;
       CREATE INDEX assets_by_sha ON assets(sha256, deleted);
       PRAGMA user_version = 9;
+    `)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
+    database.close()
+  }
+}
+
+async function mutateProjectToV10(databasePath) {
+  const database = new DatabaseSync(databasePath)
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(`
+      DROP TABLE task_outputs;
+      CREATE TABLE assets_v10 (
+        id TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL CHECK (mime_type IN (
+          'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'audio/wav', 'audio/mpeg'
+        )),
+        size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 209715200),
+        relative_path TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))
+      ) STRICT;
+      INSERT INTO assets_v10 SELECT id, sha256, original_name, mime_type, size_bytes, relative_path, created_at, updated_at, deleted FROM assets;
+      DROP TABLE assets;
+      ALTER TABLE assets_v10 RENAME TO assets;
+      CREATE INDEX assets_by_sha ON assets(sha256, deleted);
+      PRAGMA user_version = 10;
     `)
     database.exec('COMMIT')
   } catch (error) {
@@ -429,6 +498,85 @@ test('local asset import rejects unsupported or disguised file contents', async 
   assert.deepEqual(await store.listAssets(project.projectId), [])
 })
 
+test('image, video, audio and text imports validate formats, keep node references and survive backup restore', async (t) => {
+  const { store, parentDirectory, project } = await openTestProject(t)
+  const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-all-assets-backup-'))
+  const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-all-assets-restore-'))
+  t.after(async () => {
+    await fs.rm(backupParent, { recursive: true, force: true })
+    await fs.rm(restoreParent, { recursive: true, force: true })
+  })
+
+  const formats = [
+    { name: 'asset.png', bytes: Buffer.concat([PNG_HEADER, Buffer.from(' png')]), mimeType: 'image/png', assetType: 'image' },
+    { name: 'asset.jpg', bytes: Buffer.concat([JPEG_HEADER, Buffer.from(' jpeg')]), mimeType: 'image/jpeg', assetType: 'image' },
+    { name: 'asset.gif', bytes: Buffer.from('GIF89a animation fixture'), mimeType: 'image/gif', assetType: 'image' },
+    { name: 'asset.webp', bytes: minimalWebp(), mimeType: 'image/webp', assetType: 'image' },
+    { name: 'asset.mp4', bytes: minimalFtyp('isom'), mimeType: 'video/mp4', assetType: 'video' },
+    { name: 'asset.mov', bytes: minimalFtyp('qt  '), mimeType: 'video/quicktime', assetType: 'video' },
+    { name: 'asset.webm', bytes: minimalWebm(), mimeType: 'video/webm', assetType: 'video' },
+    { name: 'asset.wav', bytes: minimalWave(), mimeType: 'audio/wav', assetType: 'audio' },
+    { name: 'asset.mp3', bytes: id3Mp3(), mimeType: 'audio/mpeg', assetType: 'audio' },
+    { name: 'asset.ogg', bytes: minimalOgg(), mimeType: 'audio/ogg', assetType: 'audio' },
+    { name: 'asset.m4a', bytes: minimalFtyp('M4A '), mimeType: 'audio/mp4', assetType: 'audio' },
+    { name: 'asset.txt', bytes: Buffer.from('plain UTF-8 text\n'), mimeType: 'text/plain', assetType: 'text' },
+    { name: 'asset.md', bytes: Buffer.from('# Markdown\n'), mimeType: 'text/markdown', assetType: 'text' },
+  ]
+  const assets = []
+  for (const format of formats) {
+    const sourcePath = await writeImage(parentDirectory, format.name, format.bytes)
+    const asset = await store.importAsset(sourcePath, project.projectId, 'local')
+    assert.equal(asset.mimeType, format.mimeType, format.name)
+    assert.equal(asset.assetType, format.assetType, format.name)
+    assert.deepEqual(await fs.readFile((await store.resolveAsset(asset.assetId)).filePath), format.bytes)
+    assets.push(asset)
+  }
+
+  const referencedKinds = [
+    { type: 'image', asset: assets[0] },
+    { type: 'video', asset: assets[4] },
+    { type: 'audio', asset: assets[7] },
+    { type: 'text', asset: assets[11] },
+  ]
+  const nodes = []
+  for (let index = 0; index < referencedKinds.length; index += 1) {
+    const entry = referencedKinds[index]
+    const created = await store.createNode({
+      projectId: project.projectId,
+      canvasId: project.canvasId,
+      idempotencyKey: `all-media-reference-${entry.type}`,
+      expectedVersion: index,
+      type: entry.type,
+      params: { assetId: entry.asset.assetId },
+    })
+    nodes.push(created.node.id)
+  }
+  await assert.rejects(store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'all-media-invalid-reference',
+    expectedVersion: referencedKinds.length,
+    type: 'text',
+    params: { assetId: assets[7].assetId },
+  }), /类型不匹配/u)
+  assert.equal((await store.listAssets(project.projectId)).find((asset) => asset.assetId === assets[11].assetId).referenceCount, 1)
+
+  const backup = await store.backupProject(backupParent, project.projectId)
+  const restored = await store.restoreBackup(backup.directory, restoreParent)
+  const restoredAssets = await store.listAssets(restored.project.projectId)
+  assert.equal(restoredAssets.length, formats.length)
+  for (let index = 0; index < formats.length; index += 1) {
+    const format = formats[index]
+    const restoredAsset = restoredAssets.find((entry) => entry.assetId === assets[index].assetId)
+    assert.equal(restoredAsset.mimeType, format.mimeType, format.name)
+    assert.equal(restoredAsset.assetType, format.assetType, format.name)
+    assert.deepEqual(await fs.readFile((await store.resolveAsset(restoredAsset.assetId)).filePath), format.bytes)
+  }
+  const restoredCanvas = store.loadCanvas(restored.project.projectId, restored.project.canvasId)
+  assert.deepEqual(restoredCanvas.nodes.map((node) => node.id), nodes)
+  assert.equal(restoredAssets.find((entry) => entry.assetId === assets[11].assetId).referenceCount, 1)
+})
+
 test('project schema v9 enables validated MP3 assets with a v9 rollback snapshot', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
   const imagePath = await writeImage(parentDirectory, 'schema-v9-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' v9 image')]))
@@ -469,7 +617,7 @@ test('project schema v9 enables validated MP3 assets with a v9 rollback snapshot
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const schema = migratedDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql
     assert.match(schema, /audio\/mpeg/u)
@@ -495,6 +643,58 @@ test('project schema v9 enables validated MP3 assets with a v9 rollback snapshot
     assert.deepEqual(backupDatabase.prepare('PRAGMA foreign_key_check').all(), [])
   } finally {
     backupDatabase.close()
+  }
+})
+
+test('project schema v10 expands asset MIME types through v12 and keeps v10 and v11 rollback snapshots', async (t) => {
+  const { store, directory, parentDirectory, project } = await openTestProject(t)
+  const imagePath = await writeImage(parentDirectory, 'schema-v10-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' v10 image')]))
+  const image = await store.importAsset(imagePath, project.projectId)
+  await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'schema-v10-image-reference',
+    expectedVersion: 0,
+    type: 'image',
+    params: { assetId: image.assetId },
+  })
+  await store.close()
+
+  const databasePath = path.join(directory, '.vibepaper', 'project.sqlite')
+  await mutateProjectToV10(databasePath)
+  await store.openProject(directory)
+  const videoPath = await writeImage(parentDirectory, 'after-v10.webm', minimalWebm())
+  const video = await store.importAsset(videoPath, project.projectId, 'local')
+  assert.equal(video.mimeType, 'video/webm')
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(video.assetId)).filePath), minimalWebm())
+
+  const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
+  try {
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
+    assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
+    assert.match(migratedDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql, /video\/webm/u)
+    assert.equal(migratedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 1)
+  } finally {
+    migratedDatabase.close()
+  }
+
+  const backupDirectory = path.join(directory, '.vibepaper', 'backups')
+  const backupNames = await fs.readdir(backupDirectory)
+  const v10Name = backupNames.find((name) => name.startsWith('project-schema-v10-'))
+  const v11Name = backupNames.find((name) => name.startsWith('project-schema-v11-'))
+  assert.ok(v10Name, 'the original v10 schema is snapshotted before the asset migration')
+  assert.ok(v11Name, 'the intermediate v11 schema is snapshotted before task-output migration')
+  for (const [name, expectedVersion, expectsVideo] of [[v10Name, 10, false], [v11Name, 11, true]]) {
+    const rollback = new DatabaseSync(path.join(backupDirectory, name), { readOnly: true })
+    try {
+      assert.equal(Number(rollback.prepare('PRAGMA user_version').get().user_version), expectedVersion)
+      const schema = rollback.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql
+      assert.equal(/video\/webm/u.test(schema), expectsVideo)
+      assert.equal(rollback.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 1)
+      assert.deepEqual(rollback.prepare('PRAGMA foreign_key_check').all(), [])
+    } finally {
+      rollback.close()
+    }
   }
 })
 
@@ -631,7 +831,7 @@ test('audio and image replacement routes reject the other asset type and invalid
     params: { assetId: audio.assetId },
   })
 
-  await assert.rejects(store.replaceAudioAsset(project.projectId, image.assetId, wavePath), /只能替换 WAV 或 MP3 音频素材/u)
+  await assert.rejects(store.replaceAudioAsset(project.projectId, image.assetId, wavePath), /只能替换音频素材/u)
   await assert.rejects(store.replaceAsset(project.projectId, audio.assetId, imagePath), /只能替换图片素材/u)
   await assert.rejects(store.replaceAudioAsset(project.projectId, audio.assetId, invalidWavePath), /本地 WAV 素材格式无效/u)
   await assert.rejects(store.replaceAudioAsset(project.projectId, audio.assetId, invalidMp3Path), /有效 MPEG 音频帧/u)
@@ -644,6 +844,52 @@ test('audio and image replacement routes reject the other asset type and invalid
     imageNode.node.id,
     audioNode.node.id,
   ])
+})
+
+test('generic asset replacement validates and preserves each media category, including same-hash text MIME changes', async (t) => {
+  const { store, parentDirectory, project } = await openTestProject(t)
+  const cases = [
+    { type: 'image', beforeName: 'generic-before.png', before: Buffer.concat([PNG_HEADER, Buffer.from(' original')]), afterName: 'generic-after.jpg', after: Buffer.concat([JPEG_HEADER, Buffer.from(' replacement')]), afterMime: 'image/jpeg' },
+    { type: 'video', beforeName: 'generic-before.mp4', before: minimalFtyp('isom'), afterName: 'generic-after.webm', after: minimalWebm(), afterMime: 'video/webm' },
+    { type: 'audio', beforeName: 'generic-before.wav', before: minimalWave(), afterName: 'generic-after.ogg', after: minimalOgg(), afterMime: 'audio/ogg' },
+    { type: 'text', beforeName: 'generic-before.txt', before: Buffer.from('same text bytes\n'), afterName: 'generic-after.md', after: Buffer.from('same text bytes\n'), afterMime: 'text/markdown' },
+  ]
+  const fixtures = []
+  for (let index = 0; index < cases.length; index += 1) {
+    const entry = cases[index]
+    const beforePath = await writeImage(parentDirectory, entry.beforeName, entry.before)
+    const afterPath = await writeImage(parentDirectory, entry.afterName, entry.after)
+    const asset = await store.importAsset(beforePath, project.projectId, 'local')
+    const node = await store.createNode({
+      projectId: project.projectId,
+      canvasId: project.canvasId,
+      idempotencyKey: `generic-replace-reference-${entry.type}`,
+      expectedVersion: index,
+      type: entry.type,
+      params: { assetId: asset.assetId },
+    })
+    fixtures.push({ ...entry, asset, afterPath, nodeId: node.node.id, beforePath: (await store.resolveAsset(asset.assetId)).filePath })
+  }
+
+  for (const fixture of fixtures) {
+    const replaced = await store.replaceAssetFile(project.projectId, fixture.asset.assetId, fixture.afterPath)
+    assert.equal(replaced.assetId, fixture.asset.assetId)
+    assert.equal(replaced.assetType, fixture.type)
+    assert.equal(replaced.mimeType, fixture.afterMime)
+    assert.equal(replaced.name, fixture.afterName)
+    assert.equal(replaced.referenceCount, 1)
+    const resolved = await store.resolveAsset(fixture.asset.assetId)
+    assert.equal(resolved.mimeType, fixture.afterMime)
+    assert.deepEqual(await fs.readFile(resolved.filePath), fixture.after)
+    await assert.rejects(fs.access(fixture.beforePath))
+  }
+
+  const text = fixtures.find((entry) => entry.type === 'text')
+  const textResolved = await store.resolveAsset(text.asset.assetId)
+  assert.match(textResolved.filePath, /\.md$/u, 'MIME extension changes even when the content hash stays the same')
+  await assert.rejects(store.replaceAssetFile(project.projectId, text.asset.assetId, fixtures[0].afterPath), /保持相同的类型/u)
+  assert.deepEqual(await fs.readFile(textResolved.filePath), text.after)
+  assert.deepEqual((await store.listAssets(project.projectId)).map((asset) => asset.referenceCount), [1, 1, 1, 1])
 })
 
 test('project schema v5 migrates assets and references to soft-delete metadata before operations', async (t) => {
@@ -697,7 +943,7 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const columns = migratedDatabase.prepare('PRAGMA table_info(assets)').all().map((row) => row.name)
     assert.ok(columns.includes('updated_at'))
@@ -760,7 +1006,7 @@ test('project schema v7 migrates image assets and references through v10 with ro
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const backupName = (await fs.readdir(path.join(directory, '.vibepaper', 'backups')))
       .find((name) => name.startsWith('project-schema-v7-'))
@@ -787,7 +1033,7 @@ test('project schema v8 backfills only legacy params asset references and preser
   const migratedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
   let v8BackupName
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
     assert.deepEqual(migratedDatabase.prepare(`
       SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ? ORDER BY node_id
     `).all(fixture.project.canvasId).map((row) => ({ ...row })), [
@@ -817,7 +1063,7 @@ test('project schema v8 backfills only legacy params asset references and preser
   await fixture.store.openProject(fixture.directory)
   const reopenedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
   try {
-    assert.equal(Number(reopenedDatabase.prepare('PRAGMA user_version').get().user_version), 10)
+    assert.equal(Number(reopenedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
     assert.equal(reopenedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 2)
   } finally {
     reopenedDatabase.close()
@@ -986,7 +1232,7 @@ test('restoring a v8 backup with a missing legacy params reference migrates the 
   const restoredDatabasePath = path.join(restored.directory, '.vibepaper', 'project.sqlite')
   const restoredDatabase = new DatabaseSync(restoredDatabasePath, { readOnly: true })
   try {
-    assert.equal(Number(restoredDatabase.prepare('PRAGMA user_version').get().user_version), 10)
+    assert.equal(Number(restoredDatabase.prepare('PRAGMA user_version').get().user_version), 12)
     assert.deepEqual(restoredDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     assert.deepEqual(restoredDatabase.prepare('SELECT node_id, asset_id FROM asset_references').all().map((row) => ({ ...row })), [
       { node_id: node.node.id, asset_id: asset.assetId },
@@ -1010,22 +1256,25 @@ test('asset operations are exposed through project-scoped IPC and a path-restric
 
   assert.match(localCore, /case 'asset:rename':\s+return store\.renameAsset/u)
   assert.match(localCore, /case 'asset:replace':\s+return store\.replaceAsset/u)
+  assert.match(localCore, /case 'asset:replace-file':\s+return store\.replaceAssetFile/u)
   assert.match(localCore, /case 'asset:replace-audio':\s+return store\.replaceAudioAsset/u)
   assert.match(localCore, /case 'asset:delete':\s+return store\.deleteAsset/u)
   assert.match(main, /desktop:asset:rename',[\s\S]*assertAssetId\(assetId\)[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:rename'/u)
   assert.match(main, /desktop:asset:replace-image',[\s\S]*dialog\.showOpenDialog[\s\S]*localCore\.request\('asset:replace'/u)
-  assert.match(main, /desktop:asset:replace-audio',[\s\S]*dialog\.showOpenDialog[\s\S]*extensions: \['wav', 'mp3'\][\s\S]*localCore\.request\('asset:replace-audio'/u)
+  assert.match(main, /desktop:asset:replace-audio',[\s\S]*dialog\.showOpenDialog[\s\S]*extensions: \['wav', 'mp3', 'ogg', 'm4a'\][\s\S]*localCore\.request\('asset:replace-audio'/u)
+  assert.match(main, /desktop:asset:replace',[\s\S]*assertTrustedSender\(event\)[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:replace-file'/u)
   assert.match(main, /desktop:asset:import-image',[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'image' \}/u)
-  assert.match(main, /desktop:asset:import-local',[\s\S]*assertTrustedSender\(event\)[\s\S]*extensions: \['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav', 'mp3'\][\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'local' \}/u)
+  assert.match(main, /desktop:asset:import-local',[\s\S]*assertTrustedSender\(event\)[\s\S]*extensions: \['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'\][\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:import', \{ sourcePath: result\.filePaths\[0\], projectId, assetKind: 'local' \}/u)
   assert.match(main, /desktop:asset:import-local-assets', async \(event, projectId\) => \{[\s\S]*assertTrustedSender\(event\)[\s\S]*await assertActiveAssetProject\(projectId\)[\s\S]*properties: \['openFile', 'multiSelections'\][\s\S]*await assertActiveAssetProject\(projectId\)[\s\S]*for \(const sourcePath of result\.filePaths\)[\s\S]*safeLocalAssetImportError\(error\)[\s\S]*return \{ assets, errors \}/u)
   assert.match(main, /function localAssetImportName\(sourcePath\)[\s\S]*path\.basename\(sourcePath\)/u)
   assert.match(main, /desktop:asset:delete',[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:delete'/u)
   assert.match(preload, /renameAsset: \(projectId, assetId, name\) => ipcRenderer\.invoke\('desktop:asset:rename'/u)
   assert.match(preload, /replaceImage: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace-image'/u)
   assert.match(preload, /replaceAudio: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace-audio'/u)
+  assert.match(preload, /replaceAsset: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:replace'/u)
   assert.match(preload, /importLocalAsset: \(projectId\) => ipcRenderer\.invoke\('desktop:asset:import-local', projectId\)/u)
   assert.match(preload, /importLocalAssets: \(projectId\) => ipcRenderer\.invoke\('desktop:asset:import-local-assets', projectId\)/u)
-  assert.match(localCore, /case 'asset:import':[\s\S]*assetKind !== 'image' && assetKind !== 'local'[\s\S]*store\.importAsset\(payload\.sourcePath, payload\.projectId, assetKind\)/u)
+  assert.match(localCore, /case 'asset:import':[\s\S]*!\['image', 'video', 'audio', 'text', 'local'\]\.includes\(assetKind\)[\s\S]*store\.importAsset\(payload\.sourcePath, payload\.projectId, assetKind\)/u)
   assert.match(preload, /deleteAsset: \(projectId, assetId\) => ipcRenderer\.invoke\('desktop:asset:delete'/u)
   assert.match(main, /desktop:asset:save-task-output',[\s\S]*assertTrustedSender\(event\)[\s\S]*assertActiveAssetProject\(projectId\)[\s\S]*localCore\.request\('asset:save-task-output', \{ projectId, taskId \}/u)
   assert.match(preload, /saveTaskOutputToLibrary: \(projectId, taskId\) => ipcRenderer\.invoke\('desktop:asset:save-task-output', projectId, taskId\)/u)
@@ -1034,6 +1283,9 @@ test('asset operations are exposed through project-scoped IPC and a path-restric
   assert.match(bridgeTypes, /'audio\/wav'/u)
   assert.match(bridgeTypes, /renameAsset\(projectId: string, assetId: string, name: string\): Promise<DesktopAsset>/u)
   assert.match(bridgeTypes, /replaceImage\(projectId: string, assetId: string\): Promise<DesktopAsset \| null>/u)
+  assert.match(bridgeTypes, /replaceAsset\(projectId: string, assetId: string\): Promise<DesktopAsset \| null>/u)
+  assert.match(bridgeTypes, /'video\/webm'/u)
+  assert.match(bridgeTypes, /'text\/markdown'/u)
   assert.match(bridgeTypes, /importLocalAssets\(projectId: string\): Promise<DesktopAssetImportResult \| null>/u)
   assert.match(bridgeTypes, /errors: Array<\{ name: string; message: string \}>/u)
   assert.match(bridgeTypes, /deleteAsset\(projectId: string, assetId: string\): Promise<DesktopAssetDeleteImpact>/u)
@@ -1074,7 +1326,7 @@ test('multi-file asset IPC continues after per-file failures, hides source paths
   const result = JSON.parse(JSON.stringify(await importMany(harness.event, 'project-1')))
   const plainPickerOptions = JSON.parse(JSON.stringify(pickerOptions))
   assert.deepEqual(plainPickerOptions.properties, ['openFile', 'multiSelections'])
-  assert.deepEqual(plainPickerOptions.filters[0].extensions, ['png', 'jpg', 'jpeg', 'gif', 'webp', 'wav', 'mp3'])
+  assert.deepEqual(plainPickerOptions.filters[0].extensions, ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'])
   assert.equal(activeProjectChecks, 2, 'the project identity is checked before and after the picker')
   assert.deepEqual(importRequests.map((request) => request.assetKind), ['local', 'local', 'local'])
   assert.deepEqual(result.assets.map((asset) => asset.assetId), ['asset-1', 'asset-3'])
@@ -1095,6 +1347,78 @@ test('multi-file asset IPC continues after per-file failures, hides source paths
   const canceled = await importMany(harness.event, 'project-1')
   assert.equal(canceled, null)
   assert.equal(importRequests.length, 3, 'canceling the picker does not create an asset')
+})
+
+test('generic replacement IPC stays project-scoped and offers all supported local file types', async () => {
+  const harness = await createMainIpcHarness()
+  const selectedPath = path.join(os.tmpdir(), 'private-source', 'replacement.md')
+  let activeChecks = 0
+  let pickerOptions
+  let replaceRequest
+  harness.electron.dialog.showOpenDialog = async (_window, options) => {
+    pickerOptions = options
+    return { canceled: false, filePaths: [selectedPath] }
+  }
+  harness.setLocalCore({
+    async request(method, payload) {
+      if (method === 'project:get-active') {
+        activeChecks += 1
+        return { projectId: 'project-1' }
+      }
+      replaceRequest = { method, payload }
+      return { assetId: payload.assetId, assetType: 'text', mimeType: 'text/markdown' }
+    },
+  })
+
+  const replace = harness.handlers.get('desktop:asset:replace')
+  const result = await replace(harness.event, 'project-1', 'f1bbdc54-d75e-4329-9e4d-495d1b32da40')
+  assert.equal(activeChecks, 2)
+  assert.deepEqual(JSON.parse(JSON.stringify(pickerOptions.filters[0].extensions)), [
+    'png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md',
+  ])
+  assert.equal(replaceRequest.method, 'asset:replace-file')
+  assert.deepEqual(JSON.parse(JSON.stringify(replaceRequest.payload)), {
+    projectId: 'project-1',
+    assetId: 'f1bbdc54-d75e-4329-9e4d-495d1b32da40',
+    sourcePath: selectedPath,
+  })
+  assert.equal(result.mimeType, 'text/markdown')
+})
+
+test('local asset preview IPC serves detected MIME with nosniff and supports byte ranges', async (t) => {
+  const { store, parentDirectory, project } = await openTestProject(t)
+  const textPath = await writeImage(parentDirectory, 'preview.md', Buffer.from('# Local preview\n'))
+  const videoPath = await writeImage(parentDirectory, 'preview.mp4', minimalFtyp('isom'))
+  const text = await store.importAsset(textPath, project.projectId, 'local')
+  const video = await store.importAsset(videoPath, project.projectId, 'local')
+  const harness = await createMainIpcHarness()
+  harness.setLocalCore({
+    async request(method, payload) {
+      assert.equal(method, 'asset:resolve')
+      return store.resolveAsset(payload.assetId)
+    },
+  })
+  const handler = harness.protocolHandlers.get('vibe')
+  const makeRequest = (assetId, range) => ({
+    url: `vibe://app/assets/${assetId}`,
+    method: 'GET',
+    headers: new Headers(range ? { range } : {}),
+  })
+  const textResponse = await handler(makeRequest(text.assetId))
+  assert.equal(textResponse.status, 200)
+  assert.equal(textResponse.headers.get('content-type'), 'text/markdown')
+  assert.equal(textResponse.headers.get('x-content-type-options'), 'nosniff')
+  assert.equal(await textResponse.text(), '# Local preview\n')
+
+  const rangeResponse = await handler(makeRequest(video.assetId, 'bytes=4-7'))
+  assert.equal(rangeResponse.status, 206)
+  assert.equal(rangeResponse.headers.get('content-type'), 'video/mp4')
+  assert.equal(rangeResponse.headers.get('content-range'), `bytes 4-7/${minimalFtyp('isom').length}`)
+  assert.equal(await rangeResponse.text(), 'ftyp')
+
+  const invalidRangeResponse = await handler(makeRequest(video.assetId, 'bytes=999999-'))
+  assert.equal(invalidRangeResponse.status, 416)
+  assert.equal(invalidRangeResponse.headers.get('content-range'), `bytes */${minimalFtyp('isom').length}`)
 })
 
 test('desktop CSP permits the local vibe scheme for image and audio previews in dev and packaged modes', async () => {

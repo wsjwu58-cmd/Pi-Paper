@@ -1,17 +1,20 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs/promises')
+const http = require('node:http')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const {
   WorkerFailure,
   agnesMediaUrl,
+  buildAgnesImageRequest,
   buildAgnesVideoRequest,
   extensionForMediaType,
   getAgnesResponse,
   hasMediaSignature,
   isPublicAddress,
   downloadAgnesOutput,
+  postJson,
   runImageTask,
   runVideoTask,
 } = require('../src/generation-worker.cjs')
@@ -58,6 +61,25 @@ function mediaResponse(statusCode, bytes, contentType) {
   }
 }
 
+test('cloud HTTP errors preserve the provider detail and redact the configured API key', async (t) => {
+  const apiKey = 'mock-api-key-must-not-be-persisted'
+  const server = http.createServer((_request, response) => {
+    response.writeHead(400, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ error: { message: `invalid image dimensions; echoed ${apiKey}` } }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => server.close(resolve)))
+  const address = server.address()
+
+  await assert.rejects(
+    postJson(`http://127.0.0.1:${address.port}/images/generations`, { prompt: 'test' }, apiKey),
+    (error) => error.code === 'CLOUD_REQUEST_FAILED'
+      && error.statusCode === 400
+      && /invalid image dimensions/u.test(error.message)
+      && !error.message.includes(apiKey),
+  )
+})
+
 test('image request maps the original canvas aspect and resolution fields to Agnes API fields', async () => {
   let request
   let downloaded
@@ -85,8 +107,68 @@ test('image request maps the original canvas aspect and resolution fields to Agn
     extra_body: { response_format: 'url' },
   })
   assert.equal(request[2], 'mock-cloud-key-not-a-secret')
-  assert.deepEqual(downloaded, [CDN_URL, jobFor('image').outputDirectory, TASK_ID, 'image'])
-  assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.png` })
+  assert.deepEqual(downloaded.slice(0, 4), [CDN_URL, jobFor('image').outputDirectory, TASK_ID, 'image'])
+  assert.equal(downloaded[5], 0)
+  assert.deepEqual(result, {
+    outputPath: `generated/${TASK_ID}/result.png`,
+    outputPaths: [`generated/${TASK_ID}/result.png`],
+  })
+})
+
+test('Agnes image count submits one request per requested output and keeps indexed files', async () => {
+  const requests = []
+  const downloads = []
+  const result = await runImageTask(jobFor('image', { count: 3 }), {
+    postJson: async (_endpoint, payload) => {
+      requests.push(payload)
+      return { data: [{ url: CDN_URL }] }
+    },
+    downloadAgnesOutput: async (...args) => {
+      downloads.push(args)
+      const index = args[5]
+      return `generated/${TASK_ID}/result${index ? `-${index}` : ''}.png`
+    },
+  })
+
+  assert.equal(requests.length, 3)
+  assert.ok(requests.every((request) => request.n === 1))
+  assert.deepEqual(downloads.map((args) => args[5]), [0, 1, 2])
+  assert.deepEqual(result, {
+    outputPath: `generated/${TASK_ID}/result.png`,
+    outputPaths: [
+      `generated/${TASK_ID}/result.png`,
+      `generated/${TASK_ID}/result-1.png`,
+      `generated/${TASK_ID}/result-2.png`,
+    ],
+  })
+})
+
+test('Agnes image operations preserve the original outpaint and upscale prompt semantics', () => {
+  const outpaint = buildAgnesImageRequest({
+    ...jobFor('image'),
+    prompt: '',
+    parameters: { operation: '扩图', sourceUrl: 'data:image/png;base64,iVBORw0KGgo=', style: '水墨' },
+  })
+  assert.equal(outpaint.prompt, '扩展画面边缘，保持主体完整，outpainting，扩图\n风格：水墨')
+  assert.equal(outpaint.extra_body.image[0], 'iVBORw0KGgo=')
+
+  const upscale = buildAgnesImageRequest({
+    ...jobFor('image'),
+    prompt: '保留主体',
+    parameters: { operation: 'upscale_image', sourceUrl: 'https://media.example-cdn.net/source.png' },
+  })
+  assert.equal(upscale.prompt, '保留主体，高清超分，保留原构图')
+  assert.equal(upscale.extra_body.image[0], 'https://media.example-cdn.net/source.png')
+})
+
+test('unsupported image processing fails visibly instead of falling back to generated content', async () => {
+  await assert.rejects(
+    runImageTask(jobFor('image', { operation: '裁剪' }), {
+      postJson: async () => ({ data: [{ url: CDN_URL }] }),
+      downloadAgnesOutput: async () => 'unreachable',
+    }),
+    (error) => error.code === 'UNSUPPORTED_IMAGE_OPERATION',
+  )
 })
 
 test('image responses accept provider CDN URLs and preserve returned media format', async () => {
@@ -118,7 +200,10 @@ test('image creation retries transient Agnes statuses with exponential delays', 
 
   assert.equal(attempts, 4)
   assert.deepEqual(delays, [3_000, 6_000, 12_000])
-  assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.png` })
+  assert.deepEqual(result, {
+    outputPath: `generated/${TASK_ID}/result.png`,
+    outputPaths: [`generated/${TASK_ID}/result.png`],
+  })
 })
 
 test('image creation stops after five attempts and preserves the final provider failure code', async () => {

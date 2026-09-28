@@ -284,4 +284,5 @@ module.exports = {
   ComposeFailure,
   composeVideos,
   resolveFfmpegPath,
+  runFfmpeg,
 }
