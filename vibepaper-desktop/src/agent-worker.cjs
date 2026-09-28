@@ -21,6 +21,8 @@ const {
 } = require('../../pi-main/packages/vibepaper-agent-service/src/tools/runtime-tools.ts')
 const { AGNES_MODELS } = require('./agnes-model-catalog.cjs')
 const { createAgentLocalToolClient } = require('./agent-local-tools.cjs')
+const { buildAgentUsage } = require('./agent-usage.cjs')
+const { summarizeAgentToolActivity, summarizeAgentToolRetry } = require('./agent-activity.cjs')
 
 const parentPort = process.parentPort
 if (!parentPort) throw new Error('Agent Worker 必须由 Electron utility process 启动。')
@@ -115,6 +117,16 @@ async function getSessionMessages(projectId, sessionId) {
       createdAt: typeof message.timestamp === 'number' ? message.timestamp : 0,
     }))
     .filter((message) => message.content.trim().length > 0)
+}
+
+async function getSessionUsage(projectId, sessionId) {
+  const current = await requireProject(projectId)
+  if (typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 128) {
+    throw new Error('SESSION_ID_INVALID')
+  }
+  const session = await current.sessions.openSession(sessionId)
+  const entries = await session.findEntries({ order: 'oldestFirst' })
+  return buildAgentUsage(entries, sessionId)
 }
 
 async function getSessionSnapshot(projectId, sessionId) {
@@ -289,22 +301,31 @@ async function sendMessage(payload, onRunCreated) {
         onEvent: async (event) => {
           if (event.type === 'assistant_message' && event.content) {
             await runService.appendEvent(run.runId, 'assistant_delta', { text: event.content, replace: true })
+          } else if (event.type === 'thinking' && event.content) {
+            await runService.appendEvent(run.runId, 'thinking', { text: event.content })
           } else if (event.type === 'tool_started') {
-            await runService.appendEvent(run.runId, 'tool_started', { tool: event.toolName ?? 'operation', args: {} })
+            await runService.appendEvent(run.runId, 'tool_started', {
+              tool: event.toolName ?? 'operation',
+              args: summarizeAgentToolActivity(event.toolName, 'started', event.details),
+            })
           } else if (event.type === 'tool') {
             await runService.appendEvent(run.runId, 'tool_completed', {
               tool: event.toolName ?? 'operation',
               ok: event.ok !== false,
               ...(event.ok === false && event.errorCode ? { errorCode: event.errorCode } : {}),
-              details: event.ok === false ? '本地操作未完成' : '本地操作已完成',
+              details: summarizeAgentToolActivity(
+                event.toolName,
+                'completed',
+                undefined,
+                event.details,
+                event.ok !== false,
+                event.errorCode,
+              ),
             })
           } else if (event.type === 'tool_retry') {
-            const details = event.details && typeof event.details === 'object' ? event.details : {}
             await runService.appendEvent(run.runId, 'tool_retry', {
               tool: event.toolName ?? 'operation',
-              attempt: details.attempt,
-              maxAttempts: details.maxAttempts,
-              errorCode: details.errorCode,
+              ...summarizeAgentToolRetry(event.details),
             })
           }
         },
@@ -392,6 +413,8 @@ async function dispatch(method, payload) {
       return listAgentSkills(payload)
     case 'agent:get-messages':
       return getSessionMessages(payload?.projectId, payload?.sessionId)
+    case 'agent:get-usage':
+      return getSessionUsage(payload?.projectId, payload?.sessionId)
     case 'agent:get-snapshot':
       return getSessionSnapshot(payload?.projectId, payload?.sessionId)
     case 'agent:list-events':

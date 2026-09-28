@@ -9,6 +9,7 @@ const {
   agnesMediaUrl,
   buildAgnesImageRequest,
   buildAgnesVideoRequest,
+  buildArkVideoRequest,
   extensionForMediaType,
   getAgnesResponse,
   hasMediaSignature,
@@ -17,8 +18,10 @@ const {
   postJson,
   runImageTask,
   runVideoTask,
+  runArkVideoTask,
 } = require('../src/generation-worker.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('../src/agnes-model-catalog.cjs')
+const { ARK_API_BASE_URL, ARK_MODELS, ARK_PROVIDER_ID, resolveArkVideoModelConfig } = require('../src/ark-model-catalog.cjs')
 
 const TASK_ID = '99999999-9999-4999-8999-999999999999'
 const VIDEO_ID = 'video/id 1'
@@ -34,6 +37,20 @@ function jobFor(modality, parameters = {}) {
     endpoint: AGNES_API_BASE_URL,
     // This is a fake test value. No request is sent to Agnes.
     apiKey: 'mock-cloud-key-not-a-secret',
+    prompt: '雨夜街道中的纸灯笼',
+    parameters,
+    outputDirectory: path.join('test-project', '.vibepaper', 'generated', TASK_ID),
+  }
+}
+
+function arkVideoJob(parameters = {}) {
+  return {
+    taskId: TASK_ID,
+    modality: 'video',
+    providerType: 'cloud',
+    providerId: ARK_PROVIDER_ID,
+    modelId: ARK_MODELS.video,
+    apiKey: 'mock-ark-api-key-not-a-secret',
     prompt: '雨夜街道中的纸灯笼',
     parameters,
     outputDirectory: path.join('test-project', '.vibepaper', 'generated', TASK_ID),
@@ -581,4 +598,188 @@ test('video creation surfaces the final Agnes queue-full response after bounded 
   )
   assert.equal(attempts, 5)
   assert.deepEqual(delays, [3_000, 6_000, 12_000, 24_000])
+})
+
+test('Ark video request preserves separate HTTPS image, video, and audio reference content types', () => {
+  const request = buildArkVideoRequest(arkVideoJob({
+    ratio: '16:9',
+    duration: 6,
+    firstFrameUrl: 'https://images.example-cdn.net/start.png?sig=one',
+    referenceVideos: ['https://media.example-cdn.net/ref.mp4?sig=two'],
+    referenceAudios: ['https://media.example-cdn.net/ref.wav?sig=three'],
+  }))
+  assert.equal(request.model, 'doubao-seedance-2-5-260628')
+  assert.equal(request.duration, 6)
+  assert.equal(request.ratio, 'adaptive', 'Seedance 2.5 keyframe references lock the source aspect ratio')
+  assert.equal(request.resolution, '720p')
+  assert.deepEqual(request.content.slice(1), [
+    { type: 'image_url', image_url: { url: 'https://images.example-cdn.net/start.png?sig=one' }, role: 'first_frame' },
+    { type: 'video_url', video_url: { url: 'https://media.example-cdn.net/ref.mp4?sig=two' }, role: 'reference_video' },
+    { type: 'audio_url', audio_url: { url: 'https://media.example-cdn.net/ref.wav?sig=three' }, role: 'reference_audio' },
+  ])
+  assert.equal(JSON.stringify(request).includes('mock-ark-api-key'), false)
+})
+
+test('Ark references reject non-HTTPS, local, private, credentialed, and overlong addresses before sending', () => {
+  for (const reference of [
+    'http://media.example.net/ref.mp4',
+    'https://localhost/ref.mp4',
+    'https://127.0.0.1/ref.mp4',
+    'https://192.168.1.5/ref.mp4',
+    'https://user:pass@media.example.net/ref.mp4',
+    `https://media.example.net/${'a'.repeat(4100)}`,
+    'vibe://app/assets/11111111-1111-4111-8111-111111111111',
+  ]) {
+    assert.throws(
+      () => buildArkVideoRequest(arkVideoJob({ referenceVideos: [reference] })),
+      (error) => error.code === 'CLOUD_REFERENCE_UNAVAILABLE',
+    )
+  }
+})
+
+test('Seedance 2.5 duration and mixed media reference limits match the model contract', () => {
+  assert.equal(buildArkVideoRequest(arkVideoJob({ duration: 4 })).duration, 4)
+  assert.equal(buildArkVideoRequest(arkVideoJob({ duration: 30 })).duration, 30)
+  for (const duration of [3, 31]) {
+    assert.throws(() => buildArkVideoRequest(arkVideoJob({ duration })),
+      (error) => error.code === 'CLOUD_INPUT_INVALID' && /4 到 30 秒/u.test(error.message))
+  }
+
+  const references = Array.from({ length: 50 }, (_, index) => `https://media.example-cdn.net/ref-${index}.mp4`)
+  assert.equal(buildArkVideoRequest(arkVideoJob({ referenceVideos: references })).content.length, 51)
+  references.push('https://media.example-cdn.net/ref-50.mp4')
+  assert.throws(() => buildArkVideoRequest(arkVideoJob({ referenceVideos: references })),
+    (error) => error.code === 'CLOUD_INPUT_INVALID' && /参考数量/u.test(error.message))
+})
+
+test('Ark maps original desktop node size values to supported resolution names', () => {
+  assert.equal(buildArkVideoRequest(arkVideoJob({ size: '720P', resolution: '1280x720' })).resolution, '720p')
+  assert.equal(buildArkVideoRequest(arkVideoJob({ size: '1080P' })).resolution, '1080p')
+  assert.equal(buildArkVideoRequest(arkVideoJob({ size: '480P' })).resolution, '480p')
+  assert.throws(() => buildArkVideoRequest(arkVideoJob({ size: '8K' })),
+    (error) => error.code === 'CLOUD_INPUT_INVALID' && /分辨率/u.test(error.message))
+})
+
+test('Ark video task posts, polls and saves results without logging or returning signed reference URLs', async () => {
+  const refUrl = 'https://media.example-cdn.net/private.mp4?signature=secret'
+  const posts = []
+  const polls = []
+  const downloads = []
+  const result = await runArkVideoTask(arkVideoJob({ referenceVideos: [refUrl] }), {
+    resolveReferenceHost: async () => [{ address: '93.184.216.34', family: 4 }],
+    postArkJson: async (...args) => { posts.push(args); return { id: 'ark-task-123' } },
+    getArkJson: async (...args) => {
+      polls.push(args)
+      return { data: { status: 'succeeded', content: { video_url: 'https://result.example-cdn.net/result.mp4?token=output' } } }
+    },
+    downloadArkOutput: async (...args) => { downloads.push(args); return `generated/${TASK_ID}/result.mp4` },
+    sleep: async () => {},
+    now: () => 0,
+  })
+  assert.equal(posts[0][0], `${ARK_API_BASE_URL}/contents/generations/tasks`)
+  assert.equal(posts[0][1].content[1].video_url.url, refUrl)
+  assert.equal(posts[0][2], 'mock-ark-api-key-not-a-secret')
+  assert.equal(polls[0][0], `${ARK_API_BASE_URL}/contents/generations/tasks/ark-task-123`)
+  assert.deepEqual(downloads[0].slice(0, 4), ['https://result.example-cdn.net/result.mp4?token=output', arkVideoJob().outputDirectory, TASK_ID, 'video'])
+  assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.mp4` })
+})
+
+test('desktop video node reference fields route through the Main Ark model selection and save mocked output', async () => {
+  // These are the exact desktop NodeEditor parameter names produced by
+  // buildMediaReferenceParameters(..., 'video', true).
+  const nodeParameters = {
+    prompt: '雨夜中的纸灯笼',
+    referenceImages: ['https://images.example-cdn.net/start.png'],
+    referenceVideos: ['https://media.example-cdn.net/ref.mp4?sig=video'],
+    referenceAudios: ['https://media.example-cdn.net/ref.wav?sig=audio'],
+    duration: 8,
+    ratio: '16:9',
+  }
+  const model = resolveArkVideoModelConfig({
+    providerId: ARK_PROVIDER_ID,
+    modality: 'video',
+    modelId: ARK_MODELS.video,
+    apiKey: 'mock-ark-key-not-a-secret',
+  })
+  const posts = []
+  const polls = []
+  const downloads = []
+  const output = await runArkVideoTask({
+    ...model,
+    taskId: TASK_ID,
+    modality: 'video',
+    prompt: nodeParameters.prompt,
+    parameters: nodeParameters,
+    outputDirectory: path.join('test-project', '.vibepaper', 'generated', TASK_ID),
+  }, {
+    resolveReferenceHost: async () => [{ address: '93.184.216.34', family: 4 }],
+    postArkJson: async (...args) => { posts.push(args); return { id: 'main-route-task-1' } },
+    getArkJson: async (...args) => {
+      polls.push(args)
+      return { data: { status: 'succeeded', content: { video_url: 'https://result.example-cdn.net/generated.mp4' } } }
+    },
+    downloadArkOutput: async (...args) => { downloads.push(args); return `generated/${TASK_ID}/result.mp4` },
+    sleep: async () => {},
+    now: () => 0,
+  })
+
+  assert.equal(model.providerId, 'volcengine-ark')
+  assert.equal(model.modelId, 'doubao-seedance-2-5-260628')
+  assert.equal(posts[0][0], `${ARK_API_BASE_URL}/contents/generations/tasks`)
+  assert.deepEqual(posts[0][1].content.slice(1), [
+    { type: 'image_url', image_url: { url: nodeParameters.referenceImages[0] }, role: 'reference_image' },
+    { type: 'video_url', video_url: { url: nodeParameters.referenceVideos[0] }, role: 'reference_video' },
+    { type: 'audio_url', audio_url: { url: nodeParameters.referenceAudios[0] }, role: 'reference_audio' },
+  ])
+  assert.equal(polls[0][0], `${ARK_API_BASE_URL}/contents/generations/tasks/main-route-task-1`)
+  assert.deepEqual(downloads[0].slice(1, 4), [path.join('test-project', '.vibepaper', 'generated', TASK_ID), TASK_ID, 'video'])
+  assert.deepEqual(output, { outputPath: `generated/${TASK_ID}/result.mp4` })
+
+  assert.throws(
+    () => buildAgnesVideoRequest(jobFor('video', nodeParameters)),
+    (error) => error.code === 'UNSUPPORTED_REFERENCE_MEDIA',
+  )
+})
+
+test('Ark task blocks reference hosts resolving to private addresses and redacts signed URLs from provider errors', async () => {
+  const refUrl = 'https://media.example-cdn.net/ref.mp4?signature=secret'
+  await assert.rejects(
+    runArkVideoTask(arkVideoJob({ referenceVideos: [refUrl] }), {
+      resolveReferenceHost: async () => [{ address: '10.0.0.7', family: 4 }],
+      postArkJson: async () => assert.fail('private reference must not be sent'),
+    }),
+    (error) => error.code === 'CLOUD_REFERENCE_UNAVAILABLE',
+  )
+
+  await assert.rejects(
+    runArkVideoTask(arkVideoJob({ referenceVideos: [refUrl] }), {
+      resolveReferenceHost: async () => [{ address: '93.184.216.34', family: 4 }],
+      postArkJson: async () => ({ id: 'ark-task-123' }),
+      getArkJson: async () => { throw new WorkerFailure('CLOUD_REQUEST_FAILED', `provider echoed ${refUrl}`, 400) },
+      sleep: async () => {},
+      now: () => 0,
+    }),
+    (error) => error.code === 'CLOUD_REQUEST_FAILED'
+      && !error.message.includes(refUrl)
+      && error.message.includes('[已隐藏参考地址]'),
+  )
+})
+
+test('Ark task errors preserve the provider reason while hiding unrelated signed media URLs', async () => {
+  const unrelatedSignedUrl = 'https://private-output.example/result.mp4?signature=provider-secret'
+  await assert.rejects(
+    runArkVideoTask(arkVideoJob(), {
+      postArkJson: async () => ({ id: 'ark-task-failed' }),
+      getArkJson: async () => ({
+        data: { status: 'failed', error: { message: `input asset expired at ${unrelatedSignedUrl}` } },
+      }),
+      sleep: async () => {},
+      now: () => 0,
+    }),
+    (error) => error.code === 'CLOUD_GENERATION_FAILED'
+      && error.message.includes('input asset expired')
+      && error.message.includes('[已隐藏媒体地址]')
+      && !error.message.includes('https://')
+      && !error.message.includes('provider-secret'),
+  )
 })

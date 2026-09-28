@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentPanelDesktopAdapter } from './AgentPanel'
 import { isChatVisibleMessage } from './agentEventHandlers'
-import { mergeSessionMessages, reduceAgentEvent, type AgentEventState } from './agentEventEnvelope'
+import { isAgentRunActive, mergeSessionMessages, reduceAgentEvent, type AgentEventState } from './agentEventEnvelope'
 import type { AgentChatMsg, AgentConfirmation } from './agentTypes'
 import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentSession, DesktopAgentSkill } from '@/desktop/desktop-bridge'
 import type { SkillView } from '@/lib/types'
@@ -38,21 +38,12 @@ function createEventState(messages: AgentChatMsg[]): AgentEventState {
     messages,
     seenEventIds: new Set(),
     runStatus: 'running',
+    runStatusById: new Map(),
     messageIdByRun: new Map(),
     persistedAssistantRunIds: new Set(messages.flatMap((message) =>
       message.role === 'assistant' && message.content.trim() && message.meta?.runId ? [message.meta.runId] : [],
     )),
   }
-}
-
-function eventStateIsRunning(state: AgentEventState): boolean {
-  if (state.lastEventType === 'confirmation_required' || state.lastEventType === 'run_completed'
-    || state.lastEventType === 'run_failed' || state.lastEventType === 'run_aborted') return false
-  if (state.lastEventType === 'task_status') {
-    const status = state.messages.at(-1)?.meta?.taskStatus?.status
-    return status === 'queued' || status === 'running'
-  }
-  return state.messages.some((message) => message.role === 'assistant' && !message.content.trim())
 }
 
 function normalizeError(cause: unknown): string {
@@ -94,6 +85,8 @@ export function useDesktopAgentController({
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const activeSessionRef = useRef<string | null>(null)
+  const activeRunIdRef = useRef<string | null>(null)
+  const activeRunSessionIdRef = useRef<string | null>(null)
   const eventStatesRef = useRef(new Map<string, AgentEventState>())
   const eventSequencesRef = useRef(new Map<string, number>())
   const requestEpochRef = useRef(0)
@@ -141,7 +134,14 @@ export function useDesktopAgentController({
       eventStatesRef.current.set(sessionId, state)
       eventSequencesRef.current.set(sessionId, snapshot.lastEventSeq)
       setMessages(state.messages)
-      sendingRef.current = eventStateIsRunning(state)
+      sendingRef.current = isAgentRunActive(state)
+      if (sendingRef.current) {
+        activeRunIdRef.current = state.lastEventRunId ?? null
+        activeRunSessionIdRef.current = sessionId
+      } else if (activeRunSessionIdRef.current === sessionId) {
+        activeRunIdRef.current = null
+        activeRunSessionIdRef.current = null
+      }
       setSending(sendingRef.current)
     } else {
       const loaded = toChatMessages(await bridge.getAgentMessages(projectId, sessionId))
@@ -150,8 +150,8 @@ export function useDesktopAgentController({
       eventStatesRef.current.set(sessionId, state)
       eventSequencesRef.current.set(sessionId, 0)
       setMessages(loaded)
-      sendingRef.current = false
-      setSending(false)
+      sendingRef.current = isAgentRunActive(state)
+      setSending(sendingRef.current)
     }
   }, [projectId])
 
@@ -170,10 +170,16 @@ export function useDesktopAgentController({
       setActiveSessionId(nextId)
       if (!nextId) {
         setMessages([])
+        activeRunIdRef.current = null
+        activeRunSessionIdRef.current = null
         sendingRef.current = false
         setSending(false)
         await loadSkills(null)
         return
+      }
+      if (activeRunSessionIdRef.current && activeRunSessionIdRef.current !== nextId) {
+        activeRunIdRef.current = null
+        activeRunSessionIdRef.current = null
       }
       await loadSession(nextId, epoch)
       await loadSkills(nextId)
@@ -184,6 +190,8 @@ export function useDesktopAgentController({
 
   useEffect(() => {
     activeSessionRef.current = null
+    activeRunIdRef.current = null
+    activeRunSessionIdRef.current = null
     setSessions([])
     setActiveSessionId(null)
     setMessages([])
@@ -233,15 +241,26 @@ export function useDesktopAgentController({
       setMessages(next.messages)
       if (event.type === 'confirmation_required' || event.type === 'run_completed'
         || event.type === 'run_failed' || event.type === 'run_aborted') {
-        sendingRef.current = false
-        setSending(false)
+        if (!activeRunIdRef.current || event.runId === activeRunIdRef.current) {
+          activeRunIdRef.current = null
+          activeRunSessionIdRef.current = null
+          sendingRef.current = false
+          setSending(false)
+        }
       } else if (event.type === 'task_status') {
-        const status = String(event.data.status ?? '')
-        sendingRef.current = status === 'queued' || status === 'running'
-        setSending(sendingRef.current)
+        if (!activeRunIdRef.current || event.runId === activeRunIdRef.current) {
+          activeRunIdRef.current = event.runId
+          activeRunSessionIdRef.current = activeSessionId
+          sendingRef.current = true
+          setSending(sendingRef.current)
+        }
       } else {
-        sendingRef.current = true
-        setSending(true)
+        if (!activeRunIdRef.current || event.runId === activeRunIdRef.current) {
+          activeRunIdRef.current = event.runId
+          activeRunSessionIdRef.current = activeSessionId
+          sendingRef.current = true
+          setSending(true)
+        }
       }
       if (event.type === 'tool_completed' || (event.type === 'task_status' && String(event.data.status ?? '') === 'succeeded')) {
         onCanvasChanged()
@@ -271,6 +290,8 @@ export function useDesktopAgentController({
     if (!bridge || !projectId) return
     const epoch = ++requestEpochRef.current
     activeSessionRef.current = sessionId
+    activeRunIdRef.current = null
+    activeRunSessionIdRef.current = null
     setActiveSessionId(sessionId)
     setError('')
     try {
@@ -321,7 +342,7 @@ export function useDesktopAgentController({
           return node ? refFromNode(node.data.node) : { id: nodeId, kind: 'node', title: '节点' }
         })
         const nodeReferences = nodeReferencesForComposer(selectedRefs, snapshot.nodes)
-        await bridge.startAgentRun({
+        const started = await bridge.startAgentRun({
           projectId,
           canvasId,
           canvasVersion: currentCanvas.canvas.version,
@@ -331,6 +352,8 @@ export function useDesktopAgentController({
           selectedSkillId: input?.selectedSkillId,
           idempotencyKey: crypto.randomUUID(),
         })
+        activeRunIdRef.current = started.runId
+        activeRunSessionIdRef.current = sessionId
         await loadSkills(sessionId)
         eventDrivenRun = true
         setDraft('')
@@ -418,6 +441,7 @@ export function useDesktopAgentController({
     messages,
     draft,
     sending,
+    activeRunId: activeRunSessionIdRef.current === activeSessionId ? activeRunIdRef.current : null,
     creating,
     configured: agnesCatalog?.apiKeyConfigured === true,
     modelLabel: 'Agnes 2.5 Flash',

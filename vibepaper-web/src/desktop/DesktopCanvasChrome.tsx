@@ -1,13 +1,11 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import {
-  BarChart3, BookOpen, Bot, Check, ChevronDown, Clapperboard, Focus, Grid2x2,
-  Hand, History, Image as ImageIcon, Layers, Library, Mic, MousePointer2, Plus, Puzzle, Send,
-  Settings2, SlidersHorizontal, Square, SquarePlus, Type, Undo2, Upload, X,
+  Bot, Check, ChevronDown, Clapperboard, Focus, Grid2x2,
+  Hand, Image as ImageIcon, Layers, Library, Mic, MousePointer2, Plus,
+  Settings2, Type, Undo2, Upload,
 } from 'lucide-react'
-import { AgentEmptyState } from '@/features/canvas/AgentEmptyState'
-import { AgentTurnTimeline } from '@/features/canvas/AgentExecutionRecord'
-import type { DesktopAgentMessage, DesktopAgentSession, DesktopProject } from './desktop-bridge'
+import type { DesktopProject } from './desktop-bridge'
 
 interface ChromeProps {
   project: DesktopProject
@@ -107,61 +105,4 @@ export function DesktopCanvasChrome(props: ChromeProps) {
 
 function ToolButton({ title, active = false, onClick, children }: { title: string; active?: boolean; onClick: () => void; children: React.ReactNode }) {
   return <button type="button" title={title} aria-label={title} onClick={onClick} className={`flex h-10 w-10 items-center justify-center rounded-full transition ${active ? 'bg-white text-[#1a1c24]' : 'text-white/75 hover:bg-white/10 hover:text-white'}`}>{children}</button>
-}
-
-export function DesktopAgentPanel({ sessions, activeSessionId, messages, draft, sending, creating, agnesConfigured, error, onDraftChange, onNewSession, onSelectSession, onSend, onConfigure, onClose }: {
-  sessions: DesktopAgentSession[]
-  activeSessionId: string | null
-  messages: DesktopAgentMessage[]
-  draft: string
-  sending: boolean
-  creating: boolean
-  agnesConfigured: boolean
-  error: string
-  onDraftChange: (value: string) => void
-  onNewSession: () => Promise<void>
-  onSelectSession: (sessionId: string) => Promise<void>
-  onSend: () => Promise<void>
-  onConfigure: () => void
-  onClose: () => void
-}) {
-  const [tab, setTab] = useState<'chat' | 'history'>('chat')
-  const [width, setWidth] = useState(380)
-  const resizeStart = useRef<{ x: number; width: number } | null>(null)
-  return <aside className="relative z-30 flex h-full flex-none flex-col overflow-visible border-l border-[var(--canvas-border)] bg-[var(--canvas-surface)] text-[var(--canvas-text)] shadow-xl shadow-black/20 backdrop-blur-md" style={{ width }}>
-    <div role="separator" aria-orientation="vertical" aria-label="调整 Agent 面板宽度" className="group absolute -left-1.5 top-0 z-40 h-full w-3 cursor-col-resize touch-none select-none" onPointerDown={(event) => { resizeStart.current = { x: event.clientX, width }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={(event) => { if (resizeStart.current) setWidth(Math.min(720, Math.max(300, resizeStart.current.width + resizeStart.current.x - event.clientX))) }} onPointerUp={() => { resizeStart.current = null }} onPointerCancel={() => { resizeStart.current = null }} onDoubleClick={() => setWidth(380)}><span aria-hidden className="pointer-events-none absolute left-1/2 top-0 h-full w-[3px] -translate-x-1/2 bg-transparent transition-colors group-hover:bg-[var(--canvas-border-strong)] group-active:bg-[var(--canvas-border-strong)]" /></div>
-    <div className="flex items-center justify-between px-4 py-3.5">
-      <div className="flex items-center gap-2.5"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#111] text-white"><Bot size={16} /></span><div><p className="max-w-[140px] truncate text-[14px] font-bold text-[#111]">{sessions.find((session) => session.sessionId === activeSessionId)?.title || '新对话'}</p><p className="text-[11px] text-[#999]">Paper Agent</p></div></div>
-      <div className="flex items-center gap-0.5">
-        <IconButton title="新对话" onClick={() => void onNewSession()}><SquarePlus size={16} /></IconButton>
-        <button title="Skills 尚未接入桌面版" disabled className="rounded-full p-2 text-[#bbb]"><BookOpen size={16} /></button>
-        <button title="短剧资产尚未接入桌面版" disabled className="rounded-full p-2 text-[#bbb]"><Clapperboard size={16} /></button>
-        <IconButton title="历史" active={tab === 'history'} onClick={() => setTab(tab === 'history' ? 'chat' : 'history')}><History size={16} /></IconButton>
-        <button title="用量视图尚未接入桌面版" disabled className="rounded-full p-2 text-[#bbb]"><BarChart3 size={16} /></button>
-        <IconButton title="偏好设置" onClick={onConfigure}><Settings2 size={16} /></IconButton>
-        <IconButton title="关闭" onClick={onClose}><X size={16} /></IconButton>
-      </div>
-    </div>
-    {tab === 'chat' ? <div className="flex min-h-0 flex-1 flex-col bg-[var(--canvas-surface)]">
-      <div className="min-h-0 flex-1 overflow-y-auto bg-transparent px-3.5 pb-8 pt-3.5" aria-live="polite">
-        {messages.length === 0 && <AgentEmptyState onSuggestion={onDraftChange} />}
-        {messages.map((message, index) => <div key={`${message.createdAt}-${index}`} className={`mb-4 flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}><div className={message.role === 'user' ? 'max-w-[94%] whitespace-pre-line rounded-[18px] bg-[#efefef] px-3.5 py-2.5 text-[15px] leading-[1.65] text-[#111]' : 'w-full min-w-0 px-1 py-1 text-[15px] leading-[1.7] text-[#222]'}>{message.role === 'assistant' ? <AgentTurnTimeline steps={[]} content={message.content} /> : message.content}</div></div>)}
-        {sending && <p className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-[#888]"><span className="h-2 w-2 rounded-full bg-emerald-500" />正在工作</p>}
-      </div>
-      {error && <p role="alert" className="mx-3 mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
-      <form className="shrink-0 px-3 pb-3" onSubmit={(event) => { event.preventDefault(); void onSend() }}>
-        <div className="relative rounded-lg border border-[var(--canvas-border)] bg-[var(--canvas-surface)] shadow-[0_8px_24px_rgba(15,23,42,0.08)] focus-within:border-[var(--canvas-border-strong)]">
-          <textarea aria-label="发送给 Agent 的消息" value={draft} maxLength={20_000} disabled={sending} onChange={(event) => onDraftChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void onSend() } }} rows={3} placeholder="描述创意或需求；@ 节点引用与 / Skill 暂不可用" className="block min-h-[72px] w-full resize-none bg-transparent px-3 pb-12 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60" />
-          <div className="absolute bottom-2 left-2 right-2 flex items-center gap-1.5">
-            <button type="button" title="Skills 尚未接入桌面版" disabled className="flex size-8 items-center justify-center rounded-lg text-[var(--canvas-muted-soft)]"><Puzzle size={16} /></button>
-            <button type="button" title="生成偏好" onClick={onConfigure} className="flex size-8 items-center justify-center rounded-lg text-[var(--canvas-muted)] hover:bg-[var(--canvas-hover)]"><SlidersHorizontal size={16} /></button>
-            <button type="button" onClick={onConfigure} className="ml-auto truncate rounded-lg px-2 py-1 text-[11px] font-semibold text-[#555]">{agnesConfigured ? 'Agnes 2.5 Flash' : '配置模型'}</button>
-            {sending
-              ? <button type="button" title="桌面 Agent Worker 尚未提供中止接口" aria-label="停止（暂不可用）" disabled className="inline-flex size-7 cursor-not-allowed items-center justify-center rounded-lg bg-[var(--canvas-surface-muted)] text-[var(--canvas-muted-soft)]"><Square size={12} /></button>
-              : <button type="submit" title="发送" aria-label="发送" disabled={!agnesConfigured || !draft.trim() || creating} className="inline-flex size-7 items-center justify-center rounded-lg bg-[var(--canvas-active)] text-[var(--canvas-active-text)] disabled:cursor-not-allowed disabled:bg-[var(--canvas-surface-muted)] disabled:text-[var(--canvas-muted-soft)]"><Send size={14} /></button>}
-          </div>
-        </div>
-      </form>
-    </div> : <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-3"><p className="mb-3 text-[12px] font-bold text-[#888]">历史对话</p>{sessions.length === 0 ? <p className="text-xs text-[#999]">暂无会话</p> : sessions.map((session) => <button key={session.sessionId} type="button" onClick={() => { void onSelectSession(session.sessionId); setTab('chat') }} className={`mb-1 block w-full rounded-xl px-3 py-2.5 text-left hover:bg-black/[0.04] ${session.sessionId === activeSessionId ? 'bg-black/[0.05]' : ''}`}><p className="truncate text-[13px] font-semibold">{session.title || '新对话'}</p><p className="mt-1 text-[11px] text-[#999]">{new Date(session.modifiedAt).toLocaleString()}</p></button>)}</div>}
-  </aside>
 }

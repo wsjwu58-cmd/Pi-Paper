@@ -10,7 +10,7 @@ const { imageThumbnail } = require('./asset-thumbnail.cjs')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 13
+const PROJECT_DB_SCHEMA_VERSION = 14
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -173,6 +173,46 @@ const CANVAS_GROUP_STACK_DB_SCHEMA = `
   ) STRICT;
 `
 
+const DRAMA_ASSET_TYPES = Object.freeze([
+  'series_bible', 'episode', 'scene', 'character_profile', 'character_look',
+  'shot_spec', 'continuity_constraint', 'audio_cue', 'subtitle_cue',
+])
+
+const DRAMA_ASSETS_DB_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS drama_assets (
+    asset_id TEXT PRIMARY KEY,
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    asset_type TEXT NOT NULL CHECK (asset_type IN (
+      'series_bible', 'episode', 'scene', 'character_profile', 'character_look',
+      'shot_spec', 'continuity_constraint', 'audio_cue', 'subtitle_cue'
+    )),
+    asset_version INTEGER NOT NULL CHECK (asset_version >= 1),
+    canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
+    data_json TEXT NOT NULL CHECK (json_valid(data_json) AND json_type(data_json) = 'object'),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (canvas_id, asset_id)
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_assets_by_canvas ON drama_assets(canvas_id, created_at, asset_id);
+
+  CREATE TABLE IF NOT EXISTS drama_asset_commands (
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+    input_hash TEXT NOT NULL CHECK (length(input_hash) = 64),
+    asset_id TEXT NOT NULL REFERENCES drama_assets(asset_id) ON DELETE RESTRICT,
+    asset_type TEXT NOT NULL CHECK (asset_type IN (
+      'series_bible', 'episode', 'scene', 'character_profile', 'character_look',
+      'shot_spec', 'continuity_constraint', 'audio_cue', 'subtitle_cue'
+    )),
+    asset_version INTEGER NOT NULL CHECK (asset_version >= 1),
+    result_canvas_version INTEGER NOT NULL CHECK (result_canvas_version >= 1),
+    asset_data_snapshot TEXT NOT NULL CHECK (json_valid(asset_data_snapshot) AND json_type(asset_data_snapshot) = 'object'),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (canvas_id, idempotency_key)
+  ) STRICT;
+`
+
 const PROJECT_DB_SCHEMA = `
   CREATE TABLE project_metadata (
     key TEXT PRIMARY KEY,
@@ -213,6 +253,7 @@ const PROJECT_DB_SCHEMA = `
   ${TASK_OUTPUTS_DB_SCHEMA}
   ${CANVAS_GRAPH_COMMANDS_DB_SCHEMA}
   ${CANVAS_GROUP_STACK_DB_SCHEMA}
+  ${DRAMA_ASSETS_DB_SCHEMA}
 `
 
 function isRecord(value) {
@@ -1181,6 +1222,76 @@ function normalizeCanvasEntityId(value, label) {
   if (typeof value === 'string' && value.length > 0 && value.length <= 256) return value
   if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
   throw new Error(`${label}标识无效。`)
+}
+
+function normalizeDramaAssetData(assetType, value) {
+  if (!DRAMA_ASSET_TYPES.includes(assetType)) throw new Error('未知短剧资产类型。')
+  const data = cloneJsonRecord(value, '短剧资产 data')
+  if (Object.keys(data).length === 0) throw new Error('短剧资产 data 不能为空。')
+
+  const hasText = (...keys) => keys.some((key) => {
+    const field = data[key]
+    if (field == null) return false
+    // DramaAssetService.requireText uses Jackson's Object.toString().isBlank(),
+    // so any non-null JSON value with a nonblank representation is accepted.
+    // Java collections render as [] / {}, including when they are empty.
+    if (Array.isArray(field) || isRecord(field)) return true
+    return String(field).trim().length > 0
+  })
+  const hasNumber = (...keys) => keys.some((key) => typeof data[key] === 'number' && Number.isFinite(data[key]))
+  const missing = (field) => { throw new Error(`短剧资产缺少字段: ${field}`) }
+  switch (assetType) {
+    case 'series_bible':
+      if (!hasText('premise')) missing('premise')
+      break
+    case 'episode':
+      if (!hasNumber('episodeNo', 'episode_no')) missing('episodeNo')
+      if (!hasText('goal')) missing('goal')
+      break
+    case 'scene':
+      if (!hasNumber('sceneOrder', 'scene_order')) missing('sceneOrder')
+      if (!hasText('goal')) missing('goal')
+      break
+    case 'character_profile':
+      if (!hasText('name')) missing('name')
+      if (!hasText('identityAnchor', 'identity_anchor')) missing('identityAnchor')
+      break
+    case 'character_look':
+      if (!hasText('characterId', 'character_id')) missing('characterId')
+      break
+    case 'shot_spec':
+      if (!hasNumber('shotNo', 'shot_no')) missing('shotNo')
+      if (!hasText('purpose')) missing('purpose')
+      break
+    case 'continuity_constraint':
+      if (!hasText('subject')) missing('subject')
+      if (!hasText('rule')) missing('rule')
+      break
+    case 'audio_cue':
+    case 'subtitle_cue':
+      if (!hasText('text')) missing('text')
+      break
+    default:
+      throw new Error('未知短剧资产类型。')
+  }
+  return data
+}
+
+function dramaAssetPayload(row, currentCanvasVersion, replayed = false) {
+  const assetId = row.asset_id ?? row.assetId
+  return {
+    id: assetId,
+    assetId,
+    canvasId: row.canvas_id ?? row.canvasId,
+    assetType: row.asset_type ?? row.assetType,
+    assetVersion: Number(row.asset_version ?? row.assetVersion),
+    canvasVersion: Number(row.canvas_version ?? row.canvasVersion),
+    currentCanvasVersion: Number(currentCanvasVersion),
+    data: JSON.parse(row.data_json ?? row.asset_data_snapshot ?? row.data ?? '{}'),
+    replayed,
+    createdAt: row.created_at ?? row.createdAt,
+    updatedAt: row.updated_at ?? row.updatedAt ?? row.created_at ?? row.createdAt,
+  }
 }
 
 function normalizeCanvasNodeIds(value, label, minimum = 0) {
@@ -2278,6 +2389,37 @@ async function migrateDatabaseV12ToV13(database, dataDirectory) {
     throw error
   } finally {
     database.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+async function migrateDatabaseV13ToV14(database, dataDirectory) {
+  const version = databaseVersion(database)
+  if (version === 14) return
+  if (version !== 13) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 14。`)
+
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v13-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec(DRAMA_ASSETS_DB_SCHEMA)
+    database.exec('PRAGMA user_version = 14')
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('短剧资产迁移后检测到无效引用。')
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
   }
 }
 
@@ -3446,6 +3588,7 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 10) await migrateDatabaseV10ToV11(database, dataDirectory)
       if (databaseVersion(database) === 11) await migrateDatabaseV11ToV12(database, dataDirectory)
       if (databaseVersion(database) === 12) await migrateDatabaseV12ToV13(database, dataDirectory)
+      if (databaseVersion(database) === 13) await migrateDatabaseV13ToV14(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
@@ -4765,6 +4908,154 @@ function createLocalProjectStore() {
     return active ? publicProject(active.metadata) : null
   }
 
+  function listDramaAssets(projectId, canvasId, filters = {}) {
+    return enqueue(() => {
+      if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，请重新打开画布。')
+      }
+      if (!isRecord(filters)) throw new Error('短剧资产筛选条件无效。')
+      const assetType = filters.assetType == null || filters.assetType === '' ? null : filters.assetType
+      if (assetType !== null && !DRAMA_ASSET_TYPES.includes(assetType)) throw new Error('未知短剧资产类型。')
+      const scopeFilters = ['episodeId', 'sceneId', 'shotId'].map((key) => {
+        const value = filters[key]
+        if (value != null && (typeof value !== 'string' || value.length > 200)) throw new Error('短剧资产筛选条件无效。')
+        return value || null
+      })
+      const currentCanvasVersion = Number(active.database.prepare('SELECT version FROM canvases WHERE id = ?')
+        .get(canvasId)?.version)
+      if (!Number.isSafeInteger(currentCanvasVersion)) throw new Error('本地画布不存在。')
+      const rows = active.database.prepare(`
+        SELECT asset_id, canvas_id, asset_type, asset_version, canvas_version,
+          data_json, created_at, updated_at
+        FROM drama_assets
+        WHERE canvas_id = ? AND (? IS NULL OR asset_type = ?)
+        ORDER BY created_at ASC, asset_id ASC
+      `).all(canvasId, assetType, assetType)
+      const [episodeId, sceneId, shotId] = scopeFilters
+      const items = rows.map((row) => dramaAssetPayload(row, currentCanvasVersion)).filter((item) => {
+        const matches = (camel, snake, expected) => {
+          if (!expected) return true
+          const actual = Object.hasOwn(item.data, camel) ? item.data[camel] : item.data[snake]
+          return actual != null && String(actual) === expected
+        }
+        return matches('episodeId', 'episode_id', episodeId)
+          && matches('sceneId', 'scene_id', sceneId)
+          && matches('shotId', 'shot_id', shotId)
+      })
+      return { items }
+    })
+  }
+
+  function upsertDramaAsset(input) {
+    return enqueue(() => {
+      if (!isRecord(input)
+        || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
+        || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
+        || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.trim().length < 1
+        || input.idempotencyKey.trim().length > 128) {
+        throw new Error('短剧资产写入请求无效。')
+      }
+      const { projectId, canvasId } = input
+      const assetType = input.assetType
+      const canvasVersion = input.canvasVersion
+      const idempotencyKey = input.idempotencyKey.trim()
+      if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，请重新打开画布。')
+      }
+      const database = active.database
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const previous = database.prepare(`
+          SELECT canvas_id, idempotency_key, input_hash, asset_id, asset_type,
+            asset_version, result_canvas_version, asset_data_snapshot, created_at
+          FROM drama_asset_commands WHERE canvas_id = ? AND idempotency_key = ?
+        `).get(canvasId, idempotencyKey)
+        const currentCanvasVersion = Number(database.prepare('SELECT version FROM canvases WHERE id = ?')
+          .get(canvasId)?.version)
+        if (!Number.isSafeInteger(currentCanvasVersion)) throw new Error('本地画布不存在。')
+        if (previous) {
+          database.exec('COMMIT')
+          return dramaAssetPayload({
+            asset_id: previous.asset_id,
+            canvas_id: previous.canvas_id,
+            asset_type: previous.asset_type,
+            asset_version: previous.asset_version,
+            canvas_version: previous.result_canvas_version,
+            asset_data_snapshot: previous.asset_data_snapshot,
+            created_at: previous.created_at,
+          }, currentCanvasVersion, true)
+        }
+        if (currentCanvasVersion !== canvasVersion) throw new Error('画布版本已变化，请刷新后重试。')
+
+        // Java checks the idempotency ledger before validating the body. A
+        // replay with the same key therefore returns its original snapshot,
+        // even if the retried body is different or malformed.
+        const assetId = input.assetId == null ? null : normalizeCanvasEntityId(input.assetId, '短剧资产')
+        const data = normalizeDramaAssetData(assetType, input.data)
+        const inputHash = createHash('sha256').update(JSON.stringify({
+          assetType,
+          assetId,
+          canvasVersion,
+          data,
+        })).digest('hex')
+
+        const now = new Date().toISOString()
+        let nextAssetId = assetId
+        let nextAssetVersion = 1
+        let createdAt = now
+        if (assetId !== null) {
+          const current = database.prepare(`
+            SELECT asset_id, asset_type, asset_version, created_at
+            FROM drama_assets WHERE asset_id = ? AND canvas_id = ?
+          `).get(assetId, canvasId)
+          if (!current) throw new Error('短剧资产不存在。')
+          if (current.asset_type !== assetType) throw new Error('短剧资产类型不可变更。')
+          nextAssetVersion = Number(current.asset_version) + 1
+          createdAt = current.created_at
+          database.prepare(`
+            UPDATE drama_assets SET asset_version = ?, canvas_version = ?, data_json = ?, updated_at = ?
+            WHERE asset_id = ? AND canvas_id = ?
+          `).run(nextAssetVersion, currentCanvasVersion + 1, JSON.stringify(data), now, assetId, canvasId)
+        } else {
+          nextAssetId = randomUUID()
+          database.prepare(`
+            INSERT INTO drama_assets (
+              asset_id, canvas_id, asset_type, asset_version, canvas_version, data_json, created_at, updated_at
+            ) VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+          `).run(nextAssetId, canvasId, assetType, currentCanvasVersion + 1, JSON.stringify(data), now, now)
+        }
+
+        const nextCanvasVersion = currentCanvasVersion + 1
+        const canvasUpdate = database.prepare(`
+          UPDATE canvases SET version = ?, updated_at = ? WHERE id = ? AND version = ?
+        `).run(nextCanvasVersion, now, canvasId, currentCanvasVersion)
+        if (canvasUpdate.changes !== 1) throw new Error('画布已被并发更新，请刷新后重试。')
+        database.prepare(`
+          INSERT INTO drama_asset_commands (
+            canvas_id, idempotency_key, input_hash, asset_id, asset_type, asset_version,
+            result_canvas_version, asset_data_snapshot, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(canvasId, idempotencyKey, inputHash, nextAssetId, assetType, nextAssetVersion,
+          nextCanvasVersion, JSON.stringify(data), now)
+        database.exec('COMMIT')
+        active.canvas = { ...active.canvas, version: nextCanvasVersion }
+        return dramaAssetPayload({
+          asset_id: nextAssetId,
+          canvas_id: canvasId,
+          asset_type: assetType,
+          asset_version: nextAssetVersion,
+          canvas_version: nextCanvasVersion,
+          data_json: JSON.stringify(data),
+          created_at: createdAt,
+          updated_at: now,
+        }, nextCanvasVersion, false)
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
   function loadCanvas(projectId, canvasId) {
     if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
       throw new Error('当前项目已更改，请重新打开画布。')
@@ -5849,6 +6140,7 @@ function createLocalProjectStore() {
     importAsset,
     saveTaskOutputToLibrary,
     listAssets,
+    listDramaAssets,
     listTaskEvents,
     listTasks,
     readTaskOutputText,
@@ -5871,6 +6163,7 @@ function createLocalProjectStore() {
     saveCanvas,
     searchTasks,
     updateGroup,
+    upsertDramaAsset,
     updateNode,
     updateStack,
   }

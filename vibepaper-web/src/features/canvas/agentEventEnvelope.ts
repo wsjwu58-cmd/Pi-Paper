@@ -29,6 +29,10 @@ export type AgentEventState = {
   messages: AgentChatMsg[]
   seenEventIds: Set<string>
   runStatus: 'running' | 'completed' | 'failed' | 'aborted'
+  /** Most recent event owner, used to restore the correct live status on reload. */
+  lastEventRunId?: string
+  /** A session can contain several runs; keep their terminal state separate. */
+  runStatusById?: Map<string, 'running' | 'waiting_confirmation' | 'completed' | 'failed' | 'aborted'>
   errorCode?: string
   lastEventType?: AgentEventType
   pendingMessageId?: string | number
@@ -63,7 +67,24 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
     seenEventIds: new Set([...state.seenEventIds, event.eventId]),
     messageIdByRun: new Map(state.messageIdByRun),
     persistedAssistantRunIds: new Set(state.persistedAssistantRunIds),
+    lastEventRunId: event.runId,
+    runStatusById: new Map(state.runStatusById),
     lastEventType: event.type,
+  }
+  if (event.type === 'confirmation_required') {
+    next.runStatusById?.set(event.runId, 'waiting_confirmation')
+  } else if (event.type === 'run_completed') {
+    next.runStatusById?.set(event.runId, 'completed')
+  } else if (event.type === 'run_failed') {
+    next.runStatusById?.set(event.runId, 'failed')
+  } else if (event.type === 'run_aborted') {
+    next.runStatusById?.set(event.runId, 'aborted')
+  } else if (event.type === 'task_status') {
+    // A generation task can finish while the Agent still has to report its
+    // result or continue the conversation. Only run terminal events end work.
+    next.runStatusById?.set(event.runId, 'running')
+  } else {
+    next.runStatusById?.set(event.runId, 'running')
   }
   const assistant = (): AgentChatMsg => {
     const knownId = next.messageIdByRun.get(event.runId)
@@ -202,6 +223,24 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
   return next
 }
 
+/**
+ * Resolve live activity without mistaking streamed assistant text for a
+ * completed run. `runId` may identify a just-started run before its first
+ * durable event has arrived.
+ */
+export function isAgentRunActive(state: AgentEventState, runId?: string): boolean {
+  const targetRunId = runId ?? state.lastEventRunId
+  if (targetRunId) {
+    const status = state.runStatusById?.get(targetRunId)
+    if (status) return status === 'running'
+    return runId !== undefined
+  }
+  if (state.runStatus !== 'running') return false
+  return state.messages.some((message) =>
+    message.role === 'assistant' && (!message.content.trim() || message.meta?.executionSteps?.some((step) => step.kind === 'plan')),
+  )
+}
+
 /** Merge durable chat history with the in-memory SSE execution trace. */
 export function mergeSessionMessages(persisted: AgentChatMsg[], runtime: AgentChatMsg[]): AgentChatMsg[] {
   const merged = [...persisted]
@@ -329,15 +368,42 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function printablePayload(value: unknown): string | undefined {
   if (value === undefined) return undefined
-  const text = typeof value === 'string' ? value : JSON.stringify(redactPayload(value), null, 2) ?? ''
+  const safe = redactPayload(value)
+  if (safe === undefined) return undefined
+  const text = typeof safe === 'string' ? safe : JSON.stringify(safe, null, 2) ?? ''
+  if (!text || text === '{}' || text === '[]') return undefined
   return text.length > 6000 ? `${text.slice(0, 6000)}\n…（已截断）` : text
 }
 
-function redactPayload(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactPayload)
+function redactPayload(value: unknown, key?: string): unknown {
+  if (typeof value === 'string') {
+    if (key === 'summary' && isSafeActivitySummary(value)) return value
+    return undefined
+  }
+  if (Array.isArray(value)) {
+    const safe = value.slice(0, 30).map((item) => redactPayload(item)).filter((item) => item !== undefined)
+    return safe.length ? safe : undefined
+  }
   if (!value || typeof value !== 'object') return value
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-    key,
-    /(?:token|secret|authorization|api[_-]?key|password|node_?id|task_?id|session_?id|canvas_?id)/i.test(key) ? '[已隐藏]' : redactPayload(item),
-  ]))
+
+  // Event details are for a compact activity timeline. Keep only operational
+  // metadata; raw prompts, media URLs, payload text, and internal identifiers
+  // stay in Pi's existing private session record.
+  const allowed = new Set([
+    'summary', 'status', 'ok', 'count', 'attempt', 'maxAttempts', 'errorCode',
+    'providedInputCount', 'affectedNodeCount', 'createdCount', 'updatedCount',
+    'deletedCount', 'connectedCount', 'inputTokens', 'outputTokens', 'totalTokens',
+  ])
+  const result = Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([entryKey]) => allowed.has(entryKey))
+    .flatMap(([entryKey, item]) => {
+      const safe = redactPayload(item, entryKey)
+      return safe === undefined ? [] : [[entryKey, safe]]
+    }))
+  return Object.keys(result).length ? result : undefined
+}
+
+function isSafeActivitySummary(value: string): boolean {
+  const operation = '(?:读取画布摘要|读取选中节点(?:（\\d+ 个）)?|读取节点详情|读取模型目录|搜索素材|查询生成任务状态|执行渲染审校|创建节点(?:（\\d+ 个）)?|连接节点(?:（\\d+ 个）)?|整理节点布局(?:（\\d+ 个）)?|更新节点配置|准备生成任务|准备批量生成(?:（\\d+ 项）)?|加载 Skill|执行本地操作)'
+  return new RegExp(`^(?:(?:正在|已)${operation}|操作未完成(?:（[A-Z][A-Z0-9_]{1,47}）)?|工具正在重试)$`, 'u').test(value)
 }

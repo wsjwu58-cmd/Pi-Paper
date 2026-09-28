@@ -1,6 +1,6 @@
 # 桌面版模型提供方接入契约
 
-> 2026-09-24。状态：目标规格。当前代码仅实现本地 OpenAI 兼容文本模型与 Agnes 文/图/视频联调，不代表下表的其他提供方已经可用。模型目录和能力应在实际接入时按供应商官方文档与账号权限核验，不固定为本文撰写时的型号。
+> 2026-09-24 起的目标规格；2026-09-28 实现状态见提供方表。当前仍没有通用 Provider Registry。模型目录和能力应在实际接入时按供应商官方文档与账号权限核验，不固定为本文撰写时的型号。
 
 ## 接入范围
 
@@ -14,6 +14,9 @@
 | 其他用户自定义兼容服务 | 明确的 OpenAI 兼容配置与能力探测 | 按探测结果开放功能 | 待接入 |
 | Ollama、LM Studio 等本机服务 | 仅 loopback 地址，本地能力探测 | 本地 Agent、文本及实际支持的模态 | 本地文本原型 |
 | Agnes | 当前专用适配器 | 文本、图像、视频联调 | 原型可用，尚未完成完整端到端验收 |
+| 火山方舟 Ark | Seedance 视频生成任务 API | Seedance 2.5 文本/图片/视频/音频组合参考 | 桌面专用适配器已实现 HTTPS 参考、任务轮询与本地结果下载；mock 纵向测试通过，未用真实 Ark Key 验证。通用素材上传、音频生成及 Registry 尚未接入 |
+
+Ark 参考请求选用 `doubao-seedance-2-5-260628`。官方[模型目录](https://docs.volcengine.com/docs/ark/model-list?lang=zh)列出全模态参考生视频能力、4–30 秒时长和 480p/720p/1080p 输出；[创建视频任务 API](https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01)示例使用 `image_url`、`video_url`、`audio_url` 与 `reference_image`、`reference_video`、`reference_audio`。Seedance 2.5 提示指南说明单次最多 50 个图像/音视频参考，并要求首尾帧任务使用 `ratio=adaptive`；桌面请求据此限制参考总量并转换节点分辨率/首尾帧参数。本地视频/音频目前只做项目归属、索引 MIME/扩展名和大小检查后拒绝；任务 API 所需的公网 HTTPS 地址不能由本地文件直接提供，文档中针对已授权真人资产的 `asset://` 入库流程未集成，也不视为通用本地素材上传。
 
 官方接口入口：[OpenAI](https://platform.openai.com/docs/api-reference/introduction)、[Claude](https://platform.claude.com/docs/en/api/overview)、[Gemini](https://ai.google.dev/api)、[DeepSeek](https://api-docs.deepseek.com/)、[阿里云百炼](https://docs.modelstudio.console.alibabacloud.com/en/model-studio/text-generation)。这些链接用于实施时核验协议和能力，不意味着所有模态已接入。
 

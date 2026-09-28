@@ -76,14 +76,29 @@ export function rehydratedSkillInstructions(skills: readonly LoadedSkillResource
 	return visible.length > 0 ? `以下 Skill 已在此前轮次加载，必须遵循其方法论：\n${visible.join("\n\n")}` : undefined;
 }
 
-export function agnesModel(config: ServiceConfig, modelId = config.llmModel): Model<"openai-completions"> {
+export function agnesModel(
+	config: ServiceConfig,
+	modelId = config.llmModel,
+	enableThinking = false,
+): Model<"openai-completions"> {
 	return {
 		id: modelId,
 		name: modelId,
 		api: "openai-completions",
 		provider: "agnes",
 		baseUrl: config.llmBaseUrl,
-		reasoning: false,
+		// Desktop opts into real provider reasoning. Keep the legacy Web request
+		// shape unchanged until its own behavior is intentionally migrated.
+		reasoning: enableThinking,
+		...(enableThinking
+			? {
+					compat: {
+						thinkingFormat: "chat-template" as const,
+						supportsReasoningEffort: false,
+						chatTemplateKwargs: { enable_thinking: { $var: "thinking.enabled" as const } },
+					},
+				}
+			: {}),
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 128000,
@@ -182,7 +197,11 @@ export async function runDramaTurn(
 		},
 	]);
 	const agent = createDramaAgent(store, {
-		initialState: { model: agnesModel(config, hooks.modelId), messages: initialMessages },
+		initialState: {
+			model: agnesModel(config, hooks.modelId, hooks.desktopMode === true),
+			messages: initialMessages,
+			thinkingLevel: hooks.desktopMode ? "low" : "off",
+		},
 		streamFn: hooks.requiredToolName ? forceInitialToolCall(hooks.requiredToolName) : streamSimple,
 		sessionId,
 		getApiKey: async (provider) => (provider === "agnes" ? config.llmApiKey : undefined),

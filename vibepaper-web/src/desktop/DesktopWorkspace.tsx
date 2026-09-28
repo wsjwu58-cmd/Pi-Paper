@@ -27,7 +27,7 @@ import { SplitNodeLayout } from '@/features/canvas/nodes/SplitNodeLayout'
 import type { AgentConfirmation, AgentChatMsg } from '@/features/canvas/agentTypes'
 import type { NodePayload } from '@/lib/types'
 import { DesktopCanvasChrome } from './DesktopCanvasChrome'
-import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentSession, DesktopAsset, DesktopCanvas, DesktopCreateNodeInput, DesktopDeleteNodeResult, DesktopEdgePayload, DesktopLocalTextModel, DesktopProject, DesktopTask, DesktopUpdateNodeResult } from './desktop-bridge'
+import type { DesktopAgnesModelCatalog, DesktopArkModelCatalog, DesktopAgentMessage, DesktopAgentSession, DesktopAsset, DesktopCanvas, DesktopCreateNodeInput, DesktopDeleteNodeResult, DesktopEdgePayload, DesktopLocalTextModel, DesktopProject, DesktopTask, DesktopUpdateNodeResult } from './desktop-bridge'
 
 const bridge = window.vibepaperDesktop
 
@@ -552,6 +552,7 @@ function LocalCanvas({
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
   const [localTextModel, setLocalTextModel] = useState<DesktopLocalTextModel | null>(null)
   const [agnesModels, setAgnesModels] = useState<DesktopAgnesModelCatalog | null>(null)
+  const [arkModels, setArkModels] = useState<DesktopArkModelCatalog | null>(null)
   const [modelLoadError, setModelLoadError] = useState('')
   const version = useRef(initialCanvas.version)
   const nodesRef = useRef(nodes)
@@ -640,13 +641,14 @@ function LocalCanvas({
   }, [project.projectId])
   useEffect(() => {
     let cancelled = false
-    void Promise.allSettled([bridge?.getLocalTextModel(), bridge?.getAgnesModels()]).then(([localResult, cloudResult]) => {
+    void Promise.allSettled([bridge?.getLocalTextModel(), bridge?.getAgnesModels(), bridge?.getArkModels()]).then(([localResult, cloudResult, arkResult]) => {
       if (!cancelled) {
         if (localResult.status === 'fulfilled') setLocalTextModel(localResult.value ?? null)
         if (cloudResult.status === 'fulfilled') {
           setAgnesModels(cloudResult.value ?? null)
         }
-        const errors = [localResult, cloudResult]
+        if (arkResult.status === 'fulfilled') setArkModels(arkResult.value ?? null)
+        const errors = [localResult, cloudResult, arkResult]
           .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
           .map((result) => result.reason instanceof Error ? result.reason.message : '无法读取模型配置。')
         setModelLoadError(errors.join(' '))
@@ -2042,6 +2044,7 @@ function LocalCanvas({
         <DesktopModelSettings
           initialConfig={localTextModel}
           agnesConfigured={agnesModels?.apiKeyConfigured === true}
+          arkConfigured={arkModels?.apiKeyConfigured === true}
           loadError={modelLoadError}
           onSavedLocal={(config) => {
             setLocalTextModel(config)
@@ -2052,6 +2055,8 @@ function LocalCanvas({
           }}
           onSavedAgnes={(catalog) => setAgnesModels(catalog)}
           onClearedAgnes={(catalog) => setAgnesModels(catalog)}
+          onSavedArk={(catalog) => setArkModels(catalog)}
+          onClearedArk={(catalog) => setArkModels(catalog)}
           onClose={() => setModelSettingsOpen(false)}
         />
       )}
@@ -2070,20 +2075,26 @@ function agentSendErrorLabel(message: string) {
 function DesktopModelSettings({
   initialConfig,
   agnesConfigured,
+  arkConfigured,
   loadError,
   onSavedLocal,
   onClearedLocal,
   onSavedAgnes,
   onClearedAgnes,
+  onSavedArk,
+  onClearedArk,
   onClose,
 }: {
   initialConfig: DesktopLocalTextModel | null
   agnesConfigured: boolean
+  arkConfigured: boolean
   loadError: string
   onSavedLocal: (config: DesktopLocalTextModel) => void
   onClearedLocal: () => void
   onSavedAgnes: (catalog: DesktopAgnesModelCatalog) => void
   onClearedAgnes: (catalog: DesktopAgnesModelCatalog) => void
+  onSavedArk: (catalog: DesktopArkModelCatalog) => void
+  onClearedArk: (catalog: DesktopArkModelCatalog) => void
   onClose: () => void
 }) {
   const [endpoint, setEndpoint] = useState(initialConfig?.endpoint ?? 'http://127.0.0.1:1234/v1')
@@ -2091,6 +2102,7 @@ function DesktopModelSettings({
   const [models, setModels] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [apiKey, setApiKey] = useState('')
+  const [arkApiKey, setArkApiKey] = useState('')
   const [error, setError] = useState(loadError)
   const [message, setMessage] = useState('')
 
@@ -2174,6 +2186,40 @@ function DesktopModelSettings({
     }
   }
 
+  const saveArkKey = async () => {
+    if (!bridge || busy || !arkApiKey.trim()) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      onSavedArk(await bridge.saveArkApiKey(arkApiKey))
+      setArkApiKey('')
+      window.dispatchEvent(new Event('vp-desktop-model-catalog-changed'))
+      setMessage('火山方舟 API Key 已安全保存。提交 Seedance 视频任务后，提示词、参考图片以及已填写的 HTTPS 视频/音频地址会发送给火山方舟，可能产生供应商费用。')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '保存火山方舟 API Key 失败。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const clearArkKey = async () => {
+    if (!bridge || busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      onClearedArk(await bridge.clearArkApiKey())
+      setArkApiKey('')
+      window.dispatchEvent(new Event('vp-desktop-model-catalog-changed'))
+      setMessage('火山方舟 API Key 已从此设备移除。')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '移除火山方舟 API Key 失败。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-5" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
@@ -2211,6 +2257,29 @@ function DesktopModelSettings({
             <div className="flex gap-2">
               {agnesConfigured && <button onClick={() => void clearAgnesKey()} disabled={busy} className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">移除 Key</button>}
               <button onClick={() => void saveAgnesKey()} disabled={busy || !apiKey.trim()} className="rounded-lg bg-[#6d55c9] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{busy ? '请稍候…' : '安全保存 Key'}</button>
+            </div>
+          </div>
+        </section>
+        <section className="mt-4 rounded-xl border border-black/8 bg-[#fbfaff] p-4">
+          <h3 className="text-sm font-bold">火山方舟 Seedance 2.5</h3>
+          <p className="mt-1 text-xs leading-5 text-[#666]">API 地址：<span className="font-mono">https://ark.cn-beijing.volces.com/api/v3</span></p>
+          <p className="mt-2 text-xs leading-5 text-amber-800">视频生成会把当前提示词、参数、参考图片以及用户填写的 HTTPS 视频/音频地址发送给火山方舟，可能产生供应商费用。HTTPS 参考由供应商按 URL 拉取；本地图片作为请求图片发送。本地视频和音频当前不会上传，任务会明确提示需要 HTTPS 地址。</p>
+          <label htmlFor="ark-api-key" className="mt-4 block text-xs font-semibold">火山方舟 API Key</label>
+          <input
+            id="ark-api-key"
+            type="password"
+            autoComplete="new-password"
+            value={arkApiKey}
+            onChange={(event) => setArkApiKey(event.target.value)}
+            maxLength={1024}
+            placeholder={arkConfigured ? '已配置；输入新 Key 可替换' : '粘贴 API Key'}
+            className="mt-2 h-10 w-full rounded-lg border border-black/12 bg-white px-3 text-sm outline-none focus:border-[#8a72e8]"
+          />
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <span className="text-xs text-[#777]">{arkConfigured ? '此设备已配置 Key' : '尚未配置 Key'}</span>
+            <div className="flex gap-2">
+              {arkConfigured && <button onClick={() => void clearArkKey()} disabled={busy} className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">移除 Key</button>}
+              <button onClick={() => void saveArkKey()} disabled={busy || !arkApiKey.trim()} className="rounded-lg bg-[#6d55c9] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{busy ? '请稍候…' : '安全保存 Key'}</button>
             </div>
           </div>
         </section>

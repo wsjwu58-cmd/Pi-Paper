@@ -11,7 +11,7 @@
 | 文本 | 原编辑器、本地文本和 Agnes 文本、任务结果及文本上游参考。 | 非文本上游参考被显式拒绝；尚缺与原版同状态的逐操作录屏验收。 |
 | 图片 | 原图片节点、本地素材、Agnes 生成、图片参考、多结果预览及结果存素材。 | 仍需不同生成参数和原版所有后处理输出的视觉对照。 |
 | 音频 | 原音频节点、Windows SAPI 本地生成、播放和结果存素材。 | 云端音频模型、上游音频参考、音频节点直接导入与 macOS/Linux 本地等价模型尚未接通。 |
-| 视频 | 原视频节点、Agnes 生成、比例/时长/720P、图片首尾帧、任务状态及结果。 | 非图片媒体上游会被抽取为首尾帧候选，但本地参考材料化仅支持图片；视频作为视频参考仍未接通。 |
+| 视频 | 原视频节点、Agnes 生成与图片首尾帧；另接火山方舟 Seedance 2.5 文本/图片/视频/音频请求、任务轮询及本地结果下载。 | Ark 视频/音频参考只支持模型可访问的公网 HTTPS URL；本地视频/音频经受控解析后明确阻断，没有通用上传链。未以真实 Ark Key 做服务端验证。逐屏交互和原版录屏验收待完成。 |
 | 合成 | 原时间线与 FFmpeg 顺序合成，校验至少两段有效、已完成的视频上游。 | FFmpeg 的跨平台安装与路径选择、原服务接受的其他输入地址形式及输出细节尚未全部对齐。 |
 | 导演台 | 原 3D 编辑器与节点布局、场景状态、受限 IPC 本地 PNG 入库、最新照片 `assetId`、历史 `captures` 引用、下游图片/视频引用；Store 测试覆盖历史照删除影响及备份恢复。 | 仍需桌面 UI 手工拍摄/预览、删除流程与原版同状态录屏对照；自动 Store 测试不能替代交互验收。 |
 
@@ -23,7 +23,7 @@
 | --- | --- | --- |
 | 画布与项目 | 原 `WorkspacePage` 接 JSON 导入、导出、重命名和移入系统回收站。导入从新项目创建画布，版本为 1，节点和连线重映射 ID、节点恢复 idle，并跳过悬空边；同名项目不覆盖。原 `CanvasPage` 全量保存向本地命令账本透传幂等键，同一快照重试复用该键。画布/项目定向测试通过。 | 桌面仍为单项目单画布；跨项目 JSON 不携带素材正文，导入时移除无法核验的 `assetId` 并向用户警告。原 Web 未提供 `extractFromStack` 界面入口，本地核心已有同名后端能力；逐屏对照仍待验收。 |
 | 素材 | 本地素材库支持图片 PNG/JPEG/GIF/WebP，视频 MP4/MOV/WebM，音频 WAV/MP3/OGG/M4A，以及 TXT/MD；按内容校验格式和 200 MB 上限。上传、同类型原位替换、引用、删除影响、备份恢复、MIME 预览和视频 Range 读取均在原素材库位置接入。图片预览派生宽度不超过 320px 的 JPEG 缩略图，替换后按哈希刷新，备份恢复后可重建。 | 缩略图由本地 FFmpeg 按需生成，缺少 FFmpeg 或源图片无法解码时回退原图；原 Java 使用 ImageIO，派生时间和失败条件尚未完全等同。更少见的原服务可接收格式仍待逐项对照。为保证节点引用有效，桌面替换要求素材类别不变。 |
-| 生成与任务 | 原节点显示供应商 `errorMessage`，保留 `errorCode`；云端错误正文在受控进程截断并清理密钥。失败任务同 ID 重试、运行中取消并清理输出、图片 `count=1..4` 独立产物与备份恢复、Agnes 扩图/超分提示词语义及索引预览已接通。原节点裁剪、三视图、视频剪辑、提帧和视频超分接本地 FFmpeg 后处理；提帧 JPEG 结果按结果类型预览、备份和恢复。真实 FFmpeg 合成/后处理及 Windows SAPI 测试在允许子进程的环境通过；一次真实云端视频生成和下载成功。 | 本地后处理需要可用的 FFmpeg；三视图还需要受支持的系统字体。云端音频提供方、非图片媒体参考及多提供方仍有缺口。云端任务重启后处于 interrupted 时，没有供应商任务 ID 可对账，禁止盲重试。单次视频成功不能替代持续可用性和原节点端到端交互验收。 |
+| 生成与任务 | 原节点显示供应商 `errorMessage`，保留 `errorCode`；云端错误正文在受控进程截断并清理密钥。失败任务同 ID 重试、运行中取消并清理输出、图片 `count=1..4` 独立产物与备份恢复、Agnes 扩图/超分提示词语义及索引预览已接通。原节点裁剪、三视图、视频剪辑、提帧和视频超分接本地 FFmpeg 后处理；提帧 JPEG 结果按结果类型预览、备份和恢复。Ark 视频 create/poll/download 路径用 mock 覆盖模型选择、三种参考字段、Agnes 拒绝及结果路径。真实 FFmpeg 合成/后处理及 Windows SAPI 测试在允许子进程的环境通过；另有一次真实 Agnes 视频生成和下载成功。 | 本地后处理需要可用的 FFmpeg；三视图还需要受支持的系统字体。云端音频生成、通用多提供方、运行中取消和完整后处理仍有缺口。Ark 本地视频/音频素材没有上传链，无法作为参考提交；未进行真实 Ark 请求。云端任务重启后处于 interrupted 时，没有供应商任务 ID 可对账，禁止盲重试。单次视频成功不能替代持续可用性和原节点端到端交互验收。 |
 
 ### 桌面任务数据字典增量
 
@@ -36,6 +36,16 @@
 
 以上状态来自本地核心、前端代码、定向测试及一次真实云端视频结果；仍须执行原 Web 与桌面同状态截图、完整交互及三平台安装包验收，不能据此宣称非 Agent 全模块 1:1 完成。
 
+## 2026-09-28 Agent 面板短剧资产与用量
+
+| 能力 | 原实现基线 | 当前本地实现 | 剩余差距 |
+| --- | --- | --- | --- |
+| Agent 面板短剧资产 | `DramaAssetsTab.tsx`、`DramaAssetService.java`；`GET /canvases/{canvasId}/drama-assets` 与幂等 `POST` upsert，九类资产、筛选、画布版本校验、资产类型不可变和版本递增 | 原 `DramaAssetsTab` 的读写请求由 `vibepaper-web/src/lib/api.ts` 桌面适配转到 Preload/Main/Local Core/ProjectStore；SQLite schema v14 增加 `drama_assets` 与 `drama_asset_commands`。命令记录保存创建/更新后的资产快照和结果画布版本。已存在幂等键先返回旧快照，不校验重试正文或 input hash，与原服务 replay 顺序一致；v13→v14 升级先生成回滚副本。Store 测试覆盖代表必填字段规则（`series_bible`、`episode`）、Java `requireText` 的非空 `toString().isBlank()` 语义、版本冲突、类型不可变、重放快照、过滤、重启和迁移 | Agent 工具层没有短剧资产工具；原 UI 没有资产删除入口，本地链路也没有额外删除操作。尚未完成原后端所有边界场景和逐屏/完整端到端对照。 |
+| Agent 会话用量 | 原 Agent usage endpoint 汇总会话 Token 和模型记录；桌面契约去除点数与费用 | `UsageTab` 桌面分支经 api/bridge/Main/Worker 读取 Pi 会话 JSONL。使用实际 assistant `usage` 和 model 字段；按 JSONL entry ID 去重。响应提供总 Token、输入/输出、缓存 Token、模型/工具调用总数和模型 Token 拆分，并把摘要和工具结果的 usage 单独统计；当前 UI 显示总量、缓存、调用总数及各模型 Token，未单独显示输入/输出字段；响应不含 points 或费用字段。聚合与 Renderer API adapter 定向测试已通过，桌面本地核心完整测试 159/159 通过；Windows 开发窗口中，真实 Agnes 回合完成后用量页显示了该会话非零 Token 与调用数 | 尚需把同一会话的 UI 数值与 JSONL 条目逐项核对，并做重启恢复与原 Web 同状态对照。 |
+| 生产批次与审校 | `DramaProductionPanel.tsx` 调用 `/drama/render-batches`；`DramaAuditPanel.tsx` 调用 `/render-reviews` | 本地生产面板只读取本地短剧资产现有 `status` / `staleImpact` 字段；未填写时组件展示 `draft` 和默认说明文本，此显示不来自生产状态机。桌面端对未接通的本地接口显示明确提示，不读取旧 Web 服务，也不显示平台点数 | 渲染批次持久化、状态机、任务关联、局部重跑和审校报告/规则证据 API 均未迁移。生产链与审校不计入完成的短剧资产迁移。 |
+
+相关定向测试命令：`node test/drama-assets.test.cjs`（3/3）、`node test/agent-usage.test.cjs`（2/2）、`node test/asset-operations.test.cjs`（31/31）。这些 Store、聚合与受限 IPC 测试不替代 renderer API 在桌面应用中的完整操作验收。
+
 本地 FFmpeg 后处理当前是可执行的等价任务链路，但输出视觉细节尚未通过原版对照：三视图标签使用英文，排版与原 Pillow 输出不同；原 MockVideoProvider 的剪辑/超分会生成彩色模拟视频、提帧会生成占位图，桌面改为真实输入处理。原 MockImageProvider 的本地扩图与放大锐化路径也尚未迁移，桌面当前扩图/图片超分使用 Agnes。以上差异不能计为 1:1 验收完成。
 
 ## 原项目能力基线
@@ -46,9 +56,11 @@
 | 素材 | `vibepaper-services/asset-service/.../AssetService.java` 及画布素材引用 | 原件/派生文件、引用计数、删除影响、导入导出与项目备份恢复 | 原 `AssetLibrary` 的桌面上传入口现可多选导入 PNG/JPEG/GIF/WebP 图片和 WAV/MP3 音频；逐文件处理，单份失败不阻断其他文件，成功项仍刷新素材库。Local Core 按内容校验格式、200 MB 上限及 SHA；同一文件每次导入均创建独立素材 ID 和文件路径，与原 Java 上传一致。原图片专用入口仍只接受图片。素材重命名、图片/WAV/MP3 原位替换、软删除和引用计数已接本地 Store，替换保持素材 ID 和节点引用并更新内容哈希；删除保留原文件供现有节点使用。原音频节点的“存入素材库”通过受限任务 ID 保存经校验的 WAV；每次保存创建独立音频素材，音频节点引用、删除影响和项目备份恢复已接通。M4A、视频、文本、派生文件与完整跨模态素材能力仍未迁移。 |
 | 生成与任务 | 原 `generation-service`、节点任务动作及模型能力目录 | 文/图/音/视频及合成的参数、模型能力、异步状态、取消、结果文件、历史结果、恢复与幂等 | 本地文本、Agnes 文/图/视频已接通；原 `ComposeNodeView` 接本地 `mock-compose`/FFmpeg 顺序拼接，Local Core 验证有序上游节点、连线、成功视频任务和输出摘要，`compose` 模态进入 TaskStore 并在原节点回显。Windows SAPI 音频任务已从原 `WindowsSapiTtsProvider` 迁移，按原参数归一化生成本地 WAV，并复用 TaskStore、原音频节点与预览位置；只在 Windows 提供该本地模型。云端音频提供方、音频参考输入、通用音频上传、多提供方、运行中取消及完整后处理仍未迁移。TaskStore 保留为内部权威状态，不加独立任务抽屉。 |
 
-| Agent | `pi-main/packages/vibepaper-agent-service/src/domain/tool-manifest.ts`、`src/pi/profile-agents.ts`、`src/tools/runtime-tools.ts` | “小P”人格、读画布/节点/素材、建改删节点、连线/布局、生成/任务状态、Skill、会话与风险确认 | 桌面 Worker 直接打包原 TypeScript Agent，保留“小P”角色；原工具通过本地白名单网关访问画布、节点、任务，生成动作使用持久化确认令牌，单个与批量目标确认后提交。Pi 工具调用与结果成对保存在 JSONL、压缩时保持配对；可见回复清理规则已收敛到原 TS runtime；内置 Skill 列表及加载状态接入原 `SkillsPanel` 与本地 SQLite。Windows SAPI 音频任务已接原 `submit_generation` 确认链路；动态项目 Skill、完整素材及跨平台音频模型仍有缺口，不能宣称 Agent 1:1 完成。 |
+| Agent | `pi-main/packages/vibepaper-agent-service/src/domain/tool-manifest.ts`、`src/pi/profile-agents.ts`、`src/tools/runtime-tools.ts` | “小P”人格、读画布/节点/素材、建改删节点、连线/布局、生成/任务状态、Skill、会话与风险确认 | 桌面 Worker 直接打包原 TypeScript Agent，保留“小P”角色；原工具通过本地白名单网关访问画布、节点、任务，生成动作使用持久化确认令牌，单个与批量目标确认后提交。Pi 工具调用与结果成对保存在 JSONL、压缩时保持配对；可见回复清理规则已收敛到原 TS runtime；内置 Skill 列表及加载状态接入原 `SkillsPanel` 与本地 SQLite。Agent 面板的短剧资产列表/upsert和 JSONL 实际用量统计已接本地服务；短剧资产工具、生产批次与审校 API、动态项目 Skill、跨平台音频模型仍有缺口，不能宣称 Agent 1:1 完成。 |
 
 2026-09-27 图像/视频故障修复对照：原 Python Agnes 适配器接受云端返回的媒体 CDN 地址，并对创建请求的 429/502/503/504 与视频轮询 429 做退避。桌面 Generation Worker 已对应处理这些响应、原节点的画幅与分辨率参数、媒体重定向和格式校验。原节点的本地图片素材与成功的图片任务结果现由 Main 经 Local Core 校验后转换为有大小上限的图片 data URL；图片请求按原服务要求传裸 Base64，视频首尾帧传 data URL。图片/视频节点不再拦截图片参考，桌面 Agnes 视频分辨率显示 720P；尚不支持媒体参考的文本/音频节点仍明确拒绝。真实 Key 测试已生成三份可读取的 PNG，其中一份使用图片参考；一次 4 秒首帧视频创建请求在 5 次尝试后仍收到供应商 HTTP 429，故真实视频生成和本地首帧端到端成功尚未验收。节点现区分显示 `CLOUD_RATE_LIMITED`。非图片媒体参考及其他原后端能力仍有迁移缺口，不计为 1:1 完成。
+
+2026-09-28 Ark 非图片视频/音频参考：原 Python provider `generation-service/src/generation/providers/providers.py` 将 `referenceVideos`/`referenceAudios` 作为 `video_url`/`audio_url` 的 URL 传入 Ark 视频任务。桌面现在在原 `NodeEditorPanel` 参数路径中分开保留参考类型，Main 按所选 provider/model 读取系统凭据并路由到 Ark Worker；Worker 校验 HTTPS、无 URL 凭据、443 端口、非 localhost/私网域名，解析 DNS 确认公网后才提交。Worker 不拉取参考 URL；Ark 会收到这些 URL。Key 通过 Electron safeStorage 存储。Seedance 2.5 的模型目录和[任务 API 示例](https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01)列有全模态参考字段/role，模型目录标注 4–30 秒，代码按该边界实现。mock 测试覆盖 Main 共享模型选择、Worker create/poll、下载到本地任务目录及 Agnes 拒绝；当前没有真实 Ark Key，未做真实服务端请求。原项目本地视频/音频先校验项目归属、素材索引类型、扩展名与文件大小，随后明确返回“无供应商上传链”；元数据检查不代表完整媒体签名/容器验证。方舟另有需授权入库的人像资产 `asset://` 能力，但当前未集成此专项流程，不把它当作通用本地素材上传。公网参考地址、signed URL 及访问权由用户提供/承担，配置说明披露会发送给火山方舟；供应商费用可能发生。
 
 ## 迁移规则
 

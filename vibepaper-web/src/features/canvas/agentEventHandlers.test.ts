@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { friendlyAgentErrorMessage, mergeSessionMessages, reduceAgentEvent, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
+import { friendlyAgentErrorMessage, isAgentRunActive, mergeSessionMessages, reduceAgentEvent, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
 import { shouldRefreshCanvasEvent } from './agentEventHandlers'
 
 const base: AgentEventState = {
@@ -32,6 +32,40 @@ describe('agent event envelope reducer', () => {
     expect(duplicate).toBe(state)
   })
 
+  it('keeps the live status active after reply text arrives until the run reaches a terminal event', () => {
+    let state = reduceAgentEvent(base, event('assistant_delta', { text: '我先检查画布。' }, 'delta-1'))
+    expect(isAgentRunActive(state)).toBe(true)
+    state = reduceAgentEvent(state, event('tool_started', { tool: 'get_canvas_summary' }, 'tool-1'))
+    expect(isAgentRunActive(state)).toBe(true)
+    state = reduceAgentEvent(state, event('run_completed', {}, 'done-1'))
+    expect(isAgentRunActive(state)).toBe(false)
+  })
+
+  it('tracks activity separately for a continuation run', () => {
+    let state = reduceAgentEvent(base, eventForRun('run-1', 'run_completed', {}, 'run-1-done'))
+    state = reduceAgentEvent(state, eventForRun('run-2', 'assistant_delta', { text: '继续处理中。' }, 'run-2-delta'))
+
+    expect(isAgentRunActive(state, 'run-1')).toBe(false)
+    expect(isAgentRunActive(state, 'run-2')).toBe(true)
+  })
+
+  it('keeps the Agent active after a task finishes until the run itself is terminal', () => {
+    let state = reduceAgentEvent(base, event('task_status', { status: 'succeeded' }, 'task-finished'))
+    expect(isAgentRunActive(state)).toBe(true)
+    state = reduceAgentEvent(state, event('run_completed', {}, 'run-finished'))
+    expect(isAgentRunActive(state)).toBe(false)
+  })
+
+  it('adds only non-empty provider thinking events to the execution trace', () => {
+    let state = reduceAgentEvent(base, event('thinking', { text: '' }, 'thought-empty'))
+    expect(state.messages).toHaveLength(0)
+    state = reduceAgentEvent(state, event('thinking', { text: '先检查画布。' }, 'thought-1'))
+
+    expect(state.messages[0]?.meta?.executionSteps).toMatchObject([
+      { kind: 'reasoning', label: '推理过程', summary: '先检查画布。' },
+    ])
+  })
+
   it('records tool timeline and terminal failures visibly', () => {
     let state = reduceAgentEvent(base, event('tool_started', { tool: 'get_canvas_summary' }, 'tool-1'))
     state = reduceAgentEvent(state, event('tool_completed', { tool: 'get_canvas_summary', ok: true }, 'tool-2'))
@@ -42,6 +76,24 @@ describe('agent event envelope reducer', () => {
     ])
     expect(state.runStatus).toBe('failed')
     expect(state.errorCode).toBe('MODEL_TIMEOUT')
+  })
+
+  it('shows only bounded activity summaries and hides empty or raw tool details', () => {
+    let state = reduceAgentEvent(base, event('tool_started', {
+      tool: 'create_nodes',
+      args: { summary: '正在创建节点（2 个）', prompt: 'private screenplay', nodeId: 'node-secret' },
+    }, 'tool-start-summary'))
+    expect(JSON.parse(state.messages[0]?.meta?.executionSteps?.[0]?.detail ?? '{}')).toEqual({ summary: '正在创建节点（2 个）' })
+
+    state = reduceAgentEvent(state, event('tool_completed', {
+      tool: 'create_nodes',
+      ok: true,
+      details: { prompt: 'private screenplay', content: 'private response', assetUrl: 'vibe://private' },
+    }, 'tool-complete-raw'))
+    expect(state.messages[0]?.meta?.executionSteps?.[1]?.detail).toBeUndefined()
+
+    state = reduceAgentEvent(state, event('tool_started', { tool: 'get_canvas_summary', args: {} }, 'tool-start-empty'))
+    expect(state.messages[0]?.meta?.executionSteps?.[2]?.detail).toBeUndefined()
   })
 
   it('hides raw upstream diagnostics from model failure feedback', () => {

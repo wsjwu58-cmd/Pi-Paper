@@ -9,6 +9,7 @@ import {
   Expand,
   Film,
   Library,
+  Link2,
   Loader2,
   Maximize2,
   Ratio,
@@ -26,7 +27,7 @@ import { ModelPicker } from '@/components/ui/ModelPicker'
 import { useCanvasStore, type FlowNode } from '../canvasStore'
 import { isDesktopRuntime } from '../canvasPort'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
-import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoFrameReferences, resolveNodeResolution } from './videoNodeParameters'
+import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
 
 const STYLE_PRESETS = ['赛博朋克', '水彩', '写实', '动漫', '电影感', '产品渲染', '三视图']
 const DESKTOP_MEDIA_TOOL_MODEL_ID = 'ffmpeg-media-1'
@@ -520,6 +521,52 @@ function DesktopTextReferencePrompt({ onCancel, onSubmit }: {
   )
 }
 
+function DesktopMediaUrlReferencePrompt({ kind, onCancel, onSubmit }: {
+  kind: 'video' | 'audio'
+  onCancel: () => void
+  onSubmit: (url: string) => void
+}) {
+  const [url, setUrl] = useState('')
+  const mediaName = kind === 'video' ? '视频' : '音频'
+  return createPortal(
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/30" onMouseDown={onCancel}>
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-label={`添加 HTTPS ${mediaName}参考`}
+        className="w-[min(460px,calc(100vw-32px))] rounded-xl border border-black/10 bg-white p-5 shadow-2xl"
+        onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => { if (event.key === 'Escape') onCancel() }}
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (url.trim()) onSubmit(url.trim())
+        }}
+      >
+        <label htmlFor={`desktop-reference-${kind}-url`} className="mb-2 block text-sm font-semibold text-[#222]">
+          输入模型可访问的 HTTPS {mediaName}地址
+        </label>
+        <input
+          id={`desktop-reference-${kind}-url`}
+          type="url"
+          autoFocus
+          required
+          maxLength={4096}
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          placeholder="https://example.com/media"
+          className="h-10 w-full rounded-lg border border-black/15 px-3 text-sm outline-none focus:border-[#7c6ce7]"
+        />
+        <p className="mt-2 text-xs leading-5 text-[#777]">火山方舟会根据此地址读取参考媒体；请使用无需本机登录、可由供应商访问的公网链接。</p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="rounded-lg px-3 py-1.5 text-sm text-[#555] hover:bg-black/5">取消</button>
+          <button type="submit" disabled={!url.trim()} className="rounded-lg bg-[#111] px-3 py-1.5 text-sm text-white disabled:opacity-40">添加参考</button>
+        </div>
+      </form>
+    </div>,
+    document.body,
+  )
+}
+
 /** 选中编辑对话框：参考区 + 提示词 + 底栏生成 */
 export function NodeEditorDialog({
   node,
@@ -537,15 +584,16 @@ export function NodeEditorDialog({
 }) {
   const nodeId = sid(node.id)
   const desktopMode = Boolean(window.vibepaperDesktop)
-  const { data: desktopCatalog = { models: [] as ModelInfo[], localAudio: null as DesktopLocalAudioModel | null } } = useQuery({
+  const { data: desktopCatalog = { models: [] as ModelInfo[], localAudio: null as DesktopLocalAudioModel | null }, refetch: refetchDesktopCatalog } = useQuery({
     queryKey: ['desktop-node-models'],
     enabled: desktopMode,
     staleTime: 5_000,
     queryFn: async (): Promise<{ models: ModelInfo[]; localAudio: DesktopLocalAudioModel | null }> => {
       const bridge = window.vibepaperDesktop
       if (!bridge) return { models: [], localAudio: null }
-      const [agnesResult, localResult, localAudioResult] = await Promise.allSettled([
+      const [agnesResult, arkResult, localResult, localAudioResult] = await Promise.allSettled([
         bridge.getAgnesModels(),
+        bridge.getArkModels(),
         bridge.getLocalTextModel(),
         typeof bridge.getLocalAudioModel === 'function' ? bridge.getLocalAudioModel() : Promise.resolve(null),
       ])
@@ -566,6 +614,19 @@ export function NodeEditorDialog({
             })
           }
         }
+      }
+      if (arkResult.status === 'fulfilled' && arkResult.value.apiKeyConfigured) {
+        const name = arkResult.value.models.video
+        available.push({
+          id: name,
+          name,
+          modelType: 'video',
+          displayName: 'Seedance 2.5 · 火山方舟',
+          provider: 'volcengine-ark',
+          enabled: true,
+          basePrice: null as unknown as number,
+          description: '视频参考支持 HTTPS 图片、视频和音频地址；本地视频/音频暂不能上传到供应商。',
+        })
       }
       if (localResult.status === 'fulfilled' && localResult.value) {
         const local = localResult.value
@@ -594,6 +655,11 @@ export function NodeEditorDialog({
       return { models: available, localAudio }
     },
   })
+  useEffect(() => {
+    const refresh = () => { void refetchDesktopCatalog() }
+    window.addEventListener('vp-desktop-model-catalog-changed', refresh)
+    return () => window.removeEventListener('vp-desktop-model-catalog-changed', refresh)
+  }, [refetchDesktopCatalog])
   const desktopModels = desktopCatalog.models
   const upstream = useUpstreamRefs(nodeId)
   const excludedIds = useMemo(
@@ -601,7 +667,7 @@ export function NodeEditorDialog({
     [node.params.excludedRefIds],
   )
   const [localRefs, setLocalRefs] = useState<LocalRef[]>([])
-  const [desktopReferencePromptOpen, setDesktopReferencePromptOpen] = useState(false)
+  const [desktopReferencePromptOpen, setDesktopReferencePromptOpen] = useState<'text' | 'video-url' | 'audio-url' | null>(null)
   const [frameOrder, setFrameOrder] = useState<'asc' | 'swap'>('asc')
   const [prompt, setPrompt] = useState(stripLegacyReferenceFidelity((node.params.prompt as string) ?? ''))
   const [model, setModel] = useState((node.params.model as string) ?? '')
@@ -674,15 +740,18 @@ export function NodeEditorDialog({
 
   const refsForUi = useMemo(() => {
     if (node.type !== 'video') return localRefs
-    const images = localRefs.filter((r) => r.kind === 'image' || r.kind === 'video')
+    const images = localRefs.filter((r) => r.kind === 'image' || !desktopMode && r.kind === 'video')
     if (frameOrder === 'swap' && images.length >= 2) {
       const [a, b, ...rest] = images
-      return [b, a, ...rest, ...localRefs.filter((r) => r.kind === 'text' || r.kind === 'audio')]
+      const remainingReferences = localRefs.filter((r) => desktopMode
+        ? r.kind !== 'image'
+        : r.kind === 'text' || r.kind === 'audio')
+      return [b, a, ...rest, ...remainingReferences]
     }
     return localRefs
-  }, [frameOrder, localRefs, node.type])
+  }, [desktopMode, frameOrder, localRefs, node.type])
 
-  const { firstFrame, lastFrame } = getVideoFrameReferences(refsForUi)
+  const { firstFrame, lastFrame } = getVideoFrameReferences(refsForUi, desktopMode)
 
   const persistPrompt = (value: string) => {
     setPrompt(value)
@@ -713,7 +782,7 @@ export function NodeEditorDialog({
     try {
       if (isDesktopRuntime()) {
         if (!['image', 'video'].includes(node.type)) {
-          throw new Error('桌面版目前只支持为图片和视频节点添加图片参考。')
+          throw new Error('桌面版目前仅为图片和视频节点接入媒体参考。')
         }
         const bridge = window.vibepaperDesktop
         if (!bridge) throw new Error('桌面本地素材接口不可用。')
@@ -722,18 +791,20 @@ export function NodeEditorDialog({
         if (!project || (canvasId && project.canvasId !== sid(canvasId))) {
           throw new Error('没有匹配的本地项目，无法添加节点参考。')
         }
-        const asset = await bridge.importImage(project.projectId)
+        const asset = await bridge.importLocalAsset(project.projectId)
         if (!asset) return
-        if (!['image/png', 'image/jpeg', 'image/webp'].includes(asset.mimeType)) {
-          throw new Error('当前 Agnes 图片参考仅支持 PNG、JPEG 或 WebP。')
+        const kind = asset.assetType
+        if (!['image', 'video'].includes(node.type) || kind === 'text'
+          || node.type === 'image' && kind !== 'image') {
+          throw new Error('图片节点仅接受图片参考；视频节点可选择图片、视频或音频参考。')
         }
         setLocalRefs((prev) => [
           ...prev,
           {
             id: `local-${asset.assetId}`,
             sourceNodeId: '',
-            kind: 'image',
-            label: asset.name || '图片参考',
+            kind,
+            label: asset.name || (kind === 'video' ? '视频参考' : kind === 'audio' ? '音频参考' : '图片参考'),
             url: `vibe://app/assets/${asset.assetId}`,
             local: true,
           },
@@ -773,7 +844,7 @@ export function NodeEditorDialog({
     setErr('')
     try {
       const { submitNodeTask } = await import('./taskActions')
-      const referenceParameters = buildMediaReferenceParameters(refsForUi, node.type)
+      const referenceParameters = buildMediaReferenceParameters(refsForUi, node.type, desktopMode)
       const refTexts = referenceParameters.referenceTexts
       const trimmedPrompt = stripLegacyReferenceFidelity(prompt)
       const effectivePrompt =
@@ -787,6 +858,21 @@ export function NodeEditorDialog({
       }
       const resolutionParameters = resolveNodeResolution(node.type, selectedModel, selectedResKey, desktopMode)
       const outputCount = (isSplitLayout && node.type === 'text') || (desktopMode && node.type === 'image') ? count : 1
+      const nonImageMediaRefs = refsForUi.filter((ref) => Boolean(ref.url) && (ref.kind === 'video' || ref.kind === 'audio'))
+      if (desktopMode && node.type !== 'video' && refsForUi.some((ref) => Boolean(ref.url) && ref.kind !== 'image')) {
+        throw new Error('当前桌面模型只接受图片或文本参考，请移除视频和音频参考。')
+      }
+      if (desktopMode && node.type === 'video' && nonImageMediaRefs.length) {
+        if (selectedModel?.provider === 'agnes') {
+          throw new Error('Agnes 视频模型不支持视频或音频参考；请移除这些参考，或切换到火山方舟 Seedance。')
+        }
+        if (selectedModel?.provider !== 'volcengine-ark') {
+          throw new Error('当前视频模型不支持视频或音频参考。')
+        }
+        if (nonImageMediaRefs.some((ref) => ref.url?.startsWith('vibe://'))) {
+          throw new Error('火山方舟需要可访问的 HTTPS 视频/音频地址；本地参考尚无供应商上传链，未发送本地文件。')
+        }
+      }
       if (desktopMode && !['image', 'video'].includes(node.type) && refsForUi.some((ref) => Boolean(ref.url))) {
         throw new Error('当前桌面模型尚未接入媒体参考输入，请移除媒体参考后重试。')
       }
@@ -814,7 +900,10 @@ export function NodeEditorDialog({
           ...audioParams,
         },
         10,
-        { providerType: selectedModel?.provider === 'local' ? 'local' : 'cloud' },
+        {
+          providerType: selectedModel?.provider === 'local' ? 'local' : 'cloud',
+          ...(selectedModel?.provider === 'volcengine-ark' ? { providerId: 'volcengine-ark' as const, modelId: selectedModel.name } : {}),
+        },
       )
       const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === nodeId)?.data.node
       useCanvasStore.getState().updateNodePayload(node.id, {
@@ -868,15 +957,42 @@ export function NodeEditorDialog({
     ])
   }
 
-  const desktopReferencePrompt = desktopReferencePromptOpen && (
+  const addRemoteMediaReference = (kind: 'video' | 'audio', value: string) => {
+    let normalizedUrl: string
+    try {
+      normalizedUrl = normalizeRemoteMediaReferenceUrl(value)
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : '参考地址无效。')
+      return
+    }
+    setLocalRefs((prev) => [...prev, {
+      id: `remote-${kind}-${crypto.randomUUID()}`,
+      sourceNodeId: '',
+      kind,
+      label: `${kind === 'video' ? '视频' : '音频'} HTTPS 参考`,
+      url: normalizedUrl,
+      local: true,
+    }])
+  }
+
+  const desktopReferencePrompt = desktopReferencePromptOpen === 'text' ? (
     <DesktopTextReferencePrompt
-      onCancel={() => setDesktopReferencePromptOpen(false)}
+      onCancel={() => setDesktopReferencePromptOpen(null)}
       onSubmit={(text) => {
         addTextReference(text)
-        setDesktopReferencePromptOpen(false)
+        setDesktopReferencePromptOpen(null)
       }}
     />
-  )
+  ) : desktopReferencePromptOpen === 'video-url' || desktopReferencePromptOpen === 'audio-url' ? (
+    <DesktopMediaUrlReferencePrompt
+      kind={desktopReferencePromptOpen === 'video-url' ? 'video' : 'audio'}
+      onCancel={() => setDesktopReferencePromptOpen(null)}
+      onSubmit={(url) => {
+        addRemoteMediaReference(desktopReferencePromptOpen === 'video-url' ? 'video' : 'audio', url)
+        setDesktopReferencePromptOpen(null)
+      }}
+    />
+  ) : null
 
   const refSection = (
     <>
@@ -884,7 +1000,11 @@ export function NodeEditorDialog({
       <div className="flex flex-wrap items-center gap-2">
         <label
           title={desktopMode
-            ? ['image', 'video'].includes(node.type) ? '添加本地图片参考；云端生成会向所选模型供应商发送参考图片。' : '桌面版目前只支持为图片和视频节点添加图片参考。'
+            ? node.type === 'image'
+              ? '添加本地图片参考；云端生成会向所选模型供应商发送参考图片。'
+              : node.type === 'video'
+                ? '视频节点可选本地图片、视频或音频；当前只有本地图片可直接发送，视频和音频需使用 Ark 可访问的 HTTPS 地址。'
+                : '桌面版目前只支持为图片和视频节点添加媒体参考。'
             : '上传参考媒体'}
           aria-label="添加参考媒体"
           role={desktopMode ? 'button' : undefined}
@@ -901,7 +1021,7 @@ export function NodeEditorDialog({
           <ArrowUpFromLine size={16} />
           <input
             type="file"
-            accept={node.type === 'video' ? 'image/*,video/*' : 'image/*,video/*,audio/*,text/*'}
+            accept={node.type === 'video' ? 'image/*,video/*,audio/*' : 'image/*,video/*,audio/*,text/*'}
             className="hidden"
             disabled={desktopMode}
             onChange={(e) => {
@@ -910,13 +1030,25 @@ export function NodeEditorDialog({
             }}
           />
         </label>
+        {desktopMode && node.type === 'video' && (
+          <>
+            <button type="button" title="添加 Ark 可访问的 HTTPS 视频参考" onClick={() => setDesktopReferencePromptOpen('video-url')}
+              className="flex h-14 w-14 flex-col items-center justify-center gap-1 rounded-xl bg-[#f0f0f2] text-[9px] font-semibold text-[#777] ring-1 ring-black/6 hover:bg-[#e8e8ec]">
+              <Link2 size={15} />视频 URL
+            </button>
+            <button type="button" title="添加 Ark 可访问的 HTTPS 音频参考" onClick={() => setDesktopReferencePromptOpen('audio-url')}
+              className="flex h-14 w-14 flex-col items-center justify-center gap-1 rounded-xl bg-[#f0f0f2] text-[9px] font-semibold text-[#777] ring-1 ring-black/6 hover:bg-[#e8e8ec]">
+              <Link2 size={15} />音频 URL
+            </button>
+          </>
+        )}
         {node.type !== 'video' && (
           <button
             type="button"
             title="添加文本参考"
             onClick={() => {
               if (desktopMode) {
-                setDesktopReferencePromptOpen(true)
+                setDesktopReferencePromptOpen('text')
                 return
               }
               const t = window.prompt('输入参考文本')
@@ -968,7 +1100,9 @@ export function NodeEditorDialog({
               </div>
             )}
             {refsForUi
-              .filter((r) => r.kind === 'text' || r.kind === 'audio')
+              .filter((r) => desktopMode
+                ? r.kind !== 'image'
+                : r.kind === 'text' || r.kind === 'audio')
               .map((r) => (
                 <RefThumb
                   key={r.id}

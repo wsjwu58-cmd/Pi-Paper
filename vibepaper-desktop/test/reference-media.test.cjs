@@ -7,6 +7,7 @@ const { createLocalProjectStore } = require('../src/project-store.cjs')
 const {
   MAX_REFERENCE_IMAGE_BYTES,
   parseLocalReference,
+  resolveGenerationMediaReferences,
   resolveGenerationImageReferences,
 } = require('../src/reference-media.cjs')
 const {
@@ -190,6 +191,53 @@ test('local media URL parser only accepts exact app asset and successful-output 
   assert.deepEqual(parseLocalReference(`vibe://app/assets/${ASSET_ID}`), { type: 'asset', id: ASSET_ID })
   assert.deepEqual(parseLocalReference(`vibe://app/tasks/${OUTPUT_ID}/output`), { type: 'task-output', id: OUTPUT_ID })
   assert.throws(() => parseLocalReference(`vibe://app/tasks/${OUTPUT_ID}/output/extra`), /地址无效/u)
+})
+
+test('local video references are ownership and metadata checked, then visibly blocked without an Ark upload contract', async (t) => {
+  const { store, directory, project } = await openProject(t)
+  const videoSource = path.join(directory, 'reference.mp4')
+  const mp4Header = Buffer.from([0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0])
+  await fs.writeFile(videoSource, mp4Header)
+  const asset = await store.importAsset(videoSource, project.projectId, 'local')
+  const localCore = {
+    request(method, payload) {
+      if (method === 'asset:resolve') return store.resolveAsset(payload.assetId)
+      throw new Error(`Unexpected Local Core method: ${method}`)
+    },
+  }
+  await assert.rejects(
+    resolveGenerationMediaReferences({ referenceVideos: [`vibe://app/assets/${asset.assetId}`] }, {
+      localCore, projectId: project.projectId, projectDirectory: directory,
+    }),
+    (error) => error.code === 'CLOUD_REFERENCE_UPLOAD_UNAVAILABLE'
+      && /HTTPS 媒体地址/u.test(error.message)
+      && /未发送本地路径或文件内容/u.test(error.message),
+  )
+})
+
+test('the same local URI is rechecked when it is reused under a different reference kind', async (t) => {
+  const { store, directory, project } = await openProject(t)
+  const imageSource = path.join(directory, 'reference.png')
+  await fs.writeFile(imageSource, PNG_BYTES)
+  const asset = await store.importAsset(imageSource, project.projectId)
+  let resolves = 0
+  const localCore = {
+    request(method, payload) {
+      if (method === 'asset:resolve') {
+        resolves += 1
+        return store.resolveAsset(payload.assetId)
+      }
+      throw new Error(`Unexpected Local Core method: ${method}`)
+    },
+  }
+  const uri = `vibe://app/assets/${asset.assetId}`
+  await assert.rejects(
+    resolveGenerationMediaReferences({ referenceImages: [uri], referenceVideos: [uri] }, {
+      localCore, projectId: project.projectId, projectDirectory: directory,
+    }),
+    (error) => error.code === 'CLOUD_INPUT_INVALID' && /类型与引用字段不匹配/u.test(error.message),
+  )
+  assert.equal(resolves, 2)
 })
 
 test('Agnes image request rejects unsupported data-image MIME types and mismatched signatures', () => {

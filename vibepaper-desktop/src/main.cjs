@@ -21,6 +21,7 @@ const {
   utilityProcess,
 } = require('electron')
 const { AGNES_MODELS, AGNES_PROVIDER_ID, getAgnesModelCatalog } = require('./agnes-model-catalog.cjs')
+const { ARK_PROVIDER_ID, getArkModelCatalog, resolveArkVideoModelConfig } = require('./ark-model-catalog.cjs')
 const { COMPOSE_MODEL_ID, COMPOSE_PROVIDER_ID } = require('./compose-provider.cjs')
 const { MODEL_ID: SAPI_MODEL_ID, PROVIDER_ID: SAPI_PROVIDER_ID } = require('./sapi-tts.cjs')
 const {
@@ -34,7 +35,7 @@ const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = require('./agent-model-directory.cjs')
 const { ALLOWED_AGENT_CORE_METHODS } = require('./agent-local-tools.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
-const { resolveGenerationImageReferences } = require('./reference-media.cjs')
+const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
 
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
@@ -50,6 +51,7 @@ let recentProjectsFile = null
 let recentProjectCatalog = null
 let desktopSettingsFile = null
 let agnesCredentialFile = null
+let arkCredentialFile = null
 let quittingAfterCoreClose = false
 let stopping = false
 let generationWorker = null
@@ -572,21 +574,51 @@ async function drainTaskQueue(projectId) {
           throw codedError('LOCAL_MODEL_CONFIGURATION_CHANGED')
         }
       } else if (task.providerType === 'cloud') {
-        if (task.providerId !== AGNES_PROVIDER_ID || AGNES_MODELS[task.modality] !== task.modelId) {
-          throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
-        }
-        const apiKey = await getAgnesApiKey()
-        if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
-        taskCredential = apiKey
-        model = {
-          providerId: AGNES_PROVIDER_ID,
-          providerType: 'cloud',
-          endpoint: 'https://apihub.agnes-ai.com/v1',
-          modelId: task.modelId,
-          apiKey,
+        if (task.providerId === ARK_PROVIDER_ID) {
+          const apiKey = await getArkApiKey()
+          let arkModel
+          try {
+            arkModel = resolveArkVideoModelConfig({
+              providerId: task.providerId,
+              modality: task.modality,
+              modelId: task.modelId,
+              apiKey,
+            })
+          } catch (error) {
+            throw codedError(error.code || 'CLOUD_MODEL_CONFIGURATION_INVALID', error.message)
+          }
+          taskCredential = apiKey
+          model = arkModel
+        } else {
+          if (task.providerId !== AGNES_PROVIDER_ID || AGNES_MODELS[task.modality] !== task.modelId) {
+            throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
+          }
+          const apiKey = await getAgnesApiKey()
+          if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
+          taskCredential = apiKey
+          model = {
+            providerId: AGNES_PROVIDER_ID,
+            providerType: 'cloud',
+            endpoint: 'https://apihub.agnes-ai.com/v1',
+            modelId: task.modelId,
+            apiKey,
+          }
         }
       } else {
         throw codedError('PROVIDER_TYPE_UNSUPPORTED')
+      }
+      if (task.providerType === 'cloud') {
+        const references = parameters && typeof parameters === 'object' ? parameters : {}
+        const videos = references.referenceVideos ?? references.reference_videos ?? []
+        const audios = references.referenceAudios ?? references.reference_audios ?? []
+        const hasNonImageReferences = (Array.isArray(videos) ? videos.length > 0 : Boolean(videos))
+          || (Array.isArray(audios) ? audios.length > 0 : Boolean(audios))
+        if (task.providerId === AGNES_PROVIDER_ID && hasNonImageReferences) {
+          throw codedError('UNSUPPORTED_REFERENCE_MEDIA', 'Agnes 模型不支持视频或音频参考；请移除这些参考素材。')
+        }
+        if (task.providerId === ARK_PROVIDER_ID && task.modality !== 'video') {
+          throw codedError('UNSUPPORTED_REFERENCE_MEDIA', '火山方舟 Seedance 当前仅接入视频生成。')
+        }
       }
       if (task.providerType === 'cloud' && ['image', 'video'].includes(task.modality)) {
         const taskProjectDirectory = activeProjectDirectory
@@ -595,10 +627,18 @@ async function drainTaskQueue(projectId) {
           || activeProjectDirectory !== taskProjectDirectory) {
           throw codedError('TASK_PROJECT_CONTEXT_CHANGED')
         }
-        workerParameters = await resolveGenerationImageReferences(parameters, {
+        workerParameters = await resolveGenerationMediaReferences(parameters, {
           localCore,
           projectId,
           projectDirectory: taskProjectDirectory,
+          validateProvider(value, field) {
+            const hasValue = Array.isArray(value[field]) ? value[field].length > 0 : Boolean(value[field])
+            if (!hasValue || task.providerId !== AGNES_PROVIDER_ID) return
+            if (field === 'referenceVideos' || field === 'reference_videos'
+              || field === 'referenceAudios' || field === 'reference_audios') {
+              throw codedError('UNSUPPORTED_REFERENCE_MEDIA', 'Agnes 模型不支持视频或音频参考；请移除这些参考素材。')
+            }
+          },
         })
         if (activeProjectDirectory !== taskProjectDirectory) throw codedError('TASK_PROJECT_CONTEXT_CHANGED')
       }
@@ -822,6 +862,70 @@ async function clearAgnesApiKey() {
 
 async function getAgnesModelSettings() {
   return getAgnesModelCatalog(Boolean(await getAgnesApiKey()))
+}
+
+async function writeArkCredentialCiphertext(ciphertext) {
+  const temporaryPath = path.join(path.dirname(arkCredentialFile), `.ark-credential.${randomUUID()}.tmp`)
+  let handle
+  try {
+    await fs.mkdir(path.dirname(arkCredentialFile), { recursive: true })
+    handle = await fs.open(temporaryPath, 'wx', 0o600)
+    await handle.writeFile(ciphertext)
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await fs.rename(temporaryPath, arkCredentialFile)
+  } catch (error) {
+    if (handle) await handle.close().catch(() => undefined)
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
+async function getArkApiKey() {
+  await assertCredentialVaultAvailable()
+  let ciphertext
+  try {
+    ciphertext = await fs.readFile(arkCredentialFile)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw new Error('无法读取系统保护的火山方舟凭据。')
+  }
+  try {
+    const decrypted = await safeStorage.decryptStringAsync(ciphertext)
+    if (decrypted.shouldReEncrypt) {
+      const reencrypted = await safeStorage.encryptStringAsync(decrypted.result)
+      await writeArkCredentialCiphertext(reencrypted)
+    }
+    return decrypted.result
+  } catch {
+    throw new Error('无法解密系统保护的火山方舟凭据；请重新配置 API Key。')
+  }
+}
+
+async function saveArkApiKey(input) {
+  if (typeof input !== 'string') throw new Error('火山方舟 API Key 格式无效。')
+  const apiKey = input.trim()
+  if (apiKey.length < 16 || apiKey.length > 1024 || /\s|[\u0000-\u001f\u007f]/u.test(apiKey)) {
+    throw new Error('火山方舟 API Key 格式无效。')
+  }
+  await assertCredentialVaultAvailable()
+  const ciphertext = await safeStorage.encryptStringAsync(apiKey)
+  await writeArkCredentialCiphertext(ciphertext)
+  return getArkModelCatalog(true)
+}
+
+async function clearArkApiKey() {
+  try {
+    await fs.rm(arkCredentialFile, { force: true })
+  } catch {
+    throw new Error('无法移除火山方舟凭据。')
+  }
+  return getArkModelCatalog(false)
+}
+
+async function getArkModelSettings() {
+  return getArkModelCatalog(Boolean(await getArkApiKey()))
 }
 
 async function getLocalTextModelConfig() {
@@ -1427,6 +1531,32 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     return localCore.request('canvas:load', { projectId, canvasId })
   })
+  ipcMain.handle('desktop:canvas:drama-assets:list', (event, projectId, canvasId, filters = {}) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200
+      || typeof canvasId !== 'string' || canvasId.length === 0 || canvasId.length > 200
+      || !filters || typeof filters !== 'object' || Array.isArray(filters)
+      || Object.entries(filters).some(([key, value]) => !['assetType', 'episodeId', 'sceneId', 'shotId'].includes(key)
+        || (value !== undefined && value !== null && typeof value !== 'string'))) {
+      throw new Error('短剧资产查询请求无效。')
+    }
+    return localCore.request('canvas:drama-assets:list', { projectId, canvasId, filters })
+  })
+  ipcMain.handle('desktop:canvas:drama-assets:upsert', (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || input.projectId.length === 0 || input.projectId.length > 200
+      || typeof input.canvasId !== 'string' || input.canvasId.length === 0 || input.canvasId.length > 200
+      || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0 || input.canvasVersion > 2_147_483_647
+      || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.trim().length < 1 || input.idempotencyKey.length > 128) {
+      throw new Error('短剧资产写入请求无效。')
+    }
+    // Keep body validation in ProjectStore. It checks the idempotency ledger
+    // first, matching the original service's replay semantics for any body.
+    return localCore.request('canvas:drama-assets:upsert', input)
+  })
   ipcMain.handle('desktop:canvas:export', (event, projectId, canvasId) => {
     assertTrustedSender(event)
     if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
@@ -1801,6 +1931,8 @@ function registerProjectIpc() {
         || input.prompt.length > 200_000 || typeof input.idempotencyKey !== 'string'
         || !modalities.includes(input.modality)
         || !['local', 'cloud'].includes(input.providerType)
+        || input.providerId !== undefined && ![AGNES_PROVIDER_ID, ARK_PROVIDER_ID].includes(input.providerId)
+        || input.modelId !== undefined && (typeof input.modelId !== 'string' || !input.modelId.trim() || input.modelId.length > 256)
         || (input.parameters !== undefined && (!input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)))) {
         throw new Error('生成任务请求无效。')
       }
@@ -1825,11 +1957,21 @@ function registerProjectIpc() {
           modelId = model.modelId
         }
       } else {
-        if (input.modality === 'audio') throw codedError('MODEL_UNAVAILABLE')
-        const catalog = await getAgnesModelSettings()
-        if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING')
-        modelId = AGNES_MODELS[input.modality]
-        providerId = AGNES_PROVIDER_ID
+        if (input.providerId === ARK_PROVIDER_ID) {
+          if (input.modality !== 'video') throw codedError('MODEL_UNAVAILABLE', '火山方舟当前仅接入视频生成。')
+          const catalog = await getArkModelSettings()
+          if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING', '尚未配置火山方舟 API Key。')
+          modelId = input.modelId ?? catalog.models.video
+          if (modelId !== catalog.models.video) throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
+          providerId = ARK_PROVIDER_ID
+        } else {
+          if (input.modality === 'audio') throw codedError('MODEL_UNAVAILABLE')
+          const catalog = await getAgnesModelSettings()
+          if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING')
+          modelId = AGNES_MODELS[input.modality]
+          if (input.modelId !== undefined && input.modelId !== modelId) throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
+          providerId = AGNES_PROVIDER_ID
+        }
       }
       const parameters = { ...(input.parameters ?? {}) }
       if (input.modality !== 'audio' || input.prompt.trim() || !String(parameters.prompt ?? '').trim()) {
@@ -1903,6 +2045,18 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     return clearAgnesApiKey()
   })
+  ipcMain.handle('desktop:model:get-ark', async (event) => {
+    assertTrustedSender(event)
+    return getArkModelSettings()
+  })
+  ipcMain.handle('desktop:model:save-ark-key', async (event, apiKey) => {
+    assertTrustedSender(event)
+    return saveArkApiKey(apiKey)
+  })
+  ipcMain.handle('desktop:model:clear-ark-key', async (event) => {
+    assertTrustedSender(event)
+    return clearArkApiKey()
+  })
   ipcMain.handle('desktop:model:get-local-text', (event) => {
     assertTrustedSender(event)
     return getLocalTextModelConfig()
@@ -1967,6 +2121,14 @@ function registerAgentIpc() {
     assertTrustedSender(event)
     const worker = await getAgentWorker(projectId)
     return worker.request('agent:get-messages', { projectId, sessionId })
+  })
+  ipcMain.handle('desktop:agent:get-usage', async (event, projectId, sessionId) => {
+    assertTrustedSender(event)
+    if (typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 128) {
+      throw codedError('AGENT_SESSION_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:get-usage', { projectId, sessionId })
   })
   ipcMain.handle('desktop:agent:get-snapshot', async (event, projectId, sessionId) => {
     assertTrustedSender(event)
@@ -2116,6 +2278,7 @@ if (hasSingleInstanceLock) {
     recentProjectsFile = path.join(app.getPath('userData'), 'recent-projects.json')
     desktopSettingsFile = path.join(app.getPath('userData'), 'settings.json')
     agnesCredentialFile = path.join(app.getPath('userData'), 'credentials', 'agnes-api-key.bin')
+    arkCredentialFile = path.join(app.getPath('userData'), 'credentials', 'ark-api-key.bin')
     localCore = startLocalCore()
     recentProjectCatalog = createRecentProjectCatalog({
       catalogFile: recentProjectsFile,

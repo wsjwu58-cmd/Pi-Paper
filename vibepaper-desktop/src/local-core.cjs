@@ -85,6 +85,10 @@ async function dispatch(method, payload) {
       return store.resolveAssetThumbnail(payload?.assetId)
     case 'canvas:load':
       return store.loadCanvas(payload?.projectId, payload?.canvasId)
+    case 'canvas:drama-assets:list':
+      return store.listDramaAssets(payload?.projectId, payload?.canvasId, payload?.filters)
+    case 'canvas:drama-assets:upsert':
+      return store.upsertDramaAsset(payload)
     case 'canvas:export':
       return store.exportCanvas(payload?.projectId, payload?.canvasId)
     case 'canvas:create-node':

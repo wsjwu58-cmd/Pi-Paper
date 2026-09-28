@@ -103,6 +103,7 @@ export interface AgentPanelDesktopAdapter {
   messages: AgentChatMsg[]
   draft: string
   sending: boolean
+  activeRunId?: string | null
   creating: boolean
   configured: boolean
   modelLabel: string
@@ -115,18 +116,20 @@ export interface AgentPanelDesktopAdapter {
   onSelectSession: (sessionId: string) => Promise<void>
   onSend: () => Promise<void>
   onSendWithReferences?: (input: { selectedNodeIds: string[]; selectedSkillId?: string }) => Promise<boolean>
+  onStop?: () => Promise<void> | void
   onConfirm?: (confirmation: AgentConfirmation, accept: boolean) => Promise<void>
   onConfigure: () => void
   onClose: () => void
 }
 
 export function AgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopAdapter } = {}) {
-  if (desktopAdapter) return <AgentPanelDesktopView {...desktopAdapter} />
-  return <WebAgentPanel />
+  return <WebAgentPanel desktopAdapter={desktopAdapter} />
 }
 
-function WebAgentPanel() {
-  const open = useCanvasStore((s) => s.agentOpen)
+function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopAdapter }) {
+  const desktop = desktopAdapter !== undefined
+  const storeOpen = useCanvasStore((s) => s.agentOpen)
+  const open = desktop || storeOpen
   const setOpen = useCanvasStore((s) => s.setAgentOpen)
   const setAgentPanelWidth = useCanvasStore((s) => s.setAgentPanelWidth)
   const canvas = useCanvasStore((s) => s.canvas)
@@ -183,6 +186,28 @@ function WebAgentPanel() {
     persistedAssistantRunIds: new Set(),
   })
 
+  const panelSessionId = desktop ? desktopAdapter?.activeSessionId ?? null : sessionId
+  const panelMessages = desktop ? desktopAdapter?.messages ?? [] : messages
+  const panelDraft = desktop ? desktopAdapter?.draft ?? '' : input
+  const panelBusy = desktop ? desktopAdapter?.sending ?? false : busy
+  const panelSessionTitle = desktop
+    ? desktopAdapter?.sessions.find((item) => item.sessionId === desktopAdapter.activeSessionId)?.title || '新对话'
+    : sessionTitle
+  const panelSkills = desktop ? desktopAdapter?.skills ?? [] : skillOptions
+  const panelSkillsLoading = desktop ? desktopAdapter?.skillsLoading ?? false : skillPickerLoading
+  const setPanelDraft = (value: string) => {
+    if (desktop) desktopAdapter?.onDraftChange(value)
+    else setInput(value)
+  }
+  const closePanel = () => {
+    if (desktop) desktopAdapter?.onClose()
+    else setOpen(false)
+  }
+  const openConfiguration = () => {
+    if (desktop) desktopAdapter?.onConfigure()
+    else setTab('pref')
+  }
+
   const notifyCanvasChanged = useCallback(() => {
     // Keep the window event for CanvasPage and invalidate the shared query
     // directly so the sync does not depend on listener timing.
@@ -193,16 +218,16 @@ function WebAgentPanel() {
   }, [canvasId, queryClient])
 
   const skillCommandQuery = useMemo(() => {
-    const match = /^\/([^\s]*)$/.exec(input)
+    const match = /^\/([^\s]*)$/.exec(panelDraft)
     return match?.[1] ?? null
-  }, [input])
+  }, [panelDraft])
   const skillCommandItems = useMemo(
-    () => (skillCommandQuery == null ? [] : filterSkillCommandItems(skillOptions, skillCommandQuery)),
-    [skillCommandQuery, skillOptions],
+    () => (skillCommandQuery == null ? [] : filterSkillCommandItems(panelSkills, skillCommandQuery)),
+    [skillCommandQuery, panelSkills],
   )
 
   useEffect(() => {
-    if (!open || tab !== 'chat' || skillCommandQuery == null) return
+    if (desktop || !open || tab !== 'chat' || skillCommandQuery == null) return
     let cancelled = false
     setSkillPickerLoading(true)
     void api<{ items: SkillView[] }>(
@@ -220,7 +245,7 @@ function WebAgentPanel() {
     return () => {
       cancelled = true
     }
-  }, [open, tab, skillCommandQuery])
+  }, [desktop, open, tab, skillCommandQuery])
 
   const consumeAgentEnvelope = (event: AgentEventEnvelope): void => {
     const duplicate = seenEnvelopeIdsRef.current.has(event.eventId) || agentEventStateRef.current.seenEventIds.has(event.eventId)
@@ -293,33 +318,36 @@ function WebAgentPanel() {
   }
 
   useEffect(() => {
+    if (desktop) return
     const previousCanvasId = previousCanvasIdRef.current
     if (previousCanvasId !== undefined && String(previousCanvasId) !== String(canvasId)) {
       beginSessionTransition()
       setSessionId(null)
     }
     previousCanvasIdRef.current = canvasId
-  }, [canvasId])
+  }, [canvasId, desktop])
 
   useEffect(() => {
     busyRef.current = busy
   }, [busy])
 
   useEffect(() => {
+    if (desktop) return
     setAgentPanelWidth(open ? width : 0)
-  }, [open, width, setAgentPanelWidth])
+  }, [desktop, open, width, setAgentPanelWidth])
 
   useEffect(() => {
-    if (preferences?.defaultTextModel) {
+    if (!desktop && preferences?.defaultTextModel) {
       setAgentModel(resolvePreferredTextModel(preferences.defaultTextModel))
     }
-  }, [preferences?.defaultTextModel])
+  }, [desktop, preferences?.defaultTextModel])
 
   useEffect(() => {
+    if (desktop) return
     void api<{ items: ModelInfo[] }>('/models')
       .then((r) => setTextModels(r.items.filter((m) => m.modelType === 'text')))
       .catch(() => undefined)
-  }, [])
+  }, [desktop])
 
   const onResizePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -482,14 +510,14 @@ function WebAgentPanel() {
   }
 
   useEffect(() => {
-    if (!open) return
+    if (desktop || !open) return
     if (!canvas?.canvas.id) return
     if (sessionId) return
     void ensureSession().catch((e) => toastError((e as Error).message))
-  }, [open, sessionId, canvas?.canvas.id])
+  }, [desktop, open, sessionId, canvas?.canvas.id])
 
   useEffect(() => {
-    if (!open || !sessionId) return
+    if (desktop || !open || !sessionId) return
     const boundSessionId = sessionId
     const ac = new AbortController()
     sseAbortRef.current = ac
@@ -556,15 +584,15 @@ function WebAgentPanel() {
       ac.abort()
       sseAbortRef.current = null
     }
-  }, [open, sessionId])
+  }, [desktop, open, sessionId])
 
   useEffect(() => {
     if (chatScrollRef.current) scrollChatToBottom(chatScrollRef.current)
-  }, [messages, busy])
+  }, [panelMessages, panelBusy])
 
   // busy 结束后若逐字已追上仍卡住标记，做兜底清理
   useEffect(() => {
-    if (busy || !typingTurnId) return undefined
+    if (desktop || busy || !typingTurnId) return undefined
     const msg = messages.find((m) => m.id === typingTurnId)
     const len = msg?.content?.length ?? 0
     const ms = Math.min(12000, Math.max(800, len * 20 + 400))
@@ -572,7 +600,7 @@ function WebAgentPanel() {
       setTypingTurnId((cur) => (cur === typingTurnId ? null : cur))
     }, ms)
     return () => window.clearTimeout(t)
-  }, [busy, typingTurnId, messages])
+  }, [desktop, busy, typingTurnId, messages])
 
   const canvasNodes = useCanvasStore((s) => s.nodes)
 
@@ -588,6 +616,13 @@ function WebAgentPanel() {
   }, [])
 
   const loadSession = async (id: string | number, title?: string) => {
+    if (desktop) {
+      setComposerRefs([])
+      setSelectedSkill(null)
+      await desktopAdapter?.onSelectSession(String(id))
+      setTab('chat')
+      return
+    }
     try {
       const epoch = beginSessionTransition()
       const loaded = await loadSessionQuiet(id, title, epoch)
@@ -626,6 +661,10 @@ function WebAgentPanel() {
   }
 
   const stop = () => {
+    if (desktop) {
+      void desktopAdapter?.onStop?.()
+      return
+    }
     sendAbortRef.current?.abort()
     sendAbortRef.current = null
     if (sessionId) {
@@ -718,6 +757,10 @@ function WebAgentPanel() {
   }
 
   const confirmAction = async (confirmation: AgentConfirmation, accept: boolean) => {
+    if (desktop) {
+      await desktopAdapter?.onConfirm?.(confirmation, accept)
+      return
+    }
     if (!sessionId || confirmingActionRef.current) return
     confirmingActionRef.current = confirmation.actionId
     patchConfirmation(confirmation.actionId, 'submitting')
@@ -807,14 +850,14 @@ function WebAgentPanel() {
   // accepted/rejected. Terminal persisted state must always win over replayed
   // pending cards, otherwise a completed generation is offered again.
   const terminalConfirmationActionIds = new Set(
-    messages.flatMap((item) => {
+    panelMessages.flatMap((item) => {
       const confirmation = item.meta?.confirmation
       return confirmation && (confirmation.status === 'accepted' || confirmation.status === 'rejected')
         ? [confirmation.actionId]
         : []
     }),
   )
-  const pendingConfirmations = messages
+  const pendingConfirmations = panelMessages
     .map((item) => item.meta?.confirmation)
     .filter((confirmation): confirmation is AgentConfirmation =>
       isActionableConfirmation(confirmation) &&
@@ -826,6 +869,27 @@ function WebAgentPanel() {
   const hasPendingConfirmation = pendingConfirmations.length > 0
 
   const send = async () => {
+    if (desktop) {
+      const content = panelDraft.trim()
+      if (!content || panelBusy || desktopAdapter?.creating) return
+      if (hasPendingConfirmation) {
+        toastError('请先在确认卡片中确认或取消当前高风险操作')
+        return
+      }
+      const selectedNodeIds = [...new Set(composerRefs.filter((ref) => ref.kind === 'node').map((ref) => ref.id))]
+      const selectedSkillId = selectedSkill
+        ? String(selectedSkill.id)
+        : composerRefs.find((ref) => ref.kind === 'skill')?.id.replace(/^skill:/, '')
+      const sent = desktopAdapter?.onSendWithReferences
+        ? await desktopAdapter.onSendWithReferences({ selectedNodeIds, selectedSkillId })
+        : (await desktopAdapter?.onSend?.(), true)
+      if (sent) {
+        setComposerRefs((previous) => consumeSentNodeRefs(previous, new Set(selectedNodeIds))
+          .filter((ref) => !selectedSkillId || ref.id !== `skill:${selectedSkillId}`))
+        setSelectedSkill(null)
+      }
+      return
+    }
     const content = input.trim()
     if (!content || busy) return
     if (hasPendingConfirmation) {
@@ -1041,7 +1105,7 @@ function WebAgentPanel() {
             <Bot size={16} />
           </span>
           <div>
-            <p className="max-w-[140px] truncate text-[14px] font-bold text-[#111]">{sessionTitle}</p>
+            <p className="max-w-[140px] truncate text-[14px] font-bold text-[#111]">{panelSessionTitle}</p>
             <p className="text-[11px] text-[#999]">Paper Agent</p>
           </div>
         </div>
@@ -1049,13 +1113,22 @@ function WebAgentPanel() {
           {tab === 'chat' ? (
             <button
               type="button"
-              onClick={() => void ensureSession(true)
-                .then(() => toastSuccess('已创建新对话'))
-                .catch((e) => {
-                  if ((e as Error).name !== 'AbortError') toastError((e as Error).message)
-                })}
+              onClick={() => {
+                if (desktop) {
+                  setComposerRefs([])
+                  setSelectedSkill(null)
+                  void desktopAdapter?.onNewSession()
+                } else {
+                  void ensureSession(true)
+                    .then(() => toastSuccess('已创建新对话'))
+                    .catch((e) => {
+                      if ((e as Error).name !== 'AbortError') toastError((e as Error).message)
+                    })
+                }
+              }}
+              disabled={desktop && desktopAdapter?.creating}
               title="新对话"
-              className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04]"
+              className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04] disabled:opacity-50"
             >
               <SquarePlus size={16} />
             </button>
@@ -1066,10 +1139,22 @@ function WebAgentPanel() {
           <NavIcon tab="drama" current={tab} set={setTab} icon={Clapperboard} label="短剧资产" />
           <NavIcon tab="history" current={tab} set={setTab} icon={History} label="历史" />
           <NavIcon tab="usage" current={tab} set={setTab} icon={BarChart3} label="用量" />
-          <NavIcon tab="pref" current={tab} set={setTab} icon={Settings2} label="偏好" />
+          {desktop ? (
+            <button
+              type="button"
+              onClick={openConfiguration}
+              title="模型设置"
+              aria-label="模型设置"
+              className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04]"
+            >
+              <Settings2 size={16} />
+            </button>
+          ) : (
+            <NavIcon tab="pref" current={tab} set={setTab} icon={Settings2} label="偏好" />
+          )}
           <button
             type="button"
-            onClick={() => setOpen(false)}
+            onClick={closePanel}
             className="ml-1 rounded-full p-2 text-[#888] hover:bg-black/[0.04]"
           >
             <X size={16} />
@@ -1085,6 +1170,7 @@ function WebAgentPanel() {
               <AgentConfirmationCard
                 confirmation={activeConfirmation}
                 queuedCount={pendingConfirmations.length - 1}
+                showEstimatedCost={!desktop}
                 onConfirm={(accept) => void confirmAction(activeConfirmation, accept)}
               />
             </div>
@@ -1096,11 +1182,11 @@ function WebAgentPanel() {
               </p>
             )}
 
-            {messages.length === 0 && (
-              <AgentEmptyState onSuggestion={setInput} />
+            {(desktop ? panelMessages.length === 0 && !panelBusy : messages.length === 0) && (
+              <AgentEmptyState onSuggestion={setPanelDraft} />
             )}
 
-            {messages.filter(isChatVisibleMessage).map((m) => (
+            {panelMessages.filter(isChatVisibleMessage).map((m) => (
               <div key={m.id} className={`mb-4 flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div
                   className={cn(
@@ -1115,20 +1201,24 @@ function WebAgentPanel() {
                       <AgentTurnTimeline
                         steps={m.meta?.executionSteps ?? []}
                         content={m.content}
-                        streaming={m.id === typingTurnId && busy}
-                        animateSpeech={m.id === typingTurnId}
-                        streamComplete={!busy && m.id === typingTurnId}
+                        streaming={desktop
+                          ? panelBusy && !!desktopAdapter?.activeRunId && m.meta?.runId === desktopAdapter.activeRunId
+                          : m.id === typingTurnId && panelBusy}
+                        animateSpeech={desktop
+                          ? panelBusy && !!desktopAdapter?.activeRunId && m.meta?.runId === desktopAdapter.activeRunId
+                          : m.id === typingTurnId}
+                        streamComplete={desktop
+                          ? !panelBusy && !!desktopAdapter?.activeRunId && m.meta?.runId === desktopAdapter.activeRunId
+                          : !panelBusy && m.id === typingTurnId}
                         onRevealDone={() => {
-                          setTypingTurnId((cur) => (cur === m.id ? null : cur))
+                          if (!desktop) setTypingTurnId((cur) => (cur === m.id ? null : cur))
                         }}
                       />
                       <AgentTaskBadge status={m.meta?.taskStatus?.status} taskId={m.meta?.taskStatus?.taskId} />
                       {m.meta?.nextActions && m.meta.nextActions.length > 0 && (
                         <AgentNextActions
                           actions={m.meta.nextActions}
-                          onPick={(text) => {
-                            setInput(text)
-                          }}
+                          onPick={setPanelDraft}
                         />
                       )}
                     </>
@@ -1170,9 +1260,9 @@ function WebAgentPanel() {
               </div>
             )}
 
-            {busy && (
-              <p className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-[#888]">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            {panelBusy && (
+              <p role="status" className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-[#888]">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
                 正在工作
               </p>
             )}
@@ -1184,7 +1274,7 @@ function WebAgentPanel() {
               className="shrink-0 px-3 pb-3 pt-0"
               onSubmit={(e) => {
                 e.preventDefault()
-                if (!busy) void send()
+                if (!panelBusy) void send()
               }}
             >
               <div className="relative rounded-lg border border-[var(--canvas-border)] bg-[color-mix(in_srgb,var(--canvas-surface)_88%,var(--canvas-surface-muted))] shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition-colors focus-within:border-[var(--canvas-border-strong)] focus-within:ring-1 focus-within:ring-[var(--canvas-border)]">
@@ -1200,23 +1290,23 @@ function WebAgentPanel() {
                 {skillCommandQuery != null && (
                   <SkillCommandPicker
                     items={skillCommandItems}
-                    loading={skillPickerLoading}
+                    loading={panelSkillsLoading}
                     onSelect={(skill) => {
                       setSelectedSkill(skill)
                       setComposerRefs((prev) =>
                         upsertRefs(prev, [{ id: `skill:${String(skill.id)}`, kind: 'skill', title: skill.name }]),
                       )
-                      setInput('')
+                      setPanelDraft('')
                     }}
                   />
                 )}
                 <textarea
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  value={panelDraft}
+                  onChange={(e) => setPanelDraft(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault()
-                      if (!busy) void send()
+                      if (!panelBusy) void send()
                     }
                   }}
                   rows={3}
@@ -1225,7 +1315,7 @@ function WebAgentPanel() {
                       ? '可先编辑下一步需求；请先处理上方待确认生成'
                       : '描述创意或需求，@ 引用参考，/ 选择 Skill'
                   }
-                  disabled={busy}
+                  disabled={panelBusy}
                   className="block min-h-[72px] w-full resize-none bg-transparent px-3 pb-12 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60"
                 />
                 <div className="absolute bottom-2 left-2 right-2 z-10 flex min-w-0 items-center gap-1.5">
@@ -1244,7 +1334,7 @@ function WebAgentPanel() {
                         type="button"
                         aria-label="生成偏好"
                         title="生成偏好"
-                        onClick={() => setTab('pref')}
+                        onClick={openConfiguration}
                         className="relative flex size-8 items-center justify-center rounded-lg text-[var(--canvas-muted)] transition-colors hover:bg-[var(--canvas-hover)] hover:text-[var(--canvas-text)]"
                       >
                         <SlidersHorizontal size={16} strokeWidth={2} className="size-4" />
@@ -1252,27 +1342,38 @@ function WebAgentPanel() {
                     </div>
                   </div>
                   <div className="min-w-0 shrink">
-                    <ModelPicker
-                      composer
-                      models={
-                        textModels.length
-                          ? textModels
-                          : [
-                              {
-                                name: agentModel,
-                                displayName: agentModel,
-                                enabled: true,
-                                basePrice: 0,
-                                modelType: 'text',
-                                id: agentModel,
-                              } as ModelInfo,
-                            ]
-                      }
-                      value={agentModel}
-                      onChange={onAgentModelChange}
-                    />
+                    {desktop ? (
+                      <button
+                        type="button"
+                        onClick={openConfiguration}
+                        className="max-w-[140px] truncate rounded-lg px-2 py-1 text-[11px] font-semibold text-[#555] hover:bg-[var(--canvas-hover)]"
+                        title={desktopAdapter?.configured ? desktopAdapter.modelLabel : '配置模型'}
+                      >
+                        {desktopAdapter?.configured ? desktopAdapter.modelLabel : '配置模型'}
+                      </button>
+                    ) : (
+                      <ModelPicker
+                        composer
+                        models={
+                          textModels.length
+                            ? textModels
+                            : [
+                                {
+                                  name: agentModel,
+                                  displayName: agentModel,
+                                  enabled: true,
+                                  basePrice: 0,
+                                  modelType: 'text',
+                                  id: agentModel,
+                                } as ModelInfo,
+                              ]
+                        }
+                        value={agentModel}
+                        onChange={onAgentModelChange}
+                      />
+                    )}
                   </div>
-                  {busy ? (
+                  {panelBusy && desktopAdapter?.onStop ? (
                     <button
                       type="button"
                       onClick={stop}
@@ -1282,21 +1383,21 @@ function WebAgentPanel() {
                     >
                       <Square size={12} strokeWidth={2.5} />
                     </button>
-                  ) : (
+                  ) : !panelBusy ? (
                     <button
                       type="submit"
-                      disabled={!input.trim() || hasPendingConfirmation}
+                      disabled={!panelDraft.trim() || hasPendingConfirmation || (desktop && (!desktopAdapter?.configured || desktopAdapter?.creating))}
                       aria-label="发送"
                       className={cn(
                         'inline-flex size-7 items-center justify-center rounded-lg transition-colors',
-                        input.trim() && !hasPendingConfirmation
+                        panelDraft.trim() && !hasPendingConfirmation && (!desktop || desktopAdapter?.configured)
                           ? 'bg-[var(--canvas-active)] text-[var(--canvas-active-text)] hover:opacity-90'
                           : 'cursor-not-allowed bg-[var(--canvas-surface-muted)] text-[var(--canvas-muted-soft)]',
                       )}
                     >
                       <Send size={14} strokeWidth={2} className="size-3.5" />
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
             </form>
@@ -1305,14 +1406,22 @@ function WebAgentPanel() {
       )}
 
       {tab === 'pref' && <PreferencesTab />}
+      {desktop && desktopAdapter?.error && tab === 'chat' && (
+        <p role="alert" className="mx-3 mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{desktopAdapter.error}</p>
+      )}
       {tab === 'skills' && (
         <SkillsPanel
-          sessionId={sessionId}
-          onClose={() => setOpen(false)}
+          sessionId={panelSessionId}
+          onClose={closePanel}
           onBackToChat={() => setTab('chat')}
+          desktopSkills={desktop ? panelSkills : undefined}
+          loadedSkillIds={desktop ? desktopAdapter?.loadedSkillIds : undefined}
           onApplied={(name) => {
             if (!name) return
-            setComposerRefs((prev) => upsertRefs(prev, [{ id: `skill:${name}`, kind: 'skill', title: name }]))
+            const skill = panelSkills.find((item) => item.name === name)
+            const skillId = skill ? String(skill.id) : name
+            if (desktop && skill) setSelectedSkill(skill)
+            setComposerRefs((prev) => upsertRefs(prev, [{ id: `skill:${skillId}`, kind: 'skill', title: name }]))
           }}
         />
       )}
@@ -1320,16 +1429,19 @@ function WebAgentPanel() {
         <DramaAssetsTab
           canvasId={canvas?.canvas.id}
           canvasVersion={canvas?.canvas.version}
+          desktop={desktop}
           onBack={() => setTab('chat')}
         />
       )}
-      {tab === 'usage' && <UsageTab sessionId={sessionId} />}
+      {tab === 'usage' && <UsageTab sessionId={panelSessionId} desktop={desktop} />}
       {tab === 'history' && (
         <HistoryTab
-          sessionId={sessionId}
+          sessionId={panelSessionId}
           canvasId={canvas?.canvas.id}
           onOpenSession={loadSession}
           onImported={(id) => void loadSession(id)}
+          desktop={desktop}
+          desktopSessions={desktop ? desktopAdapter?.sessions : undefined}
         />
       )}
       </div>
@@ -1552,14 +1664,65 @@ function Memories() {
   )
 }
 
-function UsageTab({ sessionId }: { sessionId: string | number | null }) {
-  const [usage, setUsage] = useState<{ tokenTotal: number; pointsUsed: number; modelUsage: Record<string, number> } | null>(null)
+function UsageTab({ sessionId, desktop = false }: { sessionId: string | number | null; desktop?: boolean }) {
+  const [usage, setUsage] = useState<{
+    tokenTotal: number
+    pointsUsed?: number
+    inputTokens?: number
+    outputTokens?: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    modelCallCount?: number
+    toolCallCount?: number
+    modelUsage: Record<string, number>
+  } | null>(null)
+  const [usageLoading, setUsageLoading] = useState(false)
+  const [usageError, setUsageError] = useState('')
   useEffect(() => {
-    if (!sessionId) return
+    if (!sessionId) {
+      setUsage(null)
+      setUsageLoading(false)
+      setUsageError('')
+      return
+    }
+    let active = true
+    setUsageLoading(true)
+    setUsageError('')
     void api(`/agent/sessions/${sessionId}/usage`)
-      .then((u) => setUsage(u as typeof usage))
-      .catch(() => undefined)
+      .then((u) => { if (active) setUsage(u as typeof usage) })
+      .catch((error: unknown) => { if (active) setUsageError(error instanceof Error ? error.message : '读取用量失败') })
+      .finally(() => { if (active) setUsageLoading(false) })
+    return () => { active = false }
   }, [sessionId])
+  if (desktop) {
+    return (
+      <div className="flex-1 space-y-3 overflow-auto p-4">
+        <p className="text-[13px] font-bold text-[#111]">当前对话用量</p>
+        {!sessionId && <p className="text-[12px] text-[#888]">发送一条消息后显示本地用量统计。</p>}
+        {sessionId && usageLoading && <p className="text-[12px] text-[#888]">正在读取本地用量…</p>}
+        {sessionId && usageError && <p role="alert" className="text-[12px] text-red-600">{usageError}</p>}
+        {!usageLoading && !usageError && usage && <>
+          <div className="grid grid-cols-2 gap-2">
+            <UsageMetric value={usage.tokenTotal} label="Token 总量" />
+            <UsageMetric value={usage.modelCallCount ?? 0} label="模型调用" />
+            <UsageMetric value={usage.toolCallCount ?? 0} label="工具调用" />
+            <UsageMetric value={(usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)} label="缓存 Token" />
+          </div>
+          <div>
+            <p className="mb-1 text-[12px] font-bold text-[#555]">各模型 Token 用量</p>
+            {Object.entries(usage.modelUsage).length === 0
+              ? <p className="text-[12px] text-[#888]">暂无模型调用记录。</p>
+              : Object.entries(usage.modelUsage).map(([model, tokens]) => (
+                <div key={model} className="flex items-center justify-between rounded-lg bg-[#f7f7f7] px-2 py-1.5 text-[12px]">
+                  <span className="font-semibold text-[#555]">{model}</span>
+                  <span className="text-[#999]">{tokens} tokens</span>
+                </div>
+              ))}
+          </div>
+        </>}
+      </div>
+    )
+  }
   return (
     <div className="flex-1 space-y-3 overflow-auto p-4">
       <p className="text-[13px] font-bold text-[#111]">当前对话用量</p>
@@ -1614,17 +1777,22 @@ export function AgentHistorySessionItem({
 function HistoryTab({
   sessionId,
   canvasId,
+  desktopSessions,
+  desktop = false,
   onOpenSession,
   onImported,
 }: {
   sessionId: string | number | null
   canvasId?: string | number
+  desktopSessions?: AgentPanelDesktopSession[]
+  desktop?: boolean
   onOpenSession: (id: string | number, title?: string) => void
   onImported: (id: string | number) => void
 }) {
   const [sessions, setSessions] = useState<HistorySession[]>([])
   const [fragments, setFragments] = useState<Array<{ id: number; title: string }>>([])
   const reload = () => {
+    if (desktop) return
     const q = canvasId != null ? `?canvasId=${encodeURIComponent(String(canvasId))}` : ''
     void api<{ items: typeof sessions }>(`/agent/sessions${q}`)
       .then((r) => setSessions(r.items))
@@ -1634,9 +1802,11 @@ function HistoryTab({
       .catch(() => undefined)
   }
   useEffect(() => {
+    if (desktop) return
     reload()
-  }, [canvasId])
+  }, [canvasId, desktop])
   const saveFragment = async () => {
+    if (desktop) return
     if (!sessionId) return
     try {
       await api(`/agent/sessions/${sessionId}/fragments`, {
@@ -1648,6 +1818,26 @@ function HistoryTab({
     } catch (e) {
       toastError((e as Error).message)
     }
+  }
+  if (desktop) {
+    return (
+      <div className="flex-1 space-y-3 overflow-auto p-3">
+        <p className="text-[12px] font-bold text-[#555]">本地对话历史</p>
+        {!desktopSessions?.length && <p className="py-8 text-center text-[12px] text-[#888]">此项目还没有 Agent 会话。</p>}
+        {desktopSessions?.map((session) => (
+          <AgentHistorySessionItem
+            key={session.sessionId}
+            session={{
+              sessionId: session.sessionId,
+              title: session.title,
+              updatedAt: session.modifiedAt ? new Date(session.modifiedAt).toISOString() : undefined,
+            }}
+            active={String(session.sessionId) === String(sessionId)}
+            onOpen={() => onOpenSession(session.sessionId, session.title)}
+          />
+        ))}
+      </div>
+    )
   }
   return (
     <div className="flex-1 space-y-3 overflow-auto p-3">
@@ -1693,244 +1883,11 @@ function HistoryTab({
   )
 }
 
-function AgentPanelDesktopView({
-  sessions,
-  activeSessionId,
-  messages,
-  draft,
-  sending,
-  creating,
-  configured,
-  modelLabel,
-  error,
-  skills = [],
-  loadedSkillIds = [],
-  skillsLoading = false,
-  onDraftChange,
-  onNewSession,
-  onSelectSession,
-  onSend,
-  onSendWithReferences,
-  onConfirm,
-  onConfigure,
-  onClose,
-}: AgentPanelDesktopAdapter) {
-  const [tab, setTab] = useState<'chat' | 'history' | 'skills'>('chat')
-  const [width, setWidth] = useState(AGENT_PANEL_DEFAULT_WIDTH)
-  const [composerRefs, setComposerRefs] = useState<ComposerRef[]>([])
-  const [selectedSkill, setSelectedSkill] = useState<SkillView | null>(null)
-  const resizeStartRef = useRef<{ x: number; w: number } | null>(null)
-  const chatScrollRef = useRef<HTMLDivElement>(null)
-  const canvasNodes = useCanvasStore((state) => state.nodes)
-  const previousSelectedNodeIdsRef = useRef<Set<string>>(new Set())
-  const pendingConfirmations = messages
-    .map((message) => message.meta?.confirmation)
-    .filter((confirmation): confirmation is AgentConfirmation => isActionableConfirmation(confirmation))
-  const terminalActionIds = new Set(messages.flatMap((message) => {
-    const confirmation = message.meta?.confirmation
-    return confirmation && (confirmation.status === 'accepted' || confirmation.status === 'rejected')
-      ? [confirmation.actionId]
-      : []
-  }))
-  const actionableConfirmations = pendingConfirmations.filter((confirmation) => !terminalActionIds.has(confirmation.actionId))
-  const activeConfirmation = actionableConfirmations.at(-1)
-  const skillCommandQuery = useMemo(() => {
-    const match = /^\/([^\s]*)$/.exec(draft)
-    return match?.[1] ?? null
-  }, [draft])
-  const skillCommandItems = useMemo(
-    () => skillCommandQuery == null ? [] : filterSkillCommandItems(skills, skillCommandQuery),
-    [skillCommandQuery, skills],
-  )
-
-  useEffect(() => {
-    if (chatScrollRef.current) scrollChatToBottom(chatScrollRef.current)
-  }, [messages, sending, tab])
-
-  useEffect(() => {
-    const syncSelection = (nodes: typeof canvasNodes) => {
-      const { selectedIds, added } = newlySelectedComposerRefs(nodes, previousSelectedNodeIdsRef.current)
-      previousSelectedNodeIdsRef.current = selectedIds
-      if (added.length) setComposerRefs((previous) => upsertRefs(previous, added))
-    }
-    syncSelection(useCanvasStore.getState().nodes)
-    return useCanvasStore.subscribe((state) => syncSelection(state.nodes))
-  }, [])
-
-  const sendDraft = async () => {
-    const selectedNodeIds = [...new Set(composerRefs.filter((ref) => ref.kind === 'node').map((ref) => ref.id))]
-    const selectedSkillId = selectedSkill ? String(selectedSkill.id) : undefined
-    const sent = onSendWithReferences
-      ? await onSendWithReferences({ selectedNodeIds, selectedSkillId })
-      : await onSend().then(() => true)
-    if (sent) {
-      setComposerRefs((previous) => {
-        const withoutSentNodes = consumeSentNodeRefs(previous, new Set(selectedNodeIds))
-        return selectedSkillId
-          ? withoutSentNodes.filter((ref) => ref.kind !== 'skill' || ref.id !== `skill:${selectedSkillId}`)
-          : withoutSentNodes
-      })
-      setSelectedSkill(null)
-    }
-  }
-
-  const onResizePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return
-    event.preventDefault()
-    try {
-      event.currentTarget.setPointerCapture?.(event.pointerId)
-    } catch {
-      /* synthetic pointer events may not have an active pointer */
-    }
-    resizeStartRef.current = { x: event.clientX, w: width }
-  }
-  const onResizePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const start = resizeStartRef.current
-    if (!start) return
-    setWidth(Math.min(AGENT_PANEL_MAX_WIDTH, Math.max(AGENT_PANEL_MIN_WIDTH, start.w + start.x - event.clientX)))
-  }
-  const endResize = () => { resizeStartRef.current = null }
-  const visibleMessages = messages.filter(isChatVisibleMessage)
-
+function UsageMetric({ value, label }: { value: number; label: string }) {
   return (
-    <aside
-      className="relative z-30 h-full flex-none overflow-visible border-l border-[var(--canvas-border)] bg-[var(--canvas-surface)] text-[var(--canvas-text)] shadow-xl shadow-black/20 backdrop-blur-md"
-      style={{ width }}
-    >
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="调整 Agent 面板宽度"
-        className={cn('group absolute -left-1.5 top-0 z-40 h-full w-3 cursor-col-resize touch-none select-none', resizeStartRef.current && 'is-resizing')}
-        onPointerDown={onResizePointerDown}
-        onPointerMove={onResizePointerMove}
-        onPointerUp={endResize}
-        onPointerCancel={endResize}
-        onDoubleClick={() => setWidth(AGENT_PANEL_DEFAULT_WIDTH)}
-      >
-        <span aria-hidden className="pointer-events-none absolute left-1/2 top-0 h-full w-[3px] -translate-x-1/2 bg-transparent transition-colors group-hover:bg-[var(--canvas-border-strong)] group-active:bg-[var(--canvas-border-strong)]" />
-      </div>
-      <div className="flex h-full flex-col" style={{ width }}>
-        <div className="flex items-center justify-between px-4 py-3.5">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#111] text-white"><Bot size={16} /></span>
-            <div className="min-w-0">
-              <p className="max-w-[140px] truncate text-[14px] font-bold text-[#111]">
-                {sessions.find((session) => session.sessionId === activeSessionId)?.title || '新对话'}
-              </p>
-              <p className="text-[11px] text-[#999]">Paper Agent</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-0.5">
-            {tab === 'chat'
-              ? <button type="button" onClick={() => { setComposerRefs([]); setSelectedSkill(null); void onNewSession() }} disabled={creating} title="新对话" className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04] disabled:opacity-50"><SquarePlus size={16} /></button>
-              : <button type="button" onClick={() => setTab('chat')} title="对话" className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04]"><Bot size={16} /></button>}
-            <button type="button" onClick={() => setTab(tab === 'skills' ? 'chat' : 'skills')} title="Skills" aria-pressed={tab === 'skills'} className={cn('rounded-full p-2 transition', tab === 'skills' ? 'bg-black/8 text-[#111]' : 'text-[#888] hover:bg-black/[0.04]')}><BookOpen size={16} /></button>
-            <button type="button" title="短剧资产尚未接入桌面版" disabled className="rounded-full p-2 text-[#bbb]"><Clapperboard size={16} /></button>
-            <button type="button" onClick={() => setTab(tab === 'history' ? 'chat' : 'history')} title="历史" className={cn('rounded-full p-2 transition', tab === 'history' ? 'bg-black/8 text-[#111]' : 'text-[#888] hover:bg-black/[0.04]')}><History size={16} /></button>
-            <button type="button" title="用量视图尚未接入桌面版" disabled className="rounded-full p-2 text-[#bbb]"><BarChart3 size={16} /></button>
-            <button type="button" onClick={onConfigure} title="模型设置" className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04]"><Settings2 size={16} /></button>
-            <button type="button" onClick={onClose} title="关闭" className="ml-1 rounded-full p-2 text-[#888] hover:bg-black/[0.04]"><X size={16} /></button>
-          </div>
-        </div>
-
-        {tab === 'skills' ? (
-          <SkillsPanel
-            sessionId={activeSessionId}
-            onClose={() => setTab('chat')}
-            onBackToChat={() => setTab('chat')}
-            desktopSkills={skills}
-            loadedSkillIds={loadedSkillIds}
-            onApplied={(name) => {
-              const skill = skills.find((item) => item.name === name)
-              if (!skill) return
-              setSelectedSkill(skill)
-              setComposerRefs((previous) => upsertRefs(previous, [{ id: `skill:${String(skill.id)}`, kind: 'skill', title: skill.name }]))
-            }}
-          />
-        ) : tab === 'history' ? (
-          <div className="min-h-0 flex-1 overflow-y-auto p-3">
-            {sessions.length === 0
-              ? <p className="py-8 text-center text-sm text-[#888]">此项目还没有 Agent 会话。</p>
-              : <ul className="space-y-2">{sessions.map((session) => {
-                const active = session.sessionId === activeSessionId
-                return <li key={session.sessionId}><button type="button" onClick={() => { setComposerRefs([]); setSelectedSkill(null); void onSelectSession(session.sessionId); setTab('chat') }} aria-current={active ? 'true' : undefined} className={cn('w-full rounded-xl border px-3 py-3 text-left', active ? 'border-[#8a72e8] bg-[#f6f3ff]' : 'border-black/8 hover:bg-[#f7f7f8]')}>
-                  <p className="truncate text-sm font-semibold">{session.title || '本地会话'}</p>
-                  <p className="mt-1 text-xs text-[#777]">最近更新 {formatAgentSessionDate(session.modifiedAt)}</p>
-                </button></li>
-              })}</ul>}
-          </div>
-        ) : (
-          <div className="flex min-h-0 flex-1 flex-col bg-[var(--canvas-surface)]">
-            {activeConfirmation && (
-              <div className="shrink-0 border-y border-[var(--canvas-border)] bg-[var(--canvas-surface-muted)] px-3 py-2">
-                <AgentConfirmationCard
-                  confirmation={activeConfirmation}
-                  queuedCount={actionableConfirmations.length - 1}
-                  showEstimatedCost={false}
-                  onConfirm={(accept) => { if (onConfirm) void onConfirm(activeConfirmation, accept) }}
-                />
-              </div>
-            )}
-            <div ref={chatScrollRef} className="relative min-h-0 flex-1 overflow-y-auto bg-transparent px-3.5 pb-8 pt-3.5" aria-live="polite">
-              {composerRefs.some((ref) => ref.kind === 'node') && <p className="mb-3 rounded-full bg-[#f2f2f2] px-3 py-1.5 text-[11px] font-semibold text-[#555]">已加入 {composerRefs.filter((ref) => ref.kind === 'node').length} 个参考节点，将随下一条消息发送</p>}
-              {visibleMessages.length === 0 && !sending && <AgentEmptyState onSuggestion={onDraftChange} />}
-              {visibleMessages.map((message) => (
-                <div key={message.id} className={`mb-4 flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={cn('max-w-[94%] px-1 py-1', message.role === 'user' ? 'rounded-[18px] whitespace-pre-line bg-[#efefef] px-3.5 py-2.5 text-[15px] leading-[1.65] text-[#111]' : 'w-full min-w-0 text-[15px] leading-[1.7] text-[#222]')}>
-                    {message.role === 'assistant' ? <>
-                      <AgentTurnTimeline steps={message.meta?.executionSteps ?? []} content={message.content} streaming={sending} animateSpeech={sending} streamComplete={!sending} />
-                      <AgentTaskBadge status={message.meta?.taskStatus?.status} taskId={message.meta?.taskStatus?.taskId} />
-                      {message.meta?.nextActions && message.meta.nextActions.length > 0 && <AgentNextActions actions={message.meta.nextActions} onPick={onDraftChange} />}
-                    </> : <>
-                      <AgentNodeReferenceCards references={message.meta?.nodeReferences ?? []} />
-                      <div className={message.meta?.nodeReferences?.length ? 'mt-2' : undefined}>{message.content}</div>
-                    </>}
-                  </div>
-                </div>
-              ))}
-              {sending && <p className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-[#888]" role="status"><span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />正在工作</p>}
-            </div>
-            {error && <p role="alert" className="mx-3 mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
-            <form className="shrink-0 px-3 pb-3" onSubmit={(event) => { event.preventDefault(); void sendDraft() }}>
-              <div className="relative rounded-lg border border-[var(--canvas-border)] bg-[var(--canvas-surface)] shadow-[0_8px_24px_rgba(15,23,42,0.08)] focus-within:border-[var(--canvas-border-strong)]">
-                <AgentComposerBar
-                  refs={composerRefs}
-                  nodes={canvasNodes}
-                  onRemove={(ref) => {
-                    if (ref.kind === 'skill' && selectedSkill && ref.id === `skill:${String(selectedSkill.id)}`) setSelectedSkill(null)
-                    setComposerRefs((previous) => previous.filter((item) => !(item.kind === ref.kind && item.id === ref.id)))
-                  }}
-                />
-                {skillCommandQuery != null && (
-                  <SkillCommandPicker
-                    items={skillCommandItems}
-                    loading={skillsLoading}
-                    onSelect={(skill) => {
-                      setSelectedSkill(skill)
-                      setComposerRefs((previous) => upsertRefs(previous, [{ id: `skill:${String(skill.id)}`, kind: 'skill', title: skill.name }]))
-                      onDraftChange('')
-                    }}
-                  />
-                )}
-                <textarea aria-label="发送给 Agent 的消息" value={draft} maxLength={20_000} disabled={sending} onChange={(event) => onDraftChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendDraft() } }} rows={3} placeholder="描述创意或需求，@ 引用参考，/ 选择 Skill" className="block min-h-[72px] w-full resize-none bg-transparent px-3 pb-12 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60" />
-                <div className="absolute bottom-2 left-2 right-2 flex items-center gap-1.5">
-                  <button type="button" title="Skills" onClick={() => setTab('skills')} className="flex size-8 items-center justify-center rounded-lg text-[var(--canvas-muted-soft)] hover:bg-[var(--canvas-hover)]"><Puzzle size={16} /></button>
-                  <button type="button" title="生成偏好" onClick={onConfigure} className="flex size-8 items-center justify-center rounded-lg text-[var(--canvas-muted)] hover:bg-[var(--canvas-hover)]"><SlidersHorizontal size={16} /></button>
-                  <button type="button" onClick={onConfigure} className="ml-auto truncate rounded-lg px-2 py-1 text-[11px] font-semibold text-[#555]">{configured ? modelLabel : '配置模型'}</button>
-                  <button type="submit" title="发送" aria-label="发送" disabled={!configured || !draft.trim() || sending || creating} className="inline-flex size-7 items-center justify-center rounded-lg bg-[var(--canvas-active)] text-[var(--canvas-active-text)] disabled:cursor-not-allowed disabled:bg-[var(--canvas-surface-muted)] disabled:text-[var(--canvas-muted-soft)]"><Send size={14} /></button>
-                </div>
-              </div>
-              {activeConfirmation && <p className="mt-1.5 px-1 text-[10px] text-[var(--canvas-muted)]">请先确认或取消上方 Agent 生成请求，再继续发送消息。</p>}
-            </form>
-          </div>
-        )}
-      </div>
-    </aside>
+    <div className="rounded-[18px] bg-[#f7f7f7] p-3 text-center">
+      <p className="text-[22px] font-black text-[#111]">{value.toLocaleString()}</p>
+      <p className="text-[11px] text-[#999]">{label}</p>
+    </div>
   )
-}
-
-function formatAgentSessionDate(timestamp: number) {
-  if (!Number.isFinite(timestamp) || timestamp <= 0) return '时间未知'
-  return new Date(timestamp).toLocaleString()
 }

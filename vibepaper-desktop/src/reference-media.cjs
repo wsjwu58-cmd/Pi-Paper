@@ -3,16 +3,27 @@ const path = require('node:path')
 
 const MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_REFERENCE_PAYLOAD_BYTES = 64 * 1024 * 1024
+const MAX_REFERENCE_MEDIA_BYTES = 512 * 1024 * 1024
 const UUID_PATTERN = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
 const MIME_EXTENSIONS = new Map([
-  ['image/png', ['png']],
-  ['image/jpeg', ['jpg', 'jpeg']],
-  ['image/webp', ['webp']],
+  ['image/png', { kind: 'image', extensions: ['png'] }],
+  ['image/jpeg', { kind: 'image', extensions: ['jpg', 'jpeg'] }],
+  ['image/webp', { kind: 'image', extensions: ['webp'] }],
+  ['video/mp4', { kind: 'video', extensions: ['mp4'] }],
+  ['video/quicktime', { kind: 'video', extensions: ['mov'] }],
+  ['video/webm', { kind: 'video', extensions: ['webm'] }],
+  ['audio/wav', { kind: 'audio', extensions: ['wav'] }],
+  ['audio/x-wav', { kind: 'audio', extensions: ['wav'] }],
+  ['audio/mpeg', { kind: 'audio', extensions: ['mp3'] }],
+  ['audio/ogg', { kind: 'audio', extensions: ['ogg'] }],
+  ['audio/mp4', { kind: 'audio', extensions: ['m4a'] }],
+  ['audio/x-m4a', { kind: 'audio', extensions: ['m4a'] }],
 ])
 const SINGLE_REFERENCE_FIELDS = [
   'image', 'imageUrl', 'image_url', 'referenceUrl', 'sourceUrl', 'firstFrameUrl', 'lastFrameUrl',
 ]
 const LIST_REFERENCE_FIELDS = ['referenceImages', 'reference_images', 'referenceUrls']
+const LOCAL_REFERENCE_UPLOAD_MESSAGE = '该本地媒体的项目归属、素材索引类型和文件大小已核验，但火山方舟视频任务需要模型可访问的 HTTPS 媒体地址；当前桌面端没有供应商上传链，因此未发送本地路径或文件内容。'
 
 class ReferenceMediaFailure extends Error {
   constructor(code, message) {
@@ -30,6 +41,14 @@ function imageMimeFromBytes(bytes) {
     return 'image/webp'
   }
   return null
+}
+
+function kindForMime(mimeType) {
+  return MIME_EXTENSIONS.get(typeof mimeType === 'string' ? mimeType.toLowerCase() : '')?.kind ?? null
+}
+
+function extensionsForMime(mimeType) {
+  return MIME_EXTENSIONS.get(typeof mimeType === 'string' ? mimeType.toLowerCase() : '')?.extensions ?? []
 }
 
 function parseLocalReference(value) {
@@ -52,7 +71,7 @@ function assertContainedPath(root, target, label) {
   return relative
 }
 
-async function assertManagedImagePath(projectDirectory, filePath, type, id) {
+async function assertManagedMediaPath(projectDirectory, filePath, type, id, expectedKind, expectedMimeType, expectedSizeBytes) {
   if (typeof projectDirectory !== 'string' || !projectDirectory || typeof filePath !== 'string' || !filePath) {
     throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '本地媒体参考不可用。')
   }
@@ -78,12 +97,12 @@ async function assertManagedImagePath(projectDirectory, filePath, type, id) {
 
   if (type === 'asset') {
     if (segments.length !== 3 || !/^[a-f0-9]{64}$/iu.test(segments[1])
-      || !new RegExp(`^${id}\\.(?:png|jpg|jpeg|webp)$`, 'iu').test(segments[2])) {
+      || !new RegExp(`^${id}\\.(?:png|jpg|jpeg|webp|mp4|mov|webm|wav|mp3|ogg|m4a)$`, 'iu').test(segments[2])) {
       throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '本地素材路径无效。')
     }
   } else if (segments[1] !== id || segments.length !== 3
-    || !/^result\.(?:png|jpg|jpeg|webp)$/iu.test(segments[2])) {
-    throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '任务图片结果路径无效。')
+    || !/^result\.(?:png|jpg|jpeg|webp|mp4|mov|webm|wav|mp3|ogg|m4a)$/iu.test(segments[2])) {
+    throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '任务媒体结果路径无效。')
   }
 
   let current = dataRoot
@@ -99,11 +118,28 @@ async function assertManagedImagePath(projectDirectory, filePath, type, id) {
     throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '本地媒体参考文件无效。')
   }
   assertContainedPath(type === 'asset' ? path.join(dataRoot, 'assets') : path.join(dataRoot, 'generated'), realFile, '本地媒体参考')
+  const mediaInfo = await fs.stat(realFile)
+  const mimeKind = kindForMime(expectedMimeType)
+  const extension = path.extname(realFile).slice(1).toLowerCase()
+  if (!mimeKind || mimeKind !== expectedKind || !extensionsForMime(expectedMimeType).includes(extension)) {
+    throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', '本地参考媒体格式不匹配（类型与引用字段不匹配）。')
+  }
+  const maxBytes = expectedKind === 'image' ? MAX_REFERENCE_IMAGE_BYTES : MAX_REFERENCE_MEDIA_BYTES
+  if (!mediaInfo.isFile() || !Number.isSafeInteger(mediaInfo.size) || mediaInfo.size <= 0 || mediaInfo.size > maxBytes
+    || expectedSizeBytes !== undefined && expectedSizeBytes !== mediaInfo.size) {
+    const mediaName = expectedKind === 'video' ? '视频' : expectedKind === 'audio' ? '音频' : '图片'
+    const limit = expectedKind === 'image' ? '20 MiB' : '512 MiB'
+    throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', `本地${mediaName}参考为空、过大或发生变化（上限 ${limit}）。`)
+  }
   return realFile
 }
 
+async function assertManagedImagePath(projectDirectory, filePath, type, id, expectedMimeType, expectedSizeBytes) {
+  return assertManagedMediaPath(projectDirectory, filePath, type, id, 'image', expectedMimeType, expectedSizeBytes)
+}
+
 async function readBoundedImage(filePath, expectedMimeType, expectedSizeBytes) {
-  if (!MIME_EXTENSIONS.has(expectedMimeType)) {
+  if (kindForMime(expectedMimeType) !== 'image') {
     throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', 'Agnes 参考图仅支持 PNG、JPEG 或 WebP。')
   }
 
@@ -150,11 +186,11 @@ async function readBoundedImage(filePath, expectedMimeType, expectedSizeBytes) {
   }
 }
 
-async function resolveLocalReference(value, { localCore, projectId, projectDirectory }) {
+async function resolveLocalReference(value, { localCore, projectId, projectDirectory }, expectedKind) {
   const local = parseLocalReference(value)
   if (!local) return value
   if (!localCore || typeof projectId !== 'string' || !projectId) {
-    throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '当前项目不可用，无法读取本地图片参考。')
+    throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '当前项目不可用，无法读取本地媒体参考。')
   }
 
   let resolved
@@ -163,22 +199,41 @@ async function resolveLocalReference(value, { localCore, projectId, projectDirec
       ? await localCore.request('asset:resolve', { assetId: local.id })
       : await localCore.request('task:resolve-output-preview', { projectId, taskId: local.id })
   } catch {
-    throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '本地图片参考不存在或不可用。')
+    throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '本地媒体参考不存在或不可用。')
   }
-  const filePath = await assertManagedImagePath(projectDirectory, resolved?.filePath, local.type, local.id)
+  const actualKind = kindForMime(resolved?.mimeType)
+  if (!actualKind || expectedKind && actualKind !== expectedKind) {
+    throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', '本地参考媒体格式不匹配（类型与引用字段不匹配）。')
+  }
+  const filePath = await assertManagedMediaPath(
+    projectDirectory, resolved?.filePath, local.type, local.id,
+    expectedKind ?? actualKind, resolved?.mimeType, resolved?.sizeBytes,
+  )
+  if (actualKind !== 'image') {
+    throw new ReferenceMediaFailure('CLOUD_REFERENCE_UPLOAD_UNAVAILABLE', LOCAL_REFERENCE_UPLOAD_MESSAGE)
+  }
   return readBoundedImage(filePath, resolved?.mimeType, resolved?.sizeBytes)
 }
 
-async function resolveGenerationImageReferences(parameters, options) {
+function expectedReferenceKind(field) {
+  if (field === 'referenceVideos' || field === 'reference_videos') return 'video'
+  if (field === 'referenceAudios' || field === 'reference_audios') return 'audio'
+  if (field === 'referenceImages' || field === 'reference_images'
+    || SINGLE_REFERENCE_FIELDS.includes(field)) return 'image'
+  return undefined
+}
+
+async function resolveGenerationMediaReferences(parameters, options) {
   if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return parameters
   const resolved = { ...parameters }
   let expandedBytes = 0
   const cache = new Map()
-  const resolve = async (value) => {
+  const resolve = async (value, field) => {
     if (typeof value !== 'string' || !value.trim()) return value
-    const key = value.trim()
+    const source = value.trim()
+    const key = `${expectedReferenceKind(field) ?? 'any'}\u0000${source}`
     if (!cache.has(key)) {
-      const dataUrl = await resolveLocalReference(key, options)
+      const dataUrl = await resolveLocalReference(source, options, expectedReferenceKind(field))
       cache.set(key, dataUrl)
     }
     const dataUrl = cache.get(key)
@@ -193,23 +248,38 @@ async function resolveGenerationImageReferences(parameters, options) {
   }
 
   for (const field of SINGLE_REFERENCE_FIELDS) {
-    if (typeof resolved[field] === 'string') resolved[field] = await resolve(resolved[field])
-  }
-  for (const field of LIST_REFERENCE_FIELDS) {
     if (typeof resolved[field] === 'string') {
-      resolved[field] = await resolve(resolved[field])
+      options?.validateProvider?.(resolved, field)
+      resolved[field] = await resolve(resolved[field], field)
+    }
+  }
+  for (const field of [...LIST_REFERENCE_FIELDS, 'referenceVideos', 'reference_videos', 'referenceAudios', 'reference_audios']) {
+    if (typeof resolved[field] === 'string') {
+      options?.validateProvider?.(resolved, field)
+      resolved[field] = await resolve(resolved[field], field)
     } else if (Array.isArray(resolved[field])) {
-      resolved[field] = await Promise.all(resolved[field].map((value) => resolve(value)))
+      options?.validateProvider?.(resolved, field)
+      resolved[field] = await Promise.all(resolved[field].map((value) => resolve(value, field)))
     }
   }
   return resolved
 }
 
+async function resolveGenerationImageReferences(parameters, options) {
+  return resolveGenerationMediaReferences(parameters, options)
+}
+
 module.exports = {
   MAX_REFERENCE_IMAGE_BYTES,
   MAX_REFERENCE_PAYLOAD_BYTES,
+  MAX_REFERENCE_MEDIA_BYTES,
+  LOCAL_REFERENCE_UPLOAD_MESSAGE,
   ReferenceMediaFailure,
+  assertManagedImagePath,
+  assertManagedMediaPath,
   imageMimeFromBytes,
+  kindForMime,
   parseLocalReference,
+  resolveGenerationMediaReferences,
   resolveGenerationImageReferences,
 }

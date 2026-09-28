@@ -1,10 +1,13 @@
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
 
+import type { ServiceConfig } from "../src/config.ts";
 import {
 	type AgentRuntimeError,
 	type AgentTurnEvent,
 	awaitAgentTurn,
+	agnesModel,
 	captureEvent,
 	forceInitialToolCall,
 	sanitizeAgentReply,
@@ -12,6 +15,41 @@ import {
 } from "../src/application/agent-runtime.ts";
 
 describe("Pi runtime event mapping", () => {
+	it("sends the documented thinking opt-in only for desktop Agnes runs", async () => {
+		const config = {
+			llmModel: "agnes-2.5-flash",
+			llmBaseUrl: "https://api.agnes.ai/v1",
+		} as ServiceConfig;
+		let request: unknown;
+		const capturePayload = async (enableThinking: boolean) => {
+			request = undefined;
+			const stream = streamSimple(
+				agnesModel(config, config.llmModel, enableThinking),
+				{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+				{
+					apiKey: "test-key",
+					reasoning: enableThinking ? "low" : undefined,
+					onPayload: (payload) => {
+						request = payload;
+						// Stop before the provider request; this test verifies the exact
+						// request contract without making a network call.
+						throw new Error("REQUEST_CAPTURED");
+					},
+				},
+			);
+			await stream.result();
+			return request as Record<string, unknown>;
+		};
+
+		const desktopRequest = await capturePayload(true);
+		expect(desktopRequest).toMatchObject({ chat_template_kwargs: { enable_thinking: true } });
+		expect(desktopRequest).not.toHaveProperty("reasoning_effort");
+
+		const legacyWebRequest = await capturePayload(false);
+		expect(legacyWebRequest).not.toHaveProperty("chat_template_kwargs");
+		expect(legacyWebRequest).not.toHaveProperty("reasoning_effort");
+	});
+
 	it("removes implementation identifiers and tool names from user-facing replies", () => {
 		expect(sanitizeAgentReply("已创建图片节点，节点 ID：219726203383320577，并调用 create_nodes。")).toBe(
 			"已创建图片节点。",

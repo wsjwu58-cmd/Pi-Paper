@@ -61,10 +61,12 @@ function idempotencyKey() {
 export function DramaAssetsTab({
   canvasId,
   canvasVersion,
+  desktop = false,
   onBack,
 }: {
   canvasId?: string | number
   canvasVersion?: number
+  desktop?: boolean
   onBack: () => void
 }) {
   const [items, setItems] = useState<DramaAsset[]>([])
@@ -73,6 +75,11 @@ export function DramaAssetsTab({
   const [rawData, setRawData] = useState(() => stringify(TEMPLATES.series_bible))
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [writeCanvasVersion, setWriteCanvasVersion] = useState(canvasVersion)
+
+  useEffect(() => {
+    setWriteCanvasVersion(canvasVersion)
+  }, [canvasId, canvasVersion])
 
   const assetLabel = useMemo(
     () => Object.fromEntries(ASSET_OPTIONS.map((option) => [option.value, option.label])) as Record<DramaAssetType, string>,
@@ -105,7 +112,7 @@ export function DramaAssetsTab({
   }
 
   const save = async () => {
-    if (canvasId == null || canvasVersion == null) {
+    if (canvasId == null || writeCanvasVersion == null) {
       toastError('画布尚未加载完成，无法保存短剧资产')
       return
     }
@@ -120,16 +127,17 @@ export function DramaAssetsTab({
     }
     setSaving(true)
     try {
-      await api<DramaAsset>(`/canvases/${canvasId}/drama-assets`, {
+      const saved = await api<DramaAsset>(`/canvases/${canvasId}/drama-assets`, {
         method: 'POST',
         idempotencyKey: idempotencyKey(),
         body: JSON.stringify({
           assetType,
           assetId: editing?.assetId,
-          canvasVersion,
+          canvasVersion: writeCanvasVersion,
           data,
         }),
       })
+      if (Number.isSafeInteger(saved.currentCanvasVersion)) setWriteCanvasVersion(saved.currentCanvasVersion)
       toastSuccess(editing ? '短剧资产已更新' : '短剧资产已创建')
       resetEditor(assetType)
       window.dispatchEvent(new Event('vp-agent-executed'))
@@ -150,7 +158,7 @@ export function DramaAssetsTab({
       <div className="flex items-center justify-between border-b border-black/8 px-4 py-3">
         <div>
           <p className="text-[13px] font-bold text-[#111]">短剧项目资产</p>
-          <p className="mt-0.5 text-[11px] text-[#888]">结构化数据由画布服务版本化保存</p>
+          <p className="mt-0.5 text-[11px] text-[#888]">{desktop ? '结构化数据按画布版本保存在当前本地项目' : '结构化数据由画布服务版本化保存'}</p>
         </div>
         <div className="flex gap-1">
           <button type="button" onClick={() => void refresh()} title="刷新" className="rounded-lg p-2 text-[#666] hover:bg-black/5">
@@ -223,8 +231,8 @@ export function DramaAssetsTab({
             ))}
           </div>
         </div>
-        <DramaProductionPanel canvasId={canvasId} />
-        <DramaAuditPanel canvasId={canvasId} />
+        <DramaProductionPanel canvasId={canvasId} desktop={desktop} />
+        <DramaAuditPanel canvasId={canvasId} desktop={desktop} />
       </div>
     </div>
   )

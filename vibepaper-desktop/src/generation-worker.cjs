@@ -7,6 +7,7 @@ const parentPort = process.parentPort
 const { imageMimeFromBytes, MAX_REFERENCE_IMAGE_BYTES, MAX_REFERENCE_PAYLOAD_BYTES } = require('./reference-media.cjs')
 const { normalizeLocalTextModelConfig } = require('./local-model-catalog.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
+const { ARK_API_BASE_URL, ARK_MODELS, ARK_PROVIDER_ID } = require('./ark-model-catalog.cjs')
 const { composeVideos: runComposeVideos, ComposeFailure } = require('./compose-provider.cjs')
 const { MODEL_ID: SAPI_MODEL_ID, PROVIDER_ID: SAPI_PROVIDER_ID, runWindowsSapiTts, SapiFailure } = require('./sapi-tts.cjs')
 const { MediaOperationFailure, runLocalMediaOperation } = require('./media-postprocess.cjs')
@@ -26,6 +27,10 @@ const AGNES_VIDEO_MAX_CONSECUTIVE_POLL_FAILURES = 5
 const AGNES_TRANSIENT_HTTP_STATUSES = new Set([429, 502, 503, 504])
 const MAX_MEDIA_OUTPUT_BYTES = 4 * 1024 * 1024 * 1024
 const MAX_AGNES_MEDIA_REDIRECTS = 5
+const ARK_VIDEO_POLL_INTERVAL_MS = 3_000
+const ARK_VIDEO_TIMEOUT_MS = 10 * 60 * 1000
+const MAX_ARK_REFERENCE_URL_CHARS = 4096
+const MAX_ARK_REFERENCE_COUNT = 50
 
 class WorkerFailure extends Error {
   constructor(code, message, statusCode = undefined) {
@@ -35,7 +40,7 @@ class WorkerFailure extends Error {
   }
 }
 
-function postJson(endpoint, payload, apiKey = null, timeoutMs = REQUEST_TIMEOUT_MS) {
+function postJson(endpoint, payload, apiKey = null, timeoutMs = REQUEST_TIMEOUT_MS, providerName = 'Agnes') {
   const url = new URL(endpoint)
   const transport = url.protocol === 'https:' ? require('node:https') : require('node:http')
   const body = Buffer.from(JSON.stringify(payload), 'utf8')
@@ -68,8 +73,10 @@ function postJson(endpoint, payload, apiKey = null, timeoutMs = REQUEST_TIMEOUT_
           statusCode,
         )))
         response.on('end', () => {
-          const detail = providerErrorDetail(Buffer.concat(chunks).toString('utf8'), apiKey)
-          const provider = apiKey ? 'Agnes' : '本地模型服务'
+          const detail = providerErrorDetail(Buffer.concat(chunks).toString('utf8'), apiKey, {
+            redactUrls: providerName === '火山方舟',
+          })
+          const provider = apiKey ? providerName : '本地模型服务'
           const message = detail
             ? `${provider}请求失败 HTTP ${statusCode ?? '错误'}：${detail}`
             : `${provider}请求失败 HTTP ${statusCode ?? '错误'}。`
@@ -102,21 +109,63 @@ function postJson(endpoint, payload, apiKey = null, timeoutMs = REQUEST_TIMEOUT_
       })
     })
 
-    request.on('timeout', () => request.destroy(new WorkerFailure(apiKey ? 'CLOUD_REQUEST_TIMEOUT' : 'LOCAL_MODEL_UNAVAILABLE', '模型请求超时。')))
+    request.on('timeout', () => request.destroy(new WorkerFailure(apiKey ? 'CLOUD_REQUEST_TIMEOUT' : 'LOCAL_MODEL_UNAVAILABLE', `${apiKey ? providerName : '本地模型服务'}请求超时。`)))
     request.on('error', (error) => {
       if (error instanceof WorkerFailure) reject(error)
-      else reject(new WorkerFailure(apiKey ? 'CLOUD_PROVIDER_UNAVAILABLE' : 'LOCAL_MODEL_UNAVAILABLE', '无法连接模型服务。'))
+      else reject(new WorkerFailure(apiKey ? 'CLOUD_PROVIDER_UNAVAILABLE' : 'LOCAL_MODEL_UNAVAILABLE', `无法连接${apiKey ? providerName : '本地模型服务'}。`))
     })
     request.end(body)
   })
 }
 
-function providerErrorDetail(body, apiKey = null) {
+function getJson(endpoint, apiKey, timeoutMs = REQUEST_TIMEOUT_MS, providerName = '火山方舟') {
+  const url = new URL(endpoint)
+  if (url.protocol !== 'https:') throw new WorkerFailure('CLOUD_REQUEST_FAILED', '云端模型轮询地址必须使用 HTTPS。')
+  return new Promise((resolve, reject) => {
+    const request = require('node:https').get(url, {
+      headers: { accept: 'application/json', authorization: `Bearer ${apiKey}` },
+      timeout: timeoutMs,
+    }, (response) => {
+      const chunks = []
+      let size = 0
+      response.on('data', (chunk) => {
+        size += chunk.length
+        if (size > MAX_RESPONSE_BYTES) {
+          response.destroy(new WorkerFailure('CLOUD_INVALID_RESPONSE', '云端任务状态响应过大。'))
+          return
+        }
+        chunks.push(Buffer.from(chunk))
+      })
+      response.on('error', reject)
+      response.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8')
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          const detail = providerErrorDetail(raw, apiKey, { redactUrls: providerName === '火山方舟' })
+          reject(new WorkerFailure(response.statusCode === 429 ? 'CLOUD_RATE_LIMITED' : 'CLOUD_REQUEST_FAILED',
+            detail ? `${providerName}任务查询失败 HTTP ${response.statusCode}：${detail}` : `${providerName}任务查询失败 HTTP ${response.statusCode}。`,
+            response.statusCode))
+          return
+        }
+        try {
+          resolve(JSON.parse(raw))
+        } catch {
+          reject(new WorkerFailure('CLOUD_INVALID_RESPONSE', '无法读取云端任务状态。'))
+        }
+      })
+    })
+    request.on('timeout', () => request.destroy(new WorkerFailure('CLOUD_REQUEST_TIMEOUT', `${providerName}任务查询超时。`)))
+    request.on('error', (error) => reject(error instanceof WorkerFailure
+      ? error : new WorkerFailure('CLOUD_PROVIDER_UNAVAILABLE', `无法连接${providerName}。`)))
+  })
+}
+
+function providerErrorDetail(body, apiKey = null, { redactUrls = false } = {}) {
   const clean = (value) => {
     if (typeof value !== 'string') return ''
     let message = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, ' ').trim()
     if (apiKey) message = message.split(apiKey).join('[已隐藏凭据]')
     message = message.replace(/\bBearer\s+[^\s"'<>]+/giu, 'Bearer [已隐藏凭据]')
+    if (redactUrls) message = message.replace(/\bhttps?:\/\/[^\s"'<>]+/giu, '[已隐藏媒体地址]')
     return message.slice(0, MAX_PROVIDER_ERROR_MESSAGE_CHARS)
   }
 
@@ -613,6 +662,10 @@ function firstAgnesImageReference(parameters) {
 
 function buildAgnesImageRequest(job) {
   const parameters = job.parameters && typeof job.parameters === 'object' ? job.parameters : {}
+  if (normalizeReferenceList(parameters.referenceVideos ?? parameters.reference_videos).length
+    || normalizeReferenceList(parameters.referenceAudios ?? parameters.reference_audios).length) {
+    throw new WorkerFailure('UNSUPPORTED_REFERENCE_MEDIA', 'Agnes 图像模型不支持视频或音频参考；请移除这些参考素材。')
+  }
   const operation = typeof parameters.operation === 'string' ? parameters.operation.trim() : ''
   if (['裁剪', '三视图', 'crop_image', 'three_view'].includes(operation)) {
     throw new WorkerFailure('UNSUPPORTED_IMAGE_OPERATION', '桌面本地暂不支持图片裁剪或三视图处理。')
@@ -722,6 +775,10 @@ async function runImageTask(job, dependencies = {}) {
 
 function buildAgnesVideoRequest(job) {
   const parameters = job.parameters && typeof job.parameters === 'object' ? job.parameters : {}
+  if (normalizeReferenceList(parameters.referenceVideos ?? parameters.reference_videos).length
+    || normalizeReferenceList(parameters.referenceAudios ?? parameters.reference_audios).length) {
+    throw new WorkerFailure('UNSUPPORTED_REFERENCE_MEDIA', 'Agnes 视频模型不支持视频或音频参考；请移除这些参考素材。')
+  }
   const prompt = typeof job.prompt === 'string' ? job.prompt.trim() : ''
   if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new WorkerFailure('CLOUD_INPUT_INVALID', '视频生成提示词无效。')
   const rawSeconds = Number(parameters.seconds ?? parameters.duration ?? 5)
@@ -880,6 +937,233 @@ async function runVideoTask(job, dependencies = {}) {
   throw new WorkerFailure('CLOUD_REQUEST_TIMEOUT', `Agnes 视频任务超时（最后状态：${lastStatus || '未知'}）。`)
 }
 
+function normalizeArkHttpsReference(reference) {
+  if (typeof reference !== 'string' || !reference.trim() || reference.length > MAX_ARK_REFERENCE_URL_CHARS) {
+    throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', 'Ark 视频或音频参考地址无效或过长。')
+  }
+  let url
+  try {
+    url = new URL(reference.trim())
+  } catch {
+    throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', 'Ark 视频或音频参考必须是可公开访问的 HTTPS 地址。')
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/gu, '').toLowerCase().replace(/\.$/u, '')
+  if (url.protocol !== 'https:' || url.username || url.password || !hostname
+    || url.port && url.port !== '443'
+    || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')
+    || hostname.endsWith('.internal') || hostname.endsWith('.test')
+    || (net.isIP(hostname) && !isPublicAddress(hostname))) {
+    throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', 'Ark 视频或音频参考必须是可公开访问的 HTTPS 地址；不允许本机、内网或凭据 URL。')
+  }
+  return url.toString()
+}
+
+function normalizeArkImageReference(reference) {
+  if (typeof reference !== 'string' || !reference.trim()) return null
+  const source = reference.trim()
+  if (source.startsWith('data:')) return normalizeAgnesVideoReference(source)
+  return normalizeArkHttpsReference(source)
+}
+
+function listReferenceValues(value) {
+  return normalizeReferenceList(value)
+}
+
+function buildArkVideoRequest(job) {
+  if (job?.providerType !== 'cloud' || job?.providerId !== ARK_PROVIDER_ID || job?.modality !== 'video'
+    || job?.modelId !== ARK_MODELS.video) {
+    throw new WorkerFailure('MODEL_UNAVAILABLE', '火山方舟 Seedance 视频模型配置无效。')
+  }
+  const parameters = job.parameters && typeof job.parameters === 'object' ? job.parameters : {}
+  const prompt = typeof job.prompt === 'string' ? job.prompt.trim() : ''
+  if (!prompt || prompt.length > MAX_PROMPT_CHARS) throw new WorkerFailure('CLOUD_INPUT_INVALID', '视频生成提示词无效。')
+
+  const ratioByResolution = {
+    '1280x720': '16:9', '1920x1080': '16:9', '720x1280': '9:16',
+    '1080x1920': '9:16', '1024x1024': '1:1',
+  }
+  const first = typeof parameters.firstFrameUrl === 'string' ? parameters.firstFrameUrl.trim() : ''
+  const last = typeof parameters.lastFrameUrl === 'string' ? parameters.lastFrameUrl.trim() : ''
+  const hasKeyframes = Boolean(first || last)
+  const ratio = hasKeyframes ? 'adaptive'
+    : String(parameters.ratio || ratioByResolution[String(parameters.resolution || '')] || '16:9')
+  if (!['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'].includes(ratio)) {
+    throw new WorkerFailure('CLOUD_INPUT_INVALID', '火山方舟视频比例无效。')
+  }
+  const resolutionValue = String(parameters.size ?? parameters.resolution ?? '720p').trim().toLowerCase()
+  const resolution = /^(480|720|1080)p$/u.test(resolutionValue) ? resolutionValue
+    : ({ '854x480': '480p', '480x854': '480p', '1280x720': '720p', '720x1280': '720p',
+      '1920x1080': '1080p', '1080x1920': '1080p' })[resolutionValue]
+  if (!resolution) throw new WorkerFailure('CLOUD_INPUT_INVALID', '火山方舟视频分辨率无效。')
+  const durationValue = Number(parameters.duration ?? parameters.seconds ?? 5)
+  const duration = Number.isFinite(durationValue) ? Math.floor(durationValue) : 0
+  if (duration < 4 || duration > 30) throw new WorkerFailure('CLOUD_INPUT_INVALID', '火山方舟 Seedance 2.5 视频时长必须在 4 到 30 秒之间。')
+
+  let promptText = prompt
+  if (typeof parameters.camera === 'string' && parameters.camera.trim()) promptText += `\n运镜：${parameters.camera.trim()}`
+  if (typeof parameters.style === 'string' && parameters.style.trim()) promptText += `\n风格：${parameters.style.trim()}`
+  const content = [{ type: 'text', text: promptText.slice(0, 2000) }]
+  const images = []
+  const appendImage = (value, role = 'reference_image') => {
+    const image = normalizeArkImageReference(value)
+    if (!image || images.some((entry) => entry.url === image)) return
+    images.push({ url: image, role })
+  }
+  if (first) appendImage(first, 'first_frame')
+  if (last) appendImage(last, 'last_frame')
+  for (const key of ['referenceImages', 'reference_images', 'referenceUrls']) {
+    for (const value of listReferenceValues(parameters[key])) appendImage(value)
+  }
+  const single = parameters.imageUrl ?? parameters.image_url ?? parameters.referenceUrl
+  if (!images.length && typeof single === 'string' && single.trim()) appendImage(single)
+  if (images.length > MAX_ARK_REFERENCE_COUNT) {
+    throw new WorkerFailure('CLOUD_INPUT_INVALID', `Ark 视频图片参考数量超过 ${MAX_ARK_REFERENCE_COUNT} 个。`)
+  }
+  for (const image of images) content.push({
+    type: 'image_url', image_url: { url: image.url }, role: image.role,
+  })
+
+  for (const [kind, typeName, fieldNames] of [
+    ['video', 'video_url', ['referenceVideos', 'reference_videos']],
+    ['audio', 'audio_url', ['referenceAudios', 'reference_audios']],
+  ]) {
+    const references = [...new Set(fieldNames.flatMap((field) => listReferenceValues(parameters[field]))
+      .map(normalizeArkHttpsReference))]
+    if (references.length > MAX_ARK_REFERENCE_COUNT) {
+      throw new WorkerFailure('CLOUD_INPUT_INVALID', `Ark 视频${kind === 'video' ? '视频' : '音频'}参考数量超过 ${MAX_ARK_REFERENCE_COUNT} 个。`)
+    }
+    for (const url of references) {
+      const property = kind === 'video' ? 'video_url' : 'audio_url'
+      content.push({ type: typeName, [property]: { url }, role: kind === 'video' ? 'reference_video' : 'reference_audio' })
+    }
+  }
+  if (content.length > 1 + MAX_ARK_REFERENCE_COUNT) {
+    throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Ark 媒体参考数量超过本地请求上限。')
+  }
+  const dataImageBytes = images.reduce((total, image) => {
+    if (!image.url.startsWith('data:image/')) return total
+    return total + Buffer.from(image.url.slice(image.url.indexOf(',') + 1), 'base64').length
+  }, 0)
+  if (dataImageBytes > MAX_REFERENCE_PAYLOAD_BYTES) {
+    throw new WorkerFailure('CLOUD_INPUT_INVALID', '视频图片参考总大小超过本地请求上限。')
+  }
+  return {
+    model: ARK_MODELS.video,
+    content,
+    generate_audio: parameters.generate_audio !== false,
+    resolution,
+    ratio,
+    duration,
+    watermark: parameters.watermark === true,
+  }
+}
+
+function arkReferenceUrls(body) {
+  const urls = []
+  for (const entry of body.content) {
+    if (entry.type === 'image_url') urls.push(entry.image_url.url)
+    if (entry.type === 'video_url') urls.push(entry.video_url.url)
+    if (entry.type === 'audio_url') urls.push(entry.audio_url.url)
+  }
+  return urls.filter((url) => !url.startsWith('data:'))
+}
+
+async function assertArkReferenceHosts(body, dependencies = {}) {
+  const resolver = dependencies.resolveReferenceHost || dependencies.resolvePublicAddress || (async (hostname) => {
+    const addresses = await dns.lookup(hostname, { all: true, verbatim: true })
+    if (!addresses.length || addresses.some((entry) => !isPublicAddress(entry.address))) {
+      throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', 'Ark 参考媒体域名解析到非公网地址。')
+    }
+    return addresses
+  })
+  const hostnames = [...new Set(arkReferenceUrls(body).map((value) => new URL(value).hostname))]
+  for (const hostname of hostnames) {
+    try {
+      const addresses = await resolver(hostname)
+      if (Array.isArray(addresses) && (!addresses.length || addresses.some((entry) => !isPublicAddress(entry.address ?? entry)))) {
+        throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', 'Ark 参考媒体域名解析到非公网地址。')
+      }
+    } catch (error) {
+      if (error instanceof WorkerFailure) throw error
+      throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', '无法确认 Ark 参考媒体域名可公开访问。')
+    }
+  }
+}
+
+function extractArkVideoUrl(payload) {
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload
+  const content = data?.content
+  const candidates = Array.isArray(content) ? content : [content]
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue
+    for (const value of [candidate.video_url, candidate.url, candidate.output_url]) {
+      if (typeof value === 'string' && value.startsWith('https://')) return value
+      if (value && typeof value === 'object' && typeof value.url === 'string' && value.url.startsWith('https://')) return value.url
+    }
+  }
+  for (const value of [data?.video_url, data?.url, data?.output_url, data?.output?.video_url, data?.output?.url]) {
+    if (typeof value === 'string' && value.startsWith('https://')) return value
+    if (value && typeof value === 'object' && typeof value.url === 'string' && value.url.startsWith('https://')) return value.url
+  }
+  return null
+}
+
+function redactArkReferenceUrls(message, body) {
+  let result = message
+  for (const url of arkReferenceUrls(body)) result = result.split(url).join('[已隐藏参考地址]')
+  return result
+}
+
+async function runArkVideoTask(job, dependencies = {}) {
+  assertTaskOutputTarget(job)
+  if (typeof job?.apiKey !== 'string' || !job.apiKey.trim()) {
+    throw new WorkerFailure('CLOUD_CREDENTIAL_MISSING', '尚未配置火山方舟 API Key。')
+  }
+  const body = buildArkVideoRequest(job)
+  await assertArkReferenceHosts(body, dependencies)
+  const createUrl = `${ARK_API_BASE_URL}/contents/generations/tasks`
+  const post = dependencies.postArkJson || dependencies.postJson
+    || ((url, payload, key, timeout) => postJson(url, payload, key, timeout, '火山方舟'))
+  const get = dependencies.getArkJson || ((url, key, timeout) => getJson(url, key, timeout, '火山方舟'))
+  const downloadOutput = dependencies.downloadArkOutput || dependencies.downloadAgnesOutput || downloadAgnesOutput
+  const sleep = dependencies.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
+  const now = dependencies.now || Date.now
+  const pollIntervalMs = dependencies.pollIntervalMs ?? ARK_VIDEO_POLL_INTERVAL_MS
+  const timeoutMs = dependencies.timeoutMs ?? ARK_VIDEO_TIMEOUT_MS
+  let lastStatus = ''
+  try {
+    const created = await post(createUrl, body, job.apiKey, 60_000)
+    const taskId = created?.id ?? created?.task_id ?? created?.data?.id ?? created?.data?.task_id
+    if ((typeof taskId !== 'string' && typeof taskId !== 'number') || !String(taskId).trim()
+      || String(taskId).length > 200 || !/^[a-z0-9_-]+$/iu.test(String(taskId))) {
+      throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '火山方舟未返回有效的视频任务标识。')
+    }
+    const deadline = now() + timeoutMs
+    while (now() < deadline) {
+      await sleep(pollIntervalMs)
+      const statusPayload = await get(`${ARK_API_BASE_URL}/contents/generations/tasks/${encodeURIComponent(String(taskId))}`, job.apiKey, 60_000)
+      const data = statusPayload?.data && typeof statusPayload.data === 'object' ? statusPayload.data : statusPayload
+      lastStatus = String(data?.status ?? statusPayload?.status ?? '').toLowerCase()
+      if (['failed', 'error', 'cancelled', 'canceled'].includes(lastStatus)) {
+        const detail = providerErrorDetail(JSON.stringify(data), job.apiKey, { redactUrls: true })
+        throw new WorkerFailure('CLOUD_GENERATION_FAILED', detail
+          ? `火山方舟视频生成失败：${detail}` : '火山方舟视频生成失败。')
+      }
+      if (['succeeded', 'success', 'completed', 'done'].includes(lastStatus)) {
+        const videoUrl = extractArkVideoUrl(statusPayload)
+        if (!videoUrl) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '火山方舟任务已完成，但没有返回视频地址。')
+        normalizeArkHttpsReference(videoUrl)
+        await assertArkReferenceHosts({ content: [{ type: 'video_url', video_url: { url: videoUrl } }] }, dependencies)
+        return { outputPath: await downloadOutput(videoUrl, job.outputDirectory, job.taskId, 'video', dependencies) }
+      }
+    }
+    throw new WorkerFailure('CLOUD_REQUEST_TIMEOUT', `火山方舟视频任务超时（最后状态：${lastStatus || '未知'}）。`)
+  } catch (error) {
+    if (error instanceof WorkerFailure) error.message = redactArkReferenceUrls(error.message, body)
+    throw error
+  }
+}
+
 async function runAudioTask(job) {
   assertTaskOutputTarget(job)
   if (job?.providerType !== 'local' || job?.providerId !== SAPI_PROVIDER_ID || job?.modelId !== SAPI_MODEL_ID) {
@@ -908,8 +1192,9 @@ if (parentPort) parentPort.on('message', async (event) => {
   try {
     const result = request.method === 'generate:text' ? await runTextTask(request.payload)
       : request.method === 'generate:image' ? await runImageTask(request.payload)
-        : request.method === 'generate:audio' ? await runAudioTask(request.payload)
-          : request.method === 'generate:video' ? await runVideoTask(request.payload)
+          : request.method === 'generate:audio' ? await runAudioTask(request.payload)
+          : request.method === 'generate:video' ? request.payload?.providerId === ARK_PROVIDER_ID
+            ? await runArkVideoTask(request.payload) : await runVideoTask(request.payload)
             : request.method === 'generate:compose' ? await runComposeVideos(request.payload)
               : await runLocalMediaOperation(request.payload)
     parentPort.postMessage({ id: request.id, ok: true, result })
@@ -943,15 +1228,18 @@ module.exports = {
   agnesMediaUrl,
   buildAgnesImageRequest,
   buildAgnesVideoRequest,
+  buildArkVideoRequest,
   downloadAgnesOutput,
   extensionForMediaType,
   getAgnesResponse,
+  getJson,
   hasMediaSignature,
   isPublicAddress,
   normalizeAgnesVideoReference,
   postJson,
   providerErrorDetail,
   runImageTask,
+  runArkVideoTask,
   runVideoTask,
   sizeFromImageParameters,
 }

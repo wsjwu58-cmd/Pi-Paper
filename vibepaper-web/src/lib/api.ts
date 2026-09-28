@@ -117,6 +117,67 @@ export async function api<T = unknown>(
     headers['Idempotency-Key'] = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
   }
 
+  if (typeof window !== "undefined" && (window.vibepaperDesktop || window.location.protocol === "vibe:")) {
+    const bridge = window.vibepaperDesktop;
+    if (!bridge) throw new ApiError(0, "DESKTOP_BRIDGE_UNAVAILABLE", "桌面本地桥接不可用，请重新启动桌面应用。")
+    const url = new URL(path, "http://desktop.local");
+    if (url.origin !== "http://desktop.local") {
+      throw new ApiError(0, "DESKTOP_API_UNAVAILABLE", "桌面本地项目不支持此服务请求。")
+    }
+    const pathname = url.pathname.replace(/^\/api\/v1(?=\/)/u, "")
+    const method = (options.method ?? "GET").toUpperCase()
+    const dramaMatch = /^\/canvases\/([^/]+)\/drama-assets$/u.exec(pathname)
+    if (dramaMatch) {
+      let canvasId: string
+      try { canvasId = decodeURIComponent(dramaMatch[1]) } catch {
+        throw new ApiError(400, "CANVAS_ID_INVALID", "画布标识无效。")
+      }
+      const project = await bridge.getActiveProject()
+      if (!project || project.canvasId !== canvasId) {
+        throw new ApiError(0, "PROJECT_CHANGED", "当前本地项目与请求的画布不匹配，请重新打开画布。")
+      }
+      if (method === "GET") {
+        const filters = Object.fromEntries(
+          ["assetType", "episodeId", "sceneId", "shotId"]
+            .map((key) => [key, url.searchParams.get(key)])
+            .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
+        )
+        return await bridge.listDramaAssets(project.projectId, canvasId, filters) as T
+      }
+      if (method === "POST") {
+        let body: Record<string, unknown>
+        try {
+          const parsed: unknown = JSON.parse(typeof options.body === "string" ? options.body : "")
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid")
+          body = parsed as Record<string, unknown>
+        } catch {
+          throw new ApiError(400, "DRAMA_ASSET_INPUT_INVALID", "短剧资产写入请求无效。")
+        }
+        const idempotencyKey = options.idempotencyKey ?? headers["Idempotency-Key"]
+        return await bridge.upsertDramaAsset({
+          ...body,
+          projectId: project.projectId,
+          canvasId,
+          idempotencyKey,
+        } as Parameters<typeof bridge.upsertDramaAsset>[0]) as T
+      }
+      throw new ApiError(405, "METHOD_NOT_ALLOWED", "短剧资产接口不支持此请求方法。")
+    }
+
+    const usageMatch = /^\/agent\/sessions\/([^/]+)\/usage$/u.exec(pathname)
+    if (usageMatch && method === "GET") {
+      let sessionId: string
+      try { sessionId = decodeURIComponent(usageMatch[1]) } catch {
+        throw new ApiError(400, "AGENT_SESSION_INPUT_INVALID", "Agent 会话标识无效。")
+      }
+      const project = await bridge.getActiveProject()
+      if (!project) throw new ApiError(0, "PROJECT_REQUIRED", "没有打开的本地项目。")
+      return await bridge.getAgentUsage(project.projectId, sessionId) as T
+    }
+
+    throw new ApiError(0, "DESKTOP_API_UNAVAILABLE", "此功能尚未接入本地项目，请使用桌面画布中的本地操作入口。")
+  }
+
   const res = await authedFetch(path, { ...options, headers });
 
   if (!res.ok) {

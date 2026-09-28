@@ -31,7 +31,7 @@ export async function submitNodeTask(
   modelType: string,
   modelParams: Record<string, unknown>,
   estimatedCost = 8,
-  desktopOptions?: { providerType?: 'local' | 'cloud' },
+  desktopOptions?: { providerType?: 'local' | 'cloud'; providerId?: 'agnes' | 'volcengine-ark'; modelId?: string },
 ) {
   if (isDesktopRuntime()) {
     const bridge = window.vibepaperDesktop
@@ -87,6 +87,8 @@ export async function submitNodeTask(
       prompt,
       idempotencyKey: crypto.randomUUID(),
       providerType: desktopOptions?.providerType ?? 'cloud',
+      ...(desktopOptions?.providerId ? { providerId: desktopOptions.providerId } : {}),
+      ...(desktopOptions?.modelId ? { modelId: desktopOptions.modelId } : {}),
       modality,
       parameters,
     })

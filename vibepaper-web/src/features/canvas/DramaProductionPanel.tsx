@@ -12,30 +12,36 @@ type RenderBatch = {
   jobs: Array<{ id: string | number; shotId: string; status: string; taskId?: string; errorCode?: string }>
 }
 
-export function DramaProductionPanel({ canvasId }: { canvasId?: string | number }) {
+export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?: string | number; desktop?: boolean }) {
   const [items, setItems] = useState<ProductionItem[]>([])
   const [batches, setBatches] = useState<RenderBatch[]>([])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   const refresh = useCallback(async () => {
     if (canvasId == null) return
     setLoading(true)
+    setError('')
     try {
-      const [assetsResult, batchesResult] = await Promise.all([
-        api<{ items: Array<{ assetId: string | number; assetType: string; assetVersion: number; data: Record<string, unknown> }> }>(`/canvases/${canvasId}/drama-assets`),
-        api<{ items: RenderBatch[] }>('/drama/render-batches'),
-      ])
+      const assetsResult = await api<{ items: Array<{ assetId: string | number; assetType: string; assetVersion: number; data: Record<string, unknown> }> }>(`/canvases/${canvasId}/drama-assets`)
       setItems((assetsResult.items ?? []).map((item) => ({
         id: item.assetId,
         label: `${item.assetType} v${item.assetVersion}`,
         status: typeof item.data.status === 'string' ? item.data.status : 'draft',
         detail: typeof item.data.staleImpact === 'string' ? item.data.staleImpact : '等待上游事实或任务终态',
       })))
-      setBatches((batchesResult.items ?? []).filter((batch) => String(batch.canvasId) === String(canvasId)))
+      if (desktop) {
+        setBatches([])
+      } else {
+        const batchesResult = await api<{ items: RenderBatch[] }>('/drama/render-batches')
+        setBatches((batchesResult.items ?? []).filter((batch) => String(batch.canvasId) === String(canvasId)))
+      }
+    } catch (cause) {
+      setError((cause as Error).message || '读取生产链失败')
     } finally {
       setLoading(false)
     }
-  }, [canvasId])
+  }, [canvasId, desktop])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -50,6 +56,7 @@ export function DramaProductionPanel({ canvasId }: { canvasId?: string | number 
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
+      {error ? <p role="alert" className="mt-2 text-[11px] text-red-700">{error}</p> : null}
       <div className="mt-2 space-y-1.5">
         {items.length === 0 ? <p className="text-[11px] text-[#888]">尚无可追踪制品。</p> : items.map((item) => (
           <div key={String(item.id)} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5 text-[11px]">
@@ -60,7 +67,9 @@ export function DramaProductionPanel({ canvasId }: { canvasId?: string | number 
       </div>
       <div className="mt-3 border-t border-black/6 pt-2">
         <p className="text-[10px] font-semibold text-[#666]">视频渲染批次</p>
-        {batches.length === 0 ? <p className="mt-1 text-[11px] text-[#888]">尚无渲染批次。</p> : batches.map((batch) => (
+        {desktop
+          ? <p className="mt-1 text-[11px] text-[#888]">桌面本地渲染批次接口尚未接入；生成任务仍以节点和本地任务状态为准。</p>
+          : batches.length === 0 ? <p className="mt-1 text-[11px] text-[#888]">尚无渲染批次。</p> : batches.map((batch) => (
           <div key={String(batch.id)} className="mt-1.5 rounded-lg bg-white px-2 py-1.5 text-[11px]">
             <div className="flex items-center justify-between gap-2">
               <span className="truncate text-[#444]">第 {batch.episodeNo} 集 · {batch.jobs.length} 镜头</span>

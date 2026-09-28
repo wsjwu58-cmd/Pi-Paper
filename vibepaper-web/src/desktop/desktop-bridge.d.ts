@@ -20,6 +20,55 @@ export interface DesktopCanvas {
   stacks: DesktopCanvasStack[]
 }
 
+export type DesktopDramaAssetType =
+  | 'series_bible'
+  | 'episode'
+  | 'scene'
+  | 'character_profile'
+  | 'character_look'
+  | 'shot_spec'
+  | 'continuity_constraint'
+  | 'audio_cue'
+  | 'subtitle_cue'
+
+export interface DesktopDramaAsset {
+  id: string
+  assetId: string
+  canvasId: string
+  assetType: DesktopDramaAssetType
+  assetVersion: number
+  canvasVersion: number
+  currentCanvasVersion: number
+  data: Record<string, unknown>
+  replayed: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DesktopUpsertDramaAssetInput extends DesktopCanvasScope {
+  canvasVersion: number
+  idempotencyKey: string
+  assetType: DesktopDramaAssetType
+  assetId?: string | number
+  data: Record<string, unknown>
+}
+
+export interface DesktopAgentUsage {
+  sessionId: string
+  tokenTotal: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  summaryTokens: number
+  toolResultTokens: number
+  modelCallCount: number
+  summaryCallCount: number
+  toolCallCount: number
+  modelUsage: Record<string, number>
+  modelCalls: Record<string, number>
+}
+
 export interface DesktopCanvasExportDocument {
   schema_version: string
   schemaVersion: string
@@ -330,6 +379,8 @@ export interface DesktopCreateGenerationTaskInput {
   prompt: string
   idempotencyKey: string
   providerType: 'local' | 'cloud'
+  providerId?: 'agnes' | 'volcengine-ark'
+  modelId?: string
   modality: 'text' | 'image' | 'audio' | 'video'
   parameters?: Record<string, unknown>
 }
@@ -381,6 +432,19 @@ export interface DesktopAgnesModelCatalog {
   cancellation: false
 }
 
+export interface DesktopArkModelCatalog {
+  providerId: 'volcengine-ark'
+  providerType: 'cloud'
+  apiBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3'
+  models: { video: 'doubao-seedance-2-5-260628' }
+  apiKeyConfigured: boolean
+  modalities: ['video']
+  inputModes: { video: ['text', 'image', 'video', 'audio'] }
+  toolCalling: false
+  streaming: false
+  cancellation: false
+}
+
 export interface DesktopBridge {
   getActiveProject(): Promise<DesktopProject | null>
   listRecentProjects(): Promise<DesktopProject[]>
@@ -408,6 +472,13 @@ export interface DesktopBridge {
   replaceAsset(projectId: string, assetId: string): Promise<DesktopAsset | null>
   deleteAsset(projectId: string, assetId: string): Promise<DesktopAssetDeleteImpact>
   loadCanvas(projectId: string, canvasId: string): Promise<DesktopCanvas>
+  listDramaAssets(projectId: string, canvasId: string, filters?: {
+    assetType?: DesktopDramaAssetType
+    episodeId?: string
+    sceneId?: string
+    shotId?: string
+  }): Promise<{ items: DesktopDramaAsset[] }>
+  upsertDramaAsset(input: DesktopUpsertDramaAssetInput): Promise<DesktopDramaAsset>
   exportCanvas(projectId: string, canvasId: string): Promise<DesktopCanvasExportDocument>
   importCanvasDocument(document: DesktopCanvasExportDocument): Promise<DesktopCanvasImportResult | null>
   createNode(input: DesktopCreateNodeInput): Promise<DesktopCreateNodeResult>
@@ -460,6 +531,9 @@ export interface DesktopBridge {
   getAgnesModels(): Promise<DesktopAgnesModelCatalog>
   saveAgnesApiKey(apiKey: string): Promise<DesktopAgnesModelCatalog>
   clearAgnesApiKey(): Promise<DesktopAgnesModelCatalog>
+  getArkModels(): Promise<DesktopArkModelCatalog>
+  saveArkApiKey(apiKey: string): Promise<DesktopArkModelCatalog>
+  clearArkApiKey(): Promise<DesktopArkModelCatalog>
   getLocalTextModel(): Promise<DesktopLocalTextModel | null>
   getLocalAudioModel(): Promise<DesktopLocalAudioModel>
   discoverLocalModels(endpoint: string): Promise<string[]>
@@ -472,6 +546,7 @@ export interface DesktopBridge {
   }>
   createAgentSession(projectId: string, title?: string): Promise<Pick<DesktopAgentSession, 'sessionId' | 'createdAt'>>
   getAgentMessages(projectId: string, sessionId: string): Promise<DesktopAgentMessage[]>
+  getAgentUsage(projectId: string, sessionId: string): Promise<DesktopAgentUsage>
   sendAgentMessage(projectId: string, sessionId: string, content: string, selectedSkillId?: string): Promise<{ assistantText: string }>
   getAgentSessionSnapshot?(projectId: string, sessionId: string): Promise<DesktopAgentSessionSnapshot>
   startAgentRun?(input: DesktopStartAgentRunInput): Promise<{ runId: string }>
