@@ -17,9 +17,9 @@ import {
   TreePine,
   X,
 } from 'lucide-react'
-import { uploadAsset } from '@/lib/api'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { useAuthedMediaUrl } from '@/lib/media'
+import { saveDirectorCapturePort } from '../canvasPort'
 import {
   CHARACTER_CATALOG,
   CHARACTER_ENTRY,
@@ -236,10 +236,8 @@ export function DirectorStageEditor({
     try {
       const blob = await viewportRef.current?.capturePng()
       if (!blob) throw new Error('截图失败')
-      const file = new File([blob], `director-capture-${Date.now()}.png`, { type: 'image/png' })
-      const asset = (await uploadAsset(file, 'image', canvasId, nodeId)) as { url?: string }
-      if (!asset.url) throw new Error('上传失败')
-      setCaptures((prev) => [...prev, asset.url!].slice(-12))
+      const asset = await saveDirectorCapturePort(blob, canvasId, nodeId)
+      setCaptures((prev) => [...prev, asset.url].slice(-12))
       setDirty(false)
       toastSuccess('拍照完成')
       return asset.url

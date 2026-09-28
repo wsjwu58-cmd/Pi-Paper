@@ -1,17 +1,83 @@
 import type { Edge, Node } from '@xyflow/react'
-import { api } from '@/lib/api'
+import { api, uploadAsset } from '@/lib/api'
 import { sid } from '@/lib/ids'
 import type { AssetView, CanvasDetail, CanvasView, EdgePayload, GroupPayload, NodePayload, StackPayload } from '@/lib/types'
 import type { DesktopAsset, DesktopCanvas, DesktopProject } from '@/desktop/desktop-bridge'
 import type { DesktopCanvasGroup, DesktopCanvasStack } from '@/desktop/desktop-bridge'
+import type { FlowNode } from './canvasStore'
 
 export interface CanvasPortSnapshot {
   detail: CanvasDetail
   projectId?: string
 }
 
+const STALE_PRESERVED_EXEC_STATUSES = new Set(['queued', 'running', 'succeeded', 'success', 'ready'])
+
+export function applySavedCanvasStaleNodeIds(nodes: FlowNode[], staleNodeIds: readonly string[]): FlowNode[] {
+  if (staleNodeIds.length === 0) return nodes
+  const staleIds = new Set(staleNodeIds.map(sid))
+  let changed = false
+  const nextNodes = nodes.map((node) => {
+    if (!staleIds.has(sid(node.id))) return node
+    const currentData = node.data as FlowNode['data'] & { execStatus?: unknown; stale?: unknown }
+    const currentExecStatus = String(currentData.execStatus ?? currentData.node.execStatus ?? '')
+    const nextExecStatus = STALE_PRESERVED_EXEC_STATUSES.has(currentExecStatus.toLowerCase())
+      ? currentExecStatus
+      : 'stale'
+    if (currentData.stale === true && currentData.node.stale === true
+      && currentData.execStatus === nextExecStatus && currentData.node.execStatus === nextExecStatus) {
+      return node
+    }
+    changed = true
+    return {
+      ...node,
+      data: {
+        ...currentData,
+        stale: true,
+        execStatus: nextExecStatus,
+        node: { ...currentData.node, stale: true, execStatus: nextExecStatus },
+      },
+    }
+  })
+  // Preserve the original array identity when the receipt references no
+  // currently rendered nodes; callers use that identity to track dirty edits.
+  return changed ? nextNodes : nodes
+}
+
 export function isDesktopRuntime(): boolean {
   return Boolean(window.vibepaperDesktop) || window.location.protocol === 'vibe:'
+}
+
+export async function saveDirectorCapturePort(
+  blob: Blob,
+  canvasId: string | number | undefined,
+  nodeId: string | number,
+): Promise<{ url: string; assetId?: string }> {
+  const bridge = window.vibepaperDesktop
+  if (bridge) {
+    if (canvasId == null || !bridge.saveDirectorCapture) {
+      throw new Error('桌面导演台照片保存服务尚未就绪。')
+    }
+    const project = await bridge.getActiveProject()
+    if (!project || project.canvasId !== sid(canvasId)) {
+      throw new Error('当前项目或画布已更改，无法保存导演台照片。')
+    }
+    const saved = await bridge.saveDirectorCapture({
+      projectId: project.projectId,
+      canvasId: project.canvasId,
+      nodeId: sid(nodeId),
+      pngBytes: new Uint8Array(await blob.arrayBuffer()),
+    })
+    if (!saved?.url) throw new Error('桌面本地项目未保存导演台照片。')
+    window.dispatchEvent(new Event('vp-assets-updated'))
+    return saved
+  }
+
+  const file = new File([blob], `director-capture-${Date.now()}.png`, { type: 'image/png' })
+  const saved = await uploadAsset(file, 'image', canvasId, nodeId) as { url?: string }
+  if (!saved.url) throw new Error('上传失败')
+  window.dispatchEvent(new Event('vp-assets-updated'))
+  return { url: saved.url }
 }
 
 export function desktopAssetView(asset: DesktopAsset): AssetView {
@@ -181,7 +247,7 @@ export async function saveCanvasPort(input: {
   edges: Edge[]
   groups: GroupPayload[]
   stacks: StackPayload[]
-}): Promise<{ version: number }> {
+}): Promise<{ version: number; staleNodeIds: string[] }> {
   const bridge = window.vibepaperDesktop
   if (!bridge) throw new Error('本地画布保存接口不可用。')
   return bridge.saveCanvas({

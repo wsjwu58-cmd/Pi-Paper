@@ -10,7 +10,7 @@ const { imageThumbnail } = require('./asset-thumbnail.cjs')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 12
+const PROJECT_DB_SCHEMA_VERSION = 13
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -29,6 +29,7 @@ const MAX_AGENT_BACKUP_FILES = 100_000
 const MAX_AGENT_SESSION_HEADER_BYTES = 1024 * 1024
 const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'session-memory'])
 const AGENT_BACKUP_EXTENSIONS = new Set(['.jsonl', '.json', '.md', '.zst'])
+const DIRECTOR_CAPTURE_ASSET_URL = /^vibe:\/\/app\/assets\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/iu
 const EDGE_COMPATIBLE_TARGET_TYPES = Object.freeze({
   text: new Set(['text', 'image', 'video', 'audio', 'director']),
   image: new Set(['image', 'video', 'director']),
@@ -42,8 +43,9 @@ const ASSET_NODE_MIME_PREFIX = Object.freeze({
   video: 'video/',
   audio: 'audio/',
   text: 'text/',
+  director: 'image/',
 })
-const ASSET_NODE_LABEL = Object.freeze({ image: '图片', video: '视频', audio: '音频', text: '文本' })
+const ASSET_NODE_LABEL = Object.freeze({ image: '图片', video: '视频', audio: '音频', text: '文本', director: '导演台' })
 
 const ASSET_DB_SCHEMA = `
   CREATE TABLE assets (
@@ -69,7 +71,7 @@ const ASSET_DB_SCHEMA = `
     canvas_id TEXT NOT NULL,
     node_id TEXT NOT NULL,
     asset_id TEXT NOT NULL,
-    PRIMARY KEY (canvas_id, node_id),
+    PRIMARY KEY (canvas_id, node_id, asset_id),
     FOREIGN KEY (canvas_id, node_id) REFERENCES nodes(canvas_id, id) ON DELETE CASCADE,
     FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE RESTRICT
   ) STRICT;
@@ -969,48 +971,101 @@ function insertGraph(database, canvasId, graph) {
   }
 }
 
+function nodeAssetReferenceCandidates(node, { includeDirectorCaptures = true } = {}) {
+  const expectedMimePrefix = ASSET_NODE_MIME_PREFIX[node.type]
+  if (!expectedMimePrefix) return []
+  const data = isRecord(node.data) ? node.data : {}
+  const nested = isRecord(data.node) ? data.node : {}
+  const params = isRecord(data.params) ? data.params : isRecord(nested.params) ? nested.params : {}
+  const candidates = new Map()
+  const add = (assetId, required) => {
+    if (assetId === undefined || assetId === null || assetId === '') return
+    const existing = candidates.get(assetId)
+    candidates.set(assetId, { assetId, required: Boolean(required || existing?.required) })
+  }
+
+  add(data.assetId ?? nested.assetId ?? params.assetId, true)
+  if (node.type === 'director' && includeDirectorCaptures) {
+    const addLocalAssetUrl = (value) => {
+      if (typeof value !== 'string') return
+      const match = DIRECTOR_CAPTURE_ASSET_URL.exec(value)
+      if (match) add(match[1], false)
+    }
+    if (Array.isArray(params.captures)) params.captures.forEach(addLocalAssetUrl)
+    for (const key of ['url', 'lastOutputUrl', 'thumbnailUrl', 'referenceUrl', 'output_url']) {
+      addLocalAssetUrl(params[key])
+    }
+  }
+  return [...candidates.values()]
+}
+
 function insertAssetReferences(database, canvasId, graph) {
   const findAsset = database.prepare('SELECT id, mime_type FROM assets WHERE id = ?')
   const insertReference = database.prepare('INSERT INTO asset_references (canvas_id, node_id, asset_id) VALUES (?, ?, ?)')
   for (const node of graph.nodes) {
     const expectedMimePrefix = ASSET_NODE_MIME_PREFIX[node.type]
-    if (!expectedMimePrefix) continue
-    const params = isRecord(node.data.params) ? node.data.params : {}
-    const assetId = node.data.assetId ?? params.assetId
-    if (assetId === undefined || assetId === null || assetId === '') continue
-    const asset = typeof assetId === 'string' ? findAsset.get(assetId) : null
-    if (!asset) throw new Error(`画布${ASSET_NODE_LABEL[node.type]}节点引用了不存在的本地素材。`)
-    if (!asset.mime_type.startsWith(expectedMimePrefix)) {
-      throw new Error(`画布${ASSET_NODE_LABEL[node.type]}节点引用了类型不匹配的本地素材。`)
+    for (const { assetId, required } of nodeAssetReferenceCandidates(node)) {
+      if (typeof assetId !== 'string') {
+        if (required) throw new Error(`画布${ASSET_NODE_LABEL[node.type]}节点素材标识无效。`)
+        continue
+      }
+      const asset = findAsset.get(assetId)
+      if (!asset) {
+        if (required) throw new Error(`画布${ASSET_NODE_LABEL[node.type]}节点引用了不存在的本地素材。`)
+        continue
+      }
+      if (!asset.mime_type.startsWith(expectedMimePrefix)) {
+        if (required) throw new Error(`画布${ASSET_NODE_LABEL[node.type]}节点引用了类型不匹配的本地素材。`)
+        continue
+      }
+      insertReference.run(canvasId, node.id, assetId)
     }
-    insertReference.run(canvasId, node.id, assetId)
   }
 }
 
-function validateAssetReferences(database, canvasId, graph, { allowLegacyParamsGaps = false } = {}) {
+function validateAssetReferences(database, canvasId, graph, {
+  allowLegacyParamsGaps = false,
+  includeDirectorCaptures = true,
+} = {}) {
   const expected = new Map()
   const legacyParamsReferences = new Set()
   for (const node of graph.nodes) {
     const expectedMimePrefix = ASSET_NODE_MIME_PREFIX[node.type]
     if (!expectedMimePrefix) continue
-    const params = isRecord(node.data.params) ? node.data.params : {}
-    const assetId = node.data.assetId ?? params.assetId
-    if (assetId === undefined || assetId === null || assetId === '') continue
-    if (typeof assetId !== 'string') throw new Error(`项目画布中的${ASSET_NODE_LABEL[node.type]}节点素材标识无效。`)
-    const asset = database.prepare('SELECT mime_type FROM assets WHERE id = ?').get(assetId)
-    if (!asset) throw new Error(`项目画布中的${ASSET_NODE_LABEL[node.type]}节点引用了不存在的本地素材。`)
-    if (!asset.mime_type.startsWith(expectedMimePrefix)) throw new Error('项目画布中的本地素材引用类型不匹配。')
-    expected.set(node.id, assetId)
-    if (node.data.assetId === undefined || node.data.assetId === null) legacyParamsReferences.add(node.id)
+    const data = isRecord(node.data) ? node.data : {}
+    const nested = isRecord(data.node) ? data.node : {}
+    const params = isRecord(data.params) ? data.params : isRecord(nested.params) ? nested.params : {}
+    for (const { assetId, required } of nodeAssetReferenceCandidates(node, { includeDirectorCaptures })) {
+      const isPrimaryParamsReference = (data.assetId === undefined || data.assetId === null)
+        && (nested.assetId === undefined || nested.assetId === null)
+        && assetId === params.assetId
+      if (typeof assetId !== 'string') {
+        if (required) throw new Error(`项目画布中的${ASSET_NODE_LABEL[node.type]}节点素材标识无效。`)
+        continue
+      }
+      const asset = database.prepare('SELECT mime_type FROM assets WHERE id = ?').get(assetId)
+      // Older imported canvases can contain stale local capture URLs. They do
+      // not represent a materialized asset and must not block project opening.
+      if (!asset && !required) continue
+      if (!asset) throw new Error(`项目画布中的${ASSET_NODE_LABEL[node.type]}节点引用了不存在的本地素材。`)
+      if (!asset.mime_type.startsWith(expectedMimePrefix)) {
+        if (!required) continue
+        throw new Error('项目画布中的本地素材引用类型不匹配。')
+      }
+      const key = `${node.id}\u0000${assetId}`
+      expected.set(key, { canvasId, nodeId: node.id, assetId })
+      if (isPrimaryParamsReference) legacyParamsReferences.add(key)
+    }
   }
   const actualRows = database.prepare('SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ?').all(canvasId)
-  const hasConflictingOrExtraRows = actualRows.some((row) => expected.get(row.node_id) !== row.asset_id)
-  const actualNodeIds = new Set(actualRows.map((row) => row.node_id))
-  const missingRows = [...expected].filter(([nodeId]) => !actualNodeIds.has(nodeId))
+  const actual = new Set(actualRows.map((row) => `${row.node_id}\u0000${row.asset_id}`))
+  const expectedKeys = new Set(expected.keys())
+  const hasConflictingOrExtraRows = [...actual].some((key) => !expectedKeys.has(key))
+  const missingRows = [...expected].filter(([key]) => !actual.has(key)).map(([, reference]) => reference)
   if (!hasConflictingOrExtraRows && missingRows.length === 0) return []
   if (allowLegacyParamsGaps && !hasConflictingOrExtraRows
-    && missingRows.every(([nodeId]) => legacyParamsReferences.has(nodeId))) {
-    return missingRows.map(([nodeId, assetId]) => ({ canvasId, nodeId, assetId }))
+    && missingRows.every(({ nodeId, assetId }) => legacyParamsReferences.has(`${nodeId}\u0000${assetId}`))) {
+    return missingRows
   }
   throw new Error('项目画布与本地素材引用记录不一致。')
 }
@@ -1353,6 +1408,17 @@ function preserveNodeGenerationState(nodes, previousNodes) {
   })
 }
 
+function canvasNodeContentSignature(node) {
+  const payload = nodePayloadFromFlowNode(node)
+  return JSON.stringify(canonicalJson({
+    params: payload.params,
+    creativeType: payload.creativeType,
+    modelRef: payload.modelRef,
+    prompt: payload.prompt,
+    output: payload.output,
+  }))
+}
+
 function canvasEdgeExportPayload(edge) {
   const data = isRecord(edge.data) ? edge.data : {}
   const payload = isRecord(data.edge) ? data.edge : {}
@@ -1414,13 +1480,34 @@ function normalizeCanvasImportDocument(document) {
     const params = rawNode.params === undefined || rawNode.params === null
       ? {} : cloneJsonRecord(rawNode.params, '节点参数')
     const originalAssetId = params.assetId
-    if (['image', 'audio', 'video', 'text'].includes(rawNode.type)
+    const droppedDirectorAssetIds = new Set()
+    if (rawNode.type === 'director') {
+      if (typeof originalAssetId === 'string' && originalAssetId) droppedDirectorAssetIds.add(originalAssetId)
+      const removeLocalAssetUrl = (value) => {
+        if (typeof value !== 'string') return false
+        const match = DIRECTOR_CAPTURE_ASSET_URL.exec(value)
+        if (!match) return false
+        droppedDirectorAssetIds.add(match[1])
+        return true
+      }
+      if (Array.isArray(params.captures)) {
+        params.captures = params.captures.filter((value) => !removeLocalAssetUrl(value))
+      }
+      for (const key of ['url', 'lastOutputUrl', 'thumbnailUrl', 'referenceUrl', 'output_url']) {
+        if (removeLocalAssetUrl(params[key])) delete params[key]
+      }
+    }
+    if (['image', 'audio', 'video', 'text', 'director'].includes(rawNode.type)
       && originalAssetId !== undefined && originalAssetId !== null && originalAssetId !== '') {
       // CanvasService.importCanvas copies params verbatim. Local assets are scoped
       // to their project, so an ID from a foreign project cannot be made valid
       // in the fresh project created for this import.
       delete params.assetId
-      droppedAssetReferenceCount += 1
+      droppedAssetReferenceCount += rawNode.type === 'director'
+        ? Math.max(1, droppedDirectorAssetIds.size)
+        : 1
+    } else if (droppedDirectorAssetIds.size > 0) {
+      droppedAssetReferenceCount += droppedDirectorAssetIds.size
     }
     const numberField = (key, fallback) => {
       const value = rawNode[key]
@@ -1941,11 +2028,14 @@ async function migrateDatabaseV8ToV9(database, dataDirectory) {
     }))
 
     const missingRows = canvasGraphs.flatMap(({ canvasId, nodes }) =>
-      validateAssetReferences(database, canvasId, { nodes }, { allowLegacyParamsGaps: true }))
+      validateAssetReferences(database, canvasId, { nodes }, {
+        allowLegacyParamsGaps: true,
+        includeDirectorCaptures: false,
+      }))
     for (const row of missingRows) insertReference.run(row.canvasId, row.nodeId, row.assetId)
 
     for (const { canvasId, nodes } of canvasGraphs) {
-      validateAssetReferences(database, canvasId, { nodes })
+      validateAssetReferences(database, canvasId, { nodes }, { includeDirectorCaptures: false })
     }
     if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
       throw new Error('本地素材引用迁移后检测到无效引用。')
@@ -2011,7 +2101,7 @@ async function migrateDatabaseV9ToV10(database, dataDirectory) {
 
 async function migrateDatabaseV10ToV11(database, dataDirectory) {
   const version = databaseVersion(database)
-  if (version === PROJECT_DB_SCHEMA_VERSION) return
+  if (version === 11) return
   if (version !== 10) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 11。`)
 
   const backupDirectory = path.join(dataDirectory, 'backups')
@@ -2067,7 +2157,7 @@ async function migrateDatabaseV10ToV11(database, dataDirectory) {
 
 async function migrateDatabaseV11ToV12(database, dataDirectory) {
   const version = databaseVersion(database)
-  if (version === PROJECT_DB_SCHEMA_VERSION) return
+  if (version === 12) return
   if (version !== 11) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 12。`)
 
   const backupDirectory = path.join(dataDirectory, 'backups')
@@ -2108,6 +2198,86 @@ async function migrateDatabaseV11ToV12(database, dataDirectory) {
   } catch (error) {
     database.exec('ROLLBACK')
     throw error
+  }
+}
+
+async function migrateDatabaseV12ToV13(database, dataDirectory) {
+  const version = databaseVersion(database)
+  if (version === 13) return
+  if (version !== 12) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 13。`)
+
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v12-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('PRAGMA foreign_keys = OFF')
+  try {
+    database.exec('BEGIN IMMEDIATE')
+    database.exec(`
+      CREATE TABLE asset_references_v13 (
+        canvas_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        PRIMARY KEY (canvas_id, node_id, asset_id),
+        FOREIGN KEY (canvas_id, node_id) REFERENCES nodes(canvas_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE RESTRICT
+      ) STRICT;
+      INSERT INTO asset_references_v13 (canvas_id, node_id, asset_id)
+        SELECT canvas_id, node_id, asset_id FROM asset_references;
+    `)
+
+    const findAsset = database.prepare('SELECT id, mime_type FROM assets WHERE id = ?')
+    const insertReference = database.prepare(`
+      INSERT INTO asset_references_v13 (canvas_id, node_id, asset_id) VALUES (?, ?, ?)
+      ON CONFLICT(canvas_id, node_id, asset_id) DO NOTHING
+    `)
+    const directorNodes = database.prepare(`
+      SELECT canvas_id, payload_json FROM nodes WHERE json_extract(payload_json, '$.type') = 'director'
+    `).all()
+    for (const row of directorNodes) {
+      const node = JSON.parse(row.payload_json)
+      for (const { assetId, required } of nodeAssetReferenceCandidates(node)) {
+        if (typeof assetId !== 'string') {
+          if (required) throw new Error('项目画布中的导演台节点素材标识无效。')
+          continue
+        }
+        const asset = findAsset.get(assetId)
+        if (!asset) {
+          if (required) throw new Error('项目画布中的导演台节点引用了不存在的本地素材。')
+          continue
+        }
+        if (!asset.mime_type.startsWith('image/')) {
+          if (required) throw new Error('项目画布中的导演台节点素材类型无效。')
+          continue
+        }
+        insertReference.run(row.canvas_id, node.id, assetId)
+      }
+    }
+
+    database.exec(`
+      DROP INDEX IF EXISTS asset_references_by_asset;
+      DROP TABLE asset_references;
+      ALTER TABLE asset_references_v13 RENAME TO asset_references;
+      CREATE INDEX asset_references_by_asset ON asset_references(asset_id);
+      PRAGMA user_version = 13;
+    `)
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('导演台历史照片引用迁移后检测到无效引用。')
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON')
   }
 }
 
@@ -2811,7 +2981,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -3275,6 +3445,7 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 9) await migrateDatabaseV9ToV10(database, dataDirectory)
       if (databaseVersion(database) === 10) await migrateDatabaseV10ToV11(database, dataDirectory)
       if (databaseVersion(database) === 11) await migrateDatabaseV11ToV12(database, dataDirectory)
+      if (databaseVersion(database) === 12) await migrateDatabaseV12ToV13(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
@@ -4833,6 +5004,9 @@ function createLocalProjectStore() {
           if (!node) continue
           updateNodeRow.run(node.position.x, node.position.y, JSON.stringify(node), active.metadata.canvasId, nodeId)
         }
+        database.prepare('DELETE FROM asset_references WHERE canvas_id = ? AND node_id = ?')
+          .run(active.metadata.canvasId, input.nodeId)
+        insertAssetReferences(database, active.metadata.canvasId, { nodes: [resultNode] })
         const updatedCanvas = database.prepare(`
           UPDATE canvases SET version = ?, updated_at = ? WHERE id = ? AND version = ?
         `).run(nextVersion, new Date().toISOString(), active.metadata.canvasId, canvasRow.version)
@@ -5539,17 +5713,21 @@ function createLocalProjectStore() {
         }
         if (command && command.result_snapshot !== '{}') {
           let resultVersion
+          let staleNodeIds = []
           try {
             const snapshot = JSON.parse(command.result_snapshot)
             resultVersion = snapshot?.version ?? snapshot?.canvas?.version ?? command.result_canvas_version
             if (!Number.isSafeInteger(resultVersion) || resultVersion < 0) {
               throw new Error('invalid save snapshot')
             }
+            staleNodeIds = Array.isArray(snapshot?.staleNodeIds)
+              ? snapshot.staleNodeIds.filter((nodeId) => typeof nodeId === 'string')
+              : []
           } catch {
             throw new Error('画布命令结果快照损坏。')
           }
           database.exec('COMMIT')
-          return { version: resultVersion, replayed: true }
+          return { version: resultVersion, staleNodeIds, replayed: true }
         }
 
         if (hasIdempotencyKey && !command) {
@@ -5569,6 +5747,19 @@ function createLocalProjectStore() {
 
         const graph = validateGraph(input.nodes, input.edges)
         graph.nodes = preserveNodeGenerationState(graph.nodes, active.canvas.nodes)
+        const previousNodesById = new Map(active.canvas.nodes.map((node) => [node.id, node]))
+        const contentChangedNodeIds = graph.nodes
+          .filter((node) => {
+            const previous = previousNodesById.get(node.id)
+            return previous && canvasNodeContentSignature(node) !== canvasNodeContentSignature(previous)
+          })
+          .map((node) => node.id)
+        const staleNodeIds = new Set()
+        for (const nodeId of contentChangedNodeIds) {
+          const staleResult = markDownstreamNodesStale(graph.nodes, graph.edges, nodeId)
+          graph.nodes = staleResult.nodes
+          for (const staleNodeId of staleResult.staleNodeIds) staleNodeIds.add(staleNodeId)
+        }
         // Existing Renderer saves contain only graph data. Preserve Store-only
         // group/stack entities when those fields are omitted from the snapshot.
         const groups = input.groups === undefined
@@ -5598,7 +5789,10 @@ function createLocalProjectStore() {
             UPDATE canvas_graph_commands
             SET operation = 'save_canvas', result_canvas_version = ?, result_snapshot = ?
             WHERE canvas_id = ? AND idempotency_key = ?
-          `).run(nextVersion, JSON.stringify({ version: nextVersion }), active.metadata.canvasId, idempotencyKey)
+          `).run(nextVersion, JSON.stringify({
+            version: nextVersion,
+            staleNodeIds: [...staleNodeIds],
+          }), active.metadata.canvasId, idempotencyKey)
         }
         database.exec('COMMIT')
 
@@ -5612,8 +5806,8 @@ function createLocalProjectStore() {
           stacks,
         }
         return hasIdempotencyKey
-          ? { version: nextVersion, replayed: false }
-          : { version: nextVersion }
+          ? { version: nextVersion, staleNodeIds: [...staleNodeIds], replayed: false }
+          : { version: nextVersion, staleNodeIds: [...staleNodeIds] }
       } catch (error) {
         database.exec('ROLLBACK')
         throw error

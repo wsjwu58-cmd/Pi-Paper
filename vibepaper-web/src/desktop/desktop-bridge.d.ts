@@ -395,6 +395,12 @@ export interface DesktopBridge {
   importLocalAssets(projectId: string): Promise<DesktopAssetImportResult | null>
   importImage(projectId: string): Promise<DesktopAsset | null>
   saveTaskOutputToLibrary(projectId: string, taskId: string): Promise<DesktopAsset>
+  saveDirectorCapture(input: {
+    projectId: string
+    canvasId: string
+    nodeId: string
+    pngBytes: Uint8Array
+  }): Promise<{ assetId: string; url: string }>
   listAssets(projectId: string): Promise<DesktopAsset[]>
   renameAsset(projectId: string, assetId: string, name: string): Promise<DesktopAsset>
   replaceImage(projectId: string, assetId: string): Promise<DesktopAsset | null>
@@ -422,7 +428,7 @@ export interface DesktopBridge {
     edges: Edge[]
     groups?: DesktopCanvasGroup[] | null
     stacks?: DesktopCanvasStack[] | null
-  }): Promise<{ version: number }>
+  }): Promise<{ version: number; staleNodeIds: string[] }>
   connectEdge(input: {
     projectId: string
     canvasId: string

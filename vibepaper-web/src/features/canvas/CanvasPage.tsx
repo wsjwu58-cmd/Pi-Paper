@@ -33,7 +33,7 @@ import { AccountSidePanels } from './AccountSidePanels'
 import { CanvasWelcome } from './CanvasWelcome'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
-import { createCanvasNodePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
+import { applySavedCanvasStaleNodeIds, createCanvasNodePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
 import type { DesktopCanvas } from '@/desktop/desktop-bridge'
 
 const saveDebounce = 500
@@ -241,6 +241,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             const version = Math.max(latestCanvas.canvas.version, result.version)
             setCanvas({ ...latestCanvas, canvas: { ...latestCanvas.canvas, version } })
             setSavedVersion(version)
+            const currentNodes = useCanvasStore.getState().nodes
+            const nodesWithStaleOutputs = applySavedCanvasStaleNodeIds(currentNodes, result.staleNodeIds)
+            if (nodesWithStaleOutputs !== currentNodes) setNodes(nodesWithStaleOutputs)
           }
           setDirty(sameGraph ? false : true)
           if (desktopSaveIntent.current?.key === key) desktopSaveIntent.current = null
@@ -258,7 +261,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         if (desktopSaveInFlight.current === pending) desktopSaveInFlight.current = null
       }
     }
-  }, [desktopProjectId, setCanvas, setDirty, setSavedVersion, setSaving])
+  }, [desktopProjectId, setCanvas, setDirty, setNodes, setSavedVersion, setSaving])
 
   const save = useCallback(async () => {
     if (!canvas || externalSyncPending.current) return
@@ -725,9 +728,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               groups: current.groups,
               stacks: current.stacks,
             })
-            const latest = useCanvasStore.getState().canvas ?? current.canvas
+            const latestState = useCanvasStore.getState()
+            const latest = latestState.canvas ?? current.canvas
             setCanvas({ ...latest, canvas: { ...latest.canvas, version: saved.version } })
             setSavedVersion(saved.version)
+            const nodesWithStaleOutputs = applySavedCanvasStaleNodeIds(latestState.nodes, saved.staleNodeIds)
+            if (nodesWithStaleOutputs !== latestState.nodes) setNodes(nodesWithStaleOutputs)
             setDirty(false)
           }
           for (const edge of deleted) {
@@ -745,7 +751,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         )
       }
     },
-    [canvasId, desktopProjectId, refetch, setCanvas, setDirty],
+    [canvasId, desktopProjectId, refetch, setCanvas, setDirty, setNodes],
   )
 
   const addNode = useCallback(

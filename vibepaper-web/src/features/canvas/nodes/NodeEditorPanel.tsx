@@ -53,6 +53,13 @@ export interface UpstreamRef {
   text?: string
 }
 
+function isUsableUpstreamEdge(edge: { data?: unknown }): boolean {
+  const data = edge.data && typeof edge.data === 'object' && !Array.isArray(edge.data)
+    ? edge.data as { valid?: unknown; edge?: { valid?: unknown } }
+    : undefined
+  return data?.valid !== false && data?.edge?.valid !== false
+}
+
 /** 读取连入当前节点的上游素材（有效连线优先） */
 export function useUpstreamRefs(nodeId: string): UpstreamRef[] {
   const nid = sid(nodeId)
@@ -60,6 +67,7 @@ export function useUpstreamRefs(nodeId: string): UpstreamRef[] {
   const signature = useCanvasStore((s) => {
     const parts: string[] = []
     for (const e of s.edges) {
+      if (!isUsableUpstreamEdge(e)) continue
       const target =
         sid(e.target) ||
         sid((e.data as { edge?: { targetNodeId?: unknown } } | undefined)?.edge?.targetNodeId)
@@ -96,6 +104,7 @@ export function useUpstreamRefs(nodeId: string): UpstreamRef[] {
     const s = useCanvasStore.getState()
     const refs: UpstreamRef[] = []
     for (const e of s.edges) {
+      if (!isUsableUpstreamEdge(e)) continue
       const target =
         sid(e.target) ||
         sid((e.data as { edge?: { targetNodeId?: unknown } } | undefined)?.edge?.targetNodeId)

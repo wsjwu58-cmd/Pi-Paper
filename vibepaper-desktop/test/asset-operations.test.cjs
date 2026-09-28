@@ -111,7 +111,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
   const protocolHandlers = new Map()
   const headerHandlers = []
   const electron = {
-    app: { setName() {}, requestSingleInstanceLock: () => false, quit() {} },
+    app: { setName() {}, requestSingleInstanceLock: () => false, quit() {}, getPath: (name) => name === 'temp' ? os.tmpdir() : os.tmpdir() },
     BrowserWindow: class {},
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showMessageBox: async () => ({}) },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
@@ -577,6 +577,251 @@ test('image, video, audio and text imports validate formats, keep node reference
   assert.equal(restoredAssets.find((entry) => entry.assetId === assets[11].assetId).referenceCount, 1)
 })
 
+test('director capture IPC validates local PNG bytes and imports them only for an existing director node', async () => {
+  const harness = await createMainIpcHarness()
+  const assetId = 'f1bbdc54-d75e-4329-9e4d-495d1b32da40'
+  const project = { projectId: 'project-1', canvasId: 'canvas-1' }
+  const png = Buffer.concat([PNG_HEADER, Buffer.from('director capture')])
+  let targetType = 'director'
+  let importedBytes
+  let importedPath
+  let imports = 0
+  harness.setLocalCore({
+    async request(method, payload) {
+      if (method === 'project:get-active') return project
+      if (method === 'canvas:load') return { nodes: [{ id: 'director-node', type: targetType }] }
+      assert.equal(method, 'asset:import')
+      assert.equal(payload.projectId, project.projectId)
+      assert.equal(payload.assetKind, 'image')
+      importedPath = payload.sourcePath
+      importedBytes = await fs.readFile(payload.sourcePath)
+      imports += 1
+      return { assetId, assetType: 'image', mimeType: 'image/png' }
+    },
+  })
+
+  const save = harness.handlers.get('desktop:asset:save-director-capture')
+  const result = JSON.parse(JSON.stringify(await save(harness.event, {
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    nodeId: 'director-node',
+    pngBytes: new Uint8Array(png),
+  })))
+  assert.deepEqual(result, { assetId, url: `vibe://app/assets/${assetId}` })
+  assert.deepEqual(importedBytes, png)
+  await assert.rejects(fs.stat(importedPath), { code: 'ENOENT' }, 'the IPC temp file is removed after local import')
+
+  await assert.rejects(save(harness.event, {
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    nodeId: 'director-node',
+    pngBytes: Buffer.from('not a PNG'),
+  }), /必须是有效 PNG/u)
+  targetType = 'image'
+  await assert.rejects(save(harness.event, {
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    nodeId: 'director-node',
+    pngBytes: new Uint8Array(png),
+  }), /导演台节点已不存在/u)
+  assert.equal(imports, 1, 'invalid bytes or a non-director node never reach asset import')
+})
+
+test('director photo assets are referenced by the node, affect deletion, and survive project backup restore', async (t) => {
+  const { store, parentDirectory, project } = await openTestProject(t)
+  const backupParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-director-backup-'))
+  const restoreParent = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-director-restore-'))
+  t.after(async () => {
+    await fs.rm(backupParent, { recursive: true, force: true })
+    await fs.rm(restoreParent, { recursive: true, force: true })
+  })
+  const firstPhotoBytes = Buffer.concat([PNG_HEADER, Buffer.from('director scene photo one')])
+  const secondPhotoBytes = Buffer.concat([PNG_HEADER, Buffer.from('director scene photo two')])
+  const latestPhotoBytes = Buffer.concat([PNG_HEADER, Buffer.from('director scene photo latest')])
+  const firstPhotoPath = await writeImage(parentDirectory, 'director-capture-one.png', firstPhotoBytes)
+  const secondPhotoPath = await writeImage(parentDirectory, 'director-capture-two.png', secondPhotoBytes)
+  const latestPhotoPath = await writeImage(parentDirectory, 'director-capture-latest.png', latestPhotoBytes)
+  const firstPhoto = await store.importAsset(firstPhotoPath, project.projectId, 'image')
+  const secondPhoto = await store.importAsset(secondPhotoPath, project.projectId, 'image')
+  const latestPhoto = await store.importAsset(latestPhotoPath, project.projectId, 'image')
+  const firstPhotoUrl = `vibe://app/assets/${firstPhoto.assetId}`
+  const secondPhotoUrl = `vibe://app/assets/${secondPhoto.assetId}`
+  const latestPhotoUrl = `vibe://app/assets/${latestPhoto.assetId}`
+  const director = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'director-photo-reference',
+    expectedVersion: 0,
+    type: 'director',
+    params: {
+      assetId: latestPhoto.assetId,
+      url: latestPhotoUrl,
+      lastOutputUrl: latestPhotoUrl,
+      captures: [firstPhotoUrl, secondPhotoUrl, latestPhotoUrl],
+    },
+  })
+  const image = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'director-photo-image-consumer',
+    expectedVersion: 1,
+    type: 'image',
+    params: { prompt: 'Use the director photo as composition reference.' },
+  })
+  await store.connectEdge({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    expectedVersion: 2,
+    idempotencyKey: 'director-photo-reference-edge',
+    sourceNodeId: director.node.id,
+    targetNodeId: image.node.id,
+  })
+  const canvas = store.loadCanvas(project.projectId, project.canvasId)
+  assert.equal(canvas.edges[0].data.valid, true, 'director outputs can feed image nodes')
+  const referencesBeforeUpdate = await store.listAssets(project.projectId)
+  for (const photo of [firstPhoto, secondPhoto, latestPhoto]) {
+    assert.equal(referencesBeforeUpdate.find((item) => item.assetId === photo.assetId).referenceCount, 1)
+  }
+  const backup = await store.backupProject(backupParent, project.projectId)
+  const updated = await store.updateNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    nodeId: director.node.id,
+    idempotencyKey: 'director-remove-old-photo-reference',
+    expectedVersion: 3,
+    params: {
+      ...canvas.nodes.find((node) => node.id === director.node.id).data.params,
+      captures: [firstPhotoUrl, latestPhotoUrl],
+      assetId: latestPhoto.assetId,
+      url: latestPhotoUrl,
+      lastOutputUrl: latestPhotoUrl,
+    },
+  })
+  assert.equal(updated.version, 4)
+  assert.equal((await store.listAssets(project.projectId)).find((item) => item.assetId === secondPhoto.assetId).referenceCount, 0,
+    'updating the gallery removes references for photos no longer in captures')
+  const removedPhotoImpact = await store.deleteAsset(project.projectId, secondPhoto.assetId)
+  assert.deepEqual(removedPhotoImpact.references, [])
+
+  const impact = await store.deleteAsset(project.projectId, firstPhoto.assetId)
+  assert.deepEqual(impact.references, [{ canvasId: project.canvasId, nodeId: director.node.id, type: 'canvas' }])
+  const restored = await store.restoreBackup(backup.directory, restoreParent)
+  const restoredAsset = (await store.listAssets(restored.project.projectId)).find((item) => item.assetId === firstPhoto.assetId)
+  assert.equal(restoredAsset?.referenceCount, 1)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(firstPhoto.assetId)).filePath), firstPhotoBytes)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(secondPhoto.assetId)).filePath), secondPhotoBytes)
+  assert.deepEqual(await fs.readFile((await store.resolveAsset(latestPhoto.assetId)).filePath), latestPhotoBytes)
+  const restoredCanvas = store.loadCanvas(restored.project.projectId, restored.project.canvasId)
+  const restoredDirector = restoredCanvas.nodes.find((node) => node.id === director.node.id)
+  assert.equal(restoredDirector?.data.params.assetId, latestPhoto.assetId)
+  assert.deepEqual(restoredDirector?.data.params.captures, [firstPhotoUrl, secondPhotoUrl, latestPhotoUrl])
+  const restoredAssets = await store.listAssets(restored.project.projectId)
+  for (const photo of [firstPhoto, secondPhoto, latestPhoto]) {
+    assert.equal(restoredAssets.find((item) => item.assetId === photo.assetId).referenceCount, 1)
+  }
+  assert.equal(restoredCanvas.edges[0].data.valid, true)
+})
+
+test('project schema v12 migrates director capture gallery references with a rollback snapshot', async (t) => {
+  const { store, parentDirectory, directory, project } = await openTestProject(t)
+  const firstPhotoPath = await writeImage(parentDirectory, 'schema-v12-director-one.png', Buffer.concat([PNG_HEADER, Buffer.from('photo one')]))
+  const latestPhotoPath = await writeImage(parentDirectory, 'schema-v12-director-latest.png', Buffer.concat([PNG_HEADER, Buffer.from('photo latest')]))
+  const firstPhoto = await store.importAsset(firstPhotoPath, project.projectId, 'image')
+  const latestPhoto = await store.importAsset(latestPhotoPath, project.projectId, 'image')
+  const firstPhotoUrl = `vibe://app/assets/${firstPhoto.assetId}`
+  const latestPhotoUrl = `vibe://app/assets/${latestPhoto.assetId}`
+  const director = await store.createNode({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    idempotencyKey: 'schema-v12-director-gallery',
+    expectedVersion: 0,
+    type: 'director',
+    params: {
+      assetId: latestPhoto.assetId,
+      captures: [firstPhotoUrl, latestPhotoUrl],
+      url: latestPhotoUrl,
+      lastOutputUrl: latestPhotoUrl,
+    },
+  })
+  await store.close()
+
+  const databasePath = path.join(directory, '.vibepaper', 'project.sqlite')
+  const legacyDatabase = new DatabaseSync(databasePath)
+  legacyDatabase.exec('PRAGMA foreign_keys = OFF')
+  try {
+    legacyDatabase.exec('BEGIN IMMEDIATE')
+    legacyDatabase.exec(`
+      DROP INDEX IF EXISTS asset_references_by_asset;
+      ALTER TABLE asset_references RENAME TO asset_references_v13;
+      CREATE TABLE asset_references (
+        canvas_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        PRIMARY KEY (canvas_id, node_id),
+        FOREIGN KEY (canvas_id, node_id) REFERENCES nodes(canvas_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE RESTRICT
+      ) STRICT;
+      INSERT INTO asset_references (canvas_id, node_id, asset_id)
+        SELECT canvas_id, node_id, asset_id FROM asset_references_v13 WHERE asset_id = '${latestPhoto.assetId}';
+      DROP TABLE asset_references_v13;
+      CREATE INDEX asset_references_by_asset ON asset_references(asset_id);
+      PRAGMA user_version = 12;
+      COMMIT;
+    `)
+  } catch (error) {
+    legacyDatabase.exec('ROLLBACK')
+    throw error
+  } finally {
+    legacyDatabase.exec('PRAGMA foreign_keys = ON')
+    legacyDatabase.close()
+  }
+
+  await store.openProject(directory)
+  const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
+  let migrationBackup
+  try {
+    assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 13)
+    assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
+    const primaryKeyColumns = migratedDatabase.prepare('PRAGMA table_info(asset_references)').all()
+      .filter((column) => column.pk > 0)
+      .sort((left, right) => left.pk - right.pk)
+      .map((column) => column.name)
+    assert.deepEqual(primaryKeyColumns, ['canvas_id', 'node_id', 'asset_id'])
+    assert.deepEqual(migratedDatabase.prepare(`
+      SELECT asset_id FROM asset_references WHERE canvas_id = ? AND node_id = ? ORDER BY asset_id
+    `).all(project.canvasId, director.node.id).map((row) => row.asset_id), [firstPhoto.assetId, latestPhoto.assetId].sort())
+    const backupNames = (await fs.readdir(path.join(directory, '.vibepaper', 'backups')))
+      .filter((name) => name.startsWith('project-schema-v12-'))
+    assert.equal(backupNames.length, 1, 'migration keeps a single v12 rollback snapshot')
+    migrationBackup = path.join(directory, '.vibepaper', 'backups', backupNames[0])
+  } finally {
+    migratedDatabase.close()
+  }
+
+  const migratedAssets = await store.listAssets(project.projectId)
+  assert.equal(migratedAssets.find((asset) => asset.assetId === firstPhoto.assetId).referenceCount, 1)
+  assert.equal(migratedAssets.find((asset) => asset.assetId === latestPhoto.assetId).referenceCount, 1)
+  assert.deepEqual((await store.deleteAsset(project.projectId, firstPhoto.assetId)).references, [
+    { canvasId: project.canvasId, nodeId: director.node.id, type: 'canvas' },
+  ])
+
+  const rollbackDatabase = new DatabaseSync(migrationBackup, { readOnly: true })
+  try {
+    assert.equal(rollbackDatabase.prepare('PRAGMA user_version').get().user_version, 12)
+    assert.equal(rollbackDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 1,
+      'the rollback snapshot retains the original one-reference schema state')
+    assert.deepEqual(rollbackDatabase.prepare('PRAGMA foreign_key_check').all(), [])
+  } finally {
+    rollbackDatabase.close()
+  }
+
+  await store.close()
+  await store.openProject(directory)
+  const reopenedAssets = await store.listAssets(project.projectId)
+  assert.equal(reopenedAssets.find((asset) => asset.assetId === latestPhoto.assetId).referenceCount, 1,
+    'opening schema v13 again leaves migrated references intact')
+})
+
 test('project schema v9 enables validated MP3 assets with a v9 rollback snapshot', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
   const imagePath = await writeImage(parentDirectory, 'schema-v9-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' v9 image')]))
@@ -617,7 +862,7 @@ test('project schema v9 enables validated MP3 assets with a v9 rollback snapshot
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 13)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const schema = migratedDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql
     assert.match(schema, /audio\/mpeg/u)
@@ -646,7 +891,7 @@ test('project schema v9 enables validated MP3 assets with a v9 rollback snapshot
   }
 })
 
-test('project schema v10 expands asset MIME types through v12 and keeps v10 and v11 rollback snapshots', async (t) => {
+test('project schema v10 expands asset MIME types through v13 and keeps v10 and v11 rollback snapshots', async (t) => {
   const { store, directory, parentDirectory, project } = await openTestProject(t)
   const imagePath = await writeImage(parentDirectory, 'schema-v10-image.png', Buffer.concat([PNG_HEADER, Buffer.from(' v10 image')]))
   const image = await store.importAsset(imagePath, project.projectId)
@@ -670,7 +915,7 @@ test('project schema v10 expands asset MIME types through v12 and keeps v10 and 
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 13)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     assert.match(migratedDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql, /video\/webm/u)
     assert.equal(migratedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 1)
@@ -943,7 +1188,7 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 13)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const columns = migratedDatabase.prepare('PRAGMA table_info(assets)').all().map((row) => row.name)
     assert.ok(columns.includes('updated_at'))
@@ -1006,7 +1251,7 @@ test('project schema v7 migrates image assets and references through v10 with ro
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 13)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const backupName = (await fs.readdir(path.join(directory, '.vibepaper', 'backups')))
       .find((name) => name.startsWith('project-schema-v7-'))
@@ -1033,7 +1278,7 @@ test('project schema v8 backfills only legacy params asset references and preser
   const migratedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
   let v8BackupName
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 13)
     assert.deepEqual(migratedDatabase.prepare(`
       SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ? ORDER BY node_id
     `).all(fixture.project.canvasId).map((row) => ({ ...row })), [
@@ -1063,7 +1308,7 @@ test('project schema v8 backfills only legacy params asset references and preser
   await fixture.store.openProject(fixture.directory)
   const reopenedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
   try {
-    assert.equal(Number(reopenedDatabase.prepare('PRAGMA user_version').get().user_version), 12)
+    assert.equal(Number(reopenedDatabase.prepare('PRAGMA user_version').get().user_version), 13)
     assert.equal(reopenedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 2)
   } finally {
     reopenedDatabase.close()
@@ -1232,7 +1477,7 @@ test('restoring a v8 backup with a missing legacy params reference migrates the 
   const restoredDatabasePath = path.join(restored.directory, '.vibepaper', 'project.sqlite')
   const restoredDatabase = new DatabaseSync(restoredDatabasePath, { readOnly: true })
   try {
-    assert.equal(Number(restoredDatabase.prepare('PRAGMA user_version').get().user_version), 12)
+    assert.equal(Number(restoredDatabase.prepare('PRAGMA user_version').get().user_version), 13)
     assert.deepEqual(restoredDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     assert.deepEqual(restoredDatabase.prepare('SELECT node_id, asset_id FROM asset_references').all().map((row) => ({ ...row })), [
       { node_id: node.node.id, asset_id: asset.assetId },

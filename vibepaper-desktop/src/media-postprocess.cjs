@@ -162,12 +162,14 @@ function resolveMediaFontFile(options = {}) {
   const fontDirectory = path.join(env.WINDIR || env.SystemRoot || 'C:\\Windows', 'Fonts')
   if (process.platform === 'win32') {
     candidates.push(
+      path.join(fontDirectory, 'msyh.ttc'),
       path.join(fontDirectory, 'arial.ttf'),
       path.join(fontDirectory, 'segoeui.ttf'),
       path.join(fontDirectory, 'calibri.ttf'),
     )
   } else if (process.platform === 'darwin') {
     candidates.push(
+      '/System/Library/Fonts/PingFang.ttc',
       '/System/Library/Fonts/Supplemental/Arial.ttf',
       '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
       '/System/Library/Fonts/Supplemental/Helvetica.ttf',
@@ -175,6 +177,8 @@ function resolveMediaFontFile(options = {}) {
     )
   } else {
     candidates.push(
+      '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+      '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
       '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
       '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf',
       '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',

@@ -22,6 +22,8 @@ const MAX_PROVIDER_ERROR_MESSAGE_CHARS = 800
 const REQUEST_TIMEOUT_MS = 3 * 60 * 1000
 const AGNES_VIDEO_POLL_INTERVAL_MS = 10_000
 const AGNES_VIDEO_TIMEOUT_MS = 15 * 60 * 1000
+const AGNES_VIDEO_MAX_CONSECUTIVE_POLL_FAILURES = 5
+const AGNES_TRANSIENT_HTTP_STATUSES = new Set([429, 502, 503, 504])
 const MAX_MEDIA_OUTPUT_BYTES = 4 * 1024 * 1024 * 1024
 const MAX_AGNES_MEDIA_REDIRECTS = 5
 
@@ -164,7 +166,6 @@ async function readResponseErrorDetail(response, apiKey = null) {
 async function postAgnesJson(endpoint, payload, apiKey, timeoutMs, dependencies = {}) {
   const requestJson = dependencies.postJson || postJson
   const sleep = dependencies.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
-  const retryStatuses = new Set([429, 502, 503, 504])
   let delayMs = 3_000
   let lastError
   for (let attempt = 1; attempt <= 5; attempt += 1) {
@@ -172,7 +173,7 @@ async function postAgnesJson(endpoint, payload, apiKey, timeoutMs, dependencies 
       return await requestJson(endpoint, payload, apiKey, timeoutMs)
     } catch (error) {
       lastError = error
-      if (!retryStatuses.has(error?.statusCode) || attempt === 5) {
+      if (!AGNES_TRANSIENT_HTTP_STATUSES.has(error?.statusCode) || attempt === 5) {
         if (error?.statusCode === 429) {
           throw new WorkerFailure('CLOUD_RATE_LIMITED', error.message || 'Agnes 请求过于频繁，请稍后重试。', 429)
         }
@@ -807,17 +808,36 @@ async function runVideoTask(job, dependencies = {}) {
   const deadline = now() + timeoutMs
   let lastStatus = ''
   let nextPollDelayMs = pollIntervalMs
+  let consecutivePollFailures = 0
+  let lastTransientPollFailure = null
   while (now() < deadline) {
     await sleep(nextPollDelayMs)
     const pollUrl = `https://apihub.agnes-ai.com/agnesapi?video_id=${encodeURIComponent(String(videoId))}&model_name=${encodeURIComponent(AGNES_MODELS.video)}`
     let status
     try {
       status = await getResponse(pollUrl, job.apiKey, 60_000)
-    } catch {
+    } catch (error) {
+      consecutivePollFailures += 1
+      lastTransientPollFailure = error instanceof WorkerFailure
+        ? error
+        : new WorkerFailure('CLOUD_PROVIDER_UNAVAILABLE', '无法连接 Agnes 服务。')
+      if (consecutivePollFailures >= AGNES_VIDEO_MAX_CONSECUTIVE_POLL_FAILURES) {
+        throw lastTransientPollFailure
+      }
+      nextPollDelayMs = Math.min(60_000, Math.max(nextPollDelayMs * 2, pollIntervalMs * 2))
       continue
     }
-    if (status.statusCode === 429) {
-      status.resume()
+    if (AGNES_TRANSIENT_HTTP_STATUSES.has(status.statusCode)) {
+      const detail = await readResponseErrorDetail(status, job.apiKey)
+      const code = status.statusCode === 429 ? 'CLOUD_RATE_LIMITED' : 'CLOUD_REQUEST_FAILED'
+      const message = detail
+        ? `Agnes 视频状态查询失败 HTTP ${status.statusCode}：${detail}`
+        : `Agnes 视频状态查询失败 HTTP ${status.statusCode}。`
+      consecutivePollFailures += 1
+      lastTransientPollFailure = new WorkerFailure(code, message, status.statusCode)
+      if (consecutivePollFailures >= AGNES_VIDEO_MAX_CONSECUTIVE_POLL_FAILURES) {
+        throw lastTransientPollFailure
+      }
       nextPollDelayMs = Math.min(60_000, Math.max(nextPollDelayMs * 2, pollIntervalMs * 2))
       continue
     }
@@ -827,6 +847,8 @@ async function runVideoTask(job, dependencies = {}) {
         ? `Agnes 视频状态查询失败 HTTP ${status.statusCode}：${detail}`
         : `Agnes 视频状态查询失败 HTTP ${status.statusCode}。`, status.statusCode)
     }
+    consecutivePollFailures = 0
+    lastTransientPollFailure = null
     nextPollDelayMs = pollIntervalMs
     const chunks = []
     let size = 0
@@ -854,6 +876,7 @@ async function runVideoTask(job, dependencies = {}) {
       return { outputPath: await downloadOutput(videoUrl, job.outputDirectory, job.taskId, 'video') }
     }
   }
+  if (lastTransientPollFailure) throw lastTransientPollFailure
   throw new WorkerFailure('CLOUD_REQUEST_TIMEOUT', `Agnes 视频任务超时（最后状态：${lastStatus || '未知'}）。`)
 }
 

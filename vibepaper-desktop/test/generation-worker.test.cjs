@@ -457,14 +457,14 @@ test('video polling maps non-success HTTP responses to the cloud request failure
   assert.equal(failedResponse.resumed, true)
 })
 
-test('video status polling backs off exponentially after 429 and resets after success', async () => {
+test('video status polling backs off after 429, 502, 503 and 504, then resets after a successful poll', async () => {
   let now = 0
   const delays = []
   const statuses = [
     response(429, { error: 'rate limited' }),
-    response(429, { error: 'rate limited' }),
-    response(429, { error: 'rate limited' }),
-    response(429, { error: 'rate limited' }),
+    response(502, { error: 'bad gateway' }),
+    response(503, { error: 'video queue is full, please retry later' }),
+    response(504, { error: 'gateway timeout' }),
     response(202, { status: 'processing' }),
     response(200, { status: 'completed', metadata: { video_url: 'https://media.example-cdn.net/result.mp4' } }),
   ]
@@ -486,27 +486,99 @@ test('video status polling backs off exponentially after 429 and resets after su
   assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.mp4` })
 })
 
-test('video creation retries transient Agnes statuses before polling', async () => {
+test('video polling preserves transient provider status and detail after bounded retries', async (t) => {
+  for (const statusCode of [429, 502, 503, 504]) {
+    await t.test(`HTTP ${statusCode}`, async () => {
+      const delays = []
+      const detail = 'video queue is full, please retry later'
+      await assert.rejects(
+        runVideoTask(jobFor('video'), {
+          postJson: async () => ({ video_id: `poll-error-${statusCode}` }),
+          getAgnesResponse: async () => response(statusCode, { error: { message: detail } }),
+          sleep: async (milliseconds) => delays.push(milliseconds),
+          now: (() => { let now = 0; return () => ++now })(),
+          pollIntervalMs: 0,
+          timeoutMs: 100,
+        }),
+        (error) => error.code === (statusCode === 429 ? 'CLOUD_RATE_LIMITED' : 'CLOUD_REQUEST_FAILED')
+          && error.statusCode === statusCode
+          && error.message.includes(detail),
+      )
+      assert.deepEqual(delays, [0, 0, 0, 0, 0])
+    })
+  }
+})
+
+test('video status polling backs off transient connection failures and recovers', async () => {
+  let now = 0
   let attempts = 0
   const delays = []
   const result = await runVideoTask(jobFor('video'), {
-    postJson: async () => {
+    postJson: async () => ({ video_id: 'poll-network-recovery' }),
+    getAgnesResponse: async () => {
       attempts += 1
-      if (attempts < 3) throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'mock transient response', 502)
-      return { video_id: 'retry-video' }
+      if (attempts < 5) throw new WorkerFailure('CLOUD_PROVIDER_UNAVAILABLE', 'mock connection reset')
+      return response(200, { status: 'completed', metadata: { video_url: 'https://media.example-cdn.net/result.mp4' } })
     },
-    getAgnesResponse: async () => response(200, {
-      status: 'completed',
-      metadata: { video_url: 'https://media.example-cdn.net/result.mp4' },
-    }),
     downloadAgnesOutput: async () => `generated/${TASK_ID}/result.mp4`,
-    sleep: async (milliseconds) => { delays.push(milliseconds) },
-    now: (() => { let now = 0; return () => ++now })(),
-    pollIntervalMs: 0,
-    timeoutMs: 10,
+    sleep: async (milliseconds) => {
+      delays.push(milliseconds)
+      now += milliseconds
+    },
+    now: () => now,
+    pollIntervalMs: 10_000,
+    timeoutMs: 300_000,
   })
 
-  assert.equal(attempts, 3)
-  assert.deepEqual(delays, [3_000, 6_000, 0])
+  assert.equal(attempts, 5)
+  assert.deepEqual(delays, [10_000, 20_000, 40_000, 60_000, 60_000])
   assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.mp4` })
+})
+
+test('video creation retries Agnes HTTP 429, 502, 503 and 504 before polling', async (t) => {
+  for (const statusCode of [429, 502, 503, 504]) {
+    await t.test(`HTTP ${statusCode}`, async () => {
+      let attempts = 0
+      const delays = []
+      const result = await runVideoTask(jobFor('video'), {
+        postJson: async () => {
+          attempts += 1
+          if (attempts === 1) throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'mock transient response', statusCode)
+          return { video_id: `retry-video-${statusCode}` }
+        },
+        getAgnesResponse: async () => response(200, {
+          status: 'completed',
+          metadata: { video_url: 'https://media.example-cdn.net/result.mp4' },
+        }),
+        downloadAgnesOutput: async () => `generated/${TASK_ID}/result.mp4`,
+        sleep: async (milliseconds) => { delays.push(milliseconds) },
+        now: (() => { let now = 0; return () => ++now })(),
+        pollIntervalMs: 0,
+        timeoutMs: 10,
+      })
+
+      assert.equal(attempts, 2)
+      assert.deepEqual(delays, [3_000, 0])
+      assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.mp4` })
+    })
+  }
+})
+
+test('video creation surfaces the final Agnes queue-full response after bounded retries', async () => {
+  let attempts = 0
+  const delays = []
+  await assert.rejects(
+    runVideoTask(jobFor('video'), {
+      postJson: async () => {
+        attempts += 1
+        throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'Agnes 请求失败 HTTP 503：video queue is full, please retry later', 503)
+      },
+      sleep: async (milliseconds) => delays.push(milliseconds),
+    }),
+    (error) => error.code === 'CLOUD_REQUEST_FAILED'
+      && error.statusCode === 503
+      && /video queue is full, please retry later/u.test(error.message),
+  )
+  assert.equal(attempts, 5)
+  assert.deepEqual(delays, [3_000, 6_000, 12_000, 24_000])
 })

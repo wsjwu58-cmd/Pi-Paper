@@ -1037,6 +1037,26 @@ function assertAssetId(assetId) {
   }
 }
 
+const MAX_DIRECTOR_CAPTURE_BYTES = 64 * 1024 * 1024
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
+function normalizeDirectorCaptureBytes(value) {
+  if (!(Buffer.isBuffer(value)
+    || (ArrayBuffer.isView(value) && value.BYTES_PER_ELEMENT === 1))) {
+    throw new Error('导演台照片数据无效。')
+  }
+  const bytes = Buffer.isBuffer(value)
+    ? value
+    : Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+  if (bytes.byteLength <= PNG_SIGNATURE.byteLength || bytes.byteLength > MAX_DIRECTOR_CAPTURE_BYTES) {
+    throw new Error('导演台照片为空或超过 64 MB 上限。')
+  }
+  if (!bytes.subarray(0, PNG_SIGNATURE.byteLength).equals(PNG_SIGNATURE)) {
+    throw new Error('导演台照片必须是有效 PNG 图像。')
+  }
+  return bytes
+}
+
 async function assertActiveAssetProject(projectId) {
   assertAssetProjectId(projectId)
   if (stopping || projectTransitionCount > 0 || !localCore) throw new Error('项目正在切换，请稍后重试。')
@@ -1294,6 +1314,48 @@ function registerProjectIpc() {
     }
     await assertActiveAssetProject(projectId)
     return localCore.request('asset:save-task-output', { projectId, taskId }, 5 * 60 * 1000)
+  })
+  ipcMain.handle('desktop:asset:save-director-capture', async (event, input) => {
+    assertTrustedSender(event)
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || input.projectId.length === 0 || input.projectId.length > 200
+      || typeof input.canvasId !== 'string' || input.canvasId.length === 0 || input.canvasId.length > 256
+      || typeof input.nodeId !== 'string' || input.nodeId.length === 0 || input.nodeId.length > 256) {
+      throw new Error('导演台拍照请求无效。')
+    }
+    const bytes = normalizeDirectorCaptureBytes(input.pngBytes)
+    await assertActiveAssetProject(input.projectId)
+    const project = await localCore.request('project:get-active')
+    if (!project || project.projectId !== input.projectId || project.canvasId !== input.canvasId) {
+      throw new Error('当前项目或画布已更改，无法保存导演台照片。')
+    }
+    const canvas = await localCore.request('canvas:load', {
+      projectId: input.projectId,
+      canvasId: input.canvasId,
+    })
+    const target = canvas?.nodes?.find((node) => node?.id === input.nodeId)
+    if (!target || target.type !== 'director') throw new Error('导演台节点已不存在，无法保存照片。')
+
+    const tempPath = path.join(app.getPath('temp'), `vibepaper-director-capture-${randomUUID()}.png`)
+    let handle
+    try {
+      handle = await fs.open(tempPath, 'wx', 0o600)
+      await handle.writeFile(bytes)
+      await handle.sync()
+      await handle.close()
+      handle = null
+      await assertActiveAssetProject(input.projectId)
+      const asset = await localCore.request('asset:import', {
+        sourcePath: tempPath,
+        projectId: input.projectId,
+        assetKind: 'image',
+      }, 5 * 60 * 1000)
+      assertAssetId(asset?.assetId)
+      return { assetId: asset.assetId, url: `vibe://app/assets/${asset.assetId}` }
+    } finally {
+      if (handle) await handle.close().catch(() => undefined)
+      await fs.rm(tempPath, { force: true }).catch(() => undefined)
+    }
   })
   ipcMain.handle('desktop:asset:rename', async (event, projectId, assetId, name) => {
     assertTrustedSender(event)

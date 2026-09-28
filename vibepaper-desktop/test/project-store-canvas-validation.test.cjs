@@ -213,30 +213,47 @@ test('canvas save rejects node types excluded by legacy EdgeRules', async (t) =>
 test('saveCanvas supports durable optional idempotency replay before version and graph validation', async (t) => {
   const { store, directory, project } = await openTestProject(t)
   const base = { projectId: project.projectId, canvasId: project.canvasId, idempotencyKey: 'save-command-1' }
+  const source = node('saved-source', 'text')
+  source.data = { params: { prompt: 'before' } }
+  const downstream = node('saved-downstream', 'image')
+  downstream.data = { params: {}, stale: false }
+  const edges = [{ id: 'saved-input', source: source.id, target: downstream.id, dependencyType: 'input' }]
+  await store.saveCanvas({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    expectedVersion: 0,
+    nodes: [source, downstream],
+    edges,
+  })
+
+  const editedNodes = [
+    { ...source, data: { ...source.data, params: { prompt: 'after' } } },
+    downstream,
+  ]
   const saved = await store.saveCanvas({
     ...base,
-    expectedVersion: 0,
-    nodes: [node('saved-node', 'text')],
-    edges: [],
+    expectedVersion: 1,
+    nodes: editedNodes,
+    edges,
   })
-  assert.deepEqual(saved, { version: 1, replayed: false })
+  assert.deepEqual(saved, { version: 2, staleNodeIds: [downstream.id], replayed: false })
 
   await store.close()
   await store.openProject(directory)
   const replayed = await store.saveCanvas({
     ...base,
-    expectedVersion: 0,
+    expectedVersion: 1,
     nodes: [node('invalid-replay-node', 'unsupported')],
     edges: [],
   })
-  assert.deepEqual(replayed, { version: 1, replayed: true })
-  assert.equal(store.loadCanvas(project.projectId, project.canvasId).nodes[0].id, 'saved-node')
+  assert.deepEqual(replayed, { version: 2, staleNodeIds: [downstream.id], replayed: true })
+  assert.equal(store.loadCanvas(project.projectId, project.canvasId).nodes[0].id, source.id)
 
   await assert.rejects(store.createNode({
     projectId: project.projectId,
     canvasId: project.canvasId,
     idempotencyKey: 'save-command-1',
-    expectedVersion: 1,
+    expectedVersion: 2,
     type: 'text',
   }), /Idempotency-Key 已用于其他画布命令/u)
 })
@@ -349,6 +366,20 @@ test('importCanvasDocument creates a separate project and preserves CanvasServic
     nodes: [
       { id: 100, type: 'text', x: 0, y: 12, params: { prompt: 'keep this prompt' }, status: 'succeeded', stale: true, creative_type: 'story' },
       { id: 200, type: 'image', params: { prompt: 'image prompt', assetId: 'asset-from-another-project', name: 'reference.png' } },
+      {
+        id: 300,
+        type: 'director',
+        params: {
+          assetId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          captures: [
+            'vibe://app/assets/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            'vibe://app/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          ],
+          url: 'vibe://app/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          lastOutputUrl: 'vibe://app/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          sceneObjects: [],
+        },
+      },
     ],
     edges: [
       { id: 1, sourceNodeId: 100, targetNodeId: 200, dependency_type: 'input' },
@@ -364,18 +395,20 @@ test('importCanvasDocument creates a separate project and preserves CanvasServic
   assert.notEqual(imported.project.canvasId, original.project.canvasId)
   assert.equal(imported.project.name, 'Imported Canvas')
   assert.deepEqual(imported.warnings, [
-    '有 1 个素材引用不在导入文件中，已从新项目节点移除；请在素材库中重新选择本地素材。',
+    '有 3 个素材引用不在导入文件中，已从新项目节点移除；请在素材库中重新选择本地素材。',
   ])
   const canvas = store.loadCanvas(imported.project.projectId, imported.project.canvasId)
   assert.equal(canvas.version, 1)
-  assert.equal(canvas.nodes.length, 2)
+  assert.equal(canvas.nodes.length, 3)
   assert.notEqual(canvas.nodes[0].id, '100')
   assert.notEqual(canvas.nodes[1].id, '200')
+  assert.notEqual(canvas.nodes[2].id, '300')
   assert.deepEqual(canvas.nodes[0].data.params, { prompt: 'keep this prompt' })
   assert.equal(canvas.nodes[0].data.creativeType, 'story')
   assert.equal(canvas.nodes[0].data.status, 'idle')
   assert.equal(canvas.nodes[0].data.stale, false)
   assert.deepEqual(canvas.nodes[1].data.params, { prompt: 'image prompt', name: 'reference.png' })
+  assert.deepEqual(canvas.nodes[2].data.params, { captures: [], sceneObjects: [] })
   assert.deepEqual(canvas.groups, [])
   assert.deepEqual(canvas.stacks, [])
   assert.equal(canvas.edges.length, 2, 'the dangling edge is skipped while incompatible edges remain visible')
@@ -1005,6 +1038,49 @@ test('updateNode propagates stale over input edges and preserves protected execu
   assert.equal(store.loadCanvas(project.projectId, project.canvasId).version, version)
 })
 
+test('saveCanvas propagates stale after full-graph content edits, but not status-only edits', async (t) => {
+  const { store, project } = await openTestProject(t)
+  const source = node('save-stale-source', 'text')
+  source.data = { params: { prompt: 'original prompt' }, status: 'succeeded', execStatus: 'succeeded', stale: false }
+  const middle = node('save-stale-middle', 'image')
+  middle.data = { params: {}, status: 'succeeded', execStatus: 'succeeded', stale: false }
+  const downstream = node('save-stale-downstream', 'video')
+  downstream.data = { params: {}, status: 'ready', execStatus: 'ready', stale: false }
+  const referenceOnly = node('save-stale-reference-only', 'audio')
+  referenceOnly.data = { params: {}, status: 'idle', execStatus: 'idle', stale: false }
+  const edges = [
+    { id: 'save-input-source-middle', source: source.id, target: middle.id, dependencyType: 'input' },
+    { id: 'save-input-middle-downstream', source: middle.id, target: downstream.id, dependencyType: 'input' },
+    { id: 'save-reference-source-node', source: source.id, target: referenceOnly.id, dependencyType: 'reference' },
+  ]
+  const base = { projectId: project.projectId, canvasId: project.canvasId }
+  const firstSave = await store.saveCanvas({ ...base, expectedVersion: 0, nodes: [source, middle, downstream, referenceOnly], edges })
+  assert.deepEqual(firstSave.staleNodeIds, [])
+
+  const beforeStatusEdit = structuredClone(store.loadCanvas(project.projectId, project.canvasId))
+  const statusOnlyNodes = beforeStatusEdit.nodes.map((entry) => entry.id === source.id
+    ? { ...entry, data: { ...entry.data, status: 'running', execStatus: 'running' } }
+    : entry)
+  await store.saveCanvas({ ...base, expectedVersion: 1, nodes: statusOnlyNodes, edges: beforeStatusEdit.edges })
+  let savedNodes = new Map(store.loadCanvas(project.projectId, project.canvasId).nodes.map((entry) => [entry.id, entry]))
+  assert.equal(savedNodes.get(middle.id).data.stale, false, 'task-state-only writes do not stale input descendants')
+  assert.equal(savedNodes.get(downstream.id).data.stale, false)
+
+  const beforeContentEdit = structuredClone(store.loadCanvas(project.projectId, project.canvasId))
+  const changedNodes = beforeContentEdit.nodes.map((entry) => entry.id === source.id
+    ? { ...entry, data: { ...entry.data, params: { ...entry.data.params, prompt: 'updated prompt' } } }
+    : entry)
+  const contentSave = await store.saveCanvas({ ...base, expectedVersion: 2, nodes: changedNodes, edges: beforeContentEdit.edges })
+  assert.deepEqual(new Set(contentSave.staleNodeIds), new Set([middle.id, downstream.id]))
+  savedNodes = new Map(store.loadCanvas(project.projectId, project.canvasId).nodes.map((entry) => [entry.id, entry]))
+  assert.equal(savedNodes.get(source.id).data.stale, false)
+  assert.equal(savedNodes.get(middle.id).data.stale, true)
+  assert.equal(savedNodes.get(middle.id).data.execStatus, 'succeeded', 'a successful task state is preserved')
+  assert.equal(savedNodes.get(downstream.id).data.stale, true, 'stale propagates transitively through input edges')
+  assert.equal(savedNodes.get(downstream.id).data.execStatus, 'ready', 'a ready task state is preserved')
+  assert.equal(savedNodes.get(referenceOnly.id).data.stale, false, 'reference edges do not propagate stale')
+})
+
 test('deleteNode applies identity and version checks and reports direct downstream impact while removing every connected edge', async (t) => {
   const { store, project } = await openTestProject(t)
   const upstream = node('delete-upstream', 'text')
@@ -1107,7 +1183,7 @@ test('deleteNode replays its durable impact snapshot before version and node che
   }), /Idempotency-Key 已用于其他画布命令/u)
 })
 
-test('project schema v3 migrates through v12 with a v3 backup and keeps existing canvas data', async (t) => {
+test('project schema v3 migrates through v13 with a v3 backup and keeps existing canvas data', async (t) => {
   const { store, directory, project } = await openTestProject(t)
   await saveNodes(store, project, [node('existing-text', 'text')])
   await store.close()
@@ -1356,7 +1432,7 @@ test('project backup and restore retain group and stack tables and node membersh
   assert.equal(loaded.nodes.find((entry) => entry.id === 'backup-a').data.stackId, stack.id)
 })
 
-test('project schema v4 migrates through v12 after creating a rollback snapshot', async (t) => {
+test('project schema v4 migrates through v13 after creating a rollback snapshot', async (t) => {
   const { store, directory, project } = await openTestProject(t)
   await saveNodes(store, project, [node('v4-existing-node', 'text')])
   await store.close()

@@ -57,6 +57,11 @@ function parseScene(params: Record<string, unknown> | undefined): DirectorSceneS
   }
 }
 
+function localCaptureAssetId(url: string | null): string | undefined {
+  if (!url) return undefined
+  return /^vibe:\/\/app\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu.exec(url)?.[1]
+}
+
 export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
   const node = useCanvasStore((s) => s.nodes.find((n) => sid(n.id) === nodeId)?.data.node)
@@ -84,11 +89,13 @@ export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<
 
   const persistScene = (state: DirectorSceneState, latestUrl: string | null) => {
     const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === nodeId)?.data.node
+    const assetId = localCaptureAssetId(latestUrl)
     const params = {
       ...(current?.params ?? node.params),
       sceneObjects: state.objects,
       camera: state.camera,
       captures: state.captures,
+      ...(assetId ? { assetId } : {}),
       ...(latestUrl
         ? { url: latestUrl, lastOutputUrl: latestUrl, thumbnailUrl: latestUrl }
         : {}),
