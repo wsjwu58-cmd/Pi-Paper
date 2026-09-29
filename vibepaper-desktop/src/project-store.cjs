@@ -1,16 +1,18 @@
 const nativeFs = require('node:fs')
 const fs = require('node:fs/promises')
 const path = require('node:path')
-const { createHash, randomUUID } = require('node:crypto')
+const { createHash, randomBytes, randomUUID, timingSafeEqual } = require('node:crypto')
 const { Readable } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 const { backup, DatabaseSync } = require('node:sqlite')
 const { imageThumbnail } = require('./asset-thumbnail.cjs')
+const { AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
+const { ARK_MODELS, ARK_PROVIDER_ID } = require('./ark-model-catalog.cjs')
 
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 16
+const PROJECT_DB_SCHEMA_VERSION = 17
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -213,7 +215,10 @@ const DRAMA_ASSETS_DB_SCHEMA = `
   ) STRICT;
 `
 
-const DRAMA_PIPELINE_DB_SCHEMA = `
+// Schema installed by the historical v14 -> v15 migration. Keep this baseline
+// separate from the v17 fresh-project schema so the subsequent v16 -> v17
+// migration can add the new columns exactly once.
+const DRAMA_PIPELINE_DB_SCHEMA_V15 = `
   CREATE TABLE IF NOT EXISTS drama_render_batches (
     batch_id TEXT PRIMARY KEY,
     canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
@@ -255,6 +260,92 @@ const DRAMA_PIPELINE_DB_SCHEMA = `
   CREATE INDEX IF NOT EXISTS drama_render_jobs_by_batch_status
     ON drama_render_jobs(batch_id, status);
   CREATE INDEX IF NOT EXISTS drama_render_jobs_by_task ON drama_render_jobs(task_id);
+
+  CREATE TABLE IF NOT EXISTS render_reviews (
+    review_id TEXT PRIMARY KEY,
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    target_node_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL DEFAULT 'clip',
+    scores_json TEXT NOT NULL CHECK (json_valid(scores_json) AND json_type(scores_json) = 'object'),
+    failures_json TEXT NOT NULL CHECK (json_valid(failures_json) AND json_type(failures_json) = 'array'),
+    recommended_action TEXT NOT NULL,
+    evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json) AND json_type(evidence_json) = 'object'),
+    retry_count INTEGER NOT NULL CHECK (retry_count >= 0),
+    status TEXT NOT NULL CHECK (status IN ('pass', 'fail')),
+    source_task_id TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS render_reviews_by_canvas_node
+    ON render_reviews(canvas_id, target_node_id, created_at DESC);
+`
+
+const DRAMA_PIPELINE_DB_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS drama_render_batches (
+    batch_id TEXT PRIMARY KEY,
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    series_id TEXT NOT NULL,
+    episode_no INTEGER NOT NULL CHECK (episode_no > 0),
+    estimated_cost INTEGER NOT NULL CHECK (estimated_cost >= 0),
+    status TEXT NOT NULL CHECK (status IN ('draft', 'awaiting_approval', 'running', 'partial', 'completed', 'failed')),
+    idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+    request_hash TEXT NOT NULL DEFAULT '' CHECK (request_hash = '' OR length(request_hash) = 64),
+    session_id TEXT,
+    canvas_version INTEGER CHECK (canvas_version IS NULL OR canvas_version >= 0),
+    approval_action_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (canvas_id, idempotency_key)
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_render_batches_by_canvas
+    ON drama_render_batches(canvas_id, created_at DESC, batch_id);
+
+  CREATE TABLE IF NOT EXISTS drama_render_jobs (
+    job_id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES drama_render_batches(batch_id) ON DELETE CASCADE,
+    shot_id TEXT NOT NULL,
+    keyframe_render_id TEXT NOT NULL,
+    canvas_node_id TEXT,
+    duration_seconds INTEGER NOT NULL CHECK (duration_seconds BETWEEN 2 AND 5),
+    model_type TEXT NOT NULL,
+    provider_type TEXT NOT NULL DEFAULT 'cloud' CHECK (provider_type IN ('local', 'cloud')),
+    provider_id TEXT NOT NULL DEFAULT 'agnes',
+    model_id TEXT NOT NULL DEFAULT 'video',
+    model_params_json TEXT NOT NULL CHECK (json_valid(model_params_json) AND json_type(model_params_json) = 'object'),
+    estimated_cost INTEGER NOT NULL CHECK (estimated_cost >= 0),
+    input_hash TEXT NOT NULL CHECK (length(input_hash) = 64),
+    status TEXT NOT NULL CHECK (status IN ('draft', 'running', 'completed', 'failed')),
+    task_id TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
+    error_code TEXT,
+    attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (batch_id, shot_id)
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_render_jobs_by_batch_status
+    ON drama_render_jobs(batch_id, status);
+  CREATE INDEX IF NOT EXISTS drama_render_jobs_by_task ON drama_render_jobs(task_id);
+
+  CREATE TABLE IF NOT EXISTS drama_render_confirmations (
+    confirmation_id TEXT PRIMARY KEY,
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    batch_id TEXT NOT NULL REFERENCES drama_render_batches(batch_id) ON DELETE CASCADE,
+    operation TEXT NOT NULL CHECK (operation IN ('submit', 'rerun')),
+    job_id TEXT REFERENCES drama_render_jobs(job_id) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+    snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json) AND json_type(snapshot_json) = 'object'),
+    token_hash TEXT NOT NULL CHECK (length(token_hash) = 64),
+    canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected', 'expired', 'invalidated')),
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_render_confirmations_by_batch
+    ON drama_render_confirmations(batch_id, created_at DESC, confirmation_id);
 
   CREATE TABLE IF NOT EXISTS render_reviews (
     review_id TEXT PRIMARY KEY,
@@ -1525,10 +1616,15 @@ function requireDramaIdempotencyKey(value) {
   return value.trim()
 }
 
+function dramaRenderTaskIdempotencyKey(batchId, jobId, attempt) {
+  return `drama-batch:${batchId}:job:${jobId}:attempt:${attempt}`
+}
+
 function dramaRenderBatchPayload(database, row) {
   const jobs = database.prepare(`
     SELECT job_id, shot_id, keyframe_render_id, canvas_node_id, duration_seconds, model_type,
-      model_params_json, estimated_cost, input_hash, status, task_id, error_code
+      provider_type, provider_id, model_id, model_params_json, estimated_cost, input_hash,
+      status, task_id, error_code, attempt
     FROM drama_render_jobs WHERE batch_id = ? ORDER BY created_at, job_id
   `).all(row.batch_id).map((job) => ({
     id: job.job_id,
@@ -1537,12 +1633,16 @@ function dramaRenderBatchPayload(database, row) {
     ...(job.canvas_node_id == null ? {} : { canvasNodeId: job.canvas_node_id }),
     durationSeconds: Number(job.duration_seconds),
     modelType: job.model_type,
+    providerType: job.provider_type,
+    providerId: job.provider_id,
+    modelId: job.model_id,
     modelParams: JSON.parse(job.model_params_json),
     estimatedCost: Number(job.estimated_cost),
     inputHash: job.input_hash,
     status: job.status,
     ...(job.task_id == null ? {} : { taskId: job.task_id }),
     ...(job.error_code == null ? {} : { errorCode: job.error_code }),
+    attempt: Number(job.attempt),
   }))
   return {
     id: row.batch_id,
@@ -2726,7 +2826,7 @@ async function migrateDatabaseV14ToV15(database, dataDirectory) {
 
   database.exec('BEGIN IMMEDIATE')
   try {
-    database.exec(DRAMA_PIPELINE_DB_SCHEMA)
+    database.exec(DRAMA_PIPELINE_DB_SCHEMA_V15)
     database.exec('PRAGMA user_version = 15')
     if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
       throw new Error('短剧生产状态迁移后检测到无效引用。')
@@ -2761,6 +2861,72 @@ async function migrateDatabaseV15ToV16(database, dataDirectory) {
     database.exec('PRAGMA user_version = 16')
     if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
       throw new Error('短剧剧集与关键帧状态迁移后检测到无效引用。')
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+async function migrateDatabaseV16ToV17(database, dataDirectory) {
+  const version = databaseVersion(database)
+  if (version === 17) return
+  if (version !== 16) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 17。`)
+
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v16-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    const hasColumn = (table, column) => database.prepare(`PRAGMA table_info(${table})`)
+      .all().some((row) => row.name === column)
+    if (!hasColumn('drama_render_batches', 'request_hash')) {
+      database.exec("ALTER TABLE drama_render_batches ADD COLUMN request_hash TEXT NOT NULL DEFAULT '' CHECK (request_hash = '' OR length(request_hash) = 64)")
+    }
+    for (const [column, definition] of [
+      ['provider_type', "TEXT NOT NULL DEFAULT 'cloud' CHECK (provider_type IN ('local', 'cloud'))"],
+      ['provider_id', "TEXT NOT NULL DEFAULT 'agnes'"],
+      ['model_id', "TEXT NOT NULL DEFAULT 'video'"],
+      ['attempt', 'INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0)'],
+    ]) {
+      if (!hasColumn('drama_render_jobs', column)) {
+        database.exec(`ALTER TABLE drama_render_jobs ADD COLUMN ${column} ${definition}`)
+      }
+    }
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS drama_render_confirmations (
+        confirmation_id TEXT PRIMARY KEY,
+        canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+        batch_id TEXT NOT NULL REFERENCES drama_render_batches(batch_id) ON DELETE CASCADE,
+        operation TEXT NOT NULL CHECK (operation IN ('submit', 'rerun')),
+        job_id TEXT REFERENCES drama_render_jobs(job_id) ON DELETE CASCADE,
+        content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
+        snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json) AND json_type(snapshot_json) = 'object'),
+        token_hash TEXT NOT NULL CHECK (length(token_hash) = 64),
+        canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected', 'expired', 'invalidated')),
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS drama_render_confirmations_by_batch
+        ON drama_render_confirmations(batch_id, created_at DESC, confirmation_id);
+    `)
+    database.exec(`
+      PRAGMA user_version = 17;
+    `)
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('渲染批次确认状态迁移后检测到无效引用。')
     }
     database.exec('COMMIT')
   } catch (error) {
@@ -3469,7 +3635,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -3937,9 +4103,21 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 13) await migrateDatabaseV13ToV14(database, dataDirectory)
       if (databaseVersion(database) === 14) await migrateDatabaseV14ToV15(database, dataDirectory)
       if (databaseVersion(database) === 15) await migrateDatabaseV15ToV16(database, dataDirectory)
+      if (databaseVersion(database) === 16) await migrateDatabaseV16ToV17(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
+    }
+    const pendingConfirmations = database.prepare(`
+      SELECT COUNT(*) AS count FROM drama_render_confirmations
+      WHERE status IN ('pending', 'accepted')
+    `).get().count
+    if (pendingConfirmations > 0) {
+      await invalidateBackupManifest(dataDirectory)
+      database.prepare(`
+        UPDATE drama_render_confirmations SET status = 'invalidated', updated_at = ?
+        WHERE status IN ('pending', 'accepted')
+      `).run(new Date().toISOString())
     }
     const interruptedTaskCount = database.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status = 'running'").get().count
     if (interruptedTaskCount > 0) {
@@ -5953,30 +6131,730 @@ function createLocalProjectStore() {
     })
   }
 
-  function listDramaRenderBatches(projectId, canvasId) {
-    return enqueue(() => {
-      if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
-        throw new Error('当前项目已更改，请重新打开画布。')
+  function readDramaNode(database, canvasId, nodeId, label) {
+    const row = database.prepare('SELECT payload_json FROM nodes WHERE canvas_id = ? AND id = ?').get(canvasId, nodeId)
+    if (!row) throw dramaStateError('NODE_NOT_FOUND', `${label}节点不存在。`)
+    try {
+      const flowNode = JSON.parse(row.payload_json)
+      if (!isRecord(flowNode) || !isRecord(flowNode.data)) throw new Error('invalid node')
+      return nodePayloadFromFlowNode(flowNode)
+    } catch {
+      throw dramaStateError('INVALID_STATE', `${label}节点状态损坏。`)
+    }
+  }
+
+  async function requireActualAcceptedKeyframe(database, canvasId, shot, keyframeRenderId) {
+    const accepted = database.prepare(`
+      SELECT keyframe.id, keyframe.reference_pack_ids_json, series.active_canon_revision,
+        shot.prompt_revision, shot.character_bindings_json
+      FROM drama_keyframes keyframe
+      JOIN drama_shots shot ON shot.id = keyframe.shot_id
+      JOIN drama_series series ON series.id = shot.series_id
+      WHERE keyframe.id = ? AND keyframe.shot_id = ? AND keyframe.status = 'accepted'
+        AND shot.series_id = ? AND shot.episode_no = ? AND shot.duration_seconds = ?
+        AND series.canvas_id = ?
+    `).get(keyframeRenderId, shot.id, shot.seriesId, shot.episodeNo, shot.durationSeconds, canvasId)
+    if (!accepted) throw dramaStateError('KEYFRAME_NOT_ACCEPTED', '批次必须引用该镜头当前已接受的关键帧。')
+    const current = prepareDramaKeyframe(database, canvasId, shot.id)
+    let acceptedPackIds
+    try {
+      acceptedPackIds = dramaStateStrings(JSON.parse(accepted.reference_pack_ids_json), '关键帧参考包')
+    } catch {
+      throw dramaStateError('INVALID_STATE', '关键帧参考包状态格式无效。')
+    }
+    if (!sameDramaIds(acceptedPackIds, current.referencePackIds)) {
+      throw dramaStateError('KEYFRAME_STALE', '关键帧引用的角色参考包已过期，请先重新生成并接受关键帧。')
+    }
+
+    // v16 accepts a state record only. A batch is stricter: the accepted ID must
+    // identify the real, succeeded TaskStore image and its owned keyframe node.
+    const task = database.prepare('SELECT * FROM tasks WHERE task_id = ? AND canvas_id = ?')
+      .get(keyframeRenderId, canvasId)
+    if (!task || task.modality !== 'image' || task.status !== 'succeeded' || !task.node_id || !task.output_path) {
+      throw dramaStateError('KEYFRAME_OUTPUT_UNAVAILABLE', '已接受关键帧必须对应可读取的本地图片生成任务。')
+    }
+    const imageNode = readDramaNode(database, canvasId, task.node_id, '关键帧')
+    if (imageNode.type !== 'image' || imageNode.creativeType !== 'keyframe'
+      || imageNode.params.shotId !== shot.id
+      || !sameDramaIds(dramaStateStrings(imageNode.params.referencePackIds, '关键帧参考包'), current.referencePackIds)) {
+      throw dramaStateError('KEYFRAME_NODE_MISMATCH', '关键帧任务节点与当前镜头或角色参考包不匹配。')
+    }
+    try {
+      const output = await resolveTaskOutputFile(
+        path.join(active.directory, '.vibepaper'), task.task_id, 'image', task.output_path,
+      )
+      if (output.sha256 !== task.output_sha256 || output.sizeBytes !== task.output_size_bytes) throw new Error('output mismatch')
+    } catch {
+      throw dramaStateError('KEYFRAME_OUTPUT_UNAVAILABLE', '已接受关键帧的本地结果文件缺失或校验失败。')
+    }
+    return { task, referencePackIds: current.referencePackIds, accepted }
+  }
+
+  function dramaRenderBatchModelAvailability(providerType, providerId, modelId, durationSeconds, modelParams = {}) {
+    const mediaReferenceValues = (keys) => keys.flatMap((key) => {
+      const value = modelParams[key]
+      return Array.isArray(value) ? value : value == null || value === '' ? [] : [value]
+    }).filter((value) => typeof value === 'string' && value.trim())
+    const nonImageReferences = [
+      ...mediaReferenceValues(['referenceVideos', 'reference_videos']),
+      ...mediaReferenceValues(['referenceAudios', 'reference_audios']),
+    ]
+    const hasLocalNonImageReference = nonImageReferences.some((value) => /^(?:vibe:|file:)/iu.test(value.trim()))
+    if (providerType === 'cloud' && providerId === AGNES_PROVIDER_ID && modelId === AGNES_MODELS.video) {
+      if (durationSeconds < 4 || durationSeconds > 12) {
+        return {
+          available: false,
+          unavailableReasonCode: 'MODEL_DURATION_UNSUPPORTED',
+          unavailableReason: 'Agnes 视频模型只接受 4–12 秒；此镜头时长不能用于批量生成。',
+        }
       }
-      const rows = active.database.prepare(`
+      if (nonImageReferences.length > 0) {
+        return {
+          available: false,
+          unavailableReasonCode: 'UNSUPPORTED_REFERENCE_MEDIA',
+          unavailableReason: 'Agnes 视频模型不支持视频或音频参考，请先从此镜头移除这些参考素材。',
+        }
+      }
+      return { available: true }
+    }
+    if (providerType === 'cloud' && providerId === ARK_PROVIDER_ID && modelId === ARK_MODELS.video) {
+      if (durationSeconds < 4 || durationSeconds > 30) {
+        return {
+          available: false,
+          unavailableReasonCode: 'MODEL_DURATION_UNSUPPORTED',
+          unavailableReason: 'Ark Seedance 视频模型只接受 4–30 秒；此镜头时长不能用于批量生成。',
+        }
+      }
+      if (hasLocalNonImageReference) {
+        return {
+          available: false,
+          unavailableReasonCode: 'REFERENCE_MEDIA_UNSUPPORTED',
+          unavailableReason: 'Ark 本地视频或音频参考尚无供应商上传链，请移除这些参考或改用模型可访问的 HTTPS 地址。',
+        }
+      }
+      return { available: true }
+    }
+    return {
+      available: false,
+      unavailableReasonCode: 'MODEL_UNAVAILABLE',
+      unavailableReason: '此提供方或模型尚未接入短剧批次生成。',
+    }
+  }
+
+  async function normalizeDramaRenderJob(database, canvasId, seriesId, episodeNo, rawJob, options = {}) {
+    if (!isRecord(rawJob)) throw dramaStateError('INVALID_INPUT', '渲染批次镜头参数无效。')
+    const shotId = normalizeCanvasEntityId(rawJob.shotId, '镜头')
+    const keyframeRenderId = normalizeCanvasEntityId(rawJob.keyframeRenderId, '关键帧')
+    const canvasNodeId = normalizeCanvasEntityId(rawJob.canvasNodeId, '视频节点')
+    const shot = requireDramaShotRow(database, canvasId, shotId)
+    if (shot.seriesId !== seriesId || shot.episodeNo !== episodeNo) {
+      throw dramaStateError('INVALID_SHOT_REFERENCE', '批次镜头必须属于指定系列和集数。')
+    }
+    if (!Number.isSafeInteger(rawJob.durationSeconds) || rawJob.durationSeconds !== shot.durationSeconds) {
+      throw dramaStateError('INVALID_SHOT_DURATION', '批次镜头时长必须與镜头状态一致。')
+    }
+    if (rawJob.modelType !== 'video') throw dramaStateError('INVALID_INPUT', '渲染批次只支持视频生成任务。')
+    const accepted = await requireActualAcceptedKeyframe(database, canvasId, shot, keyframeRenderId)
+    const videoNode = readDramaNode(database, canvasId, canvasNodeId, '视频')
+    if (videoNode.type !== 'video' || videoNode.creativeType !== 'clip'
+      || videoNode.params.shotId !== shot.id
+      || videoNode.params.keyframeRenderId !== keyframeRenderId
+      || !sameDramaIds(dramaStateStrings(videoNode.params.referencePackIds, '视频角色参考包'), accepted.referencePackIds)) {
+      throw dramaStateError('VIDEO_NODE_MISMATCH', '批次目标节点必须属于当前镜头并引用当前已接受关键帧和角色参考包。')
+    }
+
+    const modelParams = cloneJsonRecord(rawJob.modelParams ?? {}, '视频模型参数')
+    const providerType = rawJob.providerType ?? modelParams.providerType
+    const providerId = rawJob.providerId ?? modelParams.providerId
+    const modelId = rawJob.modelId ?? modelParams.modelId
+    if (!['cloud', 'local'].includes(providerType)
+      || typeof providerId !== 'string' || !providerId.trim() || providerId.length > 160
+      || typeof modelId !== 'string' || !modelId.trim() || modelId.length > 200) {
+      throw dramaStateError('INVALID_INPUT', '批次必须明确指定提供方类型、提供方和模型。')
+    }
+    const nodePrompt = typeof videoNode.prompt === 'string' ? videoNode.prompt
+      : typeof videoNode.params.prompt === 'string' ? videoNode.params.prompt : ''
+    if (!nodePrompt.trim() || (modelParams.prompt !== undefined && modelParams.prompt !== nodePrompt)) {
+      throw dramaStateError('VIDEO_PROMPT_MISMATCH', '批次提示词必须与目标视频节点中已保存的提示词一致。')
+    }
+    modelParams.prompt = nodePrompt
+    modelParams.seconds = shot.durationSeconds
+    // Never accept a renderer supplied frame URL. Resolve it from the accepted
+    // TaskStore output at submission using this confirmed keyframe ID.
+    delete modelParams.firstFrameUrl
+    assertNoCredentialFields(modelParams)
+    const availability = dramaRenderBatchModelAvailability(
+      providerType, providerId.trim(), modelId.trim(), shot.durationSeconds, modelParams,
+    )
+    if (!options.allowUnavailableModel && !availability.available) {
+      throw dramaStateError(availability.unavailableReasonCode, availability.unavailableReason)
+    }
+    const series = requireDramaSeriesRow(database, canvasId, seriesId)
+    const lookRevision = shot.characterBindings.reduce((current, binding) => Math.max(current, binding.lookRevision), 0)
+    const inputHash = createHash('sha256').update(JSON.stringify({
+      canonRevision: series.activeCanonRevision,
+      characterLookRevision: lookRevision,
+      promptRevision: shot.promptRevision,
+      canvasVersion: Number(database.prepare('SELECT version FROM canvases WHERE id = ?').get(canvasId).version),
+      lineageInputs: [keyframeRenderId],
+    })).digest('hex')
+    return {
+      shotId,
+      keyframeRenderId,
+      canvasNodeId,
+      durationSeconds: shot.durationSeconds,
+      modelType: 'video',
+      providerType,
+      providerId: providerId.trim(),
+      modelId: modelId.trim(),
+      modelParams,
+      inputHash,
+      shot,
+    }
+  }
+
+  function listDramaRenderCandidates(projectId, canvasId) {
+    return enqueue(async () => {
+      const { database } = requireDramaScope(projectId, canvasId)
+      const shots = database.prepare(`
+        SELECT shot.id FROM drama_shots shot
+        JOIN drama_series series ON series.id = shot.series_id
+        WHERE series.canvas_id = ? ORDER BY shot.episode_no, shot.shot_no, shot.id
+      `).all(canvasId)
+      const nodeIds = database.prepare('SELECT id FROM nodes WHERE canvas_id = ? ORDER BY id').all(canvasId)
+      const candidatesByShot = new Map()
+
+      for (const row of shots) {
+        const shot = requireDramaShotRow(database, canvasId, row.id)
+        const accepted = database.prepare(`
+          SELECT id FROM drama_keyframes WHERE shot_id = ? AND status = 'accepted'
+          ORDER BY created_at DESC, id DESC LIMIT 1
+        `).get(shot.id)
+        if (!accepted) continue
+
+        let keyframe
+        try {
+          keyframe = await requireActualAcceptedKeyframe(database, canvasId, shot, accepted.id)
+        } catch (error) {
+          if (['KEYFRAME_OUTPUT_UNAVAILABLE', 'KEYFRAME_NODE_MISMATCH', 'KEYFRAME_STALE'].includes(error?.code)) continue
+          throw error
+        }
+
+        const shotCandidates = []
+        for (const nodeRow of nodeIds) {
+          const videoNode = readDramaNode(database, canvasId, nodeRow.id, '视频')
+          if (videoNode.type !== 'video' || videoNode.creativeType !== 'clip'
+            || videoNode.params.shotId !== shot.id
+            || videoNode.params.keyframeRenderId !== accepted.id
+            || !sameDramaIds(dramaStateStrings(videoNode.params.referencePackIds, '视频角色参考包'), keyframe.referencePackIds)) {
+            continue
+          }
+          const nodeModel = typeof videoNode.params.model === 'string' && videoNode.params.model.trim()
+            ? videoNode.params.model.trim()
+            : typeof videoNode.modelRef === 'string' ? videoNode.modelRef.trim() : ''
+          const provider = nodeModel === AGNES_MODELS.video
+            ? { providerType: 'cloud', providerId: AGNES_PROVIDER_ID, modelId: AGNES_MODELS.video }
+            : nodeModel === ARK_MODELS.video
+              ? { providerType: 'cloud', providerId: ARK_PROVIDER_ID, modelId: ARK_MODELS.video }
+              : null
+          if (!provider) continue
+          const modelParams = { ...videoNode.params }
+          if (videoNode.prompt && modelParams.prompt === undefined) modelParams.prompt = videoNode.prompt
+          try {
+            const normalized = await normalizeDramaRenderJob(database, canvasId, shot.seriesId, shot.episodeNo, {
+              shotId: shot.id,
+              keyframeRenderId: accepted.id,
+              canvasNodeId: videoNode.id,
+              durationSeconds: shot.durationSeconds,
+              modelType: 'video',
+              ...provider,
+              modelParams,
+            }, { allowUnavailableModel: true })
+            shotCandidates.push({
+              seriesId: shot.seriesId,
+              episodeNo: shot.episodeNo,
+              shotId: shot.id,
+              shotNo: shot.shotNo,
+              durationSeconds: normalized.durationSeconds,
+              keyframeRenderId: normalized.keyframeRenderId,
+              canvasNodeId: normalized.canvasNodeId,
+              prompt: normalized.modelParams.prompt,
+              providerType: normalized.providerType,
+              providerId: normalized.providerId,
+              modelId: normalized.modelId,
+              modelParams: normalized.modelParams,
+              ...dramaRenderBatchModelAvailability(
+                normalized.providerType, normalized.providerId, normalized.modelId, normalized.durationSeconds,
+                normalized.modelParams,
+              ),
+            })
+          } catch (error) {
+            if (['VIDEO_NODE_MISMATCH', 'VIDEO_PROMPT_MISMATCH', 'KEYFRAME_NOT_ACCEPTED', 'KEYFRAME_STALE'].includes(error?.code)) continue
+            throw error
+          }
+        }
+        if (shotCandidates.length === 1) candidatesByShot.set(shot.id, shotCandidates[0])
+      }
+      return { items: [...candidatesByShot.values()] }
+    })
+  }
+
+  function renderBatchConfirmationSnapshot(database, batch, operation, jobId) {
+    const expectedStatus = operation === 'rerun' ? 'failed' : 'draft'
+    const jobs = database.prepare(`
+      SELECT * FROM drama_render_jobs WHERE batch_id = ? AND status = ?
+        AND (? IS NULL OR job_id = ?) ORDER BY created_at, job_id
+    `).all(batch.batch_id, expectedStatus, jobId ?? null, jobId ?? null)
+    if (jobs.length === 0) throw dramaStateError('NO_JOBS_TO_SUBMIT', '批次中没有可提交的镜头任务。')
+    if (operation === 'rerun' && (jobs.length !== 1 || Number(jobs[0].attempt) >= 20)) {
+      throw dramaStateError(Number(jobs[0].attempt) >= 20 ? 'RERUN_LIMIT_REACHED' : 'JOB_NOT_FAILED',
+        Number(jobs[0].attempt) >= 20 ? '该镜头已达到局部重跑次数上限。' : '只有失败的镜头任务可以局部重跑。')
+    }
+    const version = Number(database.prepare('SELECT version FROM canvases WHERE id = ?').get(batch.canvas_id)?.version)
+    if (!Number.isSafeInteger(version) || version !== Number(batch.canvas_version)) {
+      throw dramaStateError('VERSION_CONFLICT', '画布版本已变化，请重新检查批次后确认。')
+    }
+    const snapshot = {
+      batchId: batch.batch_id,
+      canvasId: batch.canvas_id,
+      canvasVersion: version,
+      operation,
+      jobId: jobId ?? null,
+      jobs: jobs.map((job) => ({
+        id: job.job_id,
+        shotId: job.shot_id,
+        keyframeRenderId: job.keyframe_render_id,
+        canvasNodeId: job.canvas_node_id,
+        durationSeconds: Number(job.duration_seconds),
+        modelType: job.model_type,
+        providerType: job.provider_type,
+        providerId: job.provider_id,
+        modelId: job.model_id,
+        modelParams: JSON.parse(job.model_params_json),
+        inputHash: job.input_hash,
+        attempt: Number(job.attempt) + (operation === 'rerun' ? 1 : 0),
+        taskIdempotencyKey: dramaRenderTaskIdempotencyKey(
+          batch.batch_id, job.job_id, Number(job.attempt) + (operation === 'rerun' ? 1 : 0),
+        ),
+      })),
+    }
+    const contentHash = createHash('sha256').update(JSON.stringify(canonicalJson(snapshot))).digest('hex')
+    return { snapshot, contentHash }
+  }
+
+  function publicDramaConfirmation(row, token, snapshot) {
+    return {
+      actionId: row.confirmation_id,
+      token,
+      expiresAt: row.expires_at,
+      operation: row.operation,
+      batchId: row.batch_id,
+      canvasVersion: Number(row.canvas_version),
+      contentHash: row.content_hash,
+      jobs: snapshot.jobs.map((job) => ({
+        id: job.id,
+        shotId: job.shotId,
+        canvasNodeId: job.canvasNodeId,
+        keyframeRenderId: job.keyframeRenderId,
+        durationSeconds: job.durationSeconds,
+        providerType: job.providerType,
+        providerId: job.providerId,
+        modelId: job.modelId,
+        prompt: job.modelParams.prompt,
+      })),
+    }
+  }
+
+  async function prepareDramaRenderConfirmation(database, batch, operation, jobId = null) {
+    const { snapshot, contentHash } = renderBatchConfirmationSnapshot(database, batch, operation, jobId)
+    const now = new Date().toISOString()
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
+    const confirmationId = randomUUID()
+    const token = randomBytes(32).toString('hex')
+    await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      database.prepare(`
+        UPDATE drama_render_confirmations SET status = 'invalidated', updated_at = ?
+        WHERE batch_id = ? AND operation = ? AND status IN ('pending', 'accepted')
+      `).run(now, batch.batch_id, operation)
+      database.prepare(`
+        INSERT INTO drama_render_confirmations (
+          confirmation_id, canvas_id, batch_id, operation, job_id, content_hash, snapshot_json, token_hash,
+          canvas_version, status, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+      `).run(confirmationId, batch.canvas_id, batch.batch_id, operation, jobId,
+        contentHash, JSON.stringify(snapshot), createHash('sha256').update(token).digest('hex'), Number(batch.canvas_version),
+        expiresAt, now, now)
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+    const row = database.prepare('SELECT * FROM drama_render_confirmations WHERE confirmation_id = ?').get(confirmationId)
+    return publicDramaConfirmation(row, token, snapshot)
+  }
+
+  async function reconcileDramaRenderBatch(database, batchId) {
+    const batch = database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ?').get(batchId)
+    if (!batch) throw dramaStateError('NOT_FOUND', '渲染批次不存在。')
+    const jobs = database.prepare('SELECT * FROM drama_render_jobs WHERE batch_id = ? ORDER BY created_at, job_id').all(batchId)
+    const updates = []
+    for (const job of jobs) {
+      const stableKey = dramaRenderTaskIdempotencyKey(batchId, job.job_id, Number(job.attempt))
+      const task = job.task_id
+        ? database.prepare('SELECT * FROM tasks WHERE task_id = ? AND canvas_id = ?').get(job.task_id, batch.canvas_id)
+        : database.prepare('SELECT * FROM tasks WHERE idempotency_key = ? AND canvas_id = ?').get(stableKey, batch.canvas_id)
+      if (!task) continue
+      let status = 'running'
+      let errorCode = null
+      if (task.status === 'succeeded') {
+        try {
+          const output = await resolveTaskOutputFile(path.join(active.directory, '.vibepaper'), task.task_id, 'video', task.output_path)
+          if (output.sha256 !== task.output_sha256 || output.sizeBytes !== task.output_size_bytes) throw new Error('mismatch')
+          status = 'completed'
+        } catch {
+          status = 'failed'
+          errorCode = 'TASK_OUTPUT_UNAVAILABLE'
+        }
+      } else if (task.status === 'failed') {
+        status = 'failed'
+        errorCode = task.error_code || 'GENERATION_FAILED'
+      } else if (task.status === 'cancelled') {
+        status = 'failed'
+        errorCode = 'TASK_CANCELLED'
+      } else if (task.status === 'interrupted') {
+        status = 'failed'
+        errorCode = 'TASK_INTERRUPTED'
+      }
+      if (job.task_id !== task.task_id || job.status !== status || job.error_code !== errorCode) {
+        updates.push({ jobId: job.job_id, taskId: task.task_id, status, errorCode })
+      }
+    }
+    if (updates.length > 0) {
+      const now = new Date().toISOString()
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const update = database.prepare(`UPDATE drama_render_jobs SET task_id = ?, status = ?, error_code = ?, updated_at = ? WHERE job_id = ?`)
+        for (const item of updates) update.run(item.taskId, item.status, item.errorCode, now, item.jobId)
+        database.exec('COMMIT')
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    }
+    const statuses = database.prepare('SELECT status FROM drama_render_jobs WHERE batch_id = ?').all(batchId).map((job) => job.status)
+    const completed = statuses.filter((status) => status === 'completed').length
+    const failed = statuses.filter((status) => status === 'failed').length
+    const activeCount = statuses.filter((status) => status === 'running').length
+    let batchStatus
+    if (statuses.length > 0 && completed === statuses.length) batchStatus = 'completed'
+    else if (statuses.length > 0 && failed === statuses.length) batchStatus = 'failed'
+    else if (completed > 0 && failed > 0) batchStatus = 'partial'
+    else if (activeCount > 0) batchStatus = 'running'
+    else batchStatus = batch.status === 'draft' ? 'draft' : 'awaiting_approval'
+    if (batch.status !== batchStatus) {
+      database.prepare('UPDATE drama_render_batches SET status = ?, updated_at = ? WHERE batch_id = ?')
+        .run(batchStatus, new Date().toISOString(), batchId)
+    }
+  }
+
+  async function createDramaRenderBatch(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) throw dramaStateError('INVALID_INPUT', '渲染批次创建请求无效。')
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const idempotencyKey = requireDramaIdempotencyKey(input.idempotencyKey)
+      const seriesId = normalizeCanvasEntityId(input.seriesId, '短剧系列')
+      if (!Number.isSafeInteger(input.episodeNo) || input.episodeNo < 1
+        || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
+        || !Array.isArray(input.jobs) || input.jobs.length < 1 || input.jobs.length > 90) {
+        throw dramaStateError('INVALID_INPUT', '渲染批次需包含 1-90 个镜头及有效版本。')
+      }
+      assertNoCredentialFields(input.jobs)
+      const requestHash = createHash('sha256').update(JSON.stringify(canonicalJson({
+        canvasId, seriesId, episodeNo: input.episodeNo, canvasVersion: input.canvasVersion, jobs: input.jobs,
+      }))).digest('hex')
+      const replay = database.prepare(`SELECT * FROM drama_render_batches WHERE canvas_id = ? AND idempotency_key = ?`)
+        .get(canvasId, idempotencyKey)
+      if (replay) {
+        if (replay.request_hash && replay.request_hash !== requestHash) {
+          throw dramaStateError('IDEMPOTENCY_CONFLICT', 'Idempotency-Key 已用于不同的渲染批次内容。')
+        }
+        await reconcileDramaRenderBatch(database, replay.batch_id)
+        return dramaRenderBatchPayload(database, database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ?').get(replay.batch_id))
+      }
+      const currentVersion = Number(database.prepare('SELECT version FROM canvases WHERE id = ?').get(canvasId)?.version)
+      if (input.canvasVersion !== currentVersion) throw dramaStateError('VERSION_CONFLICT', '画布版本已变化，请重新读取后创建批次。')
+      const series = requireDramaSeriesRow(database, canvasId, seriesId)
+      const normalizedJobs = []
+      const shotIds = new Set()
+      for (const rawJob of input.jobs) {
+        const job = await normalizeDramaRenderJob(database, canvasId, seriesId, input.episodeNo, rawJob)
+        if (shotIds.has(job.shotId)) throw dramaStateError('DUPLICATE_SHOT', '同一批次不能重复包含同一镜头。')
+        shotIds.add(job.shotId)
+        normalizedJobs.push(job)
+      }
+      const batchId = randomUUID()
+      const now = new Date().toISOString()
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        database.prepare(`INSERT INTO drama_render_batches (
+          batch_id, canvas_id, series_id, episode_no, estimated_cost, status, idempotency_key,
+          canvas_version, request_hash, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 0, 'awaiting_approval', ?, ?, ?, ?, ?)`)
+          .run(batchId, canvasId, seriesId, input.episodeNo, idempotencyKey, currentVersion, requestHash, now, now)
+        const insert = database.prepare(`INSERT INTO drama_render_jobs (
+          job_id, batch_id, shot_id, keyframe_render_id, canvas_node_id, duration_seconds, model_type,
+          provider_type, provider_id, model_id, model_params_json, estimated_cost, input_hash, status,
+          task_id, error_code, attempt, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'video', ?, ?, ?, ?, 0, ?, 'draft', NULL, NULL, 0, ?, ?)`)
+        for (const job of normalizedJobs) {
+          insert.run(randomUUID(), batchId, job.shotId, job.keyframeRenderId, job.canvasNodeId,
+            job.durationSeconds, job.providerType, job.providerId, job.modelId,
+            JSON.stringify(job.modelParams), job.inputHash, now, now)
+        }
+        database.exec('COMMIT')
+      } catch (error) {
+        database.exec('ROLLBACK')
+        if (dramaStateUniqueConflict(error)) throw dramaStateError('IDEMPOTENCY_CONFLICT', '渲染批次已存在。')
+        throw error
+      }
+      requireDramaSeriesRow(database, canvasId, series.id)
+      return dramaRenderBatchPayload(database, database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ?').get(batchId))
+    })
+  }
+
+  function prepareDramaRenderBatchConfirmation(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) throw dramaStateError('INVALID_INPUT', '渲染批次确认请求无效。')
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const batchId = normalizeCanvasEntityId(input.batchId, '渲染批次')
+      await reconcileDramaRenderBatch(database, batchId)
+      const batch = database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ? AND canvas_id = ?')
+        .get(batchId, canvasId)
+      if (!batch) throw dramaStateError('NOT_FOUND', '渲染批次不存在。')
+      const operation = input.operation ?? 'submit'
+      if (!['submit', 'rerun'].includes(operation)) throw dramaStateError('INVALID_INPUT', '确认操作无效。')
+      const jobId = operation === 'rerun' ? normalizeCanvasEntityId(input.jobId, '渲染任务') : null
+      const confirmation = await prepareDramaRenderConfirmation(database, batch, operation, jobId)
+      return { batch: dramaRenderBatchPayload(database, batch), confirmation }
+    })
+  }
+
+  function consumeDramaRenderBatchConfirmation(input) {
+    return enqueue(async () => {
+      if (!isRecord(input) || typeof input.actionId !== 'string' || !input.actionId
+        || typeof input.token !== 'string' || !/^[a-f0-9]{64}$/iu.test(input.token)) {
+        throw dramaStateError('CONFIRMATION_REQUIRED', '请先查看并确认本批次的生成内容。')
+      }
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const batchId = normalizeCanvasEntityId(input.batchId, '渲染批次')
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      await reconcileDramaRenderBatch(database, batchId)
+      const batch = database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ? AND canvas_id = ?')
+        .get(batchId, canvasId)
+      const confirmation = database.prepare('SELECT * FROM drama_render_confirmations WHERE confirmation_id = ? AND batch_id = ? AND canvas_id = ?')
+        .get(input.actionId, batchId, canvasId)
+      if (!batch || !confirmation) throw dramaStateError('CONFIRMATION_REQUIRED', '找不到本地渲染确认记录，请重新检查批次。')
+      if (confirmation.status === 'invalidated') {
+        throw dramaStateError('CONFIRMATION_INVALIDATED', '此确认在应用重启后已失效，请重新查看生成内容并确认。')
+      }
+      if (confirmation.status === 'rejected') throw dramaStateError('CONFIRMATION_REJECTED', '此渲染确认已拒绝，请重新查看批次后再确认。')
+      if (confirmation.status === 'expired'
+        || (confirmation.status === 'pending' && Date.parse(confirmation.expires_at) <= Date.now())) {
+        database.prepare("UPDATE drama_render_confirmations SET status = 'expired', updated_at = ? WHERE confirmation_id = ?")
+          .run(new Date().toISOString(), confirmation.confirmation_id)
+        throw dramaStateError('CONFIRMATION_EXPIRED', '渲染确认已过期，请重新检查批次。')
+      }
+      const suppliedHash = createHash('sha256').update(input.token).digest()
+      const expectedHash = Buffer.from(confirmation.token_hash, 'hex')
+      if (expectedHash.length !== suppliedHash.length || !timingSafeEqual(expectedHash, suppliedHash)) {
+        throw dramaStateError('CONFIRMATION_INVALID', '渲染确认凭据无效。')
+      }
+      const currentVersion = Number(database.prepare('SELECT version FROM canvases WHERE id = ?').get(canvasId)?.version)
+      if (input.canvasVersion !== currentVersion || currentVersion !== Number(confirmation.canvas_version)) {
+        database.prepare("UPDATE drama_render_confirmations SET status = 'invalidated', updated_at = ? WHERE confirmation_id = ?")
+          .run(new Date().toISOString(), confirmation.confirmation_id)
+        throw dramaStateError('CONFIRMATION_SCOPE_CHANGED', '画布版本已变化，此确认不能提交，请重新检查批次。')
+      }
+      let snapshot
+      try {
+        snapshot = JSON.parse(confirmation.snapshot_json)
+      } catch {
+        throw dramaStateError('INVALID_STATE', '渲染确认记录损坏，请重新检查批次。')
+      }
+      const contentHash = createHash('sha256').update(JSON.stringify(canonicalJson(snapshot))).digest('hex')
+      if (!isRecord(snapshot) || contentHash !== confirmation.content_hash
+        || snapshot.batchId !== batchId || snapshot.canvasId !== canvasId
+        || snapshot.canvasVersion !== currentVersion || snapshot.operation !== confirmation.operation
+        || snapshot.jobId !== (confirmation.job_id ?? null) || !Array.isArray(snapshot.jobs)) {
+        database.prepare("UPDATE drama_render_confirmations SET status = 'invalidated', updated_at = ? WHERE confirmation_id = ?")
+          .run(new Date().toISOString(), confirmation.confirmation_id)
+        throw dramaStateError('CONFIRMATION_SCOPE_CHANGED', '确认内容与本地记录不匹配，请重新检查批次。')
+      }
+      if (confirmation.status === 'pending') {
+        const current = renderBatchConfirmationSnapshot(database, batch, confirmation.operation, confirmation.job_id)
+        if (current.contentHash !== confirmation.content_hash) {
+          database.prepare("UPDATE drama_render_confirmations SET status = 'invalidated', updated_at = ? WHERE confirmation_id = ?")
+            .run(new Date().toISOString(), confirmation.confirmation_id)
+          throw dramaStateError('CONFIRMATION_SCOPE_CHANGED', '批次内容已变化，此确认不能提交，请重新检查批次。')
+        }
+        database.exec('BEGIN IMMEDIATE')
+        try {
+          if (confirmation.operation === 'rerun') {
+            const target = snapshot.jobs[0]
+            const updated = database.prepare(`UPDATE drama_render_jobs
+              SET status = 'draft', task_id = NULL, error_code = NULL, attempt = ?, updated_at = ?
+              WHERE batch_id = ? AND job_id = ? AND status = 'failed' AND attempt = ?`)
+              .run(target.attempt, new Date().toISOString(), batchId, target.id, target.attempt - 1)
+            if (updated.changes !== 1) throw dramaStateError('CONFIRMATION_SCOPE_CHANGED', '失败任务状态已变化，请重新检查批次。')
+            database.prepare(`UPDATE drama_render_batches SET status = 'awaiting_approval', approval_action_id = NULL,
+              updated_at = ? WHERE batch_id = ?`).run(new Date().toISOString(), batchId)
+          }
+          database.prepare("UPDATE drama_render_confirmations SET status = 'accepted', updated_at = ? WHERE confirmation_id = ? AND status = 'pending'")
+            .run(new Date().toISOString(), confirmation.confirmation_id)
+          database.exec('COMMIT')
+        } catch (error) {
+          database.exec('ROLLBACK')
+          throw error
+        }
+      }
+      return {
+        batch: dramaRenderBatchPayload(database,
+          database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ?').get(batchId)),
+        jobs: snapshot.jobs,
+        confirmation: {
+          actionId: confirmation.confirmation_id,
+          operation: confirmation.operation,
+          canvasVersion: currentVersion,
+          contentHash,
+        },
+      }
+    })
+  }
+
+  function rejectDramaRenderBatchConfirmation(input) {
+    return enqueue(async () => {
+      if (!isRecord(input) || typeof input.actionId !== 'string' || !input.actionId
+        || typeof input.token !== 'string' || !/^[a-f0-9]{64}$/iu.test(input.token)) {
+        throw dramaStateError('CONFIRMATION_REQUIRED', '渲染确认请求无效。')
+      }
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const batchId = normalizeCanvasEntityId(input.batchId, '渲染批次')
+      const confirmation = database.prepare('SELECT * FROM drama_render_confirmations WHERE confirmation_id = ? AND batch_id = ? AND canvas_id = ?')
+        .get(input.actionId, batchId, canvasId)
+      if (!confirmation) throw dramaStateError('CONFIRMATION_REQUIRED', '找不到本地渲染确认记录。')
+      const suppliedHash = createHash('sha256').update(input.token).digest()
+      const expectedHash = Buffer.from(confirmation.token_hash, 'hex')
+      if (expectedHash.length !== suppliedHash.length || !timingSafeEqual(expectedHash, suppliedHash)) {
+        throw dramaStateError('CONFIRMATION_INVALID', '渲染确认凭据无效。')
+      }
+      if (confirmation.status === 'rejected') return { rejected: true }
+      if (confirmation.status === 'accepted') {
+        throw dramaStateError('CONFIRMATION_ALREADY_CONSUMED', '此确认已经消费，不能再拒绝。')
+      }
+      if (confirmation.status === 'invalidated') {
+        throw dramaStateError('CONFIRMATION_INVALIDATED', '此确认已失效，不能再更改状态。')
+      }
+      if (confirmation.status === 'expired' || Date.parse(confirmation.expires_at) <= Date.now()) {
+        if (confirmation.status === 'pending') {
+          database.prepare("UPDATE drama_render_confirmations SET status = 'expired', updated_at = ? WHERE confirmation_id = ? AND status = 'pending'")
+            .run(new Date().toISOString(), confirmation.confirmation_id)
+        }
+        throw dramaStateError('CONFIRMATION_EXPIRED', '渲染确认已过期，请重新检查批次。')
+      }
+      if (confirmation.status !== 'pending') throw dramaStateError('CONFIRMATION_INVALID', '渲染确认状态无效。')
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      const rejected = database.prepare("UPDATE drama_render_confirmations SET status = 'rejected', updated_at = ? WHERE confirmation_id = ? AND status = 'pending'")
+        .run(new Date().toISOString(), confirmation.confirmation_id)
+      if (rejected.changes !== 1) throw dramaStateError('CONFIRMATION_INVALID', '渲染确认状态已变化，请重新检查批次。')
+      return { rejected: true }
+    })
+  }
+
+  function rerunDramaRenderBatchJob(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) throw dramaStateError('INVALID_INPUT', '局部重跑请求无效。')
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const batchId = normalizeCanvasEntityId(input.batchId, '渲染批次')
+      const jobId = normalizeCanvasEntityId(input.jobId, '渲染任务')
+      await reconcileDramaRenderBatch(database, batchId)
+      const batch = database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ? AND canvas_id = ?')
+        .get(batchId, canvasId)
+      const job = database.prepare('SELECT * FROM drama_render_jobs WHERE batch_id = ? AND job_id = ?')
+        .get(batchId, jobId)
+      if (!batch || !job) throw dramaStateError('NOT_FOUND', '渲染批次或任务不存在。')
+      if (job.status !== 'failed') throw dramaStateError('JOB_NOT_FAILED', '只有失败的镜头任务可以局部重跑。')
+      if (Number(job.attempt) >= 20) throw dramaStateError('RERUN_LIMIT_REACHED', '该镜头已达到局部重跑次数上限。')
+      const confirmation = await prepareDramaRenderConfirmation(database, batch, 'rerun', jobId)
+      return { batch: dramaRenderBatchPayload(database, batch), confirmation }
+    })
+  }
+
+  function markDramaRenderBatchTask(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) throw dramaStateError('INVALID_INPUT', '批次任务关联请求无效。')
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const batchId = normalizeCanvasEntityId(input.batchId, '渲染批次')
+      const jobId = normalizeCanvasEntityId(input.jobId, '渲染任务')
+      const taskId = normalizeCanvasEntityId(input.taskId, '本地生成任务')
+      const job = database.prepare('SELECT * FROM drama_render_jobs WHERE batch_id = ? AND job_id = ?')
+        .get(batchId, jobId)
+      const task = database.prepare('SELECT * FROM tasks WHERE task_id = ? AND canvas_id = ?')
+        .get(taskId, canvasId)
+      if (!job || !task) throw dramaStateError('NOT_FOUND', '批次任务或本地任务不存在。')
+      const expectedIdempotencyKey = dramaRenderTaskIdempotencyKey(batchId, jobId, Number(job.attempt))
+      if (task.idempotency_key !== expectedIdempotencyKey || task.node_id !== job.canvas_node_id
+        || task.modality !== 'video' || task.provider_type !== job.provider_type
+        || task.provider_id !== job.provider_id || task.model_id !== job.model_id) {
+        throw dramaStateError('TASK_ASSOCIATION_MISMATCH', '本地任务与已确认的批次镜头不匹配。')
+      }
+      database.prepare('UPDATE drama_render_jobs SET task_id = ?, updated_at = ? WHERE batch_id = ? AND job_id = ?')
+        .run(taskId, new Date().toISOString(), batchId, jobId)
+      await reconcileDramaRenderBatch(database, batchId)
+      return dramaRenderBatchPayload(database, database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ?').get(batchId))
+    })
+  }
+
+  function markDramaRenderBatchJobFailure(input) {
+    return enqueue(async () => {
+      if (!isRecord(input) || typeof input.errorCode !== 'string' || !/^[A-Z0-9_]{1,120}$/u.test(input.errorCode)) {
+        throw dramaStateError('INVALID_INPUT', '批次任务失败信息无效。')
+      }
+      const { database } = requireDramaScope(input.projectId, input.canvasId)
+      const batchId = normalizeCanvasEntityId(input.batchId, '渲染批次')
+      const jobId = normalizeCanvasEntityId(input.jobId, '渲染任务')
+      database.prepare(`UPDATE drama_render_jobs SET status = 'failed', error_code = ?, updated_at = ?
+        WHERE batch_id = ? AND job_id = ? AND status = 'draft'`)
+        .run(input.errorCode, new Date().toISOString(), batchId, jobId)
+      await reconcileDramaRenderBatch(database, batchId)
+      return dramaRenderBatchPayload(database, database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ?').get(batchId))
+    })
+  }
+
+  function listDramaRenderBatches(projectId, canvasId) {
+    return enqueue(async () => {
+      const { database } = requireDramaScope(projectId, canvasId)
+      const rows = database.prepare(`
         SELECT * FROM drama_render_batches WHERE canvas_id = ?
         ORDER BY created_at DESC, batch_id DESC
       `).all(canvasId)
-      return { items: rows.map((row) => dramaRenderBatchPayload(active.database, row)) }
+      for (const row of rows) await reconcileDramaRenderBatch(database, row.batch_id)
+      return { items: rows.map((row) => dramaRenderBatchPayload(database,
+        database.prepare('SELECT * FROM drama_render_batches WHERE batch_id = ?').get(row.batch_id))) }
     })
   }
 
   function getDramaRenderBatch(projectId, canvasId, batchId) {
-    return enqueue(() => {
-      if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
-        throw new Error('当前项目已更改，请重新打开画布。')
-      }
+    return enqueue(async () => {
+      const { database } = requireDramaScope(projectId, canvasId)
       const id = normalizeCanvasEntityId(batchId, '渲染批次')
-      const row = active.database.prepare(`
-        SELECT * FROM drama_render_batches WHERE canvas_id = ? AND batch_id = ?
-      `).get(canvasId, id)
-      if (!row) throw new Error('渲染批次不存在。')
-      return dramaRenderBatchPayload(active.database, row)
+      await reconcileDramaRenderBatch(database, id)
+      const row = database.prepare('SELECT * FROM drama_render_batches WHERE canvas_id = ? AND batch_id = ?')
+        .get(canvasId, id)
+      if (!row) throw dramaStateError('NOT_FOUND', '渲染批次不存在。')
+      return dramaRenderBatchPayload(database, row)
     })
   }
 
@@ -7157,8 +8035,16 @@ function createLocalProjectStore() {
     saveTaskOutputToLibrary,
     listAssets,
     listDramaAssets,
+    listDramaRenderCandidates,
     listDramaRenderBatches,
     getDramaRenderBatch,
+    createDramaRenderBatch,
+    prepareDramaRenderBatchConfirmation,
+    consumeDramaRenderBatchConfirmation,
+    rejectDramaRenderBatchConfirmation,
+    rerunDramaRenderBatchJob,
+    markDramaRenderBatchTask,
+    markDramaRenderBatchJobFailure,
     createDramaSeries,
     createDramaCharacter,
     addDramaReferencePack,

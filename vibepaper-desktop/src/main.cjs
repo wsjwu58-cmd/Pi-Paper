@@ -36,6 +36,7 @@ const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = requ
 const { ALLOWED_AGENT_CORE_METHODS } = require('./agent-local-tools.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
 const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
+const { createDramaBatchTaskInput } = require('./drama-render-batch.cjs')
 
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
@@ -1175,6 +1176,89 @@ async function assertActiveAssetProject(projectId) {
   if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
 }
 
+async function createGenerationTaskInStore(input) {
+  const modalities = ['text', 'image', 'audio', 'video']
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
+    || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
+    || typeof input.nodeId !== 'string' || !input.nodeId
+    || typeof input.prompt !== 'string' || (input.modality !== 'audio' && input.prompt.trim().length === 0)
+    || input.prompt.length > 200_000 || typeof input.idempotencyKey !== 'string'
+    || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
+    || !modalities.includes(input.modality)
+    || !['local', 'cloud'].includes(input.providerType)
+    || input.providerId !== undefined && ![AGNES_PROVIDER_ID, ARK_PROVIDER_ID].includes(input.providerId)
+    || input.modelId !== undefined && (typeof input.modelId !== 'string' || !input.modelId.trim() || input.modelId.length > 256)
+    || (input.parameters !== undefined && (!input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)))) {
+    throw codedError('INVALID_INPUT', '生成任务请求无效。')
+  }
+  let providerId
+  let modelId
+  if (input.providerType === 'local') {
+    if (input.modality === 'audio') {
+      providerId = SAPI_PROVIDER_ID
+      modelId = SAPI_MODEL_ID
+    } else if (['image', 'video'].includes(input.modality)
+      && isLocalMediaOperation(input.modality, input.parameters?.operation)) {
+      if (!parseLocalMediaReference(input.parameters?.sourceUrl)) {
+        throw codedError('LOCAL_MEDIA_SOURCE_INVALID')
+      }
+      providerId = LOCAL_MEDIA_PROVIDER_ID
+      modelId = LOCAL_MEDIA_MODEL_ID
+    } else {
+      if (input.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
+      const model = await getLocalTextModelConfig()
+      if (!model) throw codedError('LOCAL_MODEL_CONFIGURATION_MISSING', '请先配置本地文本模型。')
+      providerId = model.providerId
+      modelId = model.modelId
+    }
+  } else {
+    if (input.providerId === ARK_PROVIDER_ID) {
+      if (input.modality !== 'video') throw codedError('MODEL_UNAVAILABLE', '火山方舟当前仅接入视频生成。')
+      const catalog = await getArkModelSettings()
+      if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING', '尚未配置火山方舟 API Key。')
+      modelId = input.modelId ?? catalog.models.video
+      if (modelId !== catalog.models.video) throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
+      providerId = ARK_PROVIDER_ID
+    } else {
+      if (input.modality === 'audio') throw codedError('MODEL_UNAVAILABLE')
+      const catalog = await getAgnesModelSettings()
+      if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING')
+      modelId = AGNES_MODELS[input.modality]
+      if (input.modelId !== undefined && input.modelId !== modelId) throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
+      providerId = AGNES_PROVIDER_ID
+    }
+  }
+  const parameters = { ...(input.parameters ?? {}) }
+  if (input.modality !== 'audio' || input.prompt.trim() || !String(parameters.prompt ?? '').trim()) {
+    parameters.prompt = input.prompt
+  }
+  return localCore.request('task:create', {
+    projectId: input.projectId,
+    canvasId: input.canvasId,
+    canvasVersion: input.canvasVersion,
+    nodeId: input.nodeId,
+    modality: input.modality,
+    providerType: input.providerType,
+    providerId,
+    modelId,
+    idempotencyKey: input.idempotencyKey,
+    parameters,
+  })
+}
+
+function dramaRenderBatchScope(input, label) {
+  assertGroupStackRequest(input, label, { stringFields: [
+    'batchId', 'idempotencyKey', 'seriesId', 'operation', 'jobId', 'actionId', 'token',
+  ] })
+}
+
+function dramaBatchFailureCode(error) {
+  return typeof error?.code === 'string' && /^[A-Z0-9_]{1,120}$/u.test(error.code)
+    ? error.code
+    : 'GENERATION_UNAVAILABLE'
+}
+
 const SAFE_LOCAL_ASSET_IMPORT_ERRORS = new Set([
   '当前项目已更改，无法导入素材。',
   '所选素材文件无效。',
@@ -1605,6 +1689,133 @@ function registerProjectIpc() {
     await assertActiveAssetProject(projectId)
     return localCore.request('drama:render-batches:get', { projectId, canvasId, batchId })
   })
+  ipcMain.handle('desktop:drama:render-batches:candidates:list', async (event, projectId, canvasId) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200
+      || typeof canvasId !== 'string' || canvasId.length === 0 || canvasId.length > 200) {
+      throw new Error('渲染候选查询请求无效。')
+    }
+    await assertActiveAssetProject(projectId)
+    return localCore.request('drama:render-batches:candidates:list', { projectId, canvasId })
+  })
+  ipcMain.handle('desktop:drama:render-batches:create', async (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    dramaRenderBatchScope(input, '渲染批次创建')
+    if (typeof input.seriesId !== 'string' || input.seriesId.length === 0 || input.seriesId.length > 200
+      || !Number.isSafeInteger(input.episodeNo) || input.episodeNo < 1
+      || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
+      || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.trim().length < 1
+      || input.idempotencyKey.length > 128 || !Array.isArray(input.jobs) || input.jobs.length < 1 || input.jobs.length > 90) {
+      throw codedError('INVALID_INPUT', '渲染批次创建请求无效。')
+    }
+    await assertActiveAssetProject(input.projectId)
+    return localCore.request('drama:render-batches:create', input)
+  })
+  ipcMain.handle('desktop:drama:render-batches:confirmation:prepare', async (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    dramaRenderBatchScope(input, '渲染批次确认')
+    if (typeof input.batchId !== 'string' || input.batchId.length === 0 || input.batchId.length > 200
+      || (input.operation !== undefined && !['submit', 'rerun'].includes(input.operation))
+      || (input.jobId !== undefined && (typeof input.jobId !== 'string' || input.jobId.length === 0 || input.jobId.length > 200))) {
+      throw codedError('INVALID_INPUT', '渲染批次确认请求无效。')
+    }
+    await assertActiveAssetProject(input.projectId)
+    return localCore.request('drama:render-batches:confirmation:prepare', input)
+  })
+  ipcMain.handle('desktop:drama:render-batches:confirmation:reject', async (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    dramaRenderBatchScope(input, '渲染确认拒绝')
+    if (typeof input.batchId !== 'string' || input.batchId.length === 0 || input.batchId.length > 200
+      || typeof input.actionId !== 'string' || input.actionId.length === 0 || input.actionId.length > 200
+      || typeof input.token !== 'string' || input.token.length === 0 || input.token.length > 4096) {
+      throw codedError('INVALID_INPUT', '渲染确认拒绝请求无效。')
+    }
+    await assertActiveAssetProject(input.projectId)
+    return localCore.request('drama:render-batches:confirmation:reject', input)
+  })
+  ipcMain.handle('desktop:drama:render-batches:rerun', async (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    dramaRenderBatchScope(input, '局部重跑')
+    if (typeof input.batchId !== 'string' || input.batchId.length === 0 || input.batchId.length > 200
+      || typeof input.jobId !== 'string' || input.jobId.length === 0 || input.jobId.length > 200) {
+      throw codedError('INVALID_INPUT', '局部重跑请求无效。')
+    }
+    await assertActiveAssetProject(input.projectId)
+    return localCore.request('drama:render-batches:rerun', input)
+  })
+  ipcMain.handle('desktop:drama:render-batches:submit', async (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    dramaRenderBatchScope(input, '渲染批次提交')
+    if (typeof input.batchId !== 'string' || input.batchId.length === 0 || input.batchId.length > 200
+      || typeof input.actionId !== 'string' || input.actionId.length === 0 || input.actionId.length > 200
+      || typeof input.token !== 'string' || input.token.length === 0 || input.token.length > 4096
+      || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0) {
+      throw codedError('INVALID_INPUT', '渲染批次提交请求无效。')
+    }
+    beginTaskCreation()
+    try {
+      await assertActiveAssetProject(input.projectId)
+      const consumed = await localCore.request('drama:render-batches:confirmation:consume', input)
+      if (!consumed || !Array.isArray(consumed.jobs) || consumed.jobs.length === 0
+        || !Number.isSafeInteger(consumed.confirmation?.canvasVersion)) {
+        throw codedError('CONFIRMATION_INVALID', '本地渲染确认没有可提交的任务。')
+      }
+      let createdTask = false
+      let markerError = null
+      for (const job of consumed.jobs) {
+        try {
+          const taskInput = createDramaBatchTaskInput({
+            projectId: input.projectId,
+            canvasId: input.canvasId,
+            batchId: input.batchId,
+            canvasVersion: consumed.confirmation.canvasVersion,
+            job,
+          })
+          if (job.taskIdempotencyKey !== undefined && job.taskIdempotencyKey !== taskInput.idempotencyKey) {
+            throw codedError('TASK_ASSOCIATION_MISMATCH', '已确认的任务幂等键与批次不匹配。')
+          }
+          const task = await createGenerationTaskInStore(taskInput)
+          if (!task?.taskId) throw codedError('TASK_CREATE_FAILED', '本地视频任务没有创建成功。')
+          createdTask = true
+          await localCore.request('drama:render-batches:mark-task', {
+            projectId: input.projectId,
+            canvasId: input.canvasId,
+            batchId: input.batchId,
+            jobId: job.id,
+            taskId: task.taskId,
+          })
+        } catch (error) {
+          const errorCode = dramaBatchFailureCode(error)
+          try {
+            await localCore.request('drama:render-batches:mark-job-failure', {
+              projectId: input.projectId,
+              canvasId: input.canvasId,
+              batchId: input.batchId,
+              jobId: job.id,
+              errorCode,
+            })
+          } catch (markError) {
+            markerError ??= markError
+          }
+        }
+      }
+      if (createdTask) void scheduleTaskPump(input.projectId)
+      if (markerError) throw codedError('BATCH_STATUS_WRITE_FAILED', '部分镜头任务已提交，但批次状态写入失败；刷新批次可从本地任务账本恢复状态。')
+      return localCore.request('drama:render-batches:get', {
+        projectId: input.projectId,
+        canvasId: input.canvasId,
+        batchId: input.batchId,
+      })
+    } finally {
+      finishTaskCreation()
+    }
+  })
   ipcMain.handle('desktop:render-reviews:list', async (event, projectId, canvasId, targetNodeId) => {
     assertTrustedSender(event)
     if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
@@ -1993,72 +2204,7 @@ function registerProjectIpc() {
     if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
     beginTaskCreation()
     try {
-      const modalities = ['text', 'image', 'audio', 'video']
-      if (!input || typeof input !== 'object' || Array.isArray(input)
-        || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
-        || !Number.isSafeInteger(input.canvasVersion) || typeof input.nodeId !== 'string'
-        || typeof input.prompt !== 'string' || (input.modality !== 'audio' && input.prompt.trim().length === 0)
-        || input.prompt.length > 200_000 || typeof input.idempotencyKey !== 'string'
-        || !modalities.includes(input.modality)
-        || !['local', 'cloud'].includes(input.providerType)
-        || input.providerId !== undefined && ![AGNES_PROVIDER_ID, ARK_PROVIDER_ID].includes(input.providerId)
-        || input.modelId !== undefined && (typeof input.modelId !== 'string' || !input.modelId.trim() || input.modelId.length > 256)
-        || (input.parameters !== undefined && (!input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)))) {
-        throw new Error('生成任务请求无效。')
-      }
-      let providerId
-      let modelId
-      if (input.providerType === 'local') {
-        if (input.modality === 'audio') {
-          providerId = SAPI_PROVIDER_ID
-          modelId = SAPI_MODEL_ID
-        } else if (['image', 'video'].includes(input.modality)
-          && isLocalMediaOperation(input.modality, input.parameters?.operation)) {
-          if (!parseLocalMediaReference(input.parameters?.sourceUrl)) {
-            throw codedError('LOCAL_MEDIA_SOURCE_INVALID')
-          }
-          providerId = LOCAL_MEDIA_PROVIDER_ID
-          modelId = LOCAL_MEDIA_MODEL_ID
-        } else {
-          if (input.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
-          const model = await getLocalTextModelConfig()
-          if (!model) throw new Error('请先配置本地文本模型。')
-          providerId = model.providerId
-          modelId = model.modelId
-        }
-      } else {
-        if (input.providerId === ARK_PROVIDER_ID) {
-          if (input.modality !== 'video') throw codedError('MODEL_UNAVAILABLE', '火山方舟当前仅接入视频生成。')
-          const catalog = await getArkModelSettings()
-          if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING', '尚未配置火山方舟 API Key。')
-          modelId = input.modelId ?? catalog.models.video
-          if (modelId !== catalog.models.video) throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
-          providerId = ARK_PROVIDER_ID
-        } else {
-          if (input.modality === 'audio') throw codedError('MODEL_UNAVAILABLE')
-          const catalog = await getAgnesModelSettings()
-          if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING')
-          modelId = AGNES_MODELS[input.modality]
-          if (input.modelId !== undefined && input.modelId !== modelId) throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
-          providerId = AGNES_PROVIDER_ID
-        }
-      }
-      const parameters = { ...(input.parameters ?? {}) }
-      if (input.modality !== 'audio' || input.prompt.trim() || !String(parameters.prompt ?? '').trim()) {
-        parameters.prompt = input.prompt
-      }
-      const task = await localCore.request('task:create', {
-        projectId: input.projectId,
-        canvasId: input.canvasId,
-        canvasVersion: input.canvasVersion,
-        nodeId: input.nodeId,
-        modality: input.modality,
-        providerType: input.providerType,
-        providerId,
-        modelId,
-        idempotencyKey: input.idempotencyKey,
-        parameters,
-      })
+      const task = await createGenerationTaskInStore(input)
       void scheduleTaskPump(input.projectId)
       return task
     } finally {

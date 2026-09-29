@@ -162,13 +162,81 @@ export interface DesktopDramaRenderJob {
   keyframeRenderId: string
   canvasNodeId?: string
   durationSeconds: number
-  modelType: string
+  modelType: 'video'
+  providerType: 'local' | 'cloud'
+  providerId: string
+  modelId: string
   modelParams: Record<string, unknown>
   estimatedCost: number
   inputHash: string
   status: 'draft' | 'running' | 'completed' | 'failed'
   taskId?: string
   errorCode?: string
+  attempt: number
+}
+
+export interface DesktopDramaRenderCandidate {
+  seriesId: string
+  episodeNo: number
+  shotId: string
+  shotNo: number
+  durationSeconds: number
+  keyframeRenderId: string
+  canvasNodeId: string
+  prompt: string
+  providerType: 'local' | 'cloud'
+  providerId: string
+  modelId: string
+  modelParams: Record<string, unknown>
+  available: boolean
+  unavailableReasonCode?: string | null
+  unavailableReason?: string | null
+}
+
+export interface DesktopDramaRenderConfirmationJob {
+  id: string
+  shotId: string
+  canvasNodeId: string
+  keyframeRenderId: string
+  durationSeconds: number
+  providerType: 'local' | 'cloud'
+  providerId: string
+  modelId: string
+  prompt: string
+}
+
+export interface DesktopDramaRenderConfirmation {
+  actionId: string
+  token: string
+  expiresAt: string
+  operation: 'submit' | 'rerun'
+  batchId: string
+  canvasVersion: number
+  contentHash: string
+  jobs: DesktopDramaRenderConfirmationJob[]
+}
+
+export interface DesktopDramaRenderBatchCreateInput extends DesktopCanvasScope {
+  idempotencyKey: string
+  seriesId: string
+  episodeNo: number
+  canvasVersion: number
+  jobs: Array<Pick<DesktopDramaRenderCandidate,
+    'shotId' | 'keyframeRenderId' | 'canvasNodeId' | 'durationSeconds' | 'providerType' | 'providerId' | 'modelId' | 'modelParams'
+  > & { modelType: 'video' }>
+}
+
+export interface DesktopDramaRenderBatchConfirmationInput extends DesktopCanvasScope {
+  batchId: string
+  operation?: 'submit' | 'rerun'
+  jobId?: string
+}
+
+export interface DesktopDramaRenderBatchActionInput extends DesktopCanvasScope {
+  batchId: string
+  actionId: string
+  token: string
+  canvasVersion: number
 }
 
 export interface DesktopDramaRenderBatch {
@@ -647,6 +715,18 @@ export interface DesktopBridge {
   staleDramaLineagesForCharacter(input: DesktopCanvasScope & { idempotencyKey: string; characterId: string }): Promise<string[]>
   listDramaRenderBatches(projectId: string, canvasId: string): Promise<{ items: DesktopDramaRenderBatch[] }>
   getDramaRenderBatch(projectId: string, canvasId: string, batchId: string): Promise<DesktopDramaRenderBatch>
+  listDramaRenderCandidates(projectId: string, canvasId: string): Promise<{ items: DesktopDramaRenderCandidate[] }>
+  createDramaRenderBatch(input: DesktopDramaRenderBatchCreateInput): Promise<DesktopDramaRenderBatch>
+  prepareDramaRenderBatchConfirmation(input: DesktopDramaRenderBatchConfirmationInput): Promise<{
+    batch: DesktopDramaRenderBatch
+    confirmation: DesktopDramaRenderConfirmation
+  }>
+  submitDramaRenderBatch(input: DesktopDramaRenderBatchActionInput): Promise<DesktopDramaRenderBatch>
+  rejectDramaRenderBatchConfirmation(input: Omit<DesktopDramaRenderBatchActionInput, 'canvasVersion'>): Promise<{ rejected: true }>
+  rerunDramaRenderBatchJob(input: DesktopCanvasScope & { batchId: string; jobId: string }): Promise<{
+    batch: DesktopDramaRenderBatch
+    confirmation: DesktopDramaRenderConfirmation
+  }>
   listRenderReviews(projectId: string, canvasId: string, targetNodeId?: string): Promise<{ items: DesktopRenderReview[] }>
   createRenderReview(input: DesktopCanvasScope & {
     targetNodeId: string

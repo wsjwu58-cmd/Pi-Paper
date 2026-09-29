@@ -780,7 +780,7 @@ test('project schema v12 migrates director capture gallery references with a rol
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   let migrationBackup
   try {
-    assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 16)
+    assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 17)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const primaryKeyColumns = migratedDatabase.prepare('PRAGMA table_info(asset_references)').all()
       .filter((column) => column.pk > 0)
@@ -862,7 +862,7 @@ test('project schema v9 enables validated MP3 assets with a v9 rollback snapshot
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 16)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 17)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const schema = migratedDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql
     assert.match(schema, /audio\/mpeg/u)
@@ -915,7 +915,7 @@ test('project schema v10 expands asset MIME types through v13 and keeps v10 and 
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 16)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 17)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     assert.match(migratedDatabase.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").get().sql, /video\/webm/u)
     assert.equal(migratedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 1)
@@ -1188,7 +1188,7 @@ test('project schema v5 migrates assets and references to soft-delete metadata b
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 16)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 17)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const columns = migratedDatabase.prepare('PRAGMA table_info(assets)').all().map((row) => row.name)
     assert.ok(columns.includes('updated_at'))
@@ -1251,7 +1251,7 @@ test('project schema v7 migrates image assets and references through v10 with ro
 
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 16)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 17)
     assert.deepEqual(migratedDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     const backupName = (await fs.readdir(path.join(directory, '.vibepaper', 'backups')))
       .find((name) => name.startsWith('project-schema-v7-'))
@@ -1278,7 +1278,7 @@ test('project schema v8 backfills only legacy params asset references and preser
   const migratedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
   let v8BackupName
   try {
-    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 16)
+    assert.equal(Number(migratedDatabase.prepare('PRAGMA user_version').get().user_version), 17)
     assert.deepEqual(migratedDatabase.prepare(`
       SELECT node_id, asset_id FROM asset_references WHERE canvas_id = ? ORDER BY node_id
     `).all(fixture.project.canvasId).map((row) => ({ ...row })), [
@@ -1308,7 +1308,7 @@ test('project schema v8 backfills only legacy params asset references and preser
   await fixture.store.openProject(fixture.directory)
   const reopenedDatabase = new DatabaseSync(fixture.databasePath, { readOnly: true })
   try {
-    assert.equal(Number(reopenedDatabase.prepare('PRAGMA user_version').get().user_version), 16)
+    assert.equal(Number(reopenedDatabase.prepare('PRAGMA user_version').get().user_version), 17)
     assert.equal(reopenedDatabase.prepare('SELECT COUNT(*) AS count FROM asset_references').get().count, 2)
   } finally {
     reopenedDatabase.close()
@@ -1477,7 +1477,7 @@ test('restoring a v8 backup with a missing legacy params reference migrates the 
   const restoredDatabasePath = path.join(restored.directory, '.vibepaper', 'project.sqlite')
   const restoredDatabase = new DatabaseSync(restoredDatabasePath, { readOnly: true })
   try {
-    assert.equal(Number(restoredDatabase.prepare('PRAGMA user_version').get().user_version), 16)
+    assert.equal(Number(restoredDatabase.prepare('PRAGMA user_version').get().user_version), 17)
     assert.deepEqual(restoredDatabase.prepare('PRAGMA foreign_key_check').all(), [])
     assert.deepEqual(restoredDatabase.prepare('SELECT node_id, asset_id FROM asset_references').all().map((row) => ({ ...row })), [
       { node_id: node.node.id, asset_id: asset.assetId },

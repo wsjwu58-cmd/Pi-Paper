@@ -14,9 +14,12 @@ const {
   WorkerFailure,
   buildAgnesImageRequest,
   buildAgnesVideoRequest,
+  buildArkVideoRequest,
   runImageTask,
 } = require('../src/generation-worker.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('../src/agnes-model-catalog.cjs')
+const { ARK_MODELS, ARK_PROVIDER_ID } = require('../src/ark-model-catalog.cjs')
+const { createDramaBatchTaskInput } = require('../src/drama-render-batch.cjs')
 
 const ASSET_ID = '22222222-2222-4222-8222-222222222222'
 const OUTPUT_ID = '33333333-3333-4333-8333-333333333333'
@@ -129,6 +132,82 @@ test('local asset and task-output URIs resolve to their actual bounded image byt
   })
   assert.equal(sentRequest.url, `${AGNES_API_BASE_URL}/images/generations`)
   assert.deepEqual(sentRequest.payload.extra_body, imageRequest.extra_body)
+})
+
+test('confirmed batch first-frame task URI resolves for Agnes and Ark video requests', async (t) => {
+  const { store, directory, project } = await openProject(t)
+  await store.saveCanvas({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    expectedVersion: 0,
+    nodes: [
+      { id: 'keyframe-node', type: 'image', position: { x: 0, y: 0 }, data: { creativeType: 'keyframe', params: {} } },
+      { id: 'video-node', type: 'video', position: { x: 200, y: 0 }, data: { creativeType: 'clip', params: {} } },
+    ],
+    edges: [],
+  })
+  const keyframeTask = await store.createTask({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    canvasVersion: 1,
+    nodeId: 'keyframe-node',
+    modality: 'image',
+    providerType: 'cloud',
+    providerId: AGNES_PROVIDER_ID,
+    modelId: AGNES_MODELS.image,
+    idempotencyKey: 'accepted-keyframe-task',
+    parameters: { prompt: 'accepted keyframe fixture' },
+  })
+  const claimed = await store.claimNextTask(project.projectId)
+  assert.equal(claimed.task.taskId, keyframeTask.taskId)
+  await fs.writeFile(path.join(claimed.outputDirectory, 'result.png'), RESULT_BYTES)
+  await store.recordTaskSucceeded(project.projectId, keyframeTask.taskId, `generated/${keyframeTask.taskId}/result.png`)
+
+  const taskInput = createDramaBatchTaskInput({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    batchId: 'batch-1',
+    canvasVersion: 1,
+    job: {
+      id: 'job-1', attempt: 0, canvasNodeId: 'video-node', keyframeRenderId: keyframeTask.taskId,
+      providerType: 'cloud', providerId: AGNES_PROVIDER_ID, modelId: AGNES_MODELS.video,
+      modelParams: { prompt: 'Continue the accepted frame', seconds: 4, aspect_ratio: '9:16' },
+    },
+  })
+  assert.equal(taskInput.idempotencyKey, 'drama-batch:batch-1:job:job-1:attempt:0')
+  assert.equal(taskInput.parameters.firstFrameUrl, `vibe://app/tasks/${keyframeTask.taskId}/output`)
+
+  const localCore = {
+    request(method, payload) {
+      if (method === 'task:resolve-output-preview') {
+        return store.resolveTaskOutputForPreview(payload.projectId, payload.taskId)
+      }
+      throw new Error(`Unexpected Local Core method: ${method}`)
+    },
+  }
+  const resolvedParameters = await resolveGenerationMediaReferences(taskInput.parameters, {
+    localCore,
+    projectId: project.projectId,
+    projectDirectory: directory,
+  })
+  const expectedImage = `data:image/png;base64,${RESULT_BYTES.toString('base64')}`
+  assert.equal(resolvedParameters.firstFrameUrl, expectedImage)
+
+  const agnesRequest = buildAgnesVideoRequest({
+    ...generationJob('video', resolvedParameters),
+    parameters: resolvedParameters,
+  })
+  assert.deepEqual(agnesRequest.extra_body, { image: [expectedImage], mode: 'keyframes' })
+
+  const arkRequest = buildArkVideoRequest({
+    ...generationJob('video', resolvedParameters),
+    providerId: ARK_PROVIDER_ID,
+    modelId: ARK_MODELS.video,
+    parameters: { ...resolvedParameters, seconds: 4 },
+  })
+  assert.equal(arkRequest.content[1].type, 'image_url')
+  assert.equal(arkRequest.content[1].image_url.url, expectedImage)
+  assert.doesNotMatch(arkRequest.content[1].image_url.url, /^vibe:/u)
 })
 
 test('local reference resolver rejects forged URLs, untrusted paths, MIME mismatches, and oversized images', async (t) => {

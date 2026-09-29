@@ -418,30 +418,117 @@ export async function api<T = unknown>(
       }
     }
 
-    const renderBatchListMatch = /^\/drama\/render-batches$/u.test(pathname)
-    const renderBatchDetailMatch = /^\/drama\/render-batches\/([^/]+)$/u.exec(pathname)
-    if (renderBatchListMatch || renderBatchDetailMatch || pathname.startsWith('/drama/render-batches/')) {
-      if (method !== 'GET') {
-        throw new ApiError(
-          0,
-          'DESKTOP_RENDER_BATCH_UNAVAILABLE',
-          '桌面本地没有可验证的已接受关键帧记录，也未接入批次确认、任务提交、状态同步和重跑流程。',
-        )
-      }
+    if (pathname === '/drama/render-batches/candidates') {
+      if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '渲染候选只支持读取。')
       const project = await bridge.getActiveProject()
       if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
       const requestedCanvasId = url.searchParams.get('canvasId')
       if (requestedCanvasId && requestedCanvasId !== project.canvasId) {
         throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
       }
-      if (renderBatchDetailMatch) {
-        let batchId: string
-        try { batchId = decodeURIComponent(renderBatchDetailMatch[1]) } catch {
-          throw new ApiError(400, 'DRAMA_BATCH_INPUT_INVALID', '渲染批次标识无效。')
-        }
-        return await bridge.getDramaRenderBatch(project.projectId, project.canvasId, batchId) as T
+      return await bridge.listDramaRenderCandidates(project.projectId, project.canvasId) as T
+    }
+
+    const renderBatchListMatch = pathname === '/drama/render-batches'
+    const renderBatchDetailMatch = /^\/drama\/render-batches\/([^/]+)$/u.exec(pathname)
+    const renderBatchActionMatch = /^\/drama\/render-batches\/([^/]+)\/(prepare|submit|reject)$/u.exec(pathname)
+    const renderBatchRerunMatch = /^\/drama\/render-batches\/([^/]+)\/jobs\/([^/]+)\/rerun$/u.exec(pathname)
+    if (renderBatchListMatch || renderBatchDetailMatch || renderBatchActionMatch || renderBatchRerunMatch) {
+      const project = await bridge.getActiveProject()
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      const requestedCanvasId = url.searchParams.get('canvasId')
+      if (requestedCanvasId && requestedCanvasId !== project.canvasId) {
+        throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
       }
-      return await bridge.listDramaRenderBatches(project.projectId, project.canvasId) as T
+      const scope = { projectId: project.projectId, canvasId: project.canvasId }
+      if (method === 'GET') {
+        if (renderBatchDetailMatch) {
+          const batchId = localDramaPathId(renderBatchDetailMatch[1], '渲染批次')
+          return await bridge.getDramaRenderBatch(project.projectId, project.canvasId, batchId) as T
+        }
+        if (renderBatchListMatch) return await bridge.listDramaRenderBatches(project.projectId, project.canvasId) as T
+        throw new ApiError(405, 'METHOD_NOT_ALLOWED', '该渲染批次接口不支持读取。')
+      }
+
+      if (renderBatchListMatch && method === 'POST') {
+        const body = parseLocalJsonObject(options, '渲染批次创建')
+        if (body.canvasId !== undefined && String(body.canvasId) !== project.canvasId) {
+          throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+        }
+        const idempotencyKey = options.idempotencyKey ?? headers['Idempotency-Key']
+        if (!idempotencyKey) throw new ApiError(400, 'INVALID_INPUT', 'Idempotency-Key 无效。')
+        if (!Array.isArray(body.jobs) || body.jobs.length < 1 || body.jobs.length > 90) {
+          throw new ApiError(400, 'INVALID_INPUT', '渲染批次需包含 1-90 个镜头。')
+        }
+        const jobs = body.jobs.map((value) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            throw new ApiError(400, 'INVALID_INPUT', '渲染批次镜头参数无效。')
+          }
+          const job = value as Record<string, unknown>
+          if (!job.modelParams || typeof job.modelParams !== 'object' || Array.isArray(job.modelParams)) {
+            throw new ApiError(400, 'INVALID_INPUT', '渲染批次模型参数无效。')
+          }
+          return {
+            shotId: localDramaRequiredText(job.shotId, 'shotId'),
+            keyframeRenderId: localDramaRequiredText(job.keyframeRenderId, 'keyframeRenderId'),
+            canvasNodeId: localDramaRequiredText(job.canvasNodeId, 'canvasNodeId'),
+            durationSeconds: localDramaInteger(job.durationSeconds, 'durationSeconds'),
+            modelType: 'video' as const,
+            providerType: localDramaStatus(job.providerType, ['local', 'cloud'] as const),
+            providerId: localDramaRequiredText(job.providerId, 'providerId'),
+            modelId: localDramaRequiredText(job.modelId, 'modelId'),
+            modelParams: job.modelParams as Record<string, unknown>,
+          }
+        })
+        const canvas = await bridge.loadCanvas(project.projectId, project.canvasId)
+        if (body.canvasVersion !== undefined && body.canvasVersion !== canvas.version) {
+          throw new ApiError(409, 'VERSION_CONFLICT', '画布已变化，请刷新生产链候选后再创建批次。')
+        }
+        const batch = await bridge.createDramaRenderBatch({
+          ...scope,
+          idempotencyKey,
+          seriesId: localDramaRequiredText(body.seriesId, 'seriesId'),
+          episodeNo: localDramaInteger(body.episodeNo, 'episodeNo'),
+          canvasVersion: canvas.version,
+          jobs,
+        })
+        return await bridge.prepareDramaRenderBatchConfirmation({ ...scope, batchId: batch.id }) as T
+      }
+
+      if (renderBatchActionMatch) {
+        const batchId = localDramaPathId(renderBatchActionMatch[1], '渲染批次')
+        const action = renderBatchActionMatch[2]
+        const body = parseLocalJsonObject(options, '渲染确认')
+        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '渲染确认接口只支持提交。')
+        if (action === 'prepare') {
+          const operation = body.operation === undefined ? 'submit'
+            : localDramaStatus(body.operation, ['submit', 'rerun'] as const)
+          const jobId = operation === 'rerun' ? localDramaRequiredText(body.jobId, 'jobId') : undefined
+          return await bridge.prepareDramaRenderBatchConfirmation({ ...scope, batchId, operation, jobId }) as T
+        }
+        if (action === 'submit') {
+          const actionId = localDramaRequiredText(body.actionId, 'actionId')
+          const token = localDramaRequiredText(body.token, 'token')
+          const canvasVersion = localDramaInteger(body.canvasVersion, 'canvasVersion')
+          const result = await bridge.submitDramaRenderBatch({ ...scope, batchId, actionId, token, canvasVersion })
+          for (const job of result.jobs ?? []) {
+            if (job.canvasNodeId) window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: job.canvasNodeId, taskId: job.taskId } }))
+          }
+          return result as T
+        }
+        const actionId = localDramaRequiredText(body.actionId, 'actionId')
+        const token = localDramaRequiredText(body.token, 'token')
+        return await bridge.rejectDramaRenderBatchConfirmation({ ...scope, batchId, actionId, token }) as T
+      }
+
+      if (renderBatchRerunMatch) {
+        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '局部重跑只支持提交。')
+        return await bridge.rerunDramaRenderBatchJob({
+          ...scope,
+          batchId: localDramaPathId(renderBatchRerunMatch[1], '渲染批次'),
+          jobId: localDramaPathId(renderBatchRerunMatch[2], '渲染任务'),
+        }) as T
+      }
     }
 
     if (pathname === '/render-reviews') {

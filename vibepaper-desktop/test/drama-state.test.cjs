@@ -275,7 +275,7 @@ test('project schema v15 migration adds drama state tables after a rollback snap
   await store.openProject(directory)
   const migrated = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 16)
+    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 17)
     for (const table of [
       'drama_series', 'drama_characters', 'drama_reference_packs', 'drama_shots',
       'drama_keyframes', 'drama_render_lineages', 'drama_state_commands',

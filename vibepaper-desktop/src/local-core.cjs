@@ -111,6 +111,22 @@ async function dispatch(method, payload) {
       return store.listDramaRenderBatches(payload?.projectId, payload?.canvasId)
     case 'drama:render-batches:get':
       return store.getDramaRenderBatch(payload?.projectId, payload?.canvasId, payload?.batchId)
+    case 'drama:render-batches:candidates:list':
+      return store.listDramaRenderCandidates(payload?.projectId, payload?.canvasId)
+    case 'drama:render-batches:create':
+      return store.createDramaRenderBatch(payload)
+    case 'drama:render-batches:confirmation:prepare':
+      return store.prepareDramaRenderBatchConfirmation(payload)
+    case 'drama:render-batches:confirmation:consume':
+      return store.consumeDramaRenderBatchConfirmation(payload)
+    case 'drama:render-batches:confirmation:reject':
+      return store.rejectDramaRenderBatchConfirmation(payload)
+    case 'drama:render-batches:rerun':
+      return store.rerunDramaRenderBatchJob(payload)
+    case 'drama:render-batches:mark-task':
+      return store.markDramaRenderBatchTask(payload)
+    case 'drama:render-batches:mark-job-failure':
+      return store.markDramaRenderBatchJobFailure(payload)
     case 'render-reviews:list':
       return store.listRenderReviews(payload?.projectId, payload?.canvasId, payload?.targetNodeId)
     case 'render-reviews:create':

@@ -19,6 +19,12 @@ let bridge: {
   createNode: ReturnType<typeof vi.fn>
   listDramaRenderBatches: ReturnType<typeof vi.fn>
   getDramaRenderBatch: ReturnType<typeof vi.fn>
+  listDramaRenderCandidates: ReturnType<typeof vi.fn>
+  createDramaRenderBatch: ReturnType<typeof vi.fn>
+  prepareDramaRenderBatchConfirmation: ReturnType<typeof vi.fn>
+  submitDramaRenderBatch: ReturnType<typeof vi.fn>
+  rejectDramaRenderBatchConfirmation: ReturnType<typeof vi.fn>
+  rerunDramaRenderBatchJob: ReturnType<typeof vi.fn>
   listRenderReviews: ReturnType<typeof vi.fn>
   createRenderReview: ReturnType<typeof vi.fn>
   getAgentUsage: ReturnType<typeof vi.fn>
@@ -53,6 +59,26 @@ beforeEach(() => {
     createNode: vi.fn(async () => ({ node: { id: 'created-node-1' }, version: 9, replayed: false })),
     listDramaRenderBatches: vi.fn(async () => ({ items: [] })),
     getDramaRenderBatch: vi.fn(async () => ({ id: 'batch-1' })),
+    listDramaRenderCandidates: vi.fn(async () => ({ items: [] })),
+    createDramaRenderBatch: vi.fn(async (input) => ({ ...input, id: 'batch-1', status: 'awaiting_approval', jobs: [] })),
+    prepareDramaRenderBatchConfirmation: vi.fn(async (input) => ({
+      batch: { id: input.batchId, canvasId: 'canvas/1', episodeNo: 1, jobs: [] },
+      confirmation: {
+        actionId: 'action-1', token: 'token-1', expiresAt: '2026-09-29T12:00:00.000Z',
+        operation: input.operation ?? 'submit', batchId: input.batchId, canvasVersion: 8,
+        contentHash: 'hash-1', jobs: [],
+      },
+    })),
+    submitDramaRenderBatch: vi.fn(async (input) => ({ id: input.batchId, canvasId: input.canvasId, jobs: [] })),
+    rejectDramaRenderBatchConfirmation: vi.fn(async () => ({ rejected: true })),
+    rerunDramaRenderBatchJob: vi.fn(async (input) => ({
+      batch: { id: input.batchId, canvasId: input.canvasId, episodeNo: 1, jobs: [] },
+      confirmation: {
+        actionId: 'action-rerun', token: 'token-rerun', expiresAt: '2026-09-29T12:00:00.000Z',
+        operation: 'rerun', batchId: input.batchId, canvasVersion: 8,
+        contentHash: 'hash-rerun', jobs: [],
+      },
+    })),
     listRenderReviews: vi.fn(async () => ({ items: [] })),
     createRenderReview: vi.fn(async (input) => ({ ...input, id: 'review-1', verdict: 'pass' })),
     getAgentUsage: vi.fn(async () => ({ sessionId: 'session-1', tokenTotal: 15, modelUsage: { 'agnes/model-a': 15 } })),
@@ -172,10 +198,65 @@ describe('desktop local API adapters', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('routes render batch reads and continuity review writes through the local project bridge', async () => {
+  it('routes render batch reads and candidate discovery through the local project bridge', async () => {
     await expect(api('/drama/render-batches')).resolves.toEqual({ items: [] })
     expect(bridge.listDramaRenderBatches).toHaveBeenCalledWith('project-1', 'canvas/1')
+    await expect(api('/drama/render-batches/candidates')).resolves.toEqual({ items: [] })
+    expect(bridge.listDramaRenderCandidates).toHaveBeenCalledWith('project-1', 'canvas/1')
+  })
 
+  it('routes batch create, explicit prepare/consume/reject, and rerun to the local bridge', async () => {
+    await api('/drama/render-batches', {
+      method: 'POST',
+      idempotencyKey: 'batch-create-key',
+      body: JSON.stringify({
+        seriesId: 'series-1', episodeNo: 1,
+        jobs: [{
+          shotId: 'shot-1', keyframeRenderId: 'image-task-1', canvasNodeId: 'clip-1',
+          durationSeconds: 4, providerType: 'cloud', providerId: 'agnes', modelId: 'agnes-video-2.5-flash',
+          modelType: 'video', modelParams: { prompt: 'A vertical dramatic shot' },
+        }],
+      }),
+    })
+    expect(bridge.createDramaRenderBatch).toHaveBeenCalledWith({
+      projectId: 'project-1', canvasId: 'canvas/1', idempotencyKey: 'batch-create-key',
+      seriesId: 'series-1', episodeNo: 1, canvasVersion: 8,
+      jobs: [{
+        shotId: 'shot-1', keyframeRenderId: 'image-task-1', canvasNodeId: 'clip-1', durationSeconds: 4,
+        modelType: 'video', providerType: 'cloud', providerId: 'agnes', modelId: 'agnes-video-2.5-flash',
+        modelParams: { prompt: 'A vertical dramatic shot' },
+      }],
+    })
+    expect(bridge.prepareDramaRenderBatchConfirmation).toHaveBeenCalledWith({
+      projectId: 'project-1', canvasId: 'canvas/1', batchId: 'batch-1',
+    })
+
+    await api('/drama/render-batches/batch-1/prepare', {
+      method: 'POST', body: JSON.stringify({ operation: 'submit' }),
+    })
+    expect(bridge.prepareDramaRenderBatchConfirmation).toHaveBeenLastCalledWith({
+      projectId: 'project-1', canvasId: 'canvas/1', batchId: 'batch-1', operation: 'submit', jobId: undefined,
+    })
+    await api('/drama/render-batches/batch-1/submit', {
+      method: 'POST', body: JSON.stringify({ actionId: 'action-1', token: 'token-1', canvasVersion: 8 }),
+    })
+    expect(bridge.submitDramaRenderBatch).toHaveBeenCalledWith({
+      projectId: 'project-1', canvasId: 'canvas/1', batchId: 'batch-1',
+      actionId: 'action-1', token: 'token-1', canvasVersion: 8,
+    })
+    await api('/drama/render-batches/batch-1/reject', {
+      method: 'POST', body: JSON.stringify({ actionId: 'action-1', token: 'token-1' }),
+    })
+    expect(bridge.rejectDramaRenderBatchConfirmation).toHaveBeenCalledWith({
+      projectId: 'project-1', canvasId: 'canvas/1', batchId: 'batch-1', actionId: 'action-1', token: 'token-1',
+    })
+    await api('/drama/render-batches/batch-1/jobs/job-1/rerun', { method: 'POST', body: JSON.stringify({}) })
+    expect(bridge.rerunDramaRenderBatchJob).toHaveBeenCalledWith({
+      projectId: 'project-1', canvasId: 'canvas/1', batchId: 'batch-1', jobId: 'job-1',
+    })
+  })
+
+  it('routes continuity review writes through the local project bridge', async () => {
     await api('/render-reviews', {
       method: 'POST',
       body: JSON.stringify({
@@ -192,18 +273,4 @@ describe('desktop local API adapters', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('rejects every render batch mutation until local accepted keyframes and confirmation exist', async () => {
-    const mutationPaths = [
-      '/drama/render-batches',
-      '/drama/render-batches/batch-1/submit',
-      '/drama/render-batches/batch-1/jobs/job-1/status',
-      '/drama/render-batches/batch-1/jobs/job-1/rerun',
-    ]
-    for (const path of mutationPaths) {
-      await expect(api(path, { method: 'POST' }))
-        .rejects.toMatchObject({ code: 'DESKTOP_RENDER_BATCH_UNAVAILABLE' })
-    }
-    expect(bridge.listDramaRenderBatches).not.toHaveBeenCalled()
-    expect(fetch).not.toHaveBeenCalled()
-  })
 })

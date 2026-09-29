@@ -42,19 +42,19 @@
 | --- | --- | --- | --- |
 | Agent 面板短剧资产 | `DramaAssetsTab.tsx`、`DramaAssetService.java`；`GET /canvases/{canvasId}/drama-assets` 与幂等 `POST` upsert，九类资产、筛选、画布版本校验、资产类型不可变和版本递增 | 原 `DramaAssetsTab` 的读写请求由 `vibepaper-web/src/lib/api.ts` 桌面适配转到 Preload/Main/Local Core/ProjectStore；SQLite schema v14 增加 `drama_assets` 与 `drama_asset_commands`。命令记录保存创建/更新后的资产快照和结果画布版本。已存在幂等键先返回旧快照，不校验重试正文或 input hash，与原服务 replay 顺序一致；v13→v14 升级先生成回滚副本。Store 测试覆盖代表必填字段规则（`series_bible`、`episode`）、Java `requireText` 的非空 `toString().isBlank()` 语义、版本冲突、类型不可变、重放快照、过滤、重启和迁移 | Agent 工具层没有短剧资产工具；原 UI 没有资产删除入口，本地链路也没有额外删除操作。尚未完成原后端所有边界场景和逐屏/完整端到端对照。 |
 | Agent 会话用量 | 原 Agent usage endpoint 汇总会话 Token 和模型记录；桌面契约去除点数与费用 | `UsageTab` 桌面分支经 api/bridge/Main/Worker 读取 Pi 会话 JSONL。使用实际 assistant `usage` 和 model 字段；按 JSONL entry ID 去重。响应提供总 Token、输入/输出、缓存 Token、模型/工具调用总数和模型 Token 拆分，并把摘要和工具结果的 usage 单独统计；当前 UI 显示总量、缓存、调用总数及各模型 Token，未单独显示输入/输出字段；响应不含 points 或费用字段。聚合与 Renderer API adapter 定向测试已通过，桌面本地核心完整测试 159/159 通过；Windows 开发窗口中，真实 Agnes 回合完成后用量页显示了该会话非零 Token 与调用数 | 尚需把同一会话的 UI 数值与 JSONL 条目逐项核对，并做重启恢复与原 Web 同状态对照。 |
-| 生产批次与审校 | `DramaProductionPanel.tsx` 调用 `/drama/render-batches`；`DramaAuditPanel.tsx` 调用 `/render-reviews`。Pi 基线含批次创建/读取/提交/任务状态/局部重跑，以及 `continuity-v1` 规则审校的写入和读取 | 桌面 SQLite schema v15 为 `drama_render_batches`、`drama_render_jobs` 和 `render_reviews` 建表并在 v14→v15 升级前保存回滚副本。原面板读取当前本地画布已持久化的批次和审校报告；审校 POST 运行原 `SHOT_DURATION`、`CHARACTER_CONTINUITY`、`AUDIO_VIDEO_SYNC` 规则并持久化 findings、证据、建议、重试次数及可关联的本地视频任务。画布节点必须存在；没有本地视频任务时报告仍只基于请求提供的测量值。桌面批次列表没有平台点数展示；批次写操作返回明确的本地能力错误，面板说明本地批次目前只读 | 桌面 v16 已持久化本地 `drama_series`、`drama_shots`、`drama_keyframes` 与关键帧接受状态；本地批次生成确认入口仍未迁移。Pi 创建批次前会校验与当前剧集、镜头时长、参考包及画布版本相符的 `accepted` keyframe render。桌面图片节点或成功图片任务不能证明该业务接受状态，不能据此伪造批次、审批或任务。任务状态回调及局部重跑同样未接入。尚无图像/音视频实测分析器；审校规则输入仍由调用方提供。Agent 工具层与逐屏/完整端到端验收仍缺失。 |
+| 生产批次与审校 | `DramaProductionPanel.tsx` 调用 `/drama/render-batches`；`DramaAuditPanel.tsx` 调用 `/render-reviews`。Pi 基线含批次创建/读取/提交/任务状态/局部重跑，以及 `continuity-v1` 规则审校的写入和读取 | 桌面 SQLite schema v17 为批次保存请求摘要、任务提供方/模型和 attempt，并保存绑定批次、画布版本、内容哈希、到期时间及 token 哈希的确认记录。ProjectStore 校验批次镜头、视频节点、已接受关键帧及实际成功图片 TaskStore 输出；提供候选读取、幂等创建、确认准备/拒绝/消费、任务关联、权威状态协调和需确认的单镜头重跑。候选附带当前可用性和原因：Agnes、Ark 视频均拒绝低于 4 秒时长；Ark 已接受图片关键帧会经受控本地任务 URI 转成 data URL，Ark 本地视频/音频参考仍因缺少供应商上传链而不可用。消费确认返回 `drama-batch:<batch>:job:<job>:attempt:<n>` 稳定幂等键；同一已接受确认在本次运行中可幂等重放，重启后失效；若任务已持久化但关联尚未完成，批次读取会按该键找回任务并校验成功输出文件。Main/Preload/API/原 `DramaProductionPanel` 现已接通候选查询、幂等批次创建、显示目标/提供方/模型/提示词/关键帧输入的显式确认、逐镜头 TaskStore 提交、失败码同步和逐 job 重跑确认；UI 显示不可用原因并排除这些镜头。桌面确认说明提示词和已接受关键帧会发送给所选云端提供方，并可能产生供应商费用；批次界面不显示平台点数。审校 POST 运行原 `SHOT_DURATION`、`CHARACTER_CONTINUITY`、`AUDIO_VIDEO_SYNC` 规则并持久化 findings、证据、建议、重试次数及可关联的本地视频任务。没有本地视频任务时，报告仍只基于请求提供的测量值 | 仍需实际 Agnes/Ark 批次请求、重启中断恢复、原 Web 与桌面同状态截图和完整端到端操作验收。Agent 工具层和审校分析器的媒体实测仍缺失。Store 测试验证确认拒绝与重启失效均不提交，并在 TaskStore 成功而任务关联写入遗漏后按稳定幂等键恢复。 |
 
-本轮定向验证：桌面迁移与短剧 Node 测试 49/49，Renderer API 和生产面板 Vitest 6/6，`npm run build` 通过。Renderer API 测试覆盖所有批次写接口显式拒绝。这些 Store、聚合与受限 IPC 测试不替代 renderer API 在桌面应用中的完整操作验收。
+渲染批次验证包括 ProjectStore 真 TaskStore 提交/幂等恢复、候选能力筛选、确认与局部重跑；媒体测试验证成功图片任务输出 URI 经 Main 任务泵使用的同一解析器转为 Agnes/Ark 请求可用的 data URL。Renderer API 与原面板测试覆盖桌面批次读写路由、确认说明、不可用候选原因和活动任务轮询。自动化用例仍不替代桌面应用中的完整操作及 Web 同状态对照验收。
 
 本地 FFmpeg 后处理当前是可执行的等价任务链路，但输出视觉细节尚未通过原版对照：三视图标签使用英文，排版与原 Pillow 输出不同；原 MockVideoProvider 的剪辑/超分会生成彩色模拟视频、提帧会生成占位图，桌面改为真实输入处理。原 MockImageProvider 的本地扩图与放大锐化路径也尚未迁移，桌面当前扩图/图片超分使用 Agnes。以上差异不能计为 1:1 验收完成。
 
 ## 2026-09-29 短剧剧集与关键帧状态
 
-Pi 的短剧系列、角色、角色参考包、镜头、关键帧及渲染血缘状态已接入本地项目 SQLite schema v16。桌面 Local Core 为这些记录提供项目/画布隔离；角色必须属于同一系列且使用当前 Look revision，镜头保持原竖屏规格与 2–5 秒范围，关键帧接受时验证当前唯一已批准参考包。视频节点准备只读取同镜头、已接受且参考包仍匹配的关键帧。渲染血缘必须引用同镜头关键帧；角色失效转换只更新该角色绑定的血缘。
+Pi 的短剧系列、角色、角色参考包、镜头、关键帧及渲染血缘状态已接入本地项目 SQLite schema v16；渲染批次/任务确认状态现使用 schema v17。桌面 Local Core 为这些记录提供项目/画布隔离；角色必须属于同一系列且使用当前 Look revision，镜头保持原竖屏规格与 2–5 秒范围，关键帧接受时验证当前唯一已批准参考包。视频节点准备只读取同镜头、已接受且参考包仍匹配的关键帧。渲染血缘必须引用同镜头关键帧；角色失效转换只更新该角色绑定的血缘。
 
 原 `/drama/series`、角色、参考包、镜头、关键帧节点/记录、视频节点、lineage 和 stale-lineage API 已经由 Renderer API adapter、Preload、Main IPC、Local Core 与 ProjectStore 串起。领域写命令和返回快照在同一 SQLite 事务提交；`Idempotency-Key` 重放返回原结果，跨项目重开保留接受状态。关键帧/视频节点仍经已有画布版本 CAS 和画布命令幂等记录创建。
 
-新 Store 测试覆盖 schema v15→v16 回滚副本、重启读取、幂等重放、失败事务回滚、跨画布/系列/镜头引用拒绝、参考包校验和角色血缘失效。Pi `recordLineage` 当前只检查关键帧存在，本地同时要求它属于同镜头，以阻止跨镜头关联。批次创建确认、任务提交/状态回调、局部重跑、Agent 短剧工具及 UI 审批入口仍是缺口；现有生产批次列表保持只读。
+Store 测试覆盖 schema v15→v16、v14→v17 和 v16→v17 回滚副本，重启读取、幂等重放、失败事务回滚、跨画布/系列/镜头引用拒绝、参考包校验和角色血缘失效。新增渲染批次纵向测试创建并拒绝/消费确认，使用真实 TaskStore 任务验证幂等关联恢复、失败协调、确认后 rerun、attempt 递增和成功输出读取。Pi `recordLineage` 当前只检查关键帧存在，本地同时要求它属于同镜头，以阻止跨镜头关联。Main/Preload/Local Core/API/原面板链路已接通；Agent 短剧工具和逐屏端到端证据仍需验收。
 
 ## 原项目能力基线
 
