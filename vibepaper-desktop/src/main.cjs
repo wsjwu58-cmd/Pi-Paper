@@ -33,7 +33,7 @@ const {
 } = require('./media-postprocess.cjs')
 const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = require('./agent-model-directory.cjs')
-const { ALLOWED_AGENT_CORE_METHODS } = require('./agent-local-tools.cjs')
+const { ALLOWED_AGENT_CORE_METHODS, getAgentCanvasDomain } = require('./agent-local-tools.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
 const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
 const { createDramaBatchTaskInput } = require('./drama-render-batch.cjs')
@@ -329,6 +329,7 @@ function createAgentWorker() {
       'agent:core:list-assets': ['projectId'],
       'agent:core:list-models': ['projectId'],
       'agent:core:create-generation-task': ['projectId', 'canvasId', 'canvasVersion', 'nodeId', 'modality', 'providerType', 'providerId', 'modelId', 'idempotencyKey', 'prompt', 'parameters'],
+      'agent:core:create-render-review': ['projectId', 'canvasId', 'canvasVersion', 'targetNodeId', 'shotDurationSeconds', 'expectedDurationSeconds', 'characterConsistent', 'audioDurationMs', 'videoDurationMs', 'previousCamera', 'currentCamera'],
     }[method]
     if (Object.keys(input).some((key) => !allowedKeys.includes(key))) throw new Error('AGENT_LOCAL_CORE_INPUT_INVALID')
     if (stopping || projectTransitionCount > 0 || agentWorker !== workerReference || agentProjectId !== input.projectId) {
@@ -410,6 +411,36 @@ function createAgentWorker() {
         } finally {
           finishTaskCreation()
         }
+      }
+      case 'agent:core:create-render-review': {
+        const durations = [input.shotDurationSeconds, input.expectedDurationSeconds, input.audioDurationMs, input.videoDurationMs]
+        if (!Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
+          || typeof input.targetNodeId !== 'string' || !input.targetNodeId
+          || durations.some((duration) => !Number.isSafeInteger(duration) || duration < 0)
+          || typeof input.characterConsistent !== 'boolean'
+          || typeof input.previousCamera !== 'string' || !input.previousCamera
+          || typeof input.currentCamera !== 'string' || !input.currentCamera) {
+          throw new Error('AGENT_RENDER_AUDIT_INPUT_INVALID')
+        }
+        const canvas = await localCore.request('canvas:load', { projectId: input.projectId, canvasId: active.canvasId }, 15_000)
+        if (!canvas || canvas.canvasId !== input.canvasId || canvas.version !== input.canvasVersion) {
+          throw new Error('AGENT_CANVAS_CHANGED')
+        }
+        if (!Array.isArray(canvas.nodes) || !canvas.nodes.some((node) => node.id === input.targetNodeId)) {
+          throw new Error('AGENT_RENDER_AUDIT_TARGET_INVALID')
+        }
+        return localCore.request('render-reviews:create', {
+          projectId: input.projectId,
+          canvasId: input.canvasId,
+          targetNodeId: input.targetNodeId,
+          shotDurationSeconds: input.shotDurationSeconds,
+          expectedDurationSeconds: input.expectedDurationSeconds,
+          characterConsistent: input.characterConsistent,
+          audioDurationMs: input.audioDurationMs,
+          videoDurationMs: input.videoDurationMs,
+          previousCamera: input.previousCamera,
+          currentCamera: input.currentCamera,
+        }, 30_000)
       }
     }
   }
@@ -2447,10 +2478,12 @@ function registerAgentIpc() {
       || latestProject.canvasId !== input.canvasId) throw codedError('AGENT_PROJECT_CHANGED')
     const latestCanvas = await localCore.request('canvas:load', { projectId: input.projectId, canvasId: input.canvasId })
     if (latestCanvas.version !== input.canvasVersion) throw codedError('AGENT_CANVAS_CHANGED')
+    const canvasDomain = getAgentCanvasDomain(latestCanvas)
     return worker.request('agent:start-run', {
       ...input,
       content: input.content.trim(),
       canvasContext,
+      canvasDomain,
       canvasNodeCount: latestCanvas.nodes.length,
       apiKey,
     }, 30_000)

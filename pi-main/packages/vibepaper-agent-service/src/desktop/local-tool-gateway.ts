@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { CanvasCommand, CanvasCommandGateway } from "../application/canvas-command-service.ts";
+import type { AuditInput } from "../domain/continuity-rules.ts";
 import { ToolGatewayError } from "../infrastructure/tool-gateway.ts";
 import type { ReadToolsGateway } from "../tools/read-tools.ts";
 
@@ -42,6 +43,34 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 		const response = await this.call("agent:core:list-models", { projectId: this.projectId });
 		if (!Array.isArray(response)) throw gatewayError("INVALID_RESPONSE", "模型目录响应无效");
 		return response.map((entry) => (isRecord(entry) ? stripPrivateFields(entry) : entry));
+	}
+
+	async requestRenderAudit(
+		userId: string,
+		canvasId: string,
+		canvasVersion: number,
+		input: AuditInput & { targetNodeId: string },
+	): Promise<Record<string, unknown>> {
+		if (userId !== this.projectId) throw gatewayError("PERMISSION_DENIED", "当前项目已更改", 403);
+		if (!canvasId || !Number.isSafeInteger(canvasVersion) || canvasVersion < 0)
+			throw gatewayError("INVALID_INPUT", "审校请求范围无效", 400);
+		const canvas = await this.loadCanvas(canvasId);
+		if (!canvas.nodes.some((node) => node.id === input.targetNodeId))
+			throw gatewayError("NOT_FOUND", "审校目标不存在", 404);
+		const response = await this.call("agent:core:create-render-review", {
+			projectId: this.projectId,
+			canvasId,
+			canvasVersion,
+			targetNodeId: input.targetNodeId,
+			shotDurationSeconds: input.shotDurationSeconds,
+			expectedDurationSeconds: input.expectedDurationSeconds,
+			characterConsistent: input.characterConsistent,
+			audioDurationMs: input.audioDurationMs,
+			videoDurationMs: input.videoDurationMs,
+			previousCamera: input.previousCamera,
+			currentCamera: input.currentCamera,
+		});
+		return projectRenderAudit(response);
 	}
 
 	async resolveGenerationModel(_userId: string, requestedModel: string): Promise<string> {
@@ -384,6 +413,23 @@ function projectTask(task: Record<string, unknown>): Record<string, unknown> {
 	return result;
 }
 
+function projectRenderAudit(value: unknown): Record<string, unknown> {
+	if (!isRecord(value) || !["pass", "fail"].includes(String(value.verdict))
+		|| typeof value.ruleVersion !== "string" || !Array.isArray(value.findings)) {
+		throw gatewayError("INVALID_RESPONSE", "审校服务未返回有效结果");
+	}
+	const findings = value.findings.map((finding) => {
+		if (!isRecord(finding)
+			|| !["SHOT_DURATION", "CHARACTER_CONTINUITY", "AUDIO_VIDEO_SYNC"].includes(String(finding.ruleId))
+			|| !["error", "warning"].includes(String(finding.severity))
+			|| typeof finding.evidence !== "string") {
+			throw gatewayError("INVALID_RESPONSE", "审校服务未返回有效规则结果");
+		}
+		return { ruleId: finding.ruleId, severity: finding.severity, evidence: finding.evidence };
+	});
+	return { verdict: value.verdict, findings, ruleVersion: value.ruleVersion };
+}
+
 function stripPrivateFields(value: Record<string, unknown>): Record<string, unknown> {
 	const output: Record<string, unknown> = {};
 	for (const [key, entry] of Object.entries(value)) {
@@ -440,6 +486,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function mapLocalErrorCode(message: string): string {
+	if (/AGENT_CANVAS_CHANGED/u.test(message)) return "VERSION_CONFLICT";
+	if (/AGENT_RENDER_AUDIT_TARGET_INVALID/u.test(message)) return "NOT_FOUND";
 	if (/VERSION_CONFLICT|版本已变化|请刷新|其他会话更新/u.test(message)) return "VERSION_CONFLICT";
 	if (/NOT_FOUND|不存在/u.test(message)) return "NOT_FOUND";
 	if (/非法|无效|超过|必须|禁止|不支持/u.test(message)) return "INVALID_INPUT";

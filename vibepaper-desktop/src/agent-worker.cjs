@@ -22,6 +22,7 @@ const {
   sanitizeAgentReply,
   sanitizeAssistantMessage,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/application/agent-runtime.ts')
+const { selectProfile } = require('../../pi-main/packages/vibepaper-agent-service/src/application/profile-selector.ts')
 const { DesktopLocalToolGateway } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/local-tool-gateway.ts')
 const {
   createRuntimeTools,
@@ -181,6 +182,7 @@ async function sendMessage(payload, onRunCreated) {
     canvasNodeCount,
     selectedNodeIds,
     selectedSkillId,
+    canvasDomain,
   } = payload ?? {}
   if (typeof sessionId !== 'string' || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
   if (typeof content !== 'string' || !content.trim() || content.length > 20_000) throw new Error('AGENT_MESSAGE_INVALID')
@@ -191,6 +193,9 @@ async function sendMessage(payload, onRunCreated) {
   if (typeof canvasId !== 'string' || canvasId.length < 1 || canvasId.length > 128
     || !Number.isSafeInteger(canvasVersion) || canvasVersion < 0
     || !Number.isSafeInteger(canvasNodeCount) || canvasNodeCount < 0 || canvasNodeCount > 1_000_000) {
+    throw new Error('AGENT_CANVAS_CONTEXT_INVALID')
+  }
+  if (canvasDomain !== undefined && canvasDomain !== 'general' && canvasDomain !== 'short-drama') {
     throw new Error('AGENT_CANVAS_CONTEXT_INVALID')
   }
   if (typeof idempotencyKey !== 'string' || idempotencyKey.length < 1 || idempotencyKey.length > 255) {
@@ -280,6 +285,7 @@ async function sendMessage(payload, onRunCreated) {
     gateway,
     approvals,
     desktopMode: true,
+    onAuditRequested: async (input) => gateway.requestRenderAudit(current.projectId, canvasId, toolContext.canvasVersion, input),
     onApprovalRequired: async (action) => {
       const generationItems = await desktopGenerationConfirmationItems(action, gateway)
       await runService.appendEvent(run.runId, 'confirmation_required', {
@@ -317,7 +323,7 @@ async function sendMessage(payload, onRunCreated) {
       skillContext,
       [],
       {
-        profile: 'canvas-general',
+        profile: selectProfile({ canvasDomain }),
         desktopMode: true,
         runtimeTools,
         intentContext: `以下是本轮只读画布摘要：\n${JSON.stringify(canvasContext)}`,

@@ -12,8 +12,21 @@ const AGENT_CORE_METHODS = Object.freeze([
   // Reached only through the original TypeScript Agent gateway after its
   // persisted approval token has been validated in the Agent Worker.
   'agent:core:create-generation-task',
+  // Uses the original request_render_audit tool and Local Core's deterministic rules.
+  'agent:core:create-render-review',
 ])
 const ALLOWED_AGENT_CORE_METHODS = new Set(AGENT_CORE_METHODS)
+const SHORT_DRAMA_CREATIVE_TYPES = new Set(['script', 'character', 'shot', 'keyframe', 'clip'])
+
+function getAgentCanvasDomain(canvas) {
+  const nodes = Array.isArray(canvas?.nodes) ? canvas.nodes : []
+  const isShortDrama = nodes.some((node) => {
+    const data = node?.data && typeof node.data === 'object' && !Array.isArray(node.data) ? node.data : {}
+    const nested = data.node && typeof data.node === 'object' && !Array.isArray(data.node) ? data.node : {}
+    return SHORT_DRAMA_CREATIVE_TYPES.has(node?.creativeType ?? data.creativeType ?? nested.creativeType)
+  })
+  return isShortDrama ? 'short-drama' : 'general'
+}
 
 function createAgentLocalToolClient(parentPort, timeoutMs = 30_000) {
   const pending = new Map()
@@ -68,5 +81,6 @@ function createAgentLocalToolClient(parentPort, timeoutMs = 30_000) {
 module.exports = {
   AGENT_CORE_METHODS,
   ALLOWED_AGENT_CORE_METHODS,
+  getAgentCanvasDomain,
   createAgentLocalToolClient,
 }

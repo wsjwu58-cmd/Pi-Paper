@@ -1,6 +1,6 @@
-# VibePaper 桌面本地版 Agent 功能规格（提案）
+# VibePaper 桌面本地版 Agent 功能规格
 
-> 日期：2026-09-24。状态：桌面 Agent 功能与验收契约；实现进行中。本地存储、备份/恢复、Worker 生命周期、会话历史查看，以及 Agnes 文本回合已有原型；用户主动发送时会附带当前画布的只读摘要，不再弹逐条 API 发送确认。受限 Local Tool Gateway 已接通画布摘要、节点详情、任务状态、模型目录读取，以及 `create_nodes`、`connect_nodes`、`update_node_config`、`layout_nodes` 本地画布写工具。聚焦测试覆盖输入边界、版本递增、逐目标来源映射、相邻连线、配置更新、原版全图布局算法、保存的 CAS/幂等重试及部分失败。创建/连线逐项落盘且不是整批原子操作；配置更新及布局分别通过本地领域命令和版本化全图保存执行。Agnes 实际端点的 tool calling 尚未完成端到端实测：隔离测试 profile 无法通过系统凭据能力解密现有凭据，因此未发出网络请求；Pi OpenAI Completions 适配器的工具调用编码与解析已通过源码核对。生成提交、Agent 工具层素材操作、Skill、记忆/压缩、本地模型回合、多平台安装包和完整迁移验收仍有缺口。原 Agent 面板的短剧资产列表/写入与 Token 用量已有局部本地接入，但生产批次和审校仍未接通；范围见第 3 节。本文规定目标行为，不代表 Agent 1:1 迁移已完成。对应技术方案见 [Agent 本地化迁移设计](../plans/2026-09-23-local-agent-migration-design.md)，全服务范围见 [桌面本地化方案](../plans/2026-09-23-desktop-full-service-local-migration-plan.md)。根目录 `AGENTS.md` 是桌面版工程契约；旧 Web PRD 与 V1.0 Spec 仅供迁移对照。
+> 日期：2026-09-29。状态：桌面 Agent 功能与验收契约；实现进行中。本地存储、备份/恢复、Worker 生命周期、会话历史查看和 Agnes 文本回合已有实现。受限 Local Tool Gateway 已接通画布摘要、节点详情、任务状态、模型目录读取，以及 `create_nodes`、`connect_nodes`、`update_node_config`、`layout_nodes` 等画布工具；生成确认与本地任务提交也已接入。原 `AgentPanel` 中短剧资产、用量、剧集/镜头/关键帧状态及生产批次确认、TaskStore 提交和局部重跑已接本地服务。短剧领域数据使用项目 SQLite schema v16，生产批次和任务确认使用 schema v17。Agnes 实际端点的 Agent tool calling 和批次请求尚未完成端到端实测；Agent 工具层的短剧资产操作、短期/长期记忆与上下文压缩、本地模型回合、多平台安装包及完整迁移验收仍有缺口。审校目前运行规则并保存调用方提供的测量值，没有媒体实测分析器。本文规定目标行为，不代表 Agent 1:1 迁移已完成。对应技术方案见 [Agent 本地化迁移设计](../plans/2026-09-23-local-agent-migration-design.md)，全服务范围见 [桌面本地化方案](../plans/2026-09-23-desktop-full-service-local-migration-plan.md)。根目录 `AGENTS.md` 是桌面版工程契约；旧 Web PRD 与 V1.0 Spec 仅供迁移对照。
 
 ## 1. 产品边界
 
@@ -35,17 +35,21 @@ Agent 工具 schema、画布命令和角色提示词以原 `pi-main/packages/vib
 5. Agent 提交生成沿用原版系统确认：单个目标由 `submit_generation` 提出确认，多个独立目标由 `submit_generation_batch` 提出一次批量确认；确认后才向本地 TaskStore 提交。确认展示目标、模型、输入与覆盖影响，去掉预计点数、冻结和结算；拒绝、过期或画布版本变化后不得执行。删除/覆盖不可撤销内容也须可撤销或显式确认，清空画布和批量写入超阈值先确认。启用联网模型时，在模型配置处披露数据范围和供应商可能收取的费用；用户主动选择云端模型并点击发送即完成普通 API 调用的数据发送授权，不另弹逐次发送确认。新增媒体上传等更宽范围需重新披露和授权。
 6. 面向用户的回复只说创作对象、结果和待办，不暴露内部节点 ID、工具名、账本键或存储路径。取消、关闭面板和重启后可从本地会话与任务状态恢复。
 
-当前已接通的工具切片（不代表 Agent 迁移完成）：`get_canvas_summary`、`get_node_detail`、`check_task_status`、`list_models` 经 Main → Local Core 读取；`create_nodes`、`connect_nodes`、`update_node_config`、`layout_nodes` 经白名单 RPC 写入本地画布。创建节点支持 1–20 个目标及逐目标 `sourceNodeIds`，连接按 `nodeIds` 顺序只连相邻节点；节点配置更新沿用旧工具的配置字段/参数回退规则。布局按旧版完整画布节点顺序计算位置，支持 `direction`、`gap` 和逐节点显式 `positions`，保存时保留连线、编组与堆叠，并按旧画布版本做整图 CAS。乐观锁版本由运行时推进；创建、连线和布局使用由工具调用及请求参数派生的稳定幂等键，节点配置更新使用稳定工具调用键。创建和连线为多个本地命令顺序执行，部分失败会回报已完成步骤和可能已修改画布，不会伪报整批成功。当前面板尚未把用户选中节点作为隐式参考来源传给 Agent，必须由模型明确使用摘要中的节点引用。已运行聚焦测试；尚未验证 Agnes 真实模型能否发起工具调用，也未实现 Agent 工具层的素材读写、Skill、短期/长期记忆与上下文压缩，因此不构成 Agent 1:1 验收。
+当前已接通的工具切片（不代表 Agent 迁移完成）：`get_canvas_summary`、`get_node_detail`、`check_task_status`、`list_models` 经 Main → Local Core 读取；`create_nodes`、`connect_nodes`、`update_node_config`、`layout_nodes` 经白名单 RPC 写入本地画布。创建节点支持 1–20 个目标及逐目标 `sourceNodeIds`，连接按 `nodeIds` 顺序只连相邻节点；节点配置更新沿用旧工具的配置字段/参数回退规则。布局按旧版完整画布节点顺序计算位置，支持 `direction`、`gap` 和逐节点显式 `positions`，保存时保留连线、编组与堆叠，并按旧画布版本做整图 CAS。乐观锁版本由运行时推进；创建、连线和布局使用由工具调用及请求参数派生的稳定幂等键，节点配置更新使用稳定工具调用键。创建和连线为多个本地命令顺序执行，部分失败会回报已完成步骤和可能已修改画布，不会伪报整批成功。生成动作沿用持久化确认后提交本地任务。当前面板已把用户选中节点作为受限参考元数据传给 Agent；逐目标连线仍须明确声明来源关系。内置及项目 Skill 的列表、编辑、导入和加载已接原面板与原 Pi loader；历史消息中的 Skill 卡片、Agent 工具层短剧资产操作、短期/长期记忆与上下文压缩仍有缺口。聚焦测试已覆盖上述部分路径，但 Agnes 真实模型的工具调用和短剧批次云端执行尚未端到端验证，因此不构成 Agent 1:1 验收。
 
-### 2026-09-28 Agent 面板短剧资产与用量状态
+### 2026-09-29 Agent 面板短剧与用量实现状态
 
-桌面 `AgentPanel` 复用原 `DramaAssetsTab` 和 `UsageTab`，经 `api()` 的显式桌面适配调用本地 bridge。短剧资产页可列出并新建/更新九类结构化资产（故事圣经、剧集、场景、角色档案、角色 Look、镜头规格、连续性约束、音频提示和字幕）；筛选支持资产类型、剧集、场景与镜头。项目 SQLite schema v14 的 `drama_assets` 保存当前版本，`drama_asset_commands` 保存幂等命令及结果快照；v13 项目升级先生成 schema 回滚副本。写入对齐原服务的画布版本冲突、资产类型不可变和版本递增语义；已存在的幂等键优先返回原快照，即使重试正文不同或字段无效也不重复写入。
+桌面 `AgentPanel` 直接复用原 `DramaAssetsTab`、`DramaProductionPanel`、审校面板和 `UsageTab`，经 `api()` 的显式桌面适配调用本地 bridge。短剧资产页可列出并新建/更新九类结构化资产（故事圣经、剧集、场景、角色档案、角色 Look、镜头规格、连续性约束、音频提示和字幕）；筛选支持资产类型、剧集、场景与镜头。资产保存沿用 schema v14 的 `drama_assets` 与 `drama_asset_commands`，支持版本冲突、类型不可变、版本递增和幂等结果快照；升级前创建回滚副本。
 
-用量页读取 Pi 会话 JSONL 中已持久化的模型 `usage`，按会话去重并呈现实际 Token 总量、缓存 Token、模型/工具调用总数和各模型 Token 拆分。本地响应还提供输入/输出 Token 字段，当前 UI 未将其单独显示；模型拆分只汇总有实际 usage 与模型标识的记录。压缩/分支摘要及带 usage 的工具结果计入总量并单独统计，无法从记录确认模型归属时不归到某个模型。此本地响应不含平台点数或估算费用。
+短剧系列、角色、角色参考包、镜头、关键帧及渲染血缘已写入本地项目 SQLite schema v16。Local Core 按项目和画布隔离数据，并校验角色系列归属及当前 Look revision、原有镜头规格与 2–5 秒时长、接受关键帧时的唯一已批准参考包。视频节点只读取同镜头且参考包仍匹配的已接受关键帧；渲染血缘必须指向同镜头关键帧，角色失效只更新该角色绑定的血缘。原短剧 API 已由 Renderer API adapter、Preload、Main IPC、Local Core 和 ProjectStore 串接，领域写入与结果快照在同一 SQLite 事务提交；幂等重放返回原结果，重启后保留接受状态。关键帧和视频节点创建仍通过画布版本 CAS 与命令幂等记录。
 
-原 `AgentPanel` 的 Web 与桌面分支现共享头部、消息时间线、确认卡和输入组件。桌面 Worker 把真实 Pi `thinking` 事件与经过限定的工具操作摘要传入原时间线，空 `{}` 不再作为执行详情。一次 Windows 开发窗口中的真实 Agnes 对话显示绿色“正在工作”、提供方返回的推理过程及“小P”回复，结束后用量页出现非零实际 Token 和模型调用；这只证明该会话链路，不能替代工具调用、长会话、压缩及恢复的完整端到端验收。
+生产批次与任务确认状态使用 schema v17。原 `DramaProductionPanel` 已接候选查询、幂等批次创建、展示目标/提供方/模型/提示词/关键帧输入的显式确认、逐镜头 TaskStore 提交、失败码同步和逐 job 局部重跑确认。ProjectStore 校验批次镜头、视频节点、已接受关键帧及成功图片任务输出；确认绑定批次、画布版本、内容哈希和有效期。TaskStore 提交使用稳定幂等键，批次读取可在任务已创建但关联未完成时找回任务并校验成功输出文件。界面显示不可用原因并排除不可用镜头；Agnes 和 Ark 都拒绝短于 4 秒的批次目标，Ark 本地视频/音频参考因缺少供应商上传链仍不可用。批次确认明确说明提示词和已接受关键帧会发送给所选云端提供方并可能产生费用，不显示平台点数。
 
-生产链视图读取本地短剧资产中现有的状态/影响字段，并能读取已持久化的渲染批次；`/render-reviews` 的 `continuity-v1` 规则审校读写已接本地存储。桌面端缺少原服务的剧集、镜头、参考包和已接受关键帧状态，也缺少批次生成确认链路，因此批次创建、提交、任务状态更新和局部重跑明确拒绝，原面板显示只读限制，不伪造批次、审批或费用。审校测量值由调用方提供，尚无媒体实测分析器。Agent 工具本身尚未获得对短剧资产的工具操作能力；原 Web 与桌面逐屏验收仍属缺口。
+`/render-reviews` 的 `continuity-v1` 规则审校读写已接本地存储，运行 `SHOT_DURATION`、`CHARACTER_CONTINUITY` 和 `AUDIO_VIDEO_SYNC` 规则，并保存 findings、证据、建议、重试次数及可关联的本地视频任务。没有本地视频任务时，报告仅基于请求提供的测量值；自动媒体分析器和 Agent 短剧资产/生产工具仍未实现。用量页从 Pi 会话 JSONL 读取实际 `usage`，按 entry ID 去重，展示 Token 总量、缓存 Token、模型/工具调用总数和按模型拆分；本地响应不含平台点数或费用，输入/输出 Token 暂未单独展示。一次 Windows 开发窗口中的 Agnes 对话后，用量页显示了非零实际 Token 和调用数。该记录仅证明单次会话链路，仍需逐项核对 JSONL 数值并验收重启恢复。
+
+桌面 Agent 的原 `request_render_audit` 工具现经 Worker、原 TS Local Tool Gateway 和 Main 白名单调用本地 `render-reviews:create`。Main 根据权威画布节点选择原通用或竖屏短剧 profile；审校工具只在短剧 profile 中可见。网关只回传规则结论、findings 和规则版本，模型不能自行写入规则结果；提交前检查当前项目、画布版本及目标节点。版本检查和审校写入属于两个本地调用，尚非原子 CAS。Agent 对结构化短剧资产及生产批次的工具操作仍未接入。
+
+桌面与 Web 共享原面板组件并通过本地 API/bridge 适配；Store、Renderer API 和面板定向测试覆盖幂等、拒绝确认、TaskStore 关联恢复、失败协调、重跑 attempt 递增和活动任务轮询。真实 Agnes/Ark 批次请求、桌面应用中的完整中断恢复、同状态截图与逐操作录屏仍未验收。自动化测试和原组件复用都不能单独证明 UI 1:1；Agent 结构化资产与生产批次工具及审校媒体实测能力也仍是明确缺口。
 
 ## 4. 数据与记忆功能
 

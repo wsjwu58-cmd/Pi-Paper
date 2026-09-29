@@ -7,6 +7,7 @@ const test = require('node:test')
 const {
   AGENT_CORE_METHODS,
   ALLOWED_AGENT_CORE_METHODS,
+  getAgentCanvasDomain,
   createAgentLocalToolClient,
 } = require('../src/agent-local-tools.cjs')
 const {
@@ -43,6 +44,7 @@ test('Main and Worker share the restricted agent:core method allowlist', () => {
     'agent:core:list-assets',
     'agent:core:list-models',
     'agent:core:create-generation-task',
+    'agent:core:create-render-review',
   ])
   assert.equal(ALLOWED_AGENT_CORE_METHODS.size, AGENT_CORE_METHODS.length)
 
@@ -51,6 +53,24 @@ test('Main and Worker share the restricted agent:core method allowlist', () => {
   assert.match(mainSource, /ALLOWED_AGENT_CORE_METHODS\.has\(method\)/u)
   assert.match(mainSource, /buildDesktopAgentModelDirectory\(agnes, localTextModel, getLocalAudioModel\(\)\)/u)
   assert.match(mainSource, /isDesktopAgentGenerationTarget\(targetNode, input\.modality\)/u)
+  assert.match(mainSource, /'agent:core:create-render-review': \['projectId', 'canvasId', 'canvasVersion', 'targetNodeId'/u)
+  assert.match(mainSource, /canvas\.version !== input\.canvasVersion/u)
+  assert.match(mainSource, /canvas\.nodes\.some\(\(node\) => node\.id === input\.targetNodeId\)/u)
+  assert.match(mainSource, /localCore\.request\('render-reviews:create'/u)
+  assert.match(mainSource, /durations\.some\(\(duration\) => !Number\.isSafeInteger\(duration\) \|\| duration < 0\)/u)
+  assert.match(mainSource, /getAgentCanvasDomain\(latestCanvas\)/u)
+
+  const workerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'agent-worker.cjs'), 'utf8')
+  assert.match(workerSource, /onAuditRequested: async \(input\) => gateway\.requestRenderAudit\(current\.projectId, canvasId, toolContext\.canvasVersion, input\)/u)
+  assert.match(workerSource, /profile: selectProfile\(\{ canvasDomain \}\)/u)
+})
+
+test('Agent canvas domain uses explicit short-drama node markers and defaults to general', () => {
+  assert.equal(getAgentCanvasDomain({ nodes: [{ id: 'clip-1', creativeType: 'clip' }] }), 'short-drama')
+  assert.equal(getAgentCanvasDomain({ nodes: [{ id: 'clip-2', creativeType: 'clip', data: {} }] }), 'short-drama')
+  assert.equal(getAgentCanvasDomain({ nodes: [{ id: 'shot-1', data: { node: { creativeType: 'shot' } } }] }), 'short-drama')
+  assert.equal(getAgentCanvasDomain({ nodes: [{ id: 'video-1', type: 'video', data: {} }] }), 'general')
+  assert.equal(getAgentCanvasDomain({ nodes: [] }), 'general')
 })
 
 test('Worker client correlates Main responses and rejects retired CJS tool methods', async () => {
