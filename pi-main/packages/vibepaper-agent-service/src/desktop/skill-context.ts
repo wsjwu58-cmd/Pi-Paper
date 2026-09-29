@@ -9,19 +9,22 @@ export type DesktopAgentSkill = {
 	name: string;
 	description: string;
 	instructions: string;
-	source: "builtin" | "system_dynamic";
+	source: "builtin" | "system_dynamic" | "project";
 	category: string;
-	version: 1;
-	enabled: true;
+	version: number;
+	enabled: boolean;
 };
 
 function asResource(skill: SystemSkillDefinition): LoadedSkillResource {
 	return { id: skill.key, key: skill.key, name: skill.name, instructions: skill.instructions };
 }
 
-export function listDesktopAgentSkills(keyword?: string): DesktopAgentSkill[] {
+export function listDesktopAgentSkills(
+	keyword?: string,
+	projectSkills: readonly DesktopAgentSkill[] = [],
+): DesktopAgentSkill[] {
 	const normalized = typeof keyword === "string" ? keyword.trim().toLocaleLowerCase() : "";
-	return SYSTEM_SKILLS.filter((skill) => {
+	const systemSkills: DesktopAgentSkill[] = SYSTEM_SKILLS.filter((skill) => {
 		if (!normalized) return true;
 		return [skill.key, skill.name, skill.description, skill.instructions, skill.category].some((value) =>
 			value.toLocaleLowerCase().includes(normalized),
@@ -32,19 +35,32 @@ export function listDesktopAgentSkills(keyword?: string): DesktopAgentSkill[] {
 		name: skill.name,
 		description: skill.description,
 		instructions: skill.instructions,
-		source: skill.kind === "builtin-core" ? "builtin" : "system_dynamic",
+		source: skill.kind === "builtin-core" ? ("builtin" as const) : ("system_dynamic" as const),
 		category: skill.category,
 		version: 1,
 		enabled: true,
 	}));
+	const matchingProjectSkills = projectSkills.filter((skill) => {
+		if (!normalized) return true;
+		return [skill.id, skill.key, skill.name, skill.description, skill.instructions, skill.category].some((value) =>
+			value.toLocaleLowerCase().includes(normalized),
+		);
+	});
+	return [...systemSkills, ...matchingProjectSkills];
 }
 
 export function createDesktopAgentSkillContext(
 	control: DesktopAgentControlStore,
 	sessionId: string,
 	selectedSkillId?: string,
+	projectSkills: readonly DesktopAgentSkill[] = [],
 ): AgentSkillContext {
-	const resources = SYSTEM_SKILLS.map(asResource);
+	const resources = [
+		...SYSTEM_SKILLS.map(asResource),
+		...projectSkills
+			.filter((skill) => skill.enabled)
+			.map((skill) => ({ id: skill.id, key: skill.key, name: skill.name, instructions: skill.instructions })),
+	];
 	const resourceById = new Map(resources.map((skill) => [skill.id, skill]));
 	if (selectedSkillId !== undefined && !resourceById.has(selectedSkillId)) throw new Error("SKILL_NOT_FOUND");
 
@@ -56,7 +72,12 @@ export function createDesktopAgentSkillContext(
 	}
 
 	return {
-		indexLines: SYSTEM_SKILLS.map(skillIndexLine),
+		indexLines: [
+			...SYSTEM_SKILLS.map(skillIndexLine),
+			...projectSkills
+				.filter((skill) => skill.enabled)
+				.map((skill) => skillIndexLine({ key: skill.key, name: skill.name, kind: "dynamic", description: skill.description })),
+		],
 		skills: resources,
 		loadedSkillIds: [...loadedIds],
 		loadedSkills: resources.filter((skill) => loadedIds.has(skill.id)),

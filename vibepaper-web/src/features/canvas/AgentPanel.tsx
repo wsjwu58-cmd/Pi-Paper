@@ -98,6 +98,7 @@ export interface AgentPanelDesktopSession {
 }
 
 export interface AgentPanelDesktopAdapter {
+  projectId?: string
   sessions: AgentPanelDesktopSession[]
   activeSessionId: string | null
   messages: AgentChatMsg[]
@@ -111,6 +112,7 @@ export interface AgentPanelDesktopAdapter {
   skills?: SkillView[]
   loadedSkillIds?: string[]
   skillsLoading?: boolean
+  refreshSkills?: () => Promise<void>
   onDraftChange: (value: string) => void
   onNewSession: () => Promise<void>
   onSelectSession: (sessionId: string) => Promise<void>
@@ -222,8 +224,10 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
     return match?.[1] ?? null
   }, [panelDraft])
   const skillCommandItems = useMemo(
-    () => (skillCommandQuery == null ? [] : filterSkillCommandItems(panelSkills, skillCommandQuery)),
-    [skillCommandQuery, panelSkills],
+    () => (skillCommandQuery == null
+      ? []
+      : filterSkillCommandItems(panelSkills.filter((skill) => !desktop || skill.enabled !== false), skillCommandQuery)),
+    [desktop, skillCommandQuery, panelSkills],
   )
 
   useEffect(() => {
@@ -1416,6 +1420,8 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
           onBackToChat={() => setTab('chat')}
           desktopSkills={desktop ? panelSkills : undefined}
           loadedSkillIds={desktop ? desktopAdapter?.loadedSkillIds : undefined}
+          desktopProjectId={desktop ? desktopAdapter?.projectId : undefined}
+          onDesktopSkillsChanged={desktop ? desktopAdapter?.refreshSkills : undefined}
           onApplied={(name) => {
             if (!name) return
             const skill = panelSkills.find((item) => item.name === name)

@@ -10,6 +10,14 @@ const {
   listDesktopAgentSkills,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/skill-context.ts')
 const {
+  createProjectAgentSkill,
+  deleteProjectAgentSkill,
+  importProjectAgentSkill,
+  listProjectAgentSkills,
+  updateProjectAgentSkill,
+} = require('./project-agent-skills.cjs')
+const { selectNodeReferences } = require('../../pi-main/packages/vibepaper-agent-service/src/application/node-reference-context.ts')
+const {
   runDramaTurn,
   sanitizeAgentReply,
   sanitizeAssistantMessage,
@@ -58,13 +66,22 @@ async function listAgentSkills(payload) {
   if (keyword !== undefined && (typeof keyword !== 'string' || keyword.length > 160)) {
     throw new Error('SKILL_QUERY_INVALID')
   }
+  const projectSkills = await listProjectAgentSkills(current.projectDirectory)
+  const items = listDesktopAgentSkills(keyword, projectSkills)
+  const availableItems = listDesktopAgentSkills(undefined, projectSkills)
   let loadedSkillIds = []
   if (sessionId) {
     await current.sessions.openSession(sessionId)
-    const availableSkillIds = new Set(listDesktopAgentSkills().map((skill) => skill.id))
+    const availableSkillIds = new Set(availableItems
+      .filter((skill) => skill.source !== 'project' || skill.enabled)
+      .map((skill) => skill.id))
     loadedSkillIds = current.control.getLoadedSkillIds(sessionId).filter((skillId) => availableSkillIds.has(skillId))
   }
-  return { items: listDesktopAgentSkills(keyword), loadedSkillIds }
+  return { items, loadedSkillIds }
+}
+
+function reservedSkillNames() {
+  return listDesktopAgentSkills().map((skill) => skill.name)
 }
 
 function messageText(message) {
@@ -108,13 +125,14 @@ function storedHistoryMessage(message) {
 async function getSessionMessages(projectId, sessionId) {
   const current = await requireProject(projectId)
   if (typeof sessionId !== 'string' || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
-  const context = await current.sessions.buildContext(sessionId)
-  return context.messages
-    .filter((message) => message.role === 'user' || message.role === 'assistant')
-    .map((message) => ({
+  return (await current.sessions.listMessages(sessionId))
+    .filter(({ message }) => message.role === 'user' || message.role === 'assistant')
+    .map(({ messageId, message, metadata }) => ({
+      id: messageId,
       role: message.role,
       content: message.role === 'assistant' ? sanitizeAgentReply(messageText(message)) : messageText(message),
       createdAt: typeof message.timestamp === 'number' ? message.timestamp : 0,
+      ...(metadata ? { meta: metadata } : {}),
     }))
     .filter((message) => message.content.trim().length > 0)
 }
@@ -205,6 +223,11 @@ async function sendMessage(payload, onRunCreated) {
   }
 
   await recoverInterruptedRun(current, runService, sessionId)
+  const selectedNodes = [...new Set(selectedNodeIds ?? [])]
+  const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
+  const nodeReferences = selectedNodes.length
+    ? selectNodeReferences(await gateway.getSelectedNodes(current.projectId, canvasId, selectedNodes), selectedNodes)
+    : []
   // Capture the branch before appending this turn's user message. runDramaTurn
   // prompts `content` itself; including the just-written user message here
   // would send it twice to the model.
@@ -214,11 +237,18 @@ async function sendMessage(payload, onRunCreated) {
   onRunCreated?.({ runId: run.runId })
   const timestamp = Date.now()
   try {
-    await session.appendMessage({
+    await current.sessions.appendMessage(sessionId, {
       role: 'user',
       content: [{ type: 'text', text: content.trim() }],
       timestamp,
-    })
+    },
+      selectedNodes.length || selectedSkillId
+        ? {
+            selectedNodeIds: nodeReferences.map((reference) => reference.nodeId),
+            nodeReferences,
+            ...(selectedSkillId ? { selectedSkillId } : {}),
+          }
+        : undefined)
     if (!(await session.getName())) await session.setName(content.trim().slice(0, 72))
   } catch {
     await runService.setStatus(run.runId, 'failed', { errorCode: 'AGENT_SESSION_WRITE_FAILED' })
@@ -226,7 +256,6 @@ async function sendMessage(payload, onRunCreated) {
     throw new Error('AGENT_SESSION_WRITE_FAILED')
   }
 
-  const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
   const approvals = new ApprovalService(current.control, current.control.getOrCreateApprovalSecret(), 10 * 60)
   const history = priorContext.messages.map(storedHistoryMessage).filter(Boolean)
   let persistenceQueue = Promise.resolve()
@@ -247,7 +276,7 @@ async function sendMessage(payload, onRunCreated) {
     runId: run.runId,
     canvasId,
     canvasVersion,
-    referenceNodeIds: selectedNodeIds ?? [],
+    referenceNodeIds: selectedNodes,
     gateway,
     approvals,
     desktopMode: true,
@@ -272,7 +301,8 @@ async function sendMessage(payload, onRunCreated) {
   }
   let turn
   try {
-    const skillContext = createDesktopAgentSkillContext(current.control, sessionId, selectedSkillId)
+    const projectSkills = await listProjectAgentSkills(current.projectDirectory)
+    const skillContext = createDesktopAgentSkillContext(current.control, sessionId, selectedSkillId, projectSkills)
     const runtimeTools = createRuntimeTools(toolContext)
     turn = await runDramaTurn(
       {
@@ -411,6 +441,22 @@ async function dispatch(method, payload) {
       return listSessions(payload?.projectId)
     case 'agent:list-skills':
       return listAgentSkills(payload)
+    case 'agent:create-skill': {
+      const current = await requireProject(payload?.projectId)
+      return createProjectAgentSkill(current.projectDirectory, payload?.draft, reservedSkillNames())
+    }
+    case 'agent:update-skill': {
+      const current = await requireProject(payload?.projectId)
+      return updateProjectAgentSkill(current.projectDirectory, payload?.skillId, payload?.patch, reservedSkillNames())
+    }
+    case 'agent:delete-skill': {
+      const current = await requireProject(payload?.projectId)
+      return deleteProjectAgentSkill(current.projectDirectory, payload?.skillId)
+    }
+    case 'agent:import-skill': {
+      const current = await requireProject(payload?.projectId)
+      return importProjectAgentSkill(current.projectDirectory, payload?.fileName, payload?.contents, reservedSkillNames())
+    }
     case 'agent:get-messages':
       return getSessionMessages(payload?.projectId, payload?.sessionId)
     case 'agent:get-usage':

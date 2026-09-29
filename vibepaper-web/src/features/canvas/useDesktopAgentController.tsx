@@ -28,7 +28,7 @@ function toChatMessages(messages: DesktopAgentMessage[]): AgentChatMsg[] {
 
 function toSkillView(skill: DesktopAgentSkill): SkillView {
   return {
-    id: skill.key,
+    id: skill.id,
     name: skill.name,
     description: skill.description,
     instructions: skill.instructions,
@@ -111,8 +111,6 @@ export function useDesktopAgentController({
     try {
       const result = await bridge.listAgentSkills(projectId, sessionId ?? undefined)
       if (epoch !== skillRequestEpochRef.current) return
-      // The desktop endpoint lists the static SYSTEM_SKILLS manifest only.
-      // Project-owned dynamic Skills remain unavailable in the local UI.
       setSkills(result.items.map(toSkillView))
       setLoadedSkillIds(result.loadedSkillIds)
     } catch (cause) {
@@ -439,6 +437,7 @@ export function useDesktopAgentController({
   }, [canvasId, onCanvasChanged, projectId, refreshSessions])
 
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
+  const refreshSkills = useCallback(async () => loadSkills(activeSessionId), [activeSessionId, loadSkills])
   const settingsDialog = settingsOpen && projectId
     ? <DesktopAgentModelSettings
         configured={agnesCatalog?.apiKeyConfigured === true}
@@ -449,6 +448,7 @@ export function useDesktopAgentController({
     : null
 
   return {
+    projectId,
     sessions,
     activeSessionId,
     messages,
@@ -462,6 +462,7 @@ export function useDesktopAgentController({
     skills,
     loadedSkillIds,
     skillsLoading,
+    refreshSkills,
     onDraftChange: setDraft,
     onNewSession,
     onSelectSession,

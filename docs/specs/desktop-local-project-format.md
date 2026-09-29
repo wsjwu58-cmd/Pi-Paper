@@ -1,6 +1,6 @@
 # 桌面本地数据格式（项目与模型设置）
 
-状态：Electron 项目引导、本地画布与六类节点存储、连线/分组/堆叠领域命令、原页面上的画布 JSON 导出、图片及 WAV/MP3 素材导入/引用/重命名/替换/软删除、Windows SAPI 音频任务、任务状态、本地文本与合成执行、Agnes 文本/图像/视频任务，以及当前格式下的项目备份恢复切片已实现。旧版“导入为新画布”语义因当前单项目单画布模型而未实现；完整素材与跨平台安装包验收仍有缺口。Agent Worker 已接入原 TypeScript 服务；动态项目 Skill 与完整跨版本恢复仍待迁移。
+状态：Electron 项目引导、本地画布与六类节点存储、连线/分组/堆叠领域命令、原页面上的画布 JSON 导出、图片及 WAV/MP3 素材导入/引用/重命名/替换/软删除、Windows SAPI 音频任务、任务状态、本地文本与合成执行、Agnes 文本/图像/视频任务、短剧系列/角色/参考包/镜头/关键帧及渲染血缘状态，以及当前格式下的项目备份恢复切片已实现。原 `AgentPanel` 的 Skills 面板已接入项目级 Skill 列表、创建、Markdown 导入、编辑、启停和归档删除，并使用 Pi 原始 Skill loader。旧版“导入为新画布”语义因当前单项目单画布模型而未实现；短剧生产批次提交、任务回调/重跑、完整素材与跨平台安装包验收、Agent 跨版本恢复仍有缺口。
 
 ## 项目目录
 
@@ -19,6 +19,12 @@
 ```
 
 不把当前绝对路径写入项目身份。项目搬迁后，用户打开新位置即可通过 `projectId`、`canvasId` 恢复相同项目身份。操作系统用户数据目录保存非密钥 `settings.json`、最近项目 `recent-projects.json` 和兼容旧版单项恢复的 `recent-project.json`。最近项目清单只由 Main 读取，Renderer 只能拿到经过身份校验的 `{projectId, canvasId, name}`；打开时 Main 按项目 ID 查回内部路径并再次验证 `project.json` 与 SQLite 身份。迁移只读取旧 `recent-project.json` 并建立新清单，不删除该文件。此目录清单记录用户明确创建或打开过的本地项目；每个项目当前仍只对应一张画布。Agnes API Key 经 Electron `safeStorage` 使用 OS 密钥能力加密后，单独保存为 `credentials/agnes-api-key.bin`；Linux 未提供 Secret Service/KWallet/Secret Portal 时拒绝保存。凭据不进入普通设置文件、项目目录或项目备份。
+
+## 项目级 Skill
+
+项目自定义 Skill 保存在 `.vibepaper/agent/skills/`，不读写用户目录里的全局 Skill。Agent Worker 使用 Pi 原始 `loadSkillsFromDir` 发现这些 Markdown 文件，运行时只把当前项目内启用的 Skill 提供给原 Agent 工具。原 `AgentPanel` Skills 面板提供列表、分类与搜索、创建、Markdown 文件导入、详情、编辑、启停和删除；导入文件上限为 512 KB。
+
+新建和导入文件采用 Pi Skill frontmatter，并在 `metadata.vibepaper` 中记录 `schemaVersion: 1`、稳定项目内 ID、显示名称、分类、启用状态与版本号。内容使用同目录临时文件和原子改名；编辑前将完整旧文件保存到隐藏 `.versions/` 目录并递增版本。删除将文件移入隐藏 `.deleted/` 目录，保留可恢复副本。Pi loader 会跳过这些隐藏目录，项目备份清单会纳入其中的 Markdown 文件。
 
 ## 本地文本模型设置
 
@@ -53,7 +59,7 @@ Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访�
 
 ## `project.sqlite`
 
-数据库使用 `PRAGMA user_version = 10` 标记当前存储结构版本，并以 WAL、外键和 `synchronous=FULL` 运行。v8→v9 升级先保存 SQLite 回退快照，再仅回填旧 `params.assetId` 图片/音频节点可核实的缺失素材引用；冲突、素材缺失和 MIME 不匹配会阻止升级。v9→v10 升级在备份快照后扩展素材 MIME 约束以接纳 MP3，事务内检查外键。主要表为：
+数据库使用 `PRAGMA user_version = 16` 标记当前存储结构版本，并以 WAL、外键和 `synchronous=FULL` 运行。每次结构迁移先保存 SQLite 回退快照并在事务内检查外键。v8→v9 回填旧 `params.assetId` 图片/音频节点可核实的缺失素材引用；v9→v10 扩展素材 MIME 约束以接纳 MP3；v13→v14 新增短剧资产和命令账本；v14→v15 新增生产批次、任务及审校表；v15→v16 新增短剧剧集状态表和幂等命令账本。主要表为：
 
 | 表 | 内容 |
 | --- | --- |
@@ -68,10 +74,23 @@ Renderer 只能通过 Main 暴露的配置、发现、保存和移除方法访�
 | `canvas_graph_commands` | 画布增量命令的 `Idempotency-Key`、操作类型、结果快照和提交版本；用于节点创建/更新/删除与连接命令 |
 | `canvas_groups` | 编组 ID、名称、颜色、布局、成员节点 ID 列表及创建/更新时间 |
 | `canvas_stacks` | 堆叠 ID、折叠状态、成员节点 ID 列表及创建/更新时间 |
+| `drama_assets`、`drama_asset_commands` | 九类画布短剧资产、版本及幂等写命令快照 |
+| `drama_render_batches`、`drama_render_jobs`、`render_reviews` | 本地生产批次与渲染任务读取、连续性审校记录 |
+| `drama_series`、`drama_characters`、`drama_reference_packs` | 画布内剧集、角色身份锚点、Look 版本及角色参考包状态 |
+| `drama_shots`、`drama_keyframes`、`drama_render_lineages` | 镜头参数、关键帧接受状态、所用参考包及后续渲染血缘 |
+| `drama_state_commands` | 短剧状态写命令的 `Idempotency-Key`、输入摘要和返回快照；与对应状态写入在同一 SQLite 事务提交 |
 
 Renderer 仅通过受限 IPC 调用 Electron utility process 读写画布。写入须匹配项目/画布身份；全量保存与节点增删改、连接命令须匹配 `expectedVersion`，节点创建按旧接口允许内部调用省略版本。Local Core 校验连线兼容性、自连接、节点类型、引用及载荷大小，再在 SQLite 事务中提交；这些版本化命令按旧接口推进画布版本。`saveCanvas` 可选接收持久化幂等键，但当前 Renderer 保存 IPC 未传入该键。分组/堆叠七项 Store 命令已通过受限 Main IPC 和 Preload 暴露，写入成员节点关系但不递增画布版本，符合旧 `GraphService` 行为；原 `CanvasPage` 仍需切换到这些桥接方法。桌面全量保存可接收 `groups`/`stacks`；未带字段时会保留 Store 中的记录，显式传入字段（包括空数组或 `null`）时才按快照替换。与旧 `deleteNode` 一致，独立删除节点不会从分组/堆叠的 `node_ids_json` 列表中过滤其 ID。若数据库版本已被其他写者更新，事务回滚并要求重新打开画布。节点创建/更新/删除及显式连接命令的同一幂等键重试返回已提交结果，不重复执行。
 
 `exportCanvas(projectId, canvasId)` 在 Store 内只读生成 interchange JSON：顶层同时写入 `schema_version` 和 `schemaVersion`（当前均为 `1.0.0`），并包含画布、节点、边、groups 与 stacks。图片节点只导出其稳定 `assetId` 引用，不打包素材文件；导出方法目前不经 IPC/Renderer 调用。旧后端 `CanvasService.importCanvas` 会创建另一张新画布并重映射节点/边身份、重置执行状态，但当前 `project_metadata` 仅保存一个 `canvasId`；本地尚无等价导入命令。为防止覆盖当前画布或生成无法解析的跨项目素材引用，画布 JSON 导入保持未实现，等待多画布身份和素材包迁移契约。
+
+### 短剧制作状态
+
+schema v16 将 Pi Agent 的短剧状态保存在项目 SQLite 中，并以 `canvas_id` 约束剧集所属画布。写入系列、角色、参考包、镜头、关键帧和渲染血缘时，状态行与幂等结果快照一起提交；相同命令键重试会返回原结果，项目关闭后重开仍可读取关键帧接受状态。短剧状态写入不递增画布版本，保持原 Pi 状态存储语义。关键帧节点与视频节点经 `createNode` 使用画布版本 CAS 和画布命令幂等账本。
+
+本地状态校验保留原格式、Look revision、角色绑定、单镜时长、已批准参考包唯一性、关键帧参考包匹配及“视频节点必须引用已接受关键帧”等规则。渲染血缘还要求关键帧属于同一镜头；按角色标记失效仅修改绑定该角色的血缘并返回实际变更 ID。参考素材 ID 持久化为本地项目数据中的引用标识，不随状态行写入素材文件内容。
+
+原短剧系列、角色、参考包、镜头、关键帧节点/接受、视频节点、血缘和按角色失效 API 已映射到受限 Preload/Main/Local Core 路径。当前桌面生产批次读取仍可用，批次确认提交、生成任务状态回调与局部重跑仍未迁移；不能仅凭存在 `accepted` 状态宣称批次生成链路完成。
 
 文本、图像与视频节点可将当前提示词提交给已配置的本地或 Agnes 模型；Windows 上原音频节点可提交本地 SAPI 语音任务。原合成节点按有序上游视频节点 ID 创建本地 `compose` 任务，由 Local Core 验证连线、最新成功视频结果与文件摘要，再交给 FFmpeg 统一转码并拼接。任务输入使用 `Idempotency-Key` 和画布版本；Worker 将输出写入该任务目录，Local Core 校验文件类型、路径、可读性、SHA-256 与大小后才提交 `succeeded`。原节点显示任务状态、历史和可预览结果；其他音频提供方及完整模态能力仍待迁移。
 

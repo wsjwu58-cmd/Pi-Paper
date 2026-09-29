@@ -1,6 +1,6 @@
 /**
- * Skills 面板：按产品截图 1:1 复刻列表 / 详情 / 新建。
- * 数据一律来自 /api/v1/skills（数据库），不读本地 md。
+ * Skills 面板沿用原版列表 / 详情 / 新建交互。
+ * Web 数据来自 /api/v1/skills；桌面数据来自当前项目的 Pi Skill 文件。
  */
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import type { MouseEvent, ReactNode } from 'react'
@@ -10,6 +10,7 @@ import {
   Camera,
   CheckCircle2,
   LayoutGrid,
+  Pencil,
   Plus,
   Puzzle,
   Search,
@@ -17,6 +18,8 @@ import {
   Sparkles,
   Star,
   Type,
+  Trash2,
+  Upload,
   User,
   X,
   Image as ImageIcon,
@@ -49,6 +52,22 @@ function loadFavorites(): Set<string> {
 
 function saveFavorites(ids: Set<string>) {
   localStorage.setItem(FAV_KEY, JSON.stringify([...ids]))
+}
+
+function skillErrorMessage(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : ''
+  if (message.includes('SKILL_NAME_COLLISION')) return '当前项目或内置 Skill 已有同名 Skill。'
+  if (message.includes('SKILL_FRONTMATTER_INVALID')) return 'Markdown Skill 的 YAML 头部无效。'
+  if (message.includes('SKILL_FILE_TOO_LARGE') || message.includes('SKILL_IMPORT_FILE_INVALID')) return 'Skill 文件不能为空且不能超过 512KB。'
+  if (message.includes('SKILL_SYMLINK_UNSUPPORTED')) return 'Skill 目录不能包含符号链接。'
+  if (message.includes('SKILL_NOT_FOUND')) return '这个项目 Skill 已不存在，请刷新后重试。'
+  if (message.includes('SKILL_NAME_INVALID')) return 'Skill 名称不能为空且不能超过 64 个字符。'
+  if (message.includes('SKILL_DESCRIPTION_INVALID')) return 'Skill 描述不能为空且不能超过 1024 个字符。'
+  if (message.includes('SKILL_CATEGORY_INVALID')) return 'Skill 分类无效。'
+  if (message.includes('SKILL_ENABLED_INVALID')) return 'Skill 启用状态无效。'
+  if (message.includes('SKILL_INSTRUCTIONS_INVALID')) return 'Skill 指令不能为空。'
+  if (message.includes('SKILL_INPUT_INVALID') || message.includes('AGENT_SKILL_INPUT_INVALID')) return 'Skill 信息无效，请检查后重试。'
+  return message || 'Skill 操作失败。'
 }
 
 function renderMarkdownLite(md: string) {
@@ -121,6 +140,8 @@ export function SkillsPanel({
   onApplied,
   desktopSkills,
   loadedSkillIds = [],
+  desktopProjectId,
+  onDesktopSkillsChanged,
 }: {
   sessionId: string | number | null
   onClose: () => void
@@ -128,6 +149,8 @@ export function SkillsPanel({
   onApplied?: (name: string) => void
   desktopSkills?: readonly SkillView[]
   loadedSkillIds?: readonly string[]
+  desktopProjectId?: string
+  onDesktopSkillsChanged?: () => Promise<void>
 }) {
   const [skills, setSkills] = useState<SkillView[]>([])
   const [keyword, setKeyword] = useState('')
@@ -135,6 +158,8 @@ export function SkillsPanel({
   const [favorites, setFavorites] = useState<Set<string>>(() => loadFavorites())
   const [view, setView] = useState<'list' | 'detail' | 'create'>('list')
   const [active, setActive] = useState<SkillView | null>(null)
+  const [editingSkillId, setEditingSkillId] = useState<string | null>(null)
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false)
   const [hoverId, setHoverId] = useState<string | null>(null)
   const [draft, setDraft] = useState({ name: '', description: '', instructions: '', category: 'general' })
   const [enabledLocal, setEnabledLocal] = useState(true)
@@ -171,7 +196,7 @@ export function SkillsPanel({
     if (category === 'favorite') {
       list = list.filter((s) => favorites.has(String(s.id)))
     } else if (category === 'mine') {
-      list = list.filter((s) => !desktopMode && s.source !== 'builtin')
+      list = list.filter((s) => desktopMode ? s.source === 'project' : s.source !== 'builtin')
     } else if (category === 'image' || category === 'video' || category === 'text') {
       list = list.filter((s) => (s.category || 'general') === category)
     }
@@ -191,7 +216,7 @@ export function SkillsPanel({
   const openDetail = async (s: SkillView) => {
     if (desktopMode) {
       setActive(s)
-      setEnabledLocal(true)
+      setEnabledLocal(s.enabled !== false)
       setView('detail')
       return
     }
@@ -210,6 +235,10 @@ export function SkillsPanel({
   const applySkill = async () => {
     if (!active) return
     if (desktopMode) {
+      if (!enabledLocal) {
+        toastError('请先启用此 Skill')
+        return
+      }
       onApplied?.(active.name)
       toastSuccess(`已选择 Skill：${active.name}`)
       onBackToChat()
@@ -235,6 +264,35 @@ export function SkillsPanel({
       return
     }
     try {
+      if (desktopMode) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !desktopProjectId) throw new Error('当前本地项目不可用。')
+        if (editingSkillId) {
+          const updated = await bridge.updateAgentSkill(desktopProjectId, editingSkillId, draft)
+          setActive({
+            ...active,
+            id: updated.id,
+            name: updated.name,
+            description: updated.description,
+            instructions: updated.instructions,
+            source: updated.source,
+            category: updated.category,
+            version: updated.version,
+            enabled: updated.enabled,
+          })
+          setEnabledLocal(updated.enabled)
+          setView('detail')
+          toastSuccess('Skill 已更新')
+        } else {
+          await bridge.createAgentSkill(desktopProjectId, draft)
+          setView('list')
+          toastSuccess('Skill 已创建')
+        }
+        setDraft({ name: '', description: '', instructions: '', category: 'general' })
+        setEditingSkillId(null)
+        await onDesktopSkillsChanged?.()
+        return
+      }
       await api('/skills', {
         method: 'POST',
         body: JSON.stringify(draft),
@@ -244,15 +302,22 @@ export function SkillsPanel({
       setView('list')
       reload()
     } catch (e) {
-      toastError((e as Error).message)
+      toastError(desktopMode ? skillErrorMessage(e) : (e as Error).message)
     }
   }
 
   const toggleEnabled = async (on: boolean) => {
-    if (desktopMode) return
     setEnabledLocal(on)
-    if (!active || active.source === 'builtin') return
+    if (!active || active.source === 'builtin' || (desktopMode && active.source !== 'project')) return
     try {
+      if (desktopMode) {
+        const bridge = window.vibepaperDesktop
+        if (!bridge || !desktopProjectId) throw new Error('当前本地项目不可用。')
+        const updated = await bridge.updateAgentSkill(desktopProjectId, String(active.id), { enabled: on })
+        setActive({ ...active, enabled: updated.enabled, version: updated.version })
+        await onDesktopSkillsChanged?.()
+        return
+      }
       const updated = await api<SkillView>(`/skills/${active.id}`, {
         method: 'PUT',
         body: JSON.stringify({ enabled: on }),
@@ -261,14 +326,63 @@ export function SkillsPanel({
       reload()
     } catch (e) {
       setEnabledLocal(!on)
-      toastError((e as Error).message)
+      toastError(desktopMode ? skillErrorMessage(e) : (e as Error).message)
+    }
+  }
+
+  const beginEdit = () => {
+    if (!active || active.source !== 'project') return
+    setDraft({
+      name: active.name,
+      description: active.description ?? '',
+      instructions: active.instructions ?? '',
+      category: active.category ?? 'general',
+    })
+    setEditingSkillId(String(active.id))
+    setView('create')
+  }
+
+  const beginCreate = () => {
+    setActive(null)
+    setEditingSkillId(null)
+    setDraft({ name: '', description: '', instructions: '', category: 'general' })
+    setView('create')
+  }
+
+  const deleteSkill = async () => {
+    if (!active || active.source !== 'project' || !desktopProjectId) return
+    try {
+      const bridge = window.vibepaperDesktop
+      if (!bridge) throw new Error('当前本地项目不可用。')
+      await bridge.deleteAgentSkill(desktopProjectId, String(active.id))
+      setDeleteConfirmationOpen(false)
+      setActive(null)
+      setView('list')
+      await onDesktopSkillsChanged?.()
+      toastSuccess('Skill 已移入已删除存档')
+    } catch (cause) {
+      toastError(skillErrorMessage(cause))
+    }
+  }
+
+  const importSkill = async () => {
+    if (!desktopProjectId) return
+    try {
+      const bridge = window.vibepaperDesktop
+      if (!bridge) throw new Error('当前本地项目不可用。')
+      const imported = await bridge.importAgentSkill(desktopProjectId)
+      if (!imported) return
+      await onDesktopSkillsChanged?.()
+      toastSuccess(`已导入 Skill：${imported.name}`)
+    } catch (cause) {
+      toastError(skillErrorMessage(cause))
     }
   }
 
   // —— 详情页 ——
   if (view === 'detail' && active) {
     return (
-      <div className="flex h-full min-h-0 flex-1 flex-col bg-white">
+      <div className="relative flex h-full min-h-0 flex-1 flex-col bg-white">
         <div className="flex items-center gap-2 border-b border-black/[0.06] px-3 py-3">
           <button
             type="button"
@@ -279,6 +393,11 @@ export function SkillsPanel({
             <ArrowLeft size={18} />
           </button>
           <p className="min-w-0 flex-1 truncate text-[15px] font-bold text-[#111]">{active.name}</p>
+          {desktopMode && active.source === 'project' && (
+            <button type="button" onClick={beginEdit} className="rounded-full p-1.5 text-[#555] hover:bg-black/[0.04]" aria-label="编辑 Skill" title="编辑 Skill">
+              <Pencil size={16} />
+            </button>
+          )}
           <button type="button" onClick={onClose} className="rounded-full p-1.5 text-[#888] hover:bg-black/[0.04]">
             <X size={18} />
           </button>
@@ -300,31 +419,70 @@ export function SkillsPanel({
         </div>
 
         <div className="flex items-center justify-between border-t border-black/[0.06] px-4 py-3">
+          <div className="flex items-center gap-2">
+            {desktopMode && active.source === 'project' && (
+              <button type="button" onClick={() => setDeleteConfirmationOpen(true)} className="rounded-full p-2 text-[#9ca3af] hover:bg-red-50 hover:text-red-600" aria-label="删除 Skill" title="删除 Skill">
+                <Trash2 size={16} />
+              </button>
+            )}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={enabledLocal}
+              disabled={desktopMode ? active.source !== 'project' : active.source === 'builtin'}
+              onClick={() => void toggleEnabled(!enabledLocal)}
+              title={desktopMode ? (active.source === 'project' ? '启用/停用' : '内置 Skill 始终可用') : active.source === 'builtin' ? '内置 Skill 始终可用' : '启用/停用'}
+              className={`relative h-7 w-12 rounded-full transition ${
+                enabledLocal ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
+              } ${(desktopMode && active.source !== 'project') || (!desktopMode && active.source === 'builtin') ? 'opacity-50' : ''}`}
+            >
+              <span
+                className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${
+                  enabledLocal ? 'left-[22px]' : 'left-0.5'
+                }`}
+              />
+            </button>
+          </div>
           <button
             type="button"
-            role="switch"
-            aria-checked={enabledLocal}
-            disabled={desktopMode || active.source === 'builtin'}
-            onClick={() => void toggleEnabled(!enabledLocal)}
-            title={desktopMode ? '桌面版内置 Skill 始终可用' : active.source === 'builtin' ? '内置 Skill 始终可用' : '启用/停用'}
-            className={`relative h-7 w-12 rounded-full transition ${
-              enabledLocal ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
-            } ${desktopMode || active.source === 'builtin' ? 'opacity-50' : ''}`}
-          >
-            <span
-              className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${
-                enabledLocal ? 'left-[22px]' : 'left-0.5'
-              }`}
-            />
-          </button>
-          <button
-            type="button"
+            disabled={!enabledLocal}
             onClick={() => void applySkill()}
-            className="h-10 min-w-[120px] rounded-xl bg-[#111827] px-6 text-[14px] font-bold text-white"
+            className="h-10 min-w-[120px] rounded-xl bg-[#111827] px-6 text-[14px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             应用
           </button>
         </div>
+        {deleteConfirmationOpen && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30 p-4" role="presentation">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="desktop-skill-delete-title"
+              className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl"
+            >
+              <h3 id="desktop-skill-delete-title" className="text-[15px] font-bold text-[#111]">删除项目 Skill？</h3>
+              <p className="mt-2 text-[13px] leading-relaxed text-[#555]">
+                「{active.name}」会移入当前项目的已删除存档，之后可从项目备份中恢复。
+              </p>
+              <div className="mt-5 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirmationOpen(false)}
+                  className="h-10 flex-1 rounded-xl border border-black/10 text-[13px] font-bold"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void deleteSkill()}
+                  className="h-10 flex-1 rounded-xl bg-red-600 text-[13px] font-bold text-white"
+                >
+                  移入存档
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     )
   }
@@ -334,10 +492,10 @@ export function SkillsPanel({
     return (
       <div className="flex h-full min-h-0 flex-1 flex-col bg-white">
         <div className="flex items-center gap-2 border-b border-black/[0.06] px-3 py-3">
-          <button type="button" onClick={() => setView('list')} className="rounded-full p-1.5 text-[#555] hover:bg-black/[0.04]">
+          <button type="button" onClick={() => setView(editingSkillId ? 'detail' : 'list')} className="rounded-full p-1.5 text-[#555] hover:bg-black/[0.04]">
             <ArrowLeft size={18} />
           </button>
-          <p className="flex-1 text-[15px] font-bold text-[#111]">新建 Skill</p>
+          <p className="flex-1 text-[15px] font-bold text-[#111]">{editingSkillId ? '编辑 Skill' : '新建 Skill'}</p>
           <button type="button" onClick={onClose} className="rounded-full p-1.5 text-[#888] hover:bg-black/[0.04]">
             <X size={18} />
           </button>
@@ -374,11 +532,15 @@ export function SkillsPanel({
           </select>
         </div>
         <div className="flex gap-2 border-t border-black/[0.06] px-4 py-3">
-          <button type="button" onClick={() => setView('list')} className="h-10 flex-1 rounded-xl border border-black/10 text-[13px] font-bold">
+          <button type="button" onClick={() => {
+            setView(editingSkillId ? 'detail' : 'list')
+            setEditingSkillId(null)
+            setDraft({ name: '', description: '', instructions: '', category: 'general' })
+          }} className="h-10 flex-1 rounded-xl border border-black/10 text-[13px] font-bold">
             取消
           </button>
           <button type="button" onClick={() => void saveCreate()} className="h-10 flex-1 rounded-xl bg-[#111827] text-[13px] font-bold text-white">
-            保存
+            {editingSkillId ? '保存更改' : '保存'}
           </button>
         </div>
       </div>
@@ -393,13 +555,22 @@ export function SkillsPanel({
         <div className="flex items-center gap-1.5">
           <button
             type="button"
-            onClick={() => setView('create')}
-            disabled={desktopMode}
-            title={desktopMode ? '桌面版项目自定义 Skill 尚未接入' : '新建 Skill'}
-            className="flex h-8 items-center gap-1 rounded-full bg-[#111] px-3 text-[12px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={beginCreate}
+            title="新建 Skill"
+            className="flex h-8 items-center gap-1 rounded-full bg-[#111] px-3 text-[12px] font-bold text-white"
           >
             <Plus size={14} strokeWidth={2.5} /> 新建
           </button>
+          {desktopMode && (
+            <button
+              type="button"
+              onClick={() => void importSkill()}
+              className="flex h-8 items-center gap-1 rounded-full border border-black/10 px-2.5 text-[12px] font-semibold text-[#333] hover:bg-black/[0.04]"
+              title="从本地 Markdown 文件导入 Skill"
+            >
+              <Upload size={14} /> 导入
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -447,8 +618,8 @@ export function SkillsPanel({
           })}
         </div>
         {desktopMode && (
-          <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[10px] leading-relaxed text-amber-800">
-            当前仅支持内置 SYSTEM_SKILLS；项目自定义 Skill 的创建、导入和管理尚未接入桌面版。
+          <p className="mt-2 rounded-lg bg-[#f8f9fb] px-2.5 py-2 text-[10px] leading-relaxed text-[#6b7280]">
+            项目 Skill 保存在当前项目中；编辑会保留历史版本，删除会移入项目内的已删除存档。
           </p>
         )}
       </div>

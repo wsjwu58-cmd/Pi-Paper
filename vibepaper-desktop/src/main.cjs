@@ -147,7 +147,13 @@ function startLocalCore() {
     clearTimeout(request.timer)
     pending.delete(message.id)
     if (message.ok) request.resolve(message.result)
-    else request.reject(new Error(typeof message.error === 'string' ? message.error : '本地项目操作失败。'))
+    else {
+      const error = new Error(typeof message.error === 'string' ? message.error : '本地项目操作失败。')
+      if (typeof message.errorCode === 'string' && /^[A-Z0-9_]{1,120}$/u.test(message.errorCode)) {
+        error.code = message.errorCode
+      }
+      request.reject(error)
+    }
   })
 
   child.on('exit', (code) => {
@@ -1557,6 +1563,27 @@ function registerProjectIpc() {
     // first, matching the original service's replay semantics for any body.
     return localCore.request('canvas:drama-assets:upsert', input)
   })
+  const dramaStateMethods = Object.freeze({
+    createSeries: 'drama:series:create',
+    createCharacter: 'drama:characters:create',
+    addReferencePack: 'drama:reference-packs:add',
+    createShot: 'drama:shots:create',
+    prepareKeyframeNode: 'drama:keyframes:prepare',
+    recordKeyframe: 'drama:keyframes:record',
+    prepareVideoNode: 'drama:videos:prepare',
+    recordLineage: 'drama:lineages:record',
+    staleLineagesForCharacter: 'drama:lineages:stale-for-character',
+  })
+  ipcMain.handle('desktop:drama:state', async (event, operation, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof operation !== 'string' || !Object.hasOwn(dramaStateMethods, operation)) {
+      throw new Error('短剧状态操作无效。')
+    }
+    assertGroupStackRequest(input, '短剧状态', { stringFields: ['idempotencyKey'] })
+    await assertActiveAssetProject(input.projectId)
+    return localCore.request(dramaStateMethods[operation], input)
+  })
   ipcMain.handle('desktop:drama:render-batches:list', async (event, projectId, canvasId) => {
     assertTrustedSender(event)
     if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
@@ -2154,6 +2181,67 @@ function registerAgentIpc() {
     }
     const worker = await getAgentWorker(projectId)
     return worker.request('agent:list-skills', { projectId, sessionId, keyword })
+  })
+  ipcMain.handle('desktop:agent:skill:create', async (event, projectId, draft) => {
+    assertTrustedSender(event)
+    if (typeof projectId !== 'string' || !projectId || !draft || typeof draft !== 'object' || Array.isArray(draft)
+      || typeof draft.name !== 'string' || draft.name.length > 64
+      || (draft.description !== undefined && (typeof draft.description !== 'string' || draft.description.length > 1024))
+      || typeof draft.instructions !== 'string' || Buffer.byteLength(draft.instructions, 'utf8') > 512 * 1024
+      || (draft.category !== undefined && typeof draft.category !== 'string')) {
+      throw codedError('AGENT_SKILL_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:create-skill', { projectId, draft })
+  })
+  ipcMain.handle('desktop:agent:skill:update', async (event, projectId, skillId, patch) => {
+    assertTrustedSender(event)
+    if (typeof projectId !== 'string' || !projectId
+      || typeof skillId !== 'string' || !/^[a-z0-9][a-z0-9-]{0,159}$/u.test(skillId)
+      || !patch || typeof patch !== 'object' || Array.isArray(patch)
+      || (patch.name !== undefined && (typeof patch.name !== 'string' || patch.name.length > 64))
+      || (patch.description !== undefined && (typeof patch.description !== 'string' || patch.description.length > 1024))
+      || (patch.instructions !== undefined && (typeof patch.instructions !== 'string'
+        || Buffer.byteLength(patch.instructions, 'utf8') > 512 * 1024))
+      || (patch.category !== undefined && typeof patch.category !== 'string')
+      || (patch.enabled !== undefined && typeof patch.enabled !== 'boolean')) {
+      throw codedError('AGENT_SKILL_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:update-skill', { projectId, skillId, patch })
+  })
+  ipcMain.handle('desktop:agent:skill:delete', async (event, projectId, skillId) => {
+    assertTrustedSender(event)
+    if (typeof projectId !== 'string' || !projectId
+      || typeof skillId !== 'string' || !/^[a-z0-9][a-z0-9-]{0,159}$/u.test(skillId)) {
+      throw codedError('AGENT_SKILL_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:delete-skill', { projectId, skillId })
+  })
+  ipcMain.handle('desktop:agent:skill:import', async (event, projectId) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '导入本地 Markdown Skill',
+      properties: ['openFile'],
+      filters: [{ name: 'Markdown Skill', extensions: ['md', 'markdown'] }],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const sourcePath = result.filePaths[0]
+    const sourceInfo = await fs.lstat(sourcePath).catch(() => null)
+    if (!sourceInfo?.isFile() || sourceInfo.isSymbolicLink() || sourceInfo.size <= 0 || sourceInfo.size > 512 * 1024) {
+      throw codedError('AGENT_SKILL_IMPORT_FILE_INVALID')
+    }
+    const contents = await fs.readFile(sourcePath, 'utf8')
+    if (!contents.trim() || Buffer.byteLength(contents, 'utf8') > 512 * 1024) throw codedError('AGENT_SKILL_IMPORT_FILE_INVALID')
+    const latestWorker = await getAgentWorker(projectId)
+    if (worker !== latestWorker) throw codedError('AGENT_PROJECT_CHANGED')
+    return worker.request('agent:import-skill', {
+      projectId,
+      fileName: path.basename(sourcePath),
+      contents,
+    })
   })
   ipcMain.handle('desktop:agent:create-session', async (event, projectId, title) => {
     assertTrustedSender(event)

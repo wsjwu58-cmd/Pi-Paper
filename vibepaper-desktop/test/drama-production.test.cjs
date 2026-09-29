@@ -106,7 +106,7 @@ test('project schema v14 migration adds durable render batch and review tables w
   await store.openProject(directory)
   const migrated = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 15)
+    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 16)
     for (const table of ['drama_render_batches', 'drama_render_jobs', 'render_reviews']) {
       assert.ok(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table))
     }

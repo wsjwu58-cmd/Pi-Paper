@@ -41,6 +41,64 @@ describe("desktop system Skill context", () => {
 		expect(listDesktopAgentSkills("absent-skill-query")).toEqual([]);
 	});
 
+	it("adds enabled project Skills to the original load_skill tool context", async () => {
+		const { store } = await createStore();
+		try {
+			const context = createDesktopAgentSkillContext(store, "session-1", undefined, [
+				{
+					id: "project-lens-notes",
+					key: "project-lens-notes",
+					name: "镜头笔记",
+					description: "保持镜头方向连续",
+					instructions: "记录轴线和镜头方向。",
+					source: "project",
+					category: "video",
+					version: 1,
+					enabled: true,
+				},
+			]);
+			expect(context.indexLines).toContain("- [dynamic] 镜头笔记 (project-lens-notes)：保持镜头方向连续");
+			expect(context.skills).toContainEqual({
+				id: "project-lens-notes",
+				key: "project-lens-notes",
+				name: "镜头笔记",
+				instructions: "记录轴线和镜头方向。",
+			});
+
+			const [loadSkill] = createLoadSkillTool(context.skills, context.loadedSkillIds, context.onLoad);
+			const result = await loadSkill.execute("tool-call-project-skill", { skill: "镜头笔记" });
+			expect(result.content[0]).toMatchObject({ text: expect.stringContaining("记录轴线和镜头方向") });
+			expect(store.getLoadedSkillIds("session-1")).toEqual(["project-lens-notes"]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps disabled project Skills out of the model context", async () => {
+		const { store } = await createStore();
+		const disabledSkill = {
+			id: "project-private-notes",
+			key: "project-private-notes",
+			name: "停用的项目笔记",
+			description: "当前不提供给 Agent",
+			instructions: "这些指令不可加载。",
+			source: "project" as const,
+			category: "general",
+			version: 2,
+			enabled: false,
+		};
+		try {
+			const context = createDesktopAgentSkillContext(store, "session-1", undefined, [disabledSkill]);
+			expect(context.indexLines.some((line) => line.includes(disabledSkill.id))).toBe(false);
+			expect(context.skills.some((skill) => skill.id === disabledSkill.id)).toBe(false);
+			expect(() => createDesktopAgentSkillContext(store, "session-1", disabledSkill.id, [disabledSkill])).toThrow(
+				"SKILL_NOT_FOUND",
+			);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("loads selected and tool-loaded skills into the next turn from SQLite", async () => {
 		const { databasePath, store } = await createStore();
 		try {

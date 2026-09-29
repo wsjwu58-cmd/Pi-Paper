@@ -45,6 +45,117 @@ export interface DesktopDramaAsset {
   updatedAt: string
 }
 
+export interface DesktopDramaSeries {
+  id: string
+  canvasId: string
+  activeCanonRevision: number
+  format: {
+    id: string
+    aspectRatio: '9:16'
+    targetDurationSeconds: number
+    minShotCount: number
+    maxShotCount: number
+    minShotDurationSeconds: number
+    maxShotDurationSeconds: number
+    keyframeFirst: true
+  }
+}
+
+export interface DesktopDramaCharacter {
+  id: string
+  seriesId: string
+  name: string
+  identityAnchors: string[]
+  activeLookRevision: number
+  voiceId: string
+}
+
+export interface DesktopDramaReferencePack {
+  id: string
+  characterId: string
+  lookRevision: number
+  status: 'draft' | 'approved' | 'retired'
+  frontAssetId: string
+  sideAssetId: string
+  backAssetId: string
+  expressionAssetIds: string[]
+}
+
+export interface DesktopDramaShotCharacterBinding {
+  characterId: string
+  lookRevision: number
+}
+
+export interface DesktopDramaShot {
+  id: string
+  seriesId: string
+  episodeNo: number
+  shotNo: number
+  durationSeconds: number
+  characterBindings: DesktopDramaShotCharacterBinding[]
+  promptRevision: number
+}
+
+export interface DesktopDramaKeyframeNodeDraft {
+  nodeType: 'image'
+  creativeType: 'keyframe'
+  shotId: string
+  referenceAssetIds: string[]
+  referencePackIds: string[]
+}
+
+export interface DesktopDramaVideoNodeDraft {
+  nodeType: 'video'
+  creativeType: 'clip'
+  shotId: string
+  keyframeRenderId: string
+  referencePackIds: string[]
+}
+
+export interface DesktopDramaSeriesInput extends DesktopCanvasScope {
+  idempotencyKey: string
+  series: {
+    id?: string
+    activeCanonRevision?: number
+    format?: DesktopDramaSeries['format']
+  }
+}
+
+export interface DesktopDramaCharacterInput extends DesktopCanvasScope {
+  idempotencyKey: string
+  character: Omit<DesktopDramaCharacter, 'id'> & { id?: string }
+}
+
+export interface DesktopDramaReferencePackInput extends DesktopCanvasScope {
+  idempotencyKey: string
+  pack: Omit<DesktopDramaReferencePack, 'id'> & { id?: string }
+}
+
+export interface DesktopDramaShotInput extends DesktopCanvasScope {
+  idempotencyKey: string
+  shot: Omit<DesktopDramaShot, 'id'> & { id?: string }
+}
+
+export interface DesktopDramaKeyframeInput extends DesktopCanvasScope {
+  idempotencyKey: string
+  render: {
+    id?: string
+    shotId: string
+    status: 'draft' | 'accepted' | 'rejected' | 'stale'
+    referencePackIds: string[]
+  }
+}
+
+export interface DesktopDramaLineageInput extends DesktopCanvasScope {
+  idempotencyKey: string
+  lineage: {
+    id?: string
+    shotId: string
+    keyframeRenderId: string
+    status: 'draft' | 'ready_for_video' | 'submitted' | 'stale'
+  }
+}
+
 export interface DesktopDramaRenderJob {
   id: string
   shotId: string
@@ -368,10 +479,10 @@ export interface DesktopAgentSkill {
   name: string
   description: string
   instructions: string
-  source: 'builtin' | 'system_dynamic'
+  source: 'builtin' | 'system_dynamic' | 'project'
   category: string
-  version: 1
-  enabled: true
+  version: number
+  enabled: boolean
 }
 
 export interface DesktopAgentMessage {
@@ -525,6 +636,15 @@ export interface DesktopBridge {
     shotId?: string
   }): Promise<{ items: DesktopDramaAsset[] }>
   upsertDramaAsset(input: DesktopUpsertDramaAssetInput): Promise<DesktopDramaAsset>
+  createDramaSeries(input: DesktopDramaSeriesInput): Promise<DesktopDramaSeries>
+  createDramaCharacter(input: DesktopDramaCharacterInput): Promise<DesktopDramaCharacter>
+  addDramaReferencePack(input: DesktopDramaReferencePackInput): Promise<DesktopDramaReferencePack>
+  createDramaShot(input: DesktopDramaShotInput): Promise<DesktopDramaShot>
+  prepareDramaKeyframeNode(input: DesktopCanvasScope & { shotId: string }): Promise<DesktopDramaKeyframeNodeDraft>
+  recordDramaKeyframe(input: DesktopDramaKeyframeInput): Promise<DesktopDramaKeyframeInput['render']>
+  prepareDramaVideoNode(input: DesktopCanvasScope & { shotId: string }): Promise<DesktopDramaVideoNodeDraft>
+  recordDramaLineage(input: DesktopDramaLineageInput): Promise<DesktopDramaLineageInput['lineage']>
+  staleDramaLineagesForCharacter(input: DesktopCanvasScope & { idempotencyKey: string; characterId: string }): Promise<string[]>
   listDramaRenderBatches(projectId: string, canvasId: string): Promise<{ items: DesktopDramaRenderBatch[] }>
   getDramaRenderBatch(projectId: string, canvasId: string, batchId: string): Promise<DesktopDramaRenderBatch>
   listRenderReviews(projectId: string, canvasId: string, targetNodeId?: string): Promise<{ items: DesktopRenderReview[] }>
@@ -605,6 +725,10 @@ export interface DesktopBridge {
     items: DesktopAgentSkill[]
     loadedSkillIds: string[]
   }>
+  createAgentSkill(projectId: string, draft: Pick<DesktopAgentSkill, 'name' | 'description' | 'instructions' | 'category'>): Promise<DesktopAgentSkill>
+  updateAgentSkill(projectId: string, skillId: string, patch: Partial<Pick<DesktopAgentSkill, 'name' | 'description' | 'instructions' | 'category' | 'enabled'>>): Promise<DesktopAgentSkill>
+  deleteAgentSkill(projectId: string, skillId: string): Promise<{ status: 'ok' }>
+  importAgentSkill(projectId: string): Promise<DesktopAgentSkill | null>
   createAgentSession(projectId: string, title?: string): Promise<Pick<DesktopAgentSession, 'sessionId' | 'createdAt'>>
   getAgentMessages(projectId: string, sessionId: string): Promise<DesktopAgentMessage[]>
   getAgentUsage(projectId: string, sessionId: string): Promise<DesktopAgentUsage>

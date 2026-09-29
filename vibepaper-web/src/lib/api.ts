@@ -72,6 +72,72 @@ function resolveApiUrl(path: string): string {
   return `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+const STANDARD_VERTICAL_SHORT_DRAMA_FORMAT = {
+  id: 'vertical-short-drama-v1',
+  aspectRatio: '9:16' as const,
+  targetDurationSeconds: 180,
+  minShotCount: 60,
+  maxShotCount: 90,
+  minShotDurationSeconds: 2,
+  maxShotDurationSeconds: 5,
+  keyframeFirst: true as const,
+}
+
+function parseLocalJsonObject(options: RequestInit, label: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(typeof options.body === 'string' ? options.body : '')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid')
+    return parsed as Record<string, unknown>
+  } catch {
+    throw new ApiError(400, 'INVALID_INPUT', `${label}请求无效。`)
+  }
+}
+
+function localDramaPathId(segment: string, label: string): string {
+  try {
+    const id = decodeURIComponent(segment).trim()
+    if (!id) throw new Error('empty')
+    return id
+  } catch {
+    throw new ApiError(400, 'INVALID_INPUT', `${label}标识无效。`)
+  }
+}
+
+function localDramaRequiredText(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new ApiError(400, 'INVALID_INPUT', `缺少或非法 ${field}`)
+  return value.trim()
+}
+
+function localDramaOptionalText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function localDramaInteger(value: unknown, field: string, fallback?: number): number {
+  if (value === undefined && fallback !== undefined) return fallback
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new ApiError(400, 'INVALID_INPUT', `缺少或非法 ${field}`)
+  }
+  return value
+}
+
+function localDramaOptionalInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+function localDramaStringArray(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string' && item.trim())) {
+    throw new ApiError(400, 'INVALID_INPUT', '字段必须是非空字符串数组')
+  }
+  return value.map((item: string) => item.trim())
+}
+
+function localDramaStatus<T extends string>(value: unknown, allowed: readonly T[]): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    throw new ApiError(400, 'INVALID_INPUT', 'status 无效')
+  }
+  return value as T
+}
+
 /** Authenticated fetch that retries once after refresh on 401. Use for SSE / non-JSON bodies. */
 export async function authedFetch(
   path: string,
@@ -162,6 +228,194 @@ export async function api<T = unknown>(
         } as Parameters<typeof bridge.upsertDramaAsset>[0]) as T
       }
       throw new ApiError(405, "METHOD_NOT_ALLOWED", "短剧资产接口不支持此请求方法。")
+    }
+
+    const dramaSeriesCreateMatch = pathname === '/drama/series'
+    const dramaCharacterCreateMatch = /^\/drama\/series\/([^/]+)\/characters$/u.exec(pathname)
+    const dramaReferencePackCreateMatch = /^\/drama\/characters\/([^/]+)\/reference-packs$/u.exec(pathname)
+    const dramaShotCreateMatch = /^\/drama\/series\/([^/]+)\/shots$/u.exec(pathname)
+    const dramaKeyframeNodeMatch = /^\/drama\/shots\/([^/]+)\/keyframe-node$/u.exec(pathname)
+    const dramaKeyframeRecordMatch = /^\/drama\/shots\/([^/]+)\/keyframes$/u.exec(pathname)
+    const dramaVideoNodeMatch = /^\/drama\/shots\/([^/]+)\/video-node$/u.exec(pathname)
+    const dramaLineageCreateMatch = pathname === '/drama/lineages'
+    const dramaStaleLineagesMatch = /^\/drama\/characters\/([^/]+)\/stale-lineages$/u.exec(pathname)
+    if (dramaSeriesCreateMatch || dramaCharacterCreateMatch || dramaReferencePackCreateMatch
+      || dramaShotCreateMatch || dramaKeyframeNodeMatch || dramaKeyframeRecordMatch
+      || dramaVideoNodeMatch || dramaLineageCreateMatch || dramaStaleLineagesMatch) {
+      if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '短剧状态接口不支持此请求方法。')
+      const project = await bridge.getActiveProject()
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      const idempotencyKey = options.idempotencyKey ?? headers['Idempotency-Key']
+      if (!idempotencyKey) throw new ApiError(400, 'INVALID_INPUT', 'Idempotency-Key 无效。')
+      const scope = { projectId: project.projectId, canvasId: project.canvasId, idempotencyKey }
+
+      if (dramaSeriesCreateMatch) {
+        const body = parseLocalJsonObject(options, '短剧系列创建')
+        if (body.canvasId !== project.canvasId) {
+          throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+        }
+        return await bridge.createDramaSeries({
+          ...scope,
+          series: {
+            ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
+            activeCanonRevision: typeof body.activeCanonRevision === 'number'
+              && Number.isSafeInteger(body.activeCanonRevision) && body.activeCanonRevision >= 0
+              ? body.activeCanonRevision : 1,
+            format: STANDARD_VERTICAL_SHORT_DRAMA_FORMAT,
+          },
+        }) as T
+      }
+
+      if (dramaCharacterCreateMatch) {
+        const body = parseLocalJsonObject(options, '角色创建')
+        return await bridge.createDramaCharacter({
+          ...scope,
+          character: {
+            ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
+            seriesId: localDramaPathId(dramaCharacterCreateMatch[1], '短剧系列'),
+            name: localDramaRequiredText(body.name, 'name'),
+            identityAnchors: localDramaStringArray(body.identityAnchors),
+            activeLookRevision: localDramaOptionalInteger(body.activeLookRevision) ?? 1,
+            voiceId: localDramaRequiredText(body.voiceId, 'voiceId'),
+          },
+        }) as T
+      }
+
+      if (dramaReferencePackCreateMatch) {
+        const body = parseLocalJsonObject(options, '角色参考包创建')
+        return await bridge.addDramaReferencePack({
+          ...scope,
+          pack: {
+            ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
+            characterId: localDramaPathId(dramaReferencePackCreateMatch[1], '角色'),
+            lookRevision: localDramaInteger(body.lookRevision, 'lookRevision'),
+            status: localDramaStatus(body.status, ['draft', 'approved', 'retired'] as const),
+            frontAssetId: localDramaRequiredText(body.frontAssetId, 'frontAssetId'),
+            sideAssetId: localDramaRequiredText(body.sideAssetId, 'sideAssetId'),
+            backAssetId: localDramaRequiredText(body.backAssetId, 'backAssetId'),
+            expressionAssetIds: localDramaStringArray(body.expressionAssetIds),
+          },
+        }) as T
+      }
+
+      if (dramaShotCreateMatch) {
+        const body = parseLocalJsonObject(options, '镜头创建')
+        if (!Array.isArray(body.characterBindings)) {
+          throw new ApiError(400, 'INVALID_INPUT', 'characterBindings 必须是数组')
+        }
+        const characterBindings = body.characterBindings.map((value) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            throw new ApiError(400, 'INVALID_INPUT', 'characterBindings 格式无效')
+          }
+          const binding = value as Record<string, unknown>
+          return {
+            characterId: localDramaRequiredText(binding.characterId, 'characterId'),
+            lookRevision: localDramaInteger(binding.lookRevision, 'lookRevision'),
+          }
+        })
+        return await bridge.createDramaShot({
+          ...scope,
+          shot: {
+            ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
+            seriesId: localDramaPathId(dramaShotCreateMatch[1], '短剧系列'),
+            episodeNo: localDramaInteger(body.episodeNo, 'episodeNo'),
+            shotNo: localDramaInteger(body.shotNo, 'shotNo'),
+            durationSeconds: localDramaInteger(body.durationSeconds, 'durationSeconds'),
+            characterBindings,
+            promptRevision: localDramaOptionalInteger(body.promptRevision) ?? 1,
+          },
+        }) as T
+      }
+
+      if (dramaKeyframeNodeMatch || dramaVideoNodeMatch) {
+        const body = parseLocalJsonObject(options, '画布节点创建')
+        if (body.canvasId !== project.canvasId) {
+          throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+        }
+        const shotId = localDramaPathId((dramaKeyframeNodeMatch ?? dramaVideoNodeMatch)![1], '镜头')
+        const prompt = localDramaRequiredText(body.prompt, 'prompt')
+        const model = localDramaOptionalText(body.model)
+        if (dramaKeyframeNodeMatch) {
+          const draft = await bridge.prepareDramaKeyframeNode({ projectId: project.projectId, canvasId: project.canvasId, shotId })
+          const canvas = await bridge.loadCanvas(project.projectId, project.canvasId)
+          const node = await bridge.createNode({
+            projectId: project.projectId,
+            canvasId: project.canvasId,
+            expectedVersion: canvas.version,
+            idempotencyKey,
+            type: 'image',
+            x: 220,
+            y: 180,
+            creativeType: 'keyframe',
+            prompt,
+            ...(model ? { modelRef: model } : {}),
+            params: {
+              shotId: draft.shotId,
+              referencePackIds: draft.referencePackIds,
+              referenceAssetIds: draft.referenceAssetIds,
+              aspectRatio: '9:16',
+              ...(model ? { model } : {}),
+            },
+          })
+          return { ...draft, canvasNodeId: node.node.id } as T
+        }
+        const draft = await bridge.prepareDramaVideoNode({ projectId: project.projectId, canvasId: project.canvasId, shotId })
+        const canvas = await bridge.loadCanvas(project.projectId, project.canvasId)
+        const node = await bridge.createNode({
+          projectId: project.projectId,
+          canvasId: project.canvasId,
+          expectedVersion: canvas.version,
+          idempotencyKey,
+          type: 'video',
+          x: 220,
+          y: 180,
+          creativeType: 'clip',
+          prompt,
+          ...(model ? { modelRef: model } : {}),
+          params: {
+            shotId: draft.shotId,
+            keyframeRenderId: draft.keyframeRenderId,
+            referencePackIds: draft.referencePackIds,
+            aspectRatio: '9:16',
+            ...(model ? { model } : {}),
+          },
+        })
+        return { ...draft, canvasNodeId: node.node.id } as T
+      }
+
+      if (dramaKeyframeRecordMatch) {
+        const body = parseLocalJsonObject(options, '关键帧状态写入')
+        return await bridge.recordDramaKeyframe({
+          ...scope,
+          render: {
+            ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
+            shotId: localDramaPathId(dramaKeyframeRecordMatch[1], '镜头'),
+            status: localDramaStatus(body.status, ['draft', 'accepted', 'rejected', 'stale'] as const),
+            referencePackIds: localDramaStringArray(body.referencePackIds),
+          },
+        }) as T
+      }
+
+      if (dramaLineageCreateMatch) {
+        const body = parseLocalJsonObject(options, '镜头渲染血缘写入')
+        return await bridge.recordDramaLineage({
+          ...scope,
+          lineage: {
+            ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
+            shotId: localDramaRequiredText(body.shotId, 'shotId'),
+            keyframeRenderId: localDramaRequiredText(body.keyframeRenderId, 'keyframeRenderId'),
+            status: localDramaStatus(body.status, ['draft', 'ready_for_video', 'submitted', 'stale'] as const),
+          },
+        }) as T
+      }
+
+      if (dramaStaleLineagesMatch) {
+        const lineageIds = await bridge.staleDramaLineagesForCharacter({
+          ...scope,
+          characterId: localDramaPathId(dramaStaleLineagesMatch[1], '角色'),
+        })
+        return { lineageIds } as T
+      }
     }
 
     const renderBatchListMatch = /^\/drama\/render-batches$/u.test(pathname)

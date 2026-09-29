@@ -89,6 +89,24 @@ async function dispatch(method, payload) {
       return store.listDramaAssets(payload?.projectId, payload?.canvasId, payload?.filters)
     case 'canvas:drama-assets:upsert':
       return store.upsertDramaAsset(payload)
+    case 'drama:series:create':
+      return store.createDramaSeries(payload)
+    case 'drama:characters:create':
+      return store.createDramaCharacter(payload)
+    case 'drama:reference-packs:add':
+      return store.addDramaReferencePack(payload)
+    case 'drama:shots:create':
+      return store.createDramaShot(payload)
+    case 'drama:keyframes:prepare':
+      return store.prepareDramaKeyframeNode(payload)
+    case 'drama:keyframes:record':
+      return store.recordDramaKeyframe(payload)
+    case 'drama:videos:prepare':
+      return store.prepareDramaVideoNode(payload)
+    case 'drama:lineages:record':
+      return store.recordDramaLineage(payload)
+    case 'drama:lineages:stale-for-character':
+      return store.markDramaLineagesStaleForCharacter(payload)
     case 'drama:render-batches:list':
       return store.listDramaRenderBatches(payload?.projectId, payload?.canvasId)
     case 'drama:render-batches:get':
@@ -205,6 +223,9 @@ parentPort.on('message', async (event) => {
       id: request.id,
       ok: false,
       error: error instanceof Error ? error.message : '本地项目操作失败。',
+      ...(typeof error?.code === 'string' && /^[A-Z0-9_]{1,120}$/u.test(error.code)
+        ? { errorCode: error.code }
+        : {}),
     })
   }
 })

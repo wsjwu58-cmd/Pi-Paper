@@ -10,7 +10,7 @@ const { imageThumbnail } = require('./asset-thumbnail.cjs')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 15
+const PROJECT_DB_SCHEMA_VERSION = 16
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -275,6 +275,93 @@ const DRAMA_PIPELINE_DB_SCHEMA = `
     ON render_reviews(canvas_id, target_node_id, created_at DESC);
 `
 
+const DRAMA_STATE_DB_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS drama_series (
+    id TEXT PRIMARY KEY,
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    active_canon_revision INTEGER NOT NULL,
+    format_json TEXT NOT NULL CHECK (json_valid(format_json) AND json_type(format_json) = 'object'),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_series_by_canvas ON drama_series(canvas_id, created_at, id);
+
+  CREATE TABLE IF NOT EXISTS drama_characters (
+    id TEXT PRIMARY KEY,
+    series_id TEXT NOT NULL REFERENCES drama_series(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    identity_anchors_json TEXT NOT NULL CHECK (json_valid(identity_anchors_json) AND json_type(identity_anchors_json) = 'array'),
+    active_look_revision INTEGER NOT NULL,
+    voice_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_characters_by_series ON drama_characters(series_id, created_at, id);
+
+  CREATE TABLE IF NOT EXISTS drama_reference_packs (
+    id TEXT PRIMARY KEY,
+    character_id TEXT NOT NULL REFERENCES drama_characters(id) ON DELETE CASCADE,
+    look_revision INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('draft', 'approved', 'retired')),
+    front_asset_id TEXT NOT NULL,
+    side_asset_id TEXT NOT NULL,
+    back_asset_id TEXT NOT NULL,
+    expression_asset_ids_json TEXT NOT NULL CHECK (json_valid(expression_asset_ids_json) AND json_type(expression_asset_ids_json) = 'array'),
+    created_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_reference_packs_by_character_look
+    ON drama_reference_packs(character_id, look_revision, status, created_at, id);
+
+  CREATE TABLE IF NOT EXISTS drama_shots (
+    id TEXT PRIMARY KEY,
+    series_id TEXT NOT NULL REFERENCES drama_series(id) ON DELETE CASCADE,
+    episode_no INTEGER NOT NULL,
+    shot_no INTEGER NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    character_bindings_json TEXT NOT NULL CHECK (json_valid(character_bindings_json) AND json_type(character_bindings_json) = 'array'),
+    prompt_revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (series_id, episode_no, shot_no)
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_shots_by_series_episode ON drama_shots(series_id, episode_no, shot_no);
+
+  CREATE TABLE IF NOT EXISTS drama_keyframes (
+    id TEXT PRIMARY KEY,
+    shot_id TEXT NOT NULL REFERENCES drama_shots(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('draft', 'accepted', 'rejected', 'stale')),
+    reference_pack_ids_json TEXT NOT NULL CHECK (json_valid(reference_pack_ids_json) AND json_type(reference_pack_ids_json) = 'array'),
+    created_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_keyframes_by_shot_status ON drama_keyframes(shot_id, status, created_at DESC, id DESC);
+
+  CREATE TABLE IF NOT EXISTS drama_render_lineages (
+    id TEXT PRIMARY KEY,
+    shot_id TEXT NOT NULL REFERENCES drama_shots(id) ON DELETE CASCADE,
+    keyframe_render_id TEXT NOT NULL REFERENCES drama_keyframes(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK (status IN ('draft', 'ready_for_video', 'submitted', 'stale')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_render_lineages_by_shot_status
+    ON drama_render_lineages(shot_id, status, created_at, id);
+
+  CREATE TABLE IF NOT EXISTS drama_state_commands (
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+    operation TEXT NOT NULL CHECK (length(operation) BETWEEN 1 AND 64),
+    input_hash TEXT NOT NULL CHECK (length(input_hash) = 64),
+    result_json TEXT NOT NULL CHECK (json_valid(result_json)),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (canvas_id, idempotency_key)
+  ) STRICT;
+`
+
 const PROJECT_DB_SCHEMA = `
   CREATE TABLE project_metadata (
     key TEXT PRIMARY KEY,
@@ -317,6 +404,7 @@ const PROJECT_DB_SCHEMA = `
   ${CANVAS_GROUP_STACK_DB_SCHEMA}
   ${DRAMA_ASSETS_DB_SCHEMA}
   ${DRAMA_PIPELINE_DB_SCHEMA}
+  ${DRAMA_STATE_DB_SCHEMA}
 `
 
 function isRecord(value) {
@@ -1364,6 +1452,76 @@ function requiredDramaInteger(value, field) {
 
 function requiredDramaText(value, field) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} 不能为空。`)
+  return value.trim()
+}
+
+const STANDARD_VERTICAL_SHORT_DRAMA_FORMAT = Object.freeze({
+  id: 'vertical-short-drama-v1',
+  aspectRatio: '9:16',
+  targetDurationSeconds: 180,
+  minShotCount: 60,
+  maxShotCount: 90,
+  minShotDurationSeconds: 2,
+  maxShotDurationSeconds: 5,
+  keyframeFirst: true,
+})
+
+function dramaStateError(code, message) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
+function dramaStateText(value, field) {
+  if (typeof value !== 'string' || !value.trim()) throw dramaStateError('INVALID_INPUT', `${field}不能为空`)
+  return value.trim()
+}
+
+function dramaStateStrings(value, field) {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string' && item.trim())) {
+    throw dramaStateError('INVALID_INPUT', `${field}状态格式无效`)
+  }
+  return value.map((item) => item.trim())
+}
+
+function dramaStateBindings(value) {
+  if (!Array.isArray(value)) throw dramaStateError('INVALID_INPUT', '镜头角色绑定状态格式无效')
+  return value.map((item) => {
+    if (!isRecord(item) || typeof item.characterId !== 'string' || typeof item.lookRevision !== 'number') {
+      throw dramaStateError('INVALID_INPUT', '镜头角色绑定状态格式无效')
+    }
+    return { characterId: dramaStateText(item.characterId, 'characterId'), lookRevision: item.lookRevision }
+  })
+}
+
+function dramaStateStatus(value, allowed, field) {
+  if (!allowed.includes(value)) throw dramaStateError('INVALID_INPUT', `${field}状态无效`)
+  return value
+}
+
+function dramaStateUniqueConflict(error) {
+  if (typeof error !== 'object' || error === null) return false
+  if (typeof error.code === 'string' && /SQLITE_CONSTRAINT_(?:PRIMARYKEY|UNIQUE)/u.test(error.code)) return true
+  return typeof error.message === 'string'
+    && /(?:UNIQUE constraint failed|PRIMARY KEY must be unique)/u.test(error.message)
+}
+
+function sameDramaIds(actual, expected) {
+  if (actual.length !== expected.length) return false
+  const sortedActual = [...actual].sort()
+  const sortedExpected = [...expected].sort()
+  return sortedActual.every((id, index) => id === sortedExpected[index])
+}
+
+function isStandardDramaFormat(format) {
+  return isRecord(format) && Object.entries(STANDARD_VERTICAL_SHORT_DRAMA_FORMAT)
+    .every(([key, value]) => format[key] === value)
+}
+
+function requireDramaIdempotencyKey(value) {
+  if (typeof value !== 'string' || value.trim().length < 1 || value.trim().length > 128) {
+    throw dramaStateError('INVALID_INPUT', 'Idempotency-Key 必须为 1-128 个字符。')
+  }
   return value.trim()
 }
 
@@ -2580,6 +2738,37 @@ async function migrateDatabaseV14ToV15(database, dataDirectory) {
   }
 }
 
+async function migrateDatabaseV15ToV16(database, dataDirectory) {
+  const version = databaseVersion(database)
+  if (version === 16) return
+  if (version !== 15) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 16。`)
+
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v15-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec(DRAMA_STATE_DB_SCHEMA)
+    database.exec('PRAGMA user_version = 16')
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('短剧剧集与关键帧状态迁移后检测到无效引用。')
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
 function readDatabaseCanvas(database, metadata, { allowLegacyParamsAssetReferenceGaps = false } = {}) {
   const projectId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('projectId')
   const canvasId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('canvasId')
@@ -3280,7 +3469,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -3747,6 +3936,7 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 12) await migrateDatabaseV12ToV13(database, dataDirectory)
       if (databaseVersion(database) === 13) await migrateDatabaseV13ToV14(database, dataDirectory)
       if (databaseVersion(database) === 14) await migrateDatabaseV14ToV15(database, dataDirectory)
+      if (databaseVersion(database) === 15) await migrateDatabaseV15ToV16(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
@@ -3860,7 +4050,16 @@ function createLocalProjectStore() {
 
       await fs.mkdir(destination)
       destinationCreated = true
-      await fs.rename(staging, path.join(destination, '.vibepaper'))
+      const projectDataPath = path.join(destination, '.vibepaper')
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await fs.rename(staging, projectDataPath)
+          break
+        } catch (error) {
+          if (process.platform !== 'win32' || !['EPERM', 'EBUSY'].includes(error?.code) || attempt >= 3) throw error
+          await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** attempt))
+        }
+      }
     } catch (error) {
       if (stagingInsideParent()) {
         await fs.rm(path.resolve(staging), { recursive: true, force: true }).catch(() => undefined)
@@ -5066,6 +5265,182 @@ function createLocalProjectStore() {
     return active ? publicProject(active.metadata) : null
   }
 
+  function requireDramaScope(projectId, canvasId) {
+    if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
+      throw dramaStateError('PROJECT_CHANGED', '当前项目已更改，请重新打开画布。')
+    }
+    return { database: active.database, canvasId }
+  }
+
+  function requireDramaSeriesRow(database, canvasId, seriesId) {
+    const row = database.prepare(`
+      SELECT id, canvas_id, active_canon_revision, format_json
+      FROM drama_series WHERE id = ? AND canvas_id = ?
+    `).get(seriesId, canvasId)
+    if (!row) throw dramaStateError('NOT_FOUND', '短剧系列不存在')
+    let format
+    try {
+      format = JSON.parse(row.format_json)
+    } catch {
+      throw dramaStateError('INVALID_STATE', '短剧规格状态无效')
+    }
+    if (!isStandardDramaFormat(format)) {
+      throw dramaStateError('INVALID_STATE', '短剧规格状态无效')
+    }
+    return {
+      id: row.id,
+      canvasId: row.canvas_id,
+      activeCanonRevision: Number(row.active_canon_revision),
+      format,
+    }
+  }
+
+  function requireDramaCharacterRow(database, canvasId, characterId) {
+    const row = database.prepare(`
+      SELECT character.id, character.series_id, character.name, character.identity_anchors_json,
+        character.active_look_revision, character.voice_id
+      FROM drama_characters character
+      JOIN drama_series series ON series.id = character.series_id
+      WHERE character.id = ? AND series.canvas_id = ?
+    `).get(characterId, canvasId)
+    if (!row) throw dramaStateError('NOT_FOUND', '角色不存在')
+    let identityAnchors
+    try {
+      identityAnchors = dramaStateStrings(JSON.parse(row.identity_anchors_json), '角色外形锚点')
+    } catch (error) {
+      if (error?.code === 'INVALID_INPUT') throw dramaStateError('INVALID_STATE', '角色外形锚点状态格式无效')
+      throw error
+    }
+    return {
+      id: row.id,
+      seriesId: row.series_id,
+      name: row.name,
+      identityAnchors,
+      activeLookRevision: Number(row.active_look_revision),
+      voiceId: row.voice_id,
+    }
+  }
+
+  function requireDramaShotRow(database, canvasId, shotId) {
+    const row = database.prepare(`
+      SELECT shot.id, shot.series_id, shot.episode_no, shot.shot_no, shot.duration_seconds,
+        shot.character_bindings_json, shot.prompt_revision
+      FROM drama_shots shot
+      JOIN drama_series series ON series.id = shot.series_id
+      WHERE shot.id = ? AND series.canvas_id = ?
+    `).get(shotId, canvasId)
+    if (!row) throw dramaStateError('NOT_FOUND', '镜头不存在')
+    let characterBindings
+    try {
+      characterBindings = dramaStateBindings(JSON.parse(row.character_bindings_json))
+    } catch {
+      throw dramaStateError('INVALID_STATE', '镜头角色绑定状态格式无效')
+    }
+    return {
+      id: row.id,
+      seriesId: row.series_id,
+      episodeNo: Number(row.episode_no),
+      shotNo: Number(row.shot_no),
+      durationSeconds: Number(row.duration_seconds),
+      characterBindings,
+      promptRevision: Number(row.prompt_revision),
+    }
+  }
+
+  function prepareDramaKeyframe(database, canvasId, shotId) {
+    const shot = requireDramaShotRow(database, canvasId, shotId)
+    const packs = shot.characterBindings.map((binding) => {
+      requireDramaCharacterRow(database, canvasId, binding.characterId)
+      const rows = database.prepare(`
+        SELECT pack.id, pack.character_id, pack.look_revision, pack.status,
+          pack.front_asset_id, pack.side_asset_id, pack.back_asset_id, pack.expression_asset_ids_json
+        FROM drama_reference_packs pack
+        JOIN drama_characters character ON character.id = pack.character_id
+        JOIN drama_series series ON series.id = character.series_id
+        WHERE pack.character_id = ? AND pack.look_revision = ? AND pack.status = 'approved'
+          AND series.canvas_id = ?
+      `).all(binding.characterId, binding.lookRevision, canvasId)
+      if (rows.length === 0) {
+        throw dramaStateError('MISSING_CHARACTER_REFERENCE', '人物镜头缺少已批准角色参考包')
+      }
+      if (rows.length > 1) {
+        throw dramaStateError('CHARACTER_REFERENCE_AMBIGUOUS', '人物镜头存在多个角色参考包，需要人工选择')
+      }
+      const row = rows[0]
+      let expressionAssetIds
+      try {
+        expressionAssetIds = dramaStateStrings(JSON.parse(row.expression_asset_ids_json), '角色表情表')
+      } catch {
+        throw dramaStateError('INVALID_STATE', '角色表情表状态格式无效')
+      }
+      for (const [value, field] of [
+        [row.front_asset_id, '角色正面参考图'],
+        [row.side_asset_id, '角色侧面参考图'],
+        [row.back_asset_id, '角色背面参考图'],
+      ]) dramaStateText(value, field)
+      if (expressionAssetIds.length === 0) {
+        throw dramaStateError('INCOMPLETE_REFERENCE_PACK', '角色参考包缺少表情表')
+      }
+      return {
+        id: row.id,
+        frontAssetId: row.front_asset_id,
+        sideAssetId: row.side_asset_id,
+        backAssetId: row.back_asset_id,
+        expressionAssetIds,
+      }
+    })
+    return {
+      nodeType: 'image',
+      creativeType: 'keyframe',
+      shotId: shot.id,
+      referencePackIds: packs.map((pack) => pack.id),
+      referenceAssetIds: packs.flatMap((pack) => [
+        pack.frontAssetId,
+        pack.sideAssetId,
+        pack.backAssetId,
+        ...pack.expressionAssetIds,
+      ]),
+    }
+  }
+
+  async function beginDramaMutation(database, canvasId, idempotencyKey, operation) {
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      const previous = database.prepare(`
+        SELECT operation, result_json FROM drama_state_commands
+        WHERE canvas_id = ? AND idempotency_key = ?
+      `).get(canvasId, idempotencyKey)
+      if (previous) {
+        if (previous.operation !== operation) {
+          throw dramaStateError('IDEMPOTENCY_CONFLICT', 'Idempotency-Key 已用于其他短剧状态命令。')
+        }
+        let result
+        try {
+          result = JSON.parse(previous.result_json)
+        } catch {
+          throw dramaStateError('INVALID_STATE', '短剧命令结果快照损坏。')
+        }
+        database.exec('COMMIT')
+        return { replayed: true, result }
+      }
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      return null
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  function finishDramaMutation(database, canvasId, idempotencyKey, operation, input, result) {
+    const now = new Date().toISOString()
+    const inputHash = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+    database.prepare(`
+      INSERT INTO drama_state_commands (
+        canvas_id, idempotency_key, operation, input_hash, result_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(canvasId, idempotencyKey, operation, inputHash, JSON.stringify(result), now)
+  }
+
   function listDramaAssets(projectId, canvasId, filters = {}) {
     return enqueue(() => {
       if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
@@ -5214,6 +5589,370 @@ function createLocalProjectStore() {
     })
   }
 
+  function createDramaSeries(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) {
+        throw dramaStateError('INVALID_INPUT', '短剧系列创建请求无效')
+      }
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const idempotencyKey = requireDramaIdempotencyKey(input.idempotencyKey)
+      const replay = await beginDramaMutation(database, canvasId, idempotencyKey, 'create_series')
+      if (replay) return replay.result
+      try {
+        if (!isRecord(input.series)) throw dramaStateError('INVALID_INPUT', '短剧系列创建请求无效')
+        const raw = input.series
+        const id = normalizeCanvasEntityId(raw.id ?? randomUUID(), '短剧系列')
+        const activeCanonRevision = raw.activeCanonRevision ?? 1
+        if (!Number.isSafeInteger(activeCanonRevision) || activeCanonRevision < 0) {
+          throw dramaStateError('INVALID_INPUT', 'activeCanonRevision 必须是非负整数')
+        }
+        const format = cloneJsonRecord(raw.format ?? STANDARD_VERTICAL_SHORT_DRAMA_FORMAT, '短剧规格')
+        if (!isStandardDramaFormat(format)) {
+          throw dramaStateError('INVALID_FORMAT', '短剧规格与标准竖屏短剧不匹配')
+        }
+        const series = { id, canvasId, activeCanonRevision, format }
+        const now = new Date().toISOString()
+        database.prepare(`
+          INSERT INTO drama_series (id, canvas_id, active_canon_revision, format_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(id, canvasId, activeCanonRevision, JSON.stringify(format), now, now)
+        finishDramaMutation(database, canvasId, idempotencyKey, 'create_series', series, series)
+        database.exec('COMMIT')
+        return JSON.parse(JSON.stringify(series))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        if (dramaStateUniqueConflict(error)) throw dramaStateError('CONFLICT', '短剧系列已存在')
+        throw error
+      }
+    })
+  }
+
+  function createDramaCharacter(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) {
+        throw dramaStateError('INVALID_INPUT', '角色创建请求无效')
+      }
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const idempotencyKey = requireDramaIdempotencyKey(input.idempotencyKey)
+      const replay = await beginDramaMutation(database, canvasId, idempotencyKey, 'create_character')
+      if (replay) return replay.result
+      try {
+        if (!isRecord(input.character)) throw dramaStateError('INVALID_INPUT', '角色创建请求无效')
+        const raw = input.character
+        const character = {
+          id: normalizeCanvasEntityId(raw.id ?? randomUUID(), '角色'),
+          seriesId: normalizeCanvasEntityId(raw.seriesId, '短剧系列'),
+          name: dramaStateText(raw.name, '角色名'),
+          identityAnchors: dramaStateStrings(raw.identityAnchors, '角色外形锚点'),
+          activeLookRevision: raw.activeLookRevision ?? 1,
+          voiceId: dramaStateText(raw.voiceId, '角色 voiceId'),
+        }
+        if (!Number.isSafeInteger(character.activeLookRevision) || character.activeLookRevision < 0) {
+          throw dramaStateError('INVALID_INPUT', 'activeLookRevision 必须是非负整数')
+        }
+        const normalizedAnchors = character.identityAnchors.map((anchor) => anchor.trim())
+        if (normalizedAnchors.length < 3 || normalizedAnchors.length > 5 || normalizedAnchors.some((anchor) => !anchor)) {
+          throw dramaStateError('INVALID_IDENTITY_ANCHORS', '角色必须包含 3-5 条不可变外形锚点')
+        }
+        if (new Set(normalizedAnchors).size !== normalizedAnchors.length) {
+          throw dramaStateError('INVALID_IDENTITY_ANCHORS', '角色外形锚点不能重复')
+        }
+        requireDramaSeriesRow(database, canvasId, character.seriesId)
+        const now = new Date().toISOString()
+        database.prepare(`
+          INSERT INTO drama_characters (
+            id, series_id, name, identity_anchors_json, active_look_revision, voice_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(character.id, character.seriesId, character.name, JSON.stringify(character.identityAnchors),
+          character.activeLookRevision, character.voiceId, now, now)
+        finishDramaMutation(database, canvasId, idempotencyKey, 'create_character', character, character)
+        database.exec('COMMIT')
+        return JSON.parse(JSON.stringify(character))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        if (dramaStateUniqueConflict(error)) throw dramaStateError('CONFLICT', '角色已存在')
+        throw error
+      }
+    })
+  }
+
+  function addDramaReferencePack(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) {
+        throw dramaStateError('INVALID_INPUT', '角色参考包创建请求无效')
+      }
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const idempotencyKey = requireDramaIdempotencyKey(input.idempotencyKey)
+      const replay = await beginDramaMutation(database, canvasId, idempotencyKey, 'add_reference_pack')
+      if (replay) return replay.result
+      try {
+        if (!isRecord(input.pack)) throw dramaStateError('INVALID_INPUT', '角色参考包创建请求无效')
+        const raw = input.pack
+        const pack = {
+          id: normalizeCanvasEntityId(raw.id ?? randomUUID(), '角色参考包'),
+          characterId: normalizeCanvasEntityId(raw.characterId, '角色'),
+          lookRevision: raw.lookRevision,
+          status: dramaStateStatus(raw.status, ['draft', 'approved', 'retired'], '角色参考包'),
+          frontAssetId: dramaStateText(raw.frontAssetId, '角色正面参考图'),
+          sideAssetId: dramaStateText(raw.sideAssetId, '角色侧面参考图'),
+          backAssetId: dramaStateText(raw.backAssetId, '角色背面参考图'),
+          expressionAssetIds: dramaStateStrings(raw.expressionAssetIds, '角色表情表'),
+        }
+        if (!Number.isSafeInteger(pack.lookRevision) || pack.lookRevision < 0) {
+          throw dramaStateError('INVALID_INPUT', 'lookRevision 必须是非负整数')
+        }
+        const character = requireDramaCharacterRow(database, canvasId, pack.characterId)
+        if (pack.lookRevision !== character.activeLookRevision) {
+          throw dramaStateError('VERSION_CONFLICT', '角色参考包不是当前 Look revision')
+        }
+        if (pack.status === 'approved' && pack.expressionAssetIds.length === 0) {
+          throw dramaStateError('INCOMPLETE_REFERENCE_PACK', '角色参考包缺少表情表')
+        }
+        const now = new Date().toISOString()
+        database.prepare(`
+          INSERT INTO drama_reference_packs (
+            id, character_id, look_revision, status, front_asset_id, side_asset_id,
+            back_asset_id, expression_asset_ids_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(pack.id, pack.characterId, pack.lookRevision, pack.status, pack.frontAssetId,
+          pack.sideAssetId, pack.backAssetId, JSON.stringify(pack.expressionAssetIds), now)
+        finishDramaMutation(database, canvasId, idempotencyKey, 'add_reference_pack', pack, pack)
+        database.exec('COMMIT')
+        return JSON.parse(JSON.stringify(pack))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        if (dramaStateUniqueConflict(error)) throw dramaStateError('CONFLICT', '角色参考包已存在')
+        throw error
+      }
+    })
+  }
+
+  function createDramaShot(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) {
+        throw dramaStateError('INVALID_INPUT', '镜头创建请求无效')
+      }
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const idempotencyKey = requireDramaIdempotencyKey(input.idempotencyKey)
+      const replay = await beginDramaMutation(database, canvasId, idempotencyKey, 'create_shot')
+      if (replay) return replay.result
+      try {
+        if (!isRecord(input.shot)) throw dramaStateError('INVALID_INPUT', '镜头创建请求无效')
+        const raw = input.shot
+        const shot = {
+          id: normalizeCanvasEntityId(raw.id ?? randomUUID(), '镜头'),
+          seriesId: normalizeCanvasEntityId(raw.seriesId, '短剧系列'),
+          episodeNo: raw.episodeNo,
+          shotNo: raw.shotNo,
+          durationSeconds: raw.durationSeconds,
+          characterBindings: dramaStateBindings(raw.characterBindings),
+          promptRevision: raw.promptRevision ?? 1,
+        }
+        for (const [value, field] of [
+          [shot.episodeNo, 'episodeNo'],
+          [shot.shotNo, 'shotNo'],
+          [shot.durationSeconds, 'durationSeconds'],
+          [shot.promptRevision, 'promptRevision'],
+        ]) {
+          if (!Number.isSafeInteger(value) || value < 0) {
+            throw dramaStateError('INVALID_INPUT', `${field} 必须是非负整数`)
+          }
+        }
+        const series = requireDramaSeriesRow(database, canvasId, shot.seriesId)
+        if (shot.durationSeconds < series.format.minShotDurationSeconds
+          || shot.durationSeconds > series.format.maxShotDurationSeconds) {
+          throw dramaStateError('INVALID_SHOT_DURATION', '竖屏短剧单镜时长必须在 2-5 秒之间')
+        }
+        for (const binding of shot.characterBindings) {
+          if (!Number.isSafeInteger(binding.lookRevision) || binding.lookRevision < 0) {
+            throw dramaStateError('INVALID_CHARACTER_BINDING', '镜头包含无效角色')
+          }
+          const character = requireDramaCharacterRow(database, canvasId, binding.characterId)
+          if (character.seriesId !== shot.seriesId || character.activeLookRevision !== binding.lookRevision) {
+            throw dramaStateError('INVALID_CHARACTER_BINDING', '镜头未绑定系列当前角色 Look revision')
+          }
+        }
+        const now = new Date().toISOString()
+        database.prepare(`
+          INSERT INTO drama_shots (
+            id, series_id, episode_no, shot_no, duration_seconds, character_bindings_json, prompt_revision, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(shot.id, shot.seriesId, shot.episodeNo, shot.shotNo, shot.durationSeconds,
+          JSON.stringify(shot.characterBindings), shot.promptRevision, now)
+        finishDramaMutation(database, canvasId, idempotencyKey, 'create_shot', shot, shot)
+        database.exec('COMMIT')
+        return JSON.parse(JSON.stringify(shot))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        if (dramaStateUniqueConflict(error)) throw dramaStateError('CONFLICT', '镜头已存在')
+        throw error
+      }
+    })
+  }
+
+  function prepareDramaKeyframeNode(input) {
+    return enqueue(() => {
+      if (!isRecord(input)) throw dramaStateError('INVALID_INPUT', '关键帧节点准备请求无效')
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const shotId = normalizeCanvasEntityId(input.shotId, '镜头')
+      return prepareDramaKeyframe(database, canvasId, shotId)
+    })
+  }
+
+  function recordDramaKeyframe(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) {
+        throw dramaStateError('INVALID_INPUT', '关键帧状态写入请求无效')
+      }
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const idempotencyKey = requireDramaIdempotencyKey(input.idempotencyKey)
+      const replay = await beginDramaMutation(database, canvasId, idempotencyKey, 'record_keyframe')
+      if (replay) return replay.result
+      try {
+        if (!isRecord(input.render)) throw dramaStateError('INVALID_INPUT', '关键帧状态写入请求无效')
+        const raw = input.render
+        const render = {
+          id: normalizeCanvasEntityId(raw.id ?? randomUUID(), '关键帧'),
+          shotId: normalizeCanvasEntityId(raw.shotId, '镜头'),
+          status: dramaStateStatus(raw.status, ['draft', 'accepted', 'rejected', 'stale'], '关键帧'),
+          referencePackIds: dramaStateStrings(raw.referencePackIds, '关键帧参考包'),
+        }
+        const expected = prepareDramaKeyframe(database, canvasId, render.shotId)
+        if (render.status === 'accepted' && !sameDramaIds(render.referencePackIds, expected.referencePackIds)) {
+          throw dramaStateError('MISSING_CHARACTER_REFERENCE', '关键帧未绑定当前角色参考包')
+        }
+        const now = new Date().toISOString()
+        database.prepare(`
+          INSERT INTO drama_keyframes (id, shot_id, status, reference_pack_ids_json, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(render.id, render.shotId, render.status, JSON.stringify(render.referencePackIds), now)
+        finishDramaMutation(database, canvasId, idempotencyKey, 'record_keyframe', render, render)
+        database.exec('COMMIT')
+        return JSON.parse(JSON.stringify(render))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        if (dramaStateUniqueConflict(error)) throw dramaStateError('CONFLICT', '关键帧已存在')
+        throw error
+      }
+    })
+  }
+
+  function prepareDramaVideoNode(input) {
+    return enqueue(() => {
+      if (!isRecord(input)) throw dramaStateError('INVALID_INPUT', '视频节点准备请求无效')
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const shotId = normalizeCanvasEntityId(input.shotId, '镜头')
+      const expected = prepareDramaKeyframe(database, canvasId, shotId)
+      const row = database.prepare(`
+        SELECT id, reference_pack_ids_json FROM drama_keyframes
+        WHERE shot_id = ? AND status = 'accepted'
+        ORDER BY created_at DESC, id DESC LIMIT 1
+      `).get(shotId)
+      if (!row) throw dramaStateError('KEYFRAME_NOT_ACCEPTED', '视频生成必须引用已接受的关键帧')
+      let referencePackIds
+      try {
+        referencePackIds = dramaStateStrings(JSON.parse(row.reference_pack_ids_json), '关键帧参考包')
+      } catch {
+        throw dramaStateError('INVALID_STATE', '关键帧参考包状态格式无效')
+      }
+      if (!sameDramaIds(referencePackIds, expected.referencePackIds)) {
+        throw dramaStateError('MISSING_CHARACTER_REFERENCE', '视频生成缺少当前角色参考包')
+      }
+      return {
+        nodeType: 'video',
+        creativeType: 'clip',
+        shotId,
+        keyframeRenderId: row.id,
+        referencePackIds: expected.referencePackIds,
+      }
+    })
+  }
+
+  function recordDramaLineage(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) {
+        throw dramaStateError('INVALID_INPUT', '镜头渲染血缘写入请求无效')
+      }
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const idempotencyKey = requireDramaIdempotencyKey(input.idempotencyKey)
+      const replay = await beginDramaMutation(database, canvasId, idempotencyKey, 'record_lineage')
+      if (replay) return replay.result
+      try {
+        if (!isRecord(input.lineage)) throw dramaStateError('INVALID_INPUT', '镜头渲染血缘写入请求无效')
+        const raw = input.lineage
+        const lineage = {
+          id: normalizeCanvasEntityId(raw.id ?? randomUUID(), '渲染血缘'),
+          shotId: normalizeCanvasEntityId(raw.shotId, '镜头'),
+          keyframeRenderId: normalizeCanvasEntityId(raw.keyframeRenderId, '关键帧'),
+          status: dramaStateStatus(raw.status, ['draft', 'ready_for_video', 'submitted', 'stale'], '渲染血缘'),
+        }
+        requireDramaShotRow(database, canvasId, lineage.shotId)
+        const keyframe = database.prepare('SELECT id, shot_id FROM drama_keyframes WHERE id = ?').get(lineage.keyframeRenderId)
+        if (!keyframe) throw dramaStateError('NOT_FOUND', '关键帧不存在')
+        if (keyframe.shot_id !== lineage.shotId) {
+          throw dramaStateError('INVALID_KEYFRAME_REFERENCE', '渲染血缘必须引用同一镜头的关键帧')
+        }
+        const now = new Date().toISOString()
+        database.prepare(`
+          INSERT INTO drama_render_lineages (id, shot_id, keyframe_render_id, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(lineage.id, lineage.shotId, lineage.keyframeRenderId, lineage.status, now, now)
+        finishDramaMutation(database, canvasId, idempotencyKey, 'record_lineage', lineage, lineage)
+        database.exec('COMMIT')
+        return JSON.parse(JSON.stringify(lineage))
+      } catch (error) {
+        database.exec('ROLLBACK')
+        if (dramaStateUniqueConflict(error)) throw dramaStateError('CONFLICT', '镜头渲染血缘已存在')
+        throw error
+      }
+    })
+  }
+
+  function markDramaLineagesStaleForCharacter(input) {
+    return enqueue(async () => {
+      if (!isRecord(input)) throw dramaStateError('INVALID_INPUT', '镜头渲染血缘失效请求无效')
+      const { database, canvasId } = requireDramaScope(input.projectId, input.canvasId)
+      const idempotencyKey = requireDramaIdempotencyKey(input.idempotencyKey)
+      const replay = await beginDramaMutation(database, canvasId, idempotencyKey, 'stale_lineages_for_character')
+      if (replay) return replay.result
+      try {
+        const characterId = normalizeCanvasEntityId(input.characterId, '角色')
+        const rows = database.prepare(`
+          SELECT lineage.id, shot.character_bindings_json
+          FROM drama_render_lineages lineage
+          JOIN drama_shots shot ON shot.id = lineage.shot_id
+          JOIN drama_series series ON series.id = shot.series_id
+          WHERE lineage.status <> 'stale' AND series.canvas_id = ?
+          ORDER BY lineage.rowid
+        `).all(canvasId)
+        const ids = rows.filter((row) => {
+          let bindings
+          try {
+            bindings = dramaStateBindings(JSON.parse(row.character_bindings_json))
+          } catch {
+            throw dramaStateError('INVALID_STATE', '镜头角色绑定状态格式无效')
+          }
+          return bindings.some((binding) => binding.characterId === characterId)
+        }).map((row) => row.id)
+        const update = database.prepare(`
+          UPDATE drama_render_lineages SET status = 'stale', updated_at = ?
+          WHERE id = ? AND status <> 'stale'
+        `)
+        const now = new Date().toISOString()
+        const staleIds = []
+        for (const id of ids) {
+          if (update.run(now, id).changes === 1) staleIds.push(id)
+        }
+        finishDramaMutation(database, canvasId, idempotencyKey, 'stale_lineages_for_character', { characterId }, staleIds)
+        database.exec('COMMIT')
+        return staleIds
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    })
+  }
+
   function listDramaRenderBatches(projectId, canvasId) {
     return enqueue(() => {
       if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
@@ -5252,7 +5991,7 @@ function createLocalProjectStore() {
       const rows = active.database.prepare(`
         SELECT * FROM render_reviews
         WHERE canvas_id = ? AND (? IS NULL OR target_node_id = ?)
-        ORDER BY created_at DESC, review_id DESC
+        ORDER BY created_at DESC, rowid DESC
       `).all(canvasId, target, target)
       return { items: rows.map((row) => renderReviewPayload(row, active.metadata.projectId)) }
     })
@@ -6420,6 +7159,15 @@ function createLocalProjectStore() {
     listDramaAssets,
     listDramaRenderBatches,
     getDramaRenderBatch,
+    createDramaSeries,
+    createDramaCharacter,
+    addDramaReferencePack,
+    createDramaShot,
+    prepareDramaKeyframeNode,
+    recordDramaKeyframe,
+    prepareDramaVideoNode,
+    recordDramaLineage,
+    markDramaLineagesStaleForCharacter,
     listRenderReviews,
     listTaskEvents,
     listTasks,
