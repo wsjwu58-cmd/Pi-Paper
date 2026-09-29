@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AgentPanelDesktopAdapter } from './AgentPanel'
 import { isChatVisibleMessage } from './agentEventHandlers'
-import { isAgentRunActive, mergeSessionMessages, reduceAgentEvent, type AgentEventState } from './agentEventEnvelope'
+import {
+  friendlyAgentErrorMessage,
+  isAgentRunActive,
+  mergeSessionMessages,
+  reduceAgentEvent,
+  type AgentEventState,
+} from './agentEventEnvelope'
 import type { AgentChatMsg, AgentConfirmation } from './agentTypes'
 import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentSession, DesktopAgentSkill } from '@/desktop/desktop-bridge'
 import type { SkillView } from '@/lib/types'
@@ -53,7 +59,7 @@ function normalizeError(cause: unknown): string {
   if (message.includes('AGENT_PROJECT_CHANGED')) return '当前本地项目已切换，请重新打开画布。'
   if (message.includes('AGENT_RUN_ALREADY_PROCESSED')) return '这条消息已处理，请检查会话记录后再继续。'
   if (message.includes('AGENT_MESSAGE_INVALID')) return '消息不能为空，且不能超过 20,000 个字符。'
-  return message || '本地 Agent 操作失败。'
+  return friendlyAgentErrorMessage(message || '本地 Agent 操作失败。')
 }
 
 export function useDesktopAgentController({
@@ -247,6 +253,12 @@ export function useDesktopAgentController({
           sendingRef.current = false
           setSending(false)
         }
+        if (event.type === 'run_failed') {
+          setError(friendlyAgentErrorMessage(event.data.message ?? event.data.errorCode))
+        }
+        void bridge.listAgentSessions(projectId).then((listed) => {
+          if (active) setSessions(listed)
+        }).catch(() => undefined)
       } else if (event.type === 'task_status') {
         if (!activeRunIdRef.current || event.runId === activeRunIdRef.current) {
           activeRunIdRef.current = event.runId
@@ -296,10 +308,11 @@ export function useDesktopAgentController({
     setError('')
     try {
       await loadSession(sessionId, epoch)
+      await loadSkills(sessionId)
     } catch (cause) {
       if (epoch === requestEpochRef.current) setError(normalizeError(cause))
     }
-  }, [loadSession, projectId])
+  }, [loadSession, loadSkills, projectId])
 
   const sendWithReferences = useCallback(async (input: { selectedNodeIds: string[]; selectedSkillId?: string }): Promise<boolean> => {
     const content = draft.trim()

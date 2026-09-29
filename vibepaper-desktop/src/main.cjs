@@ -1557,6 +1557,49 @@ function registerProjectIpc() {
     // first, matching the original service's replay semantics for any body.
     return localCore.request('canvas:drama-assets:upsert', input)
   })
+  ipcMain.handle('desktop:drama:render-batches:list', async (event, projectId, canvasId) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200
+      || typeof canvasId !== 'string' || canvasId.length === 0 || canvasId.length > 200) {
+      throw new Error('渲染批次查询请求无效。')
+    }
+    await assertActiveAssetProject(projectId)
+    return localCore.request('drama:render-batches:list', { projectId, canvasId })
+  })
+  ipcMain.handle('desktop:drama:render-batches:get', async (event, projectId, canvasId, batchId) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200
+      || typeof canvasId !== 'string' || canvasId.length === 0 || canvasId.length > 200
+      || typeof batchId !== 'string' || batchId.length === 0 || batchId.length > 200) {
+      throw new Error('渲染批次查询请求无效。')
+    }
+    await assertActiveAssetProject(projectId)
+    return localCore.request('drama:render-batches:get', { projectId, canvasId, batchId })
+  })
+  ipcMain.handle('desktop:render-reviews:list', async (event, projectId, canvasId, targetNodeId) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200
+      || typeof canvasId !== 'string' || canvasId.length === 0 || canvasId.length > 200
+      || (targetNodeId != null && (typeof targetNodeId !== 'string' || targetNodeId.length > 200))) {
+      throw new Error('审校查询请求无效。')
+    }
+    await assertActiveAssetProject(projectId)
+    return localCore.request('render-reviews:list', { projectId, canvasId, targetNodeId })
+  })
+  ipcMain.handle('desktop:render-reviews:create', async (event, input) => {
+    assertTrustedSender(event)
+    if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || typeof input.projectId !== 'string' || input.projectId.length === 0 || input.projectId.length > 200
+      || typeof input.canvasId !== 'string' || input.canvasId.length === 0 || input.canvasId.length > 200) {
+      throw new Error('审校写入请求无效。')
+    }
+    await assertActiveAssetProject(input.projectId)
+    return localCore.request('render-reviews:create', input)
+  })
   ipcMain.handle('desktop:canvas:export', (event, projectId, canvasId) => {
     assertTrustedSender(event)
     if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')

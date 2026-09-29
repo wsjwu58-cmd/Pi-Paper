@@ -119,7 +119,7 @@ test('project schema v13 migrates short drama tables with a rollback snapshot', 
   const reopened = await store.openProject(directory)
   const migratedDatabase = new DatabaseSync(databasePath, { readOnly: true })
   try {
-    assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 14)
+    assert.equal(migratedDatabase.prepare('PRAGMA user_version').get().user_version, 15)
     assert.ok(migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'drama_assets'").get())
     assert.ok(migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'drama_asset_commands'").get())
   } finally {

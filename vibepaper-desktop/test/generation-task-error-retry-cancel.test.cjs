@@ -211,7 +211,7 @@ test('schema v11 project backups restore and migrate legacy task output into the
   assert.deepEqual(restoredTask.outputs.map((output) => output.index), [0])
   const restoredDatabase = new DatabaseSync(path.join(restored.directory, '.vibepaper', 'project.sqlite'))
   try {
-    assert.equal(restoredDatabase.prepare('PRAGMA user_version').get().user_version, 14)
+    assert.equal(restoredDatabase.prepare('PRAGMA user_version').get().user_version, 15)
     assert.equal(restoredDatabase.prepare('SELECT COUNT(*) AS count FROM task_outputs WHERE task_id = ?').get(task.taskId).count, 1)
   } finally {
     restoredDatabase.close()

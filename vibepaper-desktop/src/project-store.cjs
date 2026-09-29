@@ -10,7 +10,7 @@ const { imageThumbnail } = require('./asset-thumbnail.cjs')
 const PROJECT_SCHEMA_VERSION = 1
 const CANVAS_SCHEMA_VERSION = 1
 const CANVAS_EXPORT_SCHEMA_VERSION = '1.0.0'
-const PROJECT_DB_SCHEMA_VERSION = 14
+const PROJECT_DB_SCHEMA_VERSION = 15
 const PROJECT_BACKUP_SCHEMA_VERSION = 2
 const MAX_NODES = 10_000
 const MAX_EDGES = 20_000
@@ -213,6 +213,68 @@ const DRAMA_ASSETS_DB_SCHEMA = `
   ) STRICT;
 `
 
+const DRAMA_PIPELINE_DB_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS drama_render_batches (
+    batch_id TEXT PRIMARY KEY,
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    series_id TEXT NOT NULL,
+    episode_no INTEGER NOT NULL CHECK (episode_no > 0),
+    estimated_cost INTEGER NOT NULL CHECK (estimated_cost >= 0),
+    status TEXT NOT NULL CHECK (status IN ('draft', 'awaiting_approval', 'running', 'partial', 'completed', 'failed')),
+    idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+    session_id TEXT,
+    canvas_version INTEGER CHECK (canvas_version IS NULL OR canvas_version >= 0),
+    approval_action_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (canvas_id, idempotency_key)
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_render_batches_by_canvas
+    ON drama_render_batches(canvas_id, created_at DESC, batch_id);
+
+  CREATE TABLE IF NOT EXISTS drama_render_jobs (
+    job_id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES drama_render_batches(batch_id) ON DELETE CASCADE,
+    shot_id TEXT NOT NULL,
+    keyframe_render_id TEXT NOT NULL,
+    canvas_node_id TEXT,
+    duration_seconds INTEGER NOT NULL CHECK (duration_seconds BETWEEN 2 AND 5),
+    model_type TEXT NOT NULL,
+    model_params_json TEXT NOT NULL CHECK (json_valid(model_params_json) AND json_type(model_params_json) = 'object'),
+    estimated_cost INTEGER NOT NULL CHECK (estimated_cost >= 0),
+    input_hash TEXT NOT NULL CHECK (length(input_hash) = 64),
+    status TEXT NOT NULL CHECK (status IN ('draft', 'running', 'completed', 'failed')),
+    task_id TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (batch_id, shot_id)
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS drama_render_jobs_by_batch_status
+    ON drama_render_jobs(batch_id, status);
+  CREATE INDEX IF NOT EXISTS drama_render_jobs_by_task ON drama_render_jobs(task_id);
+
+  CREATE TABLE IF NOT EXISTS render_reviews (
+    review_id TEXT PRIMARY KEY,
+    canvas_id TEXT NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    target_node_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL DEFAULT 'clip',
+    scores_json TEXT NOT NULL CHECK (json_valid(scores_json) AND json_type(scores_json) = 'object'),
+    failures_json TEXT NOT NULL CHECK (json_valid(failures_json) AND json_type(failures_json) = 'array'),
+    recommended_action TEXT NOT NULL,
+    evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json) AND json_type(evidence_json) = 'object'),
+    retry_count INTEGER NOT NULL CHECK (retry_count >= 0),
+    status TEXT NOT NULL CHECK (status IN ('pass', 'fail')),
+    source_task_id TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS render_reviews_by_canvas_node
+    ON render_reviews(canvas_id, target_node_id, created_at DESC);
+`
+
 const PROJECT_DB_SCHEMA = `
   CREATE TABLE project_metadata (
     key TEXT PRIMARY KEY,
@@ -254,6 +316,7 @@ const PROJECT_DB_SCHEMA = `
   ${CANVAS_GRAPH_COMMANDS_DB_SCHEMA}
   ${CANVAS_GROUP_STACK_DB_SCHEMA}
   ${DRAMA_ASSETS_DB_SCHEMA}
+  ${DRAMA_PIPELINE_DB_SCHEMA}
 `
 
 function isRecord(value) {
@@ -1291,6 +1354,69 @@ function dramaAssetPayload(row, currentCanvasVersion, replayed = false) {
     replayed,
     createdAt: row.created_at ?? row.createdAt,
     updatedAt: row.updated_at ?? row.updatedAt ?? row.created_at ?? row.createdAt,
+  }
+}
+
+function requiredDramaInteger(value, field) {
+  if (!Number.isSafeInteger(value)) throw new Error(`${field} 必须是整数。`)
+  return value
+}
+
+function requiredDramaText(value, field) {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} 不能为空。`)
+  return value.trim()
+}
+
+function dramaRenderBatchPayload(database, row) {
+  const jobs = database.prepare(`
+    SELECT job_id, shot_id, keyframe_render_id, canvas_node_id, duration_seconds, model_type,
+      model_params_json, estimated_cost, input_hash, status, task_id, error_code
+    FROM drama_render_jobs WHERE batch_id = ? ORDER BY created_at, job_id
+  `).all(row.batch_id).map((job) => ({
+    id: job.job_id,
+    shotId: job.shot_id,
+    keyframeRenderId: job.keyframe_render_id,
+    ...(job.canvas_node_id == null ? {} : { canvasNodeId: job.canvas_node_id }),
+    durationSeconds: Number(job.duration_seconds),
+    modelType: job.model_type,
+    modelParams: JSON.parse(job.model_params_json),
+    estimatedCost: Number(job.estimated_cost),
+    inputHash: job.input_hash,
+    status: job.status,
+    ...(job.task_id == null ? {} : { taskId: job.task_id }),
+    ...(job.error_code == null ? {} : { errorCode: job.error_code }),
+  }))
+  return {
+    id: row.batch_id,
+    canvasId: row.canvas_id,
+    seriesId: row.series_id,
+    episodeNo: Number(row.episode_no),
+    estimatedCost: Number(row.estimated_cost),
+    status: row.status,
+    ...(row.session_id == null ? {} : { sessionId: row.session_id }),
+    ...(row.canvas_version == null ? {} : { canvasVersion: Number(row.canvas_version) }),
+    ...(row.approval_action_id == null ? {} : { approvalActionId: row.approval_action_id }),
+    jobs,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function renderReviewPayload(row, projectId) {
+  return {
+    id: row.review_id,
+    canvas_id: row.canvas_id,
+    user_id: projectId,
+    target_node_id: row.target_node_id,
+    target_kind: row.target_kind,
+    scores: JSON.parse(row.scores_json),
+    failures: JSON.parse(row.failures_json),
+    recommended_action: row.recommended_action,
+    evidence: JSON.parse(row.evidence_json),
+    retry_count: Number(row.retry_count),
+    status: row.status,
+    ...(row.source_task_id == null ? {} : { source_task_id: row.source_task_id }),
+    created_at: row.created_at,
   }
 }
 
@@ -2423,6 +2549,37 @@ async function migrateDatabaseV13ToV14(database, dataDirectory) {
   }
 }
 
+async function migrateDatabaseV14ToV15(database, dataDirectory) {
+  const version = databaseVersion(database)
+  if (version === 15) return
+  if (version !== 14) throw new Error(`无法将本地项目数据库从版本 ${version} 升级到版本 15。`)
+
+  const backupDirectory = path.join(dataDirectory, 'backups')
+  await fs.mkdir(backupDirectory, { recursive: true })
+  const backupDirectoryInfo = await fs.lstat(backupDirectory)
+  const realBackupDirectory = await fs.realpath(backupDirectory)
+  if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()
+    || path.relative(backupDirectory, realBackupDirectory) !== '') {
+    throw new Error('项目升级备份目录不能是符号链接。')
+  }
+  const backupPath = path.join(backupDirectory, `project-schema-v14-${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}.sqlite`)
+  await backup(database, backupPath)
+  await fs.chmod(backupPath, 0o600).catch(() => undefined)
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec(DRAMA_PIPELINE_DB_SCHEMA)
+    database.exec('PRAGMA user_version = 15')
+    if (database.prepare('PRAGMA foreign_key_check').all().length > 0) {
+      throw new Error('短剧生产状态迁移后检测到无效引用。')
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
 function readDatabaseCanvas(database, metadata, { allowLegacyParamsAssetReferenceGaps = false } = {}) {
   const projectId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('projectId')
   const canvasId = database.prepare('SELECT value FROM project_metadata WHERE key = ?').get('canvasId')
@@ -3123,7 +3280,7 @@ async function validateRestorableProject(projectDirectory) {
   const database = new DatabaseSync(databasePath, { timeout: 5000 })
   try {
     const schemaVersion = databaseVersion(database)
-    if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
+    if (![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, PROJECT_DB_SCHEMA_VERSION].includes(schemaVersion)) {
       throw new Error('该备份的项目数据库版本当前不支持恢复。')
     }
     const integrity = database.prepare('PRAGMA integrity_check').all()
@@ -3589,6 +3746,7 @@ async function openProjectData(projectDirectory, expectedIdentity) {
       if (databaseVersion(database) === 11) await migrateDatabaseV11ToV12(database, dataDirectory)
       if (databaseVersion(database) === 12) await migrateDatabaseV12ToV13(database, dataDirectory)
       if (databaseVersion(database) === 13) await migrateDatabaseV13ToV14(database, dataDirectory)
+      if (databaseVersion(database) === 14) await migrateDatabaseV14ToV15(database, dataDirectory)
       if (databaseVersion(database) !== PROJECT_DB_SCHEMA_VERSION) {
         throw new Error(`本地项目数据库版本 ${databaseVersion(database)} 当前不受支持。`)
       }
@@ -5056,6 +5214,125 @@ function createLocalProjectStore() {
     })
   }
 
+  function listDramaRenderBatches(projectId, canvasId) {
+    return enqueue(() => {
+      if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，请重新打开画布。')
+      }
+      const rows = active.database.prepare(`
+        SELECT * FROM drama_render_batches WHERE canvas_id = ?
+        ORDER BY created_at DESC, batch_id DESC
+      `).all(canvasId)
+      return { items: rows.map((row) => dramaRenderBatchPayload(active.database, row)) }
+    })
+  }
+
+  function getDramaRenderBatch(projectId, canvasId, batchId) {
+    return enqueue(() => {
+      if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，请重新打开画布。')
+      }
+      const id = normalizeCanvasEntityId(batchId, '渲染批次')
+      const row = active.database.prepare(`
+        SELECT * FROM drama_render_batches WHERE canvas_id = ? AND batch_id = ?
+      `).get(canvasId, id)
+      if (!row) throw new Error('渲染批次不存在。')
+      return dramaRenderBatchPayload(active.database, row)
+    })
+  }
+
+  function listRenderReviews(projectId, canvasId, targetNodeId) {
+    return enqueue(() => {
+      if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
+        throw new Error('当前项目已更改，请重新打开画布。')
+      }
+      const target = targetNodeId == null || targetNodeId === ''
+        ? null
+        : normalizeCanvasEntityId(targetNodeId, '审校目标节点')
+      const rows = active.database.prepare(`
+        SELECT * FROM render_reviews
+        WHERE canvas_id = ? AND (? IS NULL OR target_node_id = ?)
+        ORDER BY created_at DESC, review_id DESC
+      `).all(canvasId, target, target)
+      return { items: rows.map((row) => renderReviewPayload(row, active.metadata.projectId)) }
+    })
+  }
+
+  function createRenderReview(input) {
+    return enqueue(() => {
+      if (!isRecord(input)
+        || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
+        || input.projectId !== active?.metadata.projectId || input.canvasId !== active?.metadata.canvasId) {
+        throw new Error('当前项目已更改，请重新打开画布。')
+      }
+      const targetNodeId = normalizeCanvasEntityId(input.targetNodeId, '审校目标节点')
+      const targetNode = active.database.prepare(`
+        SELECT id FROM nodes WHERE canvas_id = ? AND id = ?
+      `).get(input.canvasId, targetNodeId)
+      if (!targetNode) throw new Error('审校目标节点不存在。')
+      const shotDurationSeconds = requiredDramaInteger(input.shotDurationSeconds, 'shotDurationSeconds')
+      const expectedDurationSeconds = requiredDramaInteger(input.expectedDurationSeconds, 'expectedDurationSeconds')
+      const audioDurationMs = requiredDramaInteger(input.audioDurationMs, 'audioDurationMs')
+      const videoDurationMs = requiredDramaInteger(input.videoDurationMs, 'videoDurationMs')
+      if (typeof input.characterConsistent !== 'boolean') throw new Error('characterConsistent 必须是布尔值。')
+      const previousCamera = requiredDramaText(input.previousCamera, 'previousCamera')
+      const currentCamera = requiredDramaText(input.currentCamera, 'currentCamera')
+      const retryCount = input.retryCount == null ? 0 : requiredDramaInteger(input.retryCount, 'retryCount')
+      if (retryCount < 0) throw new Error('retryCount 不能小于 0。')
+      const targetKind = input.targetKind == null ? 'clip' : requiredDramaText(input.targetKind, 'targetKind')
+      const findings = []
+      if (shotDurationSeconds !== expectedDurationSeconds) findings.push({
+        ruleId: 'SHOT_DURATION', severity: 'error', evidence: `${shotDurationSeconds} != ${expectedDurationSeconds}`,
+      })
+      if (!input.characterConsistent) findings.push({
+        ruleId: 'CHARACTER_CONTINUITY', severity: 'error', evidence: 'character identity anchors differ',
+      })
+      if (Math.abs(audioDurationMs - videoDurationMs) > 100) findings.push({
+        ruleId: 'AUDIO_VIDEO_SYNC', severity: 'error', evidence: `${audioDurationMs}ms vs ${videoDurationMs}ms`,
+      })
+      const verdict = findings.some((finding) => finding.severity === 'error') ? 'fail' : 'pass'
+      const ruleVersion = 'continuity-v1'
+      const recommendation = verdict === 'pass' ? 'accept' : 'fix_and_retry'
+      const id = randomUUID()
+      const now = new Date().toISOString()
+      const latestTask = active.database.prepare(`
+        SELECT task_id FROM tasks WHERE canvas_id = ? AND node_id = ? AND modality = 'video'
+        ORDER BY created_at DESC, task_id DESC LIMIT 1
+      `).get(input.canvasId, targetNodeId)
+      const auditInput = {
+        shotDurationSeconds,
+        expectedDurationSeconds,
+        characterConsistent: input.characterConsistent,
+        audioDurationMs,
+        videoDurationMs,
+        previousCamera,
+        currentCamera,
+      }
+      const scores = { verdict, ruleVersion }
+      const evidence = {
+        ruleVersion,
+        ownerId: input.projectId,
+        input: auditInput,
+        ...(latestTask ? { sourceTaskId: latestTask.task_id } : {}),
+      }
+      active.database.prepare(`
+        INSERT INTO render_reviews (
+          review_id, canvas_id, target_node_id, target_kind, scores_json, failures_json,
+          recommended_action, evidence_json, retry_count, status, source_task_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, input.canvasId, targetNodeId, targetKind, JSON.stringify(scores), JSON.stringify(findings),
+        recommendation, JSON.stringify(evidence), retryCount, verdict, latestTask?.task_id ?? null, now)
+      return {
+        id,
+        ownerId: input.projectId,
+        verdict,
+        findings,
+        ruleVersion,
+        ...(latestTask ? { sourceTaskId: latestTask.task_id } : {}),
+      }
+    })
+  }
+
   function loadCanvas(projectId, canvasId) {
     if (!active || projectId !== active.metadata.projectId || canvasId !== active.metadata.canvasId) {
       throw new Error('当前项目已更改，请重新打开画布。')
@@ -6141,6 +6418,9 @@ function createLocalProjectStore() {
     saveTaskOutputToLibrary,
     listAssets,
     listDramaAssets,
+    listDramaRenderBatches,
+    getDramaRenderBatch,
+    listRenderReviews,
     listTaskEvents,
     listTasks,
     readTaskOutputText,
@@ -6164,6 +6444,7 @@ function createLocalProjectStore() {
     searchTasks,
     updateGroup,
     upsertDramaAsset,
+    createRenderReview,
     updateNode,
     updateStack,
   }

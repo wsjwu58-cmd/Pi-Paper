@@ -101,6 +101,14 @@ describe('agent event envelope reducer', () => {
     expect(friendlyAgentErrorMessage('模型调用失败')).toBe('模型调用失败')
   })
 
+  it('turns desktop run failure codes into readable messages', () => {
+    expect(friendlyAgentErrorMessage('AGENT_MODEL_REQUEST_FAILED')).toBe('模型请求失败，请检查 Agnes 配置后重试。')
+    expect(friendlyAgentErrorMessage('AGENT_SESSION_WRITE_FAILED')).toBe('Agent 会话未能保存到本地项目，请检查磁盘空间后重试。')
+    expect(friendlyAgentErrorMessage('MODEL_UNAVAILABLE')).toBe('模型服务暂时不可用，请检查服务配置后重试。')
+    expect(friendlyAgentErrorMessage('SESSION_BUSY')).toBe('此会话有任务正在运行，请等待当前任务完成。')
+    expect(friendlyAgentErrorMessage('SOME_INTERNAL_CODE')).toBe('Agent 执行失败，请稍后重试。')
+  })
+
   it('replaces a restarted streamed reply instead of appending a duplicate paragraph', () => {
     let state = reduceAgentEvent(base, event('assistant_delta', { text: '你好！我是小P，陪你一起创作。\n\n今天想做什么？' }, 'delta-1'))
     state = reduceAgentEvent(

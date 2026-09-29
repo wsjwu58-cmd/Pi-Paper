@@ -30,12 +30,8 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
         status: typeof item.data.status === 'string' ? item.data.status : 'draft',
         detail: typeof item.data.staleImpact === 'string' ? item.data.staleImpact : '等待上游事实或任务终态',
       })))
-      if (desktop) {
-        setBatches([])
-      } else {
-        const batchesResult = await api<{ items: RenderBatch[] }>('/drama/render-batches')
-        setBatches((batchesResult.items ?? []).filter((batch) => String(batch.canvasId) === String(canvasId)))
-      }
+      const batchesResult = await api<{ items: RenderBatch[] }>('/drama/render-batches')
+      setBatches((batchesResult.items ?? []).filter((batch) => String(batch.canvasId) === String(canvasId)))
     } catch (cause) {
       setError((cause as Error).message || '读取生产链失败')
     } finally {
@@ -67,13 +63,16 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
       </div>
       <div className="mt-3 border-t border-black/6 pt-2">
         <p className="text-[10px] font-semibold text-[#666]">视频渲染批次</p>
-        {desktop
-          ? <p className="mt-1 text-[11px] text-[#888]">桌面本地渲染批次接口尚未接入；生成任务仍以节点和本地任务状态为准。</p>
-          : batches.length === 0 ? <p className="mt-1 text-[11px] text-[#888]">尚无渲染批次。</p> : batches.map((batch) => (
+        {desktop ? (
+          <p role="status" className="mt-1 text-[11px] text-amber-800">
+            桌面本地没有可验证的已接受关键帧记录，批次确认、任务提交、状态同步和重跑尚未接入；此处只显示已有批次。
+          </p>
+        ) : null}
+        {batches.length === 0 ? <p className="mt-1 text-[11px] text-[#888]">尚无渲染批次。</p> : batches.map((batch) => (
           <div key={String(batch.id)} className="mt-1.5 rounded-lg bg-white px-2 py-1.5 text-[11px]">
             <div className="flex items-center justify-between gap-2">
               <span className="truncate text-[#444]">第 {batch.episodeNo} 集 · {batch.jobs.length} 镜头</span>
-              <span className="text-[#666]">{batch.status} · {batch.estimatedCost} 点</span>
+              <span className="text-[#666]">{batch.status}{desktop ? '' : ` · ${batch.estimatedCost} 点`}</span>
             </div>
             <p className="mt-1 text-[10px] text-[#999]">
               {batch.jobs.filter((job) => job.status === 'completed').length}/{batch.jobs.length} 已完成

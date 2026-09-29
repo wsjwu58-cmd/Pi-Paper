@@ -45,6 +45,52 @@ export interface DesktopDramaAsset {
   updatedAt: string
 }
 
+export interface DesktopDramaRenderJob {
+  id: string
+  shotId: string
+  keyframeRenderId: string
+  canvasNodeId?: string
+  durationSeconds: number
+  modelType: string
+  modelParams: Record<string, unknown>
+  estimatedCost: number
+  inputHash: string
+  status: 'draft' | 'running' | 'completed' | 'failed'
+  taskId?: string
+  errorCode?: string
+}
+
+export interface DesktopDramaRenderBatch {
+  id: string
+  canvasId: string
+  seriesId: string
+  episodeNo: number
+  estimatedCost: number
+  status: 'draft' | 'awaiting_approval' | 'running' | 'partial' | 'completed' | 'failed'
+  sessionId?: string
+  canvasVersion?: number
+  approvalActionId?: string
+  jobs: DesktopDramaRenderJob[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DesktopRenderReview {
+  id: string
+  canvas_id: string
+  user_id: string
+  target_node_id: string
+  target_kind: string
+  scores: Record<string, unknown>
+  failures: Array<{ ruleId: string; severity: 'error' | 'warning'; evidence: string }>
+  recommended_action: string
+  evidence: Record<string, unknown>
+  retry_count: number
+  status: 'pass' | 'fail'
+  source_task_id?: string
+  created_at: string
+}
+
 export interface DesktopUpsertDramaAssetInput extends DesktopCanvasScope {
   canvasVersion: number
   idempotencyKey: string
@@ -479,6 +525,21 @@ export interface DesktopBridge {
     shotId?: string
   }): Promise<{ items: DesktopDramaAsset[] }>
   upsertDramaAsset(input: DesktopUpsertDramaAssetInput): Promise<DesktopDramaAsset>
+  listDramaRenderBatches(projectId: string, canvasId: string): Promise<{ items: DesktopDramaRenderBatch[] }>
+  getDramaRenderBatch(projectId: string, canvasId: string, batchId: string): Promise<DesktopDramaRenderBatch>
+  listRenderReviews(projectId: string, canvasId: string, targetNodeId?: string): Promise<{ items: DesktopRenderReview[] }>
+  createRenderReview(input: DesktopCanvasScope & {
+    targetNodeId: string
+    targetKind?: string
+    shotDurationSeconds: number
+    expectedDurationSeconds: number
+    characterConsistent: boolean
+    audioDurationMs: number
+    videoDurationMs: number
+    previousCamera: string
+    currentCamera: string
+    retryCount?: number
+  }): Promise<Record<string, unknown>>
   exportCanvas(projectId: string, canvasId: string): Promise<DesktopCanvasExportDocument>
   importCanvasDocument(document: DesktopCanvasExportDocument): Promise<DesktopCanvasImportResult | null>
   createNode(input: DesktopCreateNodeInput): Promise<DesktopCreateNodeResult>

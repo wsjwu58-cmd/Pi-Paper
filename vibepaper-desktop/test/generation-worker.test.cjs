@@ -637,6 +637,39 @@ test('Ark references reject non-HTTPS, local, private, credentialed, and overlon
   }
 })
 
+test('Ark task does not submit local media, data URLs, or Files API IDs as reference URLs', async () => {
+  let submissions = 0
+  const unsupportedReferences = {
+    referenceVideos: [
+      'data:video/mp4;base64,AAAA',
+      'file:///C:/Users/example/reference.mp4',
+      'file-20251018114827-6zgrb',
+      'mm_file://file-20251018114827-6zgrb',
+      'vibe://app/assets/11111111-1111-4111-8111-111111111111',
+    ],
+    referenceAudios: [
+      'data:audio/mpeg;base64,AAAA',
+      'file:///C:/Users/example/reference.mp3',
+      'file-20251018114827-6zgrb',
+      'mm_file://file-20251018114827-6zgrb',
+      'vibe://app/assets/11111111-1111-4111-8111-111111111111',
+    ],
+  }
+
+  for (const [field, references] of Object.entries(unsupportedReferences)) {
+    for (const reference of references) {
+      await assert.rejects(
+        runArkVideoTask(arkVideoJob({ [field]: [reference] }), {
+          postArkJson: async () => { submissions += 1; return { id: 'should-not-submit' } },
+          getArkJson: async () => assert.fail('an unsupported reference must not create a task'),
+        }),
+        (error) => error.code === 'CLOUD_REFERENCE_UNAVAILABLE',
+      )
+    }
+  }
+  assert.equal(submissions, 0)
+})
+
 test('Seedance 2.5 duration and mixed media reference limits match the model contract', () => {
   assert.equal(buildArkVideoRequest(arkVideoJob({ duration: 4 })).duration, 4)
   assert.equal(buildArkVideoRequest(arkVideoJob({ duration: 30 })).duration, 30)

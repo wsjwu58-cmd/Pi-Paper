@@ -53,10 +53,25 @@ export function isAgentEventEnvelope(value: unknown): value is AgentEventEnvelop
 /** Keep provider diagnostics and raw gateway responses out of the chat UI. */
 export function friendlyAgentErrorMessage(value: unknown): string {
   const message = typeof value === 'string' ? value.trim() : ''
+  const knownErrors: Record<string, string> = {
+    AGENT_MODEL_TIMEOUT: '模型响应超时，请稍后重试。',
+    MODEL_TIMEOUT: '模型响应超时，请稍后重试。',
+    MODEL_UNAVAILABLE: '模型服务暂时不可用，请检查服务配置后重试。',
+    AGENT_MODEL_REQUEST_FAILED: '模型请求失败，请检查 Agnes 配置后重试。',
+    CLOUD_CREDENTIAL_MISSING: '请先配置 Agnes API Key。',
+    AGENT_SESSION_WRITE_FAILED: 'Agent 会话未能保存到本地项目，请检查磁盘空间后重试。',
+    AGENT_RUN_RESULT_MISSING: 'Agent 未能恢复本轮回复，请重新发送。',
+    AGENT_RUN_ALREADY_PROCESSED: '这条消息已处理，请检查会话记录后再继续。',
+    SESSION_BUSY: '此会话有任务正在运行，请等待当前任务完成。',
+    CONFIRMATION_REQUIRED: '请先处理当前待确认的生成请求。',
+  }
+  const knownError = Object.prototype.hasOwnProperty.call(knownErrors, message) ? knownErrors[message] : undefined
+  if (knownError) return knownError
   if (/do_request_failed|failed to reach upstream|agnesai_error|upstream|^500\s*:/i.test(message)) {
     return '模型服务暂时不可用，请稍后重试。'
   }
   if (/timeout|timed out|超时/i.test(message)) return '模型响应超时，请稍后重试。'
+  if (/^[A-Z][A-Z0-9_]{1,79}$/u.test(message)) return 'Agent 执行失败，请稍后重试。'
   return message || '模型调用失败，请稍后重试。'
 }
 

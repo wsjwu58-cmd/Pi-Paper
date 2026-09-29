@@ -6,6 +6,10 @@ let bridge: {
   getActiveProject: ReturnType<typeof vi.fn>
   listDramaAssets: ReturnType<typeof vi.fn>
   upsertDramaAsset: ReturnType<typeof vi.fn>
+  listDramaRenderBatches: ReturnType<typeof vi.fn>
+  getDramaRenderBatch: ReturnType<typeof vi.fn>
+  listRenderReviews: ReturnType<typeof vi.fn>
+  createRenderReview: ReturnType<typeof vi.fn>
   getAgentUsage: ReturnType<typeof vi.fn>
 }
 
@@ -19,6 +23,10 @@ beforeEach(() => {
     getActiveProject: vi.fn(async () => ({ projectId: 'project-1', canvasId: 'canvas/1', name: 'Test' })),
     listDramaAssets: vi.fn(async () => ({ items: [] })),
     upsertDramaAsset: vi.fn(async (input) => ({ ...input, assetId: 'asset-1', currentCanvasVersion: 1 })),
+    listDramaRenderBatches: vi.fn(async () => ({ items: [] })),
+    getDramaRenderBatch: vi.fn(async () => ({ id: 'batch-1' })),
+    listRenderReviews: vi.fn(async () => ({ items: [] })),
+    createRenderReview: vi.fn(async (input) => ({ ...input, id: 'review-1', verdict: 'pass' })),
     getAgentUsage: vi.fn(async () => ({ sessionId: 'session-1', tokenTotal: 15, modelUsage: { 'agnes/model-a': 15 } })),
   }
   vi.stubGlobal('window', {
@@ -57,8 +65,38 @@ describe('desktop local API adapters', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('keeps unsupported desktop API paths visibly unavailable', async () => {
-    await expect(api('/drama/render-batches')).rejects.toMatchObject({ code: 'DESKTOP_API_UNAVAILABLE' })
+  it('routes render batch reads and continuity review writes through the local project bridge', async () => {
+    await expect(api('/drama/render-batches')).resolves.toEqual({ items: [] })
+    expect(bridge.listDramaRenderBatches).toHaveBeenCalledWith('project-1', 'canvas/1')
+
+    await api('/render-reviews', {
+      method: 'POST',
+      body: JSON.stringify({
+        canvasId: 'canvas/1', targetNodeId: 'video-node', shotDurationSeconds: 3,
+        expectedDurationSeconds: 3, characterConsistent: true, audioDurationMs: 3000,
+        videoDurationMs: 3000, previousCamera: 'wide', currentCamera: 'close',
+      }),
+    })
+    expect(bridge.createRenderReview).toHaveBeenCalledWith({
+      canvasId: 'canvas/1', targetNodeId: 'video-node', shotDurationSeconds: 3,
+      expectedDurationSeconds: 3, characterConsistent: true, audioDurationMs: 3000,
+      videoDurationMs: 3000, previousCamera: 'wide', currentCamera: 'close', projectId: 'project-1',
+    })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('rejects every render batch mutation until local accepted keyframes and confirmation exist', async () => {
+    const mutationPaths = [
+      '/drama/render-batches',
+      '/drama/render-batches/batch-1/submit',
+      '/drama/render-batches/batch-1/jobs/job-1/status',
+      '/drama/render-batches/batch-1/jobs/job-1/rerun',
+    ]
+    for (const path of mutationPaths) {
+      await expect(api(path, { method: 'POST' }))
+        .rejects.toMatchObject({ code: 'DESKTOP_RENDER_BATCH_UNAVAILABLE' })
+    }
+    expect(bridge.listDramaRenderBatches).not.toHaveBeenCalled()
     expect(fetch).not.toHaveBeenCalled()
   })
 })

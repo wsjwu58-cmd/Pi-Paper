@@ -89,6 +89,14 @@ async function dispatch(method, payload) {
       return store.listDramaAssets(payload?.projectId, payload?.canvasId, payload?.filters)
     case 'canvas:drama-assets:upsert':
       return store.upsertDramaAsset(payload)
+    case 'drama:render-batches:list':
+      return store.listDramaRenderBatches(payload?.projectId, payload?.canvasId)
+    case 'drama:render-batches:get':
+      return store.getDramaRenderBatch(payload?.projectId, payload?.canvasId, payload?.batchId)
+    case 'render-reviews:list':
+      return store.listRenderReviews(payload?.projectId, payload?.canvasId, payload?.targetNodeId)
+    case 'render-reviews:create':
+      return store.createRenderReview(payload)
     case 'canvas:export':
       return store.exportCanvas(payload?.projectId, payload?.canvasId)
     case 'canvas:create-node':

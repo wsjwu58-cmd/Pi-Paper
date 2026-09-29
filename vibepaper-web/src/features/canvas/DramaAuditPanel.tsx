@@ -4,7 +4,7 @@ import { api } from '@/lib/api'
 
 type AuditReport = { id: string | number; status?: string; failures?: unknown; evidence?: unknown; recommended_action?: string }
 
-export function DramaAuditPanel({ canvasId, desktop = false }: { canvasId?: string | number; desktop?: boolean }) {
+export function DramaAuditPanel({ canvasId }: { canvasId?: string | number; desktop?: boolean }) {
   const [reports, setReports] = useState<AuditReport[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -14,10 +14,6 @@ export function DramaAuditPanel({ canvasId, desktop = false }: { canvasId?: stri
     setLoading(true)
     setError('')
     try {
-      if (desktop) {
-        setReports([])
-        return
-      }
       const result = await api<{ items: AuditReport[] }>(`/render-reviews?canvasId=${encodeURIComponent(String(canvasId))}`)
       setReports(result.items ?? [])
     } catch (cause) {
@@ -25,7 +21,7 @@ export function DramaAuditPanel({ canvasId, desktop = false }: { canvasId?: stri
     } finally {
       setLoading(false)
     }
-  }, [canvasId, desktop])
+  }, [canvasId])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -42,9 +38,7 @@ export function DramaAuditPanel({ canvasId, desktop = false }: { canvasId?: stri
       </div>
       {error ? <p role="alert" className="mt-2 text-[11px] text-red-700">{error}</p> : null}
       <div className="mt-2 space-y-2">
-        {desktop
-          ? <p className="text-[11px] text-[#888]">桌面本地审校报告接口尚未接入。</p>
-          : reports.length === 0 ? <p className="text-[11px] text-[#888]">尚无审校报告。</p> : reports.map((report) => (
+        {reports.length === 0 ? <p className="text-[11px] text-[#888]">尚无审校报告。</p> : reports.map((report) => (
           <article key={String(report.id)} className="rounded-lg bg-white p-2 text-[11px] text-[#555]">
             <p className="font-semibold text-[#333]">报告 #{report.id} · {report.status ?? 'pending'}</p>
             <p className="mt-1 break-words">失败项：{JSON.stringify(report.failures ?? [])}</p>

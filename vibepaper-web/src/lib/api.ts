@@ -164,6 +164,64 @@ export async function api<T = unknown>(
       throw new ApiError(405, "METHOD_NOT_ALLOWED", "短剧资产接口不支持此请求方法。")
     }
 
+    const renderBatchListMatch = /^\/drama\/render-batches$/u.test(pathname)
+    const renderBatchDetailMatch = /^\/drama\/render-batches\/([^/]+)$/u.exec(pathname)
+    if (renderBatchListMatch || renderBatchDetailMatch || pathname.startsWith('/drama/render-batches/')) {
+      if (method !== 'GET') {
+        throw new ApiError(
+          0,
+          'DESKTOP_RENDER_BATCH_UNAVAILABLE',
+          '桌面本地没有可验证的已接受关键帧记录，也未接入批次确认、任务提交、状态同步和重跑流程。',
+        )
+      }
+      const project = await bridge.getActiveProject()
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      const requestedCanvasId = url.searchParams.get('canvasId')
+      if (requestedCanvasId && requestedCanvasId !== project.canvasId) {
+        throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+      }
+      if (renderBatchDetailMatch) {
+        let batchId: string
+        try { batchId = decodeURIComponent(renderBatchDetailMatch[1]) } catch {
+          throw new ApiError(400, 'DRAMA_BATCH_INPUT_INVALID', '渲染批次标识无效。')
+        }
+        return await bridge.getDramaRenderBatch(project.projectId, project.canvasId, batchId) as T
+      }
+      return await bridge.listDramaRenderBatches(project.projectId, project.canvasId) as T
+    }
+
+    if (pathname === '/render-reviews') {
+      const project = await bridge.getActiveProject()
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (method === 'GET') {
+        const requestedCanvasId = url.searchParams.get('canvasId')
+        if (!requestedCanvasId || requestedCanvasId !== project.canvasId) {
+          throw new ApiError(400, 'CANVAS_ID_INVALID', '审校查询必须指定当前本地画布。')
+        }
+        const targetNodeId = url.searchParams.get('targetNodeId') ?? undefined
+        return await bridge.listRenderReviews(project.projectId, project.canvasId, targetNodeId) as T
+      }
+      if (method === 'POST') {
+        let body: Record<string, unknown>
+        try {
+          const parsed: unknown = JSON.parse(typeof options.body === 'string' ? options.body : '')
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid')
+          body = parsed as Record<string, unknown>
+        } catch {
+          throw new ApiError(400, 'RENDER_REVIEW_INPUT_INVALID', '审校写入请求无效。')
+        }
+        if (String(body.canvasId ?? '') !== project.canvasId) {
+          throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+        }
+        return await bridge.createRenderReview({
+          ...body,
+          projectId: project.projectId,
+          canvasId: project.canvasId,
+        } as Parameters<typeof bridge.createRenderReview>[0]) as T
+      }
+      throw new ApiError(405, 'METHOD_NOT_ALLOWED', '审校接口不支持此请求方法。')
+    }
+
     const usageMatch = /^\/agent\/sessions\/([^/]+)\/usage$/u.exec(pathname)
     if (usageMatch && method === "GET") {
       let sessionId: string
