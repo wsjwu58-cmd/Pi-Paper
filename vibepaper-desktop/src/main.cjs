@@ -432,6 +432,7 @@ function createAgentWorker() {
         return localCore.request('render-reviews:create', {
           projectId: input.projectId,
           canvasId: input.canvasId,
+          canvasVersion: input.canvasVersion,
           targetNodeId: input.targetNodeId,
           shotDurationSeconds: input.shotDurationSeconds,
           expectedDurationSeconds: input.expectedDurationSeconds,

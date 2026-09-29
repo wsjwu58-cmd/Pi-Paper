@@ -157,6 +157,45 @@ test('render reviews persist rule findings against an existing canvas node and k
   assert.equal(persisted.items[1].evidence.input.videoDurationMs, 3_700)
 })
 
+test('render review optional canvas version CAS rejects edits and deleted targets before writing', async (t) => {
+  const { store, project } = await openTestProject(t)
+  const scope = { projectId: project.projectId, canvasId: project.canvasId }
+  await store.saveCanvas({
+    ...scope,
+    expectedVersion: 0,
+    nodes: [{ id: 'clip-node', type: 'video', position: { x: 0, y: 0 }, data: {} }],
+    edges: [],
+  })
+  const reviewInput = {
+    ...scope,
+    targetNodeId: 'clip-node',
+    shotDurationSeconds: 3,
+    expectedDurationSeconds: 3,
+    characterConsistent: true,
+    audioDurationMs: 3_000,
+    videoDurationMs: 3_000,
+    previousCamera: 'wide',
+    currentCamera: 'close',
+  }
+
+  const created = await store.createRenderReview({ ...reviewInput, canvasVersion: 1 })
+  assert.equal(created.verdict, 'pass')
+  assert.equal((await store.listRenderReviews(project.projectId, project.canvasId)).items.length, 1)
+
+  await store.saveCanvas({
+    ...scope,
+    expectedVersion: 1,
+    nodes: [{ id: 'clip-node', type: 'video', position: { x: 10, y: 0 }, data: {} }],
+    edges: [],
+  })
+  await assert.rejects(store.createRenderReview({ ...reviewInput, canvasVersion: 1 }), /AGENT_CANVAS_CHANGED/u)
+  assert.equal((await store.listRenderReviews(project.projectId, project.canvasId)).items.length, 1)
+
+  await store.saveCanvas({ ...scope, expectedVersion: 2, nodes: [], edges: [] })
+  await assert.rejects(store.createRenderReview({ ...reviewInput, canvasVersion: 3 }), /审校目标节点不存在/u)
+  assert.equal((await store.listRenderReviews(project.projectId, project.canvasId)).items.length, 1)
+})
+
 test('render batch reads return only stored records and report missing ids', async (t) => {
   const { store, project } = await openTestProject(t)
   assert.deepEqual(await store.listDramaRenderBatches(project.projectId, project.canvasId), { items: [] })

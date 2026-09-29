@@ -6882,6 +6882,14 @@ function createLocalProjectStore() {
         || input.projectId !== active?.metadata.projectId || input.canvasId !== active?.metadata.canvasId) {
         throw new Error('当前项目已更改，请重新打开画布。')
       }
+      if (input.canvasVersion !== undefined) {
+        if (!Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0) {
+          throw new Error('AGENT_CANVAS_VERSION_INVALID')
+        }
+        const currentVersion = Number(active.database.prepare('SELECT version FROM canvases WHERE id = ?')
+          .get(input.canvasId)?.version)
+        if (currentVersion !== input.canvasVersion) throw new Error('AGENT_CANVAS_CHANGED')
+      }
       const targetNodeId = normalizeCanvasEntityId(input.targetNodeId, '审校目标节点')
       const targetNode = active.database.prepare(`
         SELECT id FROM nodes WHERE canvas_id = ? AND id = ?
