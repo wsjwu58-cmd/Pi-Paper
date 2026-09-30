@@ -1,3 +1,6 @@
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
 	type AgentMessage,
 	buildSessionContext,
@@ -39,6 +42,29 @@ export type DesktopStoredMessage = {
 	metadata?: DesktopAgentMessageMetadata;
 };
 
+export type DesktopAgentCompactionInput = {
+	/** Caller-generated summary of conversation facts needed for future turns. */
+	summary: string;
+	/** Minimum recent context messages to retain; complete tool pairs may add messages. */
+	retainLastMessages: number;
+	tokensBefore: number;
+};
+
+export type DesktopAgentCompactionCheckpoint = {
+	schemaVersion: 1;
+	sessionId: string;
+	branchId: "main";
+	throughEntryId: string;
+	throughEntrySeq: number;
+	sourceHash: string;
+	summary: string;
+	createdAt: number;
+};
+
+const COMPACTION_CHECKPOINT_SUFFIX = ".checkpoint.json";
+const MAX_COMPACTION_SUMMARY_CHARACTERS = 8_000;
+const MAX_RETAINED_CONTEXT_MESSAGES = 512;
+
 class RelocatableSessionExecutionEnv extends NodeExecutionEnv {
 	private readonly stableCwd: string;
 
@@ -61,6 +87,7 @@ export class DesktopAgentSessionStore {
 	private readonly projectId: string;
 	private readonly fileSystem: RelocatableSessionExecutionEnv;
 	private readonly repo: JsonlSessionRepo;
+	private readonly sessionMutationTails = new Map<string, Promise<void>>();
 
 	constructor(projectId: string, projectDirectory: string, sessionsRoot: string) {
 		this.projectId = projectId;
@@ -93,12 +120,52 @@ export class DesktopAgentSessionStore {
 		metadata?: DesktopAgentMessageMetadata,
 	): Promise<string> {
 		const safeMetadata = metadata === undefined ? undefined : normalizeMessageMetadata(metadata);
-		const session = await this.openSession(sessionId);
-		const messageId = await session.appendMessage(message);
-		if (safeMetadata) {
-			await session.appendCustomEntry(MESSAGE_METADATA_ENTRY_TYPE, { messageId, metadata: safeMetadata });
+		return this.withSessionMutation(sessionId, async () => {
+			const session = await this.openSession(sessionId);
+			const messageId = await session.appendMessage(message);
+			if (safeMetadata) {
+				await session.appendCustomEntry(MESSAGE_METADATA_ENTRY_TYPE, { messageId, metadata: safeMetadata });
+			}
+			return messageId;
+		});
+	}
+
+	/**
+	 * Append a Pi compaction entry to the active main branch and reload its context from JSONL.
+	 * Existing message entries remain intact; the entry changes only the context projection.
+	 */
+	async appendCompaction(sessionId: string, input: DesktopAgentCompactionInput): Promise<SessionContext> {
+		const summary = validateCompactionSummary(input.summary);
+		if (
+			!Number.isSafeInteger(input.retainLastMessages) ||
+			input.retainLastMessages < 0 ||
+			input.retainLastMessages > MAX_RETAINED_CONTEXT_MESSAGES ||
+			!Number.isSafeInteger(input.tokensBefore) ||
+			input.tokensBefore < 0
+		) {
+			throw new Error("AGENT_COMPACTION_INVALID");
 		}
-		return messageId;
+
+		return this.withSessionMutation(sessionId, async () => {
+			const session = await this.openSession(sessionId);
+			const leafId = await session.getLeafId();
+			if (leafId === null) throw new Error("AGENT_COMPACTION_EMPTY_SESSION");
+			const entries = await session.findEntriesOnBranch({ start: leafId, order: "oldestFirst" });
+			const retainedTail = retainCompleteToolPairs(contextMessagesForRetention(entries), input.retainLastMessages);
+			await session.appendEntry(
+				{
+					type: "compaction",
+					id: randomUUID(),
+					summary,
+					retainedTail,
+					tokensBefore: input.tokensBefore,
+				},
+				"main",
+			);
+
+			// Reopen through JsonlSessionRepo so the returned context is based on the durable entry.
+			return this.buildContext(sessionId);
+		});
 	}
 
 	async listMessages(sessionId: string): Promise<DesktopStoredMessage[]> {
@@ -133,7 +200,22 @@ export class DesktopAgentSessionStore {
 		const leafId = await session.getLeafId();
 		if (leafId === null) return buildSessionContext([]);
 		const entries = await session.findEntriesOnBranch({ start: leafId, order: "oldestFirst" });
+		await this.refreshOptionalCompactionCheckpoint(sessionId, await session.getMetadata(), entries);
 		return buildSessionContext(entries);
+	}
+
+	/** Full active-branch transcript for UI history; compaction only changes model input. */
+	async listTranscriptMessages(sessionId: string): Promise<DesktopStoredMessage[]> {
+		const session = await this.openSession(sessionId);
+		const leafId = await session.getLeafId();
+		if (leafId === null) return [];
+		const entries = await session.findEntriesOnBranch({ start: leafId, order: "oldestFirst" });
+		const metadata = messageMetadataById(entries);
+		return entries.flatMap((entry) => entry.type === "message" ? [{
+			messageId: entry.id,
+			message: entry.message,
+			...(metadata.has(entry.id) ? { metadata: metadata.get(entry.id) } : {}),
+		}] : []);
 	}
 
 	async flushOutbox(controlStore: DesktopAgentControlStore, sessionId?: string): Promise<number> {
@@ -149,40 +231,240 @@ export class DesktopAgentSessionStore {
 			}
 
 			for (const [pendingSessionId, items] of grouped) {
-				const session = await this.openSession(pendingSessionId);
-				const existingEntries = await session.findEntries({
-					type: "custom",
-					customType: RUN_EVENT_ENTRY_TYPE,
-					order: "oldestFirst",
-				});
-				const recordedOutboxIds = new Set<string>();
-				for (const entry of existingEntries) {
-					if (
-						entry.type !== "custom" ||
-						typeof entry.data !== "object" ||
-						entry.data === null ||
-						Array.isArray(entry.data)
-					)
-						continue;
-					const outboxId = "outboxId" in entry.data ? entry.data.outboxId : undefined;
-					if (typeof outboxId === "string") recordedOutboxIds.add(outboxId);
-				}
-				for (const item of items) {
-					if (!recordedOutboxIds.has(item.outboxId)) {
-						await session.appendCustomEntry(RUN_EVENT_ENTRY_TYPE, {
-							outboxId: item.outboxId,
-							event: item.payload,
-						});
-						recordedOutboxIds.add(item.outboxId);
+				await this.withSessionMutation(pendingSessionId, async () => {
+					const session = await this.openSession(pendingSessionId);
+					const existingEntries = await session.findEntries({
+						type: "custom",
+						customType: RUN_EVENT_ENTRY_TYPE,
+						order: "oldestFirst",
+					});
+					const recordedOutboxIds = new Set<string>();
+					for (const entry of existingEntries) {
+						if (
+							entry.type !== "custom" ||
+							typeof entry.data !== "object" ||
+							entry.data === null ||
+							Array.isArray(entry.data)
+						)
+							continue;
+						const outboxId = "outboxId" in entry.data ? entry.data.outboxId : undefined;
+						if (typeof outboxId === "string") recordedOutboxIds.add(outboxId);
 					}
-					if (controlStore.markOutboxDelivered(item.outboxId)) delivered += 1;
-				}
+					for (const item of items) {
+						if (!recordedOutboxIds.has(item.outboxId)) {
+							await session.appendCustomEntry(RUN_EVENT_ENTRY_TYPE, {
+								outboxId: item.outboxId,
+								event: item.payload,
+							});
+							recordedOutboxIds.add(item.outboxId);
+						}
+						if (controlStore.markOutboxDelivered(item.outboxId)) delivered += 1;
+					}
+				});
 			}
 		}
 	}
 
 	async close(): Promise<void> {
+		await Promise.all(this.sessionMutationTails.values());
 		await this.fileSystem.cleanup();
+	}
+
+	private async withSessionMutation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+		const previous = this.sessionMutationTails.get(sessionId) ?? Promise.resolve();
+		let release!: () => void;
+		const current = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		this.sessionMutationTails.set(sessionId, current);
+		await previous;
+		try {
+			return await operation();
+		} finally {
+			release();
+			if (this.sessionMutationTails.get(sessionId) === current) this.sessionMutationTails.delete(sessionId);
+		}
+	}
+
+	private async refreshOptionalCompactionCheckpoint(
+		sessionId: string,
+		metadata: JsonlSessionMetadata,
+		entries: readonly Entry[],
+	): Promise<void> {
+		const latestCompaction = [...entries].reverse().find((entry) => entry.type === "compaction");
+		if (!latestCompaction || latestCompaction.type !== "compaction") return;
+		const checkpoint = compactionCheckpoint(sessionId, latestCompaction);
+		const checkpointPath = `${metadata.path}${COMPACTION_CHECKPOINT_SUFFIX}`;
+		try {
+			const parent = dirname(checkpointPath);
+			if (await realpath(parent) !== parent) return;
+			const info = await lstat(checkpointPath).catch(() => null);
+			if (info && (!info.isFile() || info.isSymbolicLink())) return;
+			if (info && info.size <= 1024 * 1024
+				&& isMatchingCheckpoint(await readFile(checkpointPath, "utf8"), checkpoint)) return;
+			await this.writeOptionalCheckpoint(checkpointPath, checkpoint);
+		} catch {
+			// Checkpoints are optional caches; JSONL remains the recovery source.
+		}
+	}
+
+	private async writeOptionalCheckpoint(
+		checkpointPath: string,
+		checkpoint: DesktopAgentCompactionCheckpoint,
+	): Promise<void> {
+		const temporaryPath = `${checkpointPath}.${randomUUID()}.tmp`;
+		let handle: Awaited<ReturnType<typeof open>> | undefined;
+		try {
+			handle = await open(temporaryPath, "wx", 0o600);
+			await handle.writeFile(`${JSON.stringify(checkpoint)}\n`, "utf8");
+			await handle.sync();
+			await handle.close();
+			handle = undefined;
+			await rename(temporaryPath, checkpointPath);
+		} catch {
+			// The JSONL entry is authoritative; checkpoint cache failures never block session recovery.
+			await handle?.close().catch(() => undefined);
+			await rm(temporaryPath, { force: true }).catch(() => undefined);
+		}
+	}
+}
+
+export function desktopCompactionSummary(context: SessionContext): string | undefined {
+	const summaries = context.messages.flatMap((message) => message.role === "compactionSummary" ? [message.summary] : []);
+	return summaries.length ? summaries.join("\n\n") : undefined;
+}
+
+function validateCompactionSummary(value: string): string {
+	if (typeof value !== "string") throw new Error("AGENT_COMPACTION_INVALID");
+	const summary = value.trim();
+	if (
+		summary.length < 8 ||
+		summary.length > MAX_COMPACTION_SUMMARY_CHARACTERS ||
+		/^compacted\s+\d+\s+messages\.?$/iu.test(summary)
+	) {
+		throw new Error("AGENT_COMPACTION_SUMMARY_REQUIRED");
+	}
+	return summary;
+}
+
+function contextMessagesForRetention(entries: readonly Entry[]): AgentMessage[] {
+	const contextEntries = buildContextEntries(entries);
+	return contextEntries.flatMap((entry, entryIndex) => {
+		if (entry.type === "compaction") return entry.retainedTail;
+		return sessionEntryToContextMessages(entry, entryIndex, contextEntries);
+	});
+}
+
+function retainCompleteToolPairs(messages: readonly AgentMessage[], requestedTailSize: number): AgentMessage[] {
+	const desiredStart = Math.max(0, messages.length - requestedTailSize);
+	for (let start = desiredStart; start >= 0; start -= 1) {
+		if (hasCompleteToolPairs(messages, start)) return messages.slice(start).map((message) => structuredClone(message));
+	}
+	// A dangling call in the requested tail cannot be fixed by retaining more
+	// history. Trim forward past it, while still preferring to retain a complete
+	// pair when the requested boundary splits one.
+	for (let start = desiredStart + 1; start <= messages.length; start += 1) {
+		if (hasCompleteToolPairs(messages, start)) return messages.slice(start).map((message) => structuredClone(message));
+	}
+	throw new Error("AGENT_COMPACTION_UNPAIRED_TOOL_CALL");
+}
+
+function hasCompleteToolPairs(messages: readonly AgentMessage[], start: number): boolean {
+	const assistantCallIndexes = new Map<string, number[]>();
+	const resultIndexes = new Map<string, number[]>();
+	for (let index = 0; index < messages.length; index += 1) {
+		const message = messages[index];
+		if (!message) continue;
+		for (const callId of toolCallIds(message)) {
+			const indexes = assistantCallIndexes.get(callId) ?? [];
+			indexes.push(index);
+			assistantCallIndexes.set(callId, indexes);
+		}
+		const resultCallId = toolResultCallId(message);
+		if (resultCallId) {
+			const indexes = resultIndexes.get(resultCallId) ?? [];
+			indexes.push(index);
+			resultIndexes.set(resultCallId, indexes);
+		}
+	}
+	for (let index = start; index < messages.length; index += 1) {
+		const message = messages[index];
+		if (!message) continue;
+		for (const callId of toolCallIds(message)) {
+			if (!callId || !(resultIndexes.get(callId) ?? []).some((resultIndex) => resultIndex > index)) return false;
+		}
+		const resultCallId = toolResultCallId(message);
+		if (message.role === "toolResult" && !resultCallId) return false;
+		if (
+			resultCallId &&
+			!(assistantCallIndexes.get(resultCallId) ?? []).some((callIndex) => callIndex >= start && callIndex < index)
+		) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function toolCallIds(message: AgentMessage): string[] {
+	if (message.role !== "assistant" || typeof message.content === "string") return [];
+	return message.content.flatMap((item) => {
+		if (item.type !== "toolCall") return [];
+		return [typeof item.id === "string" ? item.id : ""];
+	});
+}
+
+function toolResultCallId(message: AgentMessage): string | undefined {
+	if (message.role !== "toolResult") return undefined;
+	return message.toolCallId || undefined;
+}
+
+function compactionCheckpoint(
+	sessionId: string,
+	entry: Extract<Entry, { type: "compaction" }>,
+): DesktopAgentCompactionCheckpoint {
+	const sourceHash = createHash("sha256")
+		.update(
+			JSON.stringify({
+				sessionId,
+				branchId: "main",
+				id: entry.id,
+				seq: entry.seq,
+				parentId: entry.parentId,
+				summary: entry.summary,
+				retainedTail: entry.retainedTail,
+				tokensBefore: entry.tokensBefore,
+			}),
+		)
+		.digest("hex");
+	return {
+		schemaVersion: 1,
+		sessionId,
+		branchId: "main",
+		throughEntryId: entry.id,
+		throughEntrySeq: entry.seq,
+		sourceHash,
+		summary: entry.summary,
+		createdAt: entry.timestamp,
+	};
+}
+
+function isMatchingCheckpoint(value: string, expected: DesktopAgentCompactionCheckpoint): boolean {
+	try {
+		const parsed: unknown = JSON.parse(value);
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
+		const checkpoint = parsed as Partial<DesktopAgentCompactionCheckpoint>;
+		return (
+			checkpoint.schemaVersion === expected.schemaVersion &&
+			checkpoint.sessionId === expected.sessionId &&
+			checkpoint.branchId === expected.branchId &&
+			checkpoint.throughEntryId === expected.throughEntryId &&
+			checkpoint.throughEntrySeq === expected.throughEntrySeq &&
+			checkpoint.sourceHash === expected.sourceHash &&
+			checkpoint.summary === expected.summary &&
+			checkpoint.createdAt === expected.createdAt
+		);
+	} catch {
+		return false;
 	}
 }
 

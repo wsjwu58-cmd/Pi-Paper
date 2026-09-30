@@ -3243,8 +3243,8 @@ async function copyAgentData(sourceDataDirectory, targetDataDirectory, options =
   if (sourceControl) {
     await validateAgentControlDatabase(sourceControl.absolutePath)
     const sourceDatabase = new DatabaseSync(sourceControl.absolutePath, { timeout: 5000 })
+    const targetControl = path.join(targetDataDirectory, 'agent', 'control.sqlite')
     try {
-      const targetControl = path.join(targetDataDirectory, 'agent', 'control.sqlite')
       await fs.mkdir(path.dirname(targetControl), { recursive: true, mode: 0o700 })
       await backup(sourceDatabase, targetControl)
       await validateAgentControlDatabase(targetControl, true)
@@ -3359,6 +3359,24 @@ async function rebaseAgentProjectIdentity(dataDirectory, previousProjectId, next
   const files = await listAgentBackupFiles(dataDirectory)
   const oldCwd = `vibepaper-project-${previousProjectId}`
   const newCwd = `vibepaper-project-${nextProjectId}`
+  const memoryFile = files.find((file) => file.relativePath === 'agent/memory/MEMORY.md')
+  if (memoryFile) {
+    if (memoryFile.sizeBytes > 1024 * 1024) throw new Error('项目记忆文件超过本地上限。')
+    const text = await fs.readFile(memoryFile.absolutePath, 'utf8')
+    const lines = text.split(/\r?\n/u)
+    if (lines[0] !== '# VibePaper project memory') throw new Error('项目记忆文件格式无效。')
+    const rebased = lines.map((line) => {
+      if (!line.startsWith('- <!-- vibepaper-memory ')) return line
+      const match = /^- <!-- vibepaper-memory (\{.*?\}) --> (.*)$/u.exec(line)
+      if (!match) throw new Error('项目记忆文件格式无效。')
+      const metadata = JSON.parse(match[1])
+      if (!isRecord(metadata) || metadata.userId !== previousProjectId || metadata.scope !== 'long_term') {
+        throw new Error('项目记忆与备份项目身份不匹配。')
+      }
+      return `- <!-- vibepaper-memory ${JSON.stringify({ ...metadata, userId: nextProjectId })} --> ${match[2]}`
+    }).join('\n')
+    await fs.writeFile(memoryFile.absolutePath, rebased, { mode: 0o600 })
+  }
   for (const file of files.filter((candidate) => candidate.relativePath.startsWith('agent/sessions/')
     && candidate.relativePath.endsWith('.jsonl'))) {
     const { header, lineEnding, nextByteOffset } = await readAgentSessionHeader(file.absolutePath)
@@ -3394,7 +3412,7 @@ async function rebaseAgentProjectIdentity(dataDirectory, previousProjectId, next
   const control = new DatabaseSync(controlPath, { timeout: 5000 })
   try {
     const version = Number(control.prepare('PRAGMA user_version').get().user_version)
-    if (version !== 1) throw new Error('Agent 控制数据库版本当前不支持恢复。')
+    if (![1, 2, 3].includes(version)) throw new Error('Agent 控制数据库版本当前不支持恢复。')
     const integrity = control.prepare('PRAGMA integrity_check').all()
     if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
       || control.prepare('PRAGMA foreign_key_check').all().length > 0) {
@@ -3403,7 +3421,7 @@ async function rebaseAgentProjectIdentity(dataDirectory, previousProjectId, next
     const now = new Date().toISOString()
     control.exec('BEGIN IMMEDIATE')
     try {
-      control.prepare(`UPDATE approvals SET project_id = ?, status = CASE WHEN status = 'pending' THEN 'invalidated' ELSE status END, updated_at = ?`)
+      control.prepare(`UPDATE approvals SET project_id = ?, status = CASE WHEN status IN ('pending', 'accepted') THEN 'invalidated' ELSE status END, updated_at = ?`)
         .run(nextProjectId, now)
       const activeRuns = control.prepare(`SELECT id, session_id FROM agent_runs
         WHERE status IN ('queued', 'running', 'waiting_confirmation', 'waiting_task')`).all()
@@ -3459,7 +3477,7 @@ async function validateAgentControlDatabase(filePath, checkpointOnClose = false)
   try {
     const version = Number(database.prepare('PRAGMA user_version').get().user_version)
     const integrity = database.prepare('PRAGMA integrity_check').all()
-    if (version !== 1 || integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
+    if (![1, 2, 3].includes(version) || integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
       || database.prepare('PRAGMA foreign_key_check').all().length > 0) {
       throw new Error('Agent 控制数据库版本或完整性校验失败。')
     }

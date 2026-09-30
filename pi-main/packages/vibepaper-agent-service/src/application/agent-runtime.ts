@@ -45,6 +45,8 @@ export interface AgentRuntimeHooks {
 	onAgent?: (agent: Agent) => void;
 	onEvent?: (event: AgentTurnEvent) => void | Promise<void>;
 	runtimeTools?: AgentTool[];
+	desktopMemoryTools?: AgentTool[];
+	desktopCompactionSummary?: string;
 	profile?: AgentProfile;
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	shouldStopAfterTurn?: NonNullable<AgentOptions["shouldStopAfterTurn"]>;
@@ -207,7 +209,9 @@ export async function runDramaTurn(
 		getApiKey: async (provider) => (provider === "agnes" ? config.llmApiKey : undefined),
 		systemPromptSuffix:
 			[
-				compacted.summary ? `会话压缩摘要：${compacted.summary}` : undefined,
+				(hooks.desktopMode && hooks.desktopCompactionSummary ? hooks.desktopCompactionSummary : compacted.summary)
+					? `会话压缩摘要：${hooks.desktopMode && hooks.desktopCompactionSummary ? hooks.desktopCompactionSummary : compacted.summary}`
+					: undefined,
 				...orderedInstructions,
 				hooks.intentContext,
 				hooks.memoryContext,
@@ -216,6 +220,7 @@ export async function runDramaTurn(
 				.join("\n\n") || undefined,
 		extraTools: createLoadSkillTool(skillContext.skills, skillContext.loadedSkillIds, skillContext.onLoad),
 		runtimeTools: hooks.runtimeTools,
+		desktopMemoryTools: hooks.desktopMemoryTools,
 		profile: hooks.profile,
 		desktopMode: hooks.desktopMode,
 		transformContext: hooks.transformContext,

@@ -14,6 +14,7 @@ export interface CreateDramaAgentOptions {
 	systemPromptSuffix?: string;
 	extraTools?: AgentTool[];
 	runtimeTools?: AgentTool[];
+	desktopMemoryTools?: AgentTool[];
 	profile?: AgentProfile;
 	desktopMode?: boolean;
 	transformContext?: AgentOptions["transformContext"];
@@ -29,10 +30,18 @@ export function createDramaAgent(store: DramaStateStore | undefined, options: Cr
 	const profileToolNames = options.profile
 		? new Set(getToolsForProfile(options.profile).map((entry) => entry.name))
 		: undefined;
-	const tools = [...dramaTools, ...(options.runtimeTools ?? []), ...(options.extraTools ?? [])].filter(
+	const profileTools = [...dramaTools, ...(options.runtimeTools ?? []), ...(options.extraTools ?? [])].filter(
 		(tool) =>
 			!profileToolNames || profileToolNames.has(tool.name) || dramaTools.some((item) => item.name === tool.name),
 	);
+	const memoryToolNames = new Set([
+		"read_project_memory", "remember_project_preference", "edit_project_memory", "delete_project_memory",
+	]);
+	const desktopMemoryTools = options.desktopMode
+		? (options.desktopMemoryTools ?? []).filter((tool) => memoryToolNames.has(tool.name)
+			&& (options.profile !== "audit-readonly" || tool.name === "read_project_memory"))
+		: [];
+	const tools = [...profileTools, ...desktopMemoryTools];
 	const allowedToolNames = new Set(tools.map((tool) => tool.name));
 
 	return new Agent({

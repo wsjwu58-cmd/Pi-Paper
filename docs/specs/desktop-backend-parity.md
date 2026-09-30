@@ -58,6 +58,8 @@ Store 测试覆盖 schema v15→v16、v14→v17 和 v16→v17 回滚副本，重
 
 ## 原项目能力基线
 
+2026-09-30 Agent 记忆切片：项目 Markdown Repository 复用原 `MemoryService`，接入桌面回合的显式偏好工具与有界提示词注入；原 Web 路径保留。项目备份/恢复已支持当前 Agent 控制库 v3，并将恢复副本的记忆项目身份重绑。原 Pi JSONL 的 compaction 写入、检查点重建、完整历史读取及恢复摘要注入已接，但自动摘要生成、全请求预算和会话工作状态投影仍未接入。定向测试 32/32、桌面回归 180/180、原 TS 构建及 Worker 启动检查通过；真实模型跨压缩续聊、更多作用域及记忆管理 UI 仍有缺口，不能宣称完整迁移。细节见 [Agent 功能规格](desktop-agent-functional-spec.md)。
+
 | 模块 | 原实现依据 | 桌面等价实现必须覆盖 | 当前状态与差距 |
 | --- | --- | --- | --- |
 | 画布与节点 | `vibepaper-services/canvas-service/.../CanvasService.java`、`GraphService.java`、`EdgeRules.java` | 画布版本、节点类型/能力、连线方向与依赖、上下游失效、删除影响、分组堆叠、导入导出、幂等与错误语义 | **已接通：** 全量 `saveCanvas` 经 Local Core 和受限 IPC 接到原 `CanvasPage`；校验六种节点类型与连线兼容矩阵，跳过悬空边，并按原 `CanvasService.applyPreservedGeneration` 保留旧节点的生成产物、媒体参数及已成功状态；`createNode`、`updateNode`、`deleteNode`、`connectEdge`、`deleteEdge` 均从原 `CanvasPage` 调用桌面桥接。`updateNode` 保留字段更新、版本 CAS、命令账本及仅沿 input 边传播 stale；`connectEdge` 校验端点、自连接、兼容性和依赖类型，显式命令键可重启回放，重复端点按原规则返回已有边且不增版本。`addGroup`、`updateGroup`、`deleteGroup`、`addStack`、`updateStack`、`deleteStack` 经原 `CanvasToolbar` 调用 Local Core；节点双击时展开堆叠，布局字段和坐标随整图保存；成员命令不递增画布版本。Store 的 `saveCanvas` 接收显式 groups/stacks 快照；省略字段会保留本地记录，这一兼容行为不同于 Java 全量保存对缺省字段的清空语义。只读 `exportCanvas` 已从 Store 接到 Local Core、Main IPC、Preload 和 bridge 类型；导出按钮及文件保存 UI 待原 `WorkspacePage` 接入。Store 的保存命令幂等键尚未由 Renderer 保存 IPC 传入。**未迁移：** `extractFromStack` 有 Store/IPC/Preload 实现，但原 `CanvasToolbar` 当前无对应调用；画布导入未实现，桌面仍是单项目单画布，不能安全复刻旧 `importCanvas`“新建画布并重新映射身份”的语义。旧 `deleteNode` 不从 group/stack 的 `nodeIds` 清除被删节点，此处保留原行为。 |

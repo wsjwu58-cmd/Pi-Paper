@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 import {
 	DesktopAgentSessionStore,
+	desktopCompactionSummary,
 	type DesktopAgentMessageMetadata,
 } from "../src/desktop/session-store.ts";
 
@@ -105,6 +106,98 @@ describe("desktop Pi session reference metadata", () => {
 				selectedSkillId: "shot-storyboard",
 			},
 		});
+	});
+
+	it("appends durable compaction after long history and rebuilds missing or corrupt optional checkpoints", async () => {
+		const { projectDirectory, sessionsDirectory, store } = await createStore();
+		const session = await store.createSession("长会话压缩");
+		for (let index = 0; index < 50; index += 1) {
+			await store.appendMessage(session.id, {
+				role: "user",
+				content: [{ type: "text", text: `历史消息 ${index}` }],
+				timestamp: 1_790_000_000_000 + index,
+			});
+		}
+		const toolAssistant: AgentMessage = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "call-last", name: "read_canvas", arguments: {} }],
+			api: "openai-completions",
+			provider: "openai",
+			model: "test-model",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 1_790_000_000_050,
+		};
+		const toolResult: AgentMessage = {
+			role: "toolResult",
+			toolCallId: "call-last",
+			toolName: "read_canvas",
+			content: [{ type: "text", text: "读取到了当前画布状态" }],
+			isError: false,
+			timestamp: 1_790_000_000_051,
+		};
+		await store.appendMessage(session.id, toolAssistant);
+		await store.appendMessage(session.id, toolResult);
+
+		await expect(
+			store.appendCompaction(session.id, {
+				summary: "Compacted 52 messages",
+				retainLastMessages: 1,
+				tokensBefore: 4_100,
+			}),
+		).rejects.toThrow("AGENT_COMPACTION_SUMMARY_REQUIRED");
+		const summary = "用户正在整理画布方案；最后一次画布读取已经返回当前状态。";
+		const compactedContext = await store.appendCompaction(session.id, {
+			summary,
+			retainLastMessages: 1,
+			tokensBefore: 4_100,
+		});
+		expect(compactedContext.messages).toHaveLength(3);
+		expect(compactedContext.messages[0]).toEqual(expect.objectContaining({ role: "compactionSummary", summary }));
+		expect(compactedContext.messages.slice(1)).toEqual([toolAssistant, toolResult]);
+		expect(desktopCompactionSummary(compactedContext)).toBe(summary);
+		expect(await store.listTranscriptMessages(session.id)).toHaveLength(52);
+
+		const storedSession = await store.openSession(session.id);
+		const sessionPath = (await storedSession.getMetadata()).path;
+		const checkpointPath = `${sessionPath}.checkpoint.json`;
+		const rawJsonl = await readFile(sessionPath, "utf8");
+		expect(rawJsonl).toContain("历史消息 0");
+		expect(rawJsonl).toContain("历史消息 49");
+		expect(rawJsonl).toContain("读取到了当前画布状态");
+		expect((await storedSession.findEntries({ type: "message" })).length).toBe(52);
+		expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toEqual(
+			expect.objectContaining({ schemaVersion: 1, sessionId: session.id, summary }),
+		);
+
+		await closeStore(store);
+		const reopened = new DesktopAgentSessionStore(
+			"f382c607-b2c1-41d9-9703-8bd84ae84c29",
+			projectDirectory,
+			sessionsDirectory,
+		);
+		openStores.push(reopened);
+		await rm(checkpointPath, { force: true });
+		const restoredWithoutCheckpoint = await reopened.buildContext(session.id);
+		expect(restoredWithoutCheckpoint.messages).toEqual(compactedContext.messages);
+		expect(await reopened.listTranscriptMessages(session.id)).toHaveLength(52);
+		expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toEqual(
+			expect.objectContaining({ schemaVersion: 1, sessionId: session.id, summary }),
+		);
+
+		await writeFile(checkpointPath, "{not valid json");
+		const restoredWithCorruptCheckpoint = await reopened.buildContext(session.id);
+		expect(restoredWithCorruptCheckpoint.messages).toEqual(compactedContext.messages);
+		expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toEqual(
+			expect.objectContaining({ schemaVersion: 1, sessionId: session.id, summary }),
+		);
 	});
 
 	it("stores only approved local preview identifiers and enforces the reference count before writing", async () => {

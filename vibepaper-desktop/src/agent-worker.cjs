@@ -1,4 +1,6 @@
 const { openDesktopAgentStores } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/agent-stores.ts')
+const { DesktopProjectMemory } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/project-memory.ts')
+const { desktopCompactionSummary } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-store.ts')
 const { SessionRunService } = require('../../pi-main/packages/vibepaper-agent-service/src/application/session-run-service.ts')
 const { ApprovalService } = require('../../pi-main/packages/vibepaper-agent-service/src/application/approval-service.ts')
 const {
@@ -37,6 +39,7 @@ const parentPort = process.parentPort
 if (!parentPort) throw new Error('Agent Worker 必须由 Electron utility process 启动。')
 
 let stores = null
+let projectMemory = null
 let requestQueue = Promise.resolve()
 const agentLocalCoreClient = createAgentLocalToolClient(parentPort)
 
@@ -126,7 +129,7 @@ function storedHistoryMessage(message) {
 async function getSessionMessages(projectId, sessionId) {
   const current = await requireProject(projectId)
   if (typeof sessionId !== 'string' || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
-  return (await current.sessions.listMessages(sessionId))
+  return (await current.sessions.listTranscriptMessages(sessionId))
     .filter(({ message }) => message.role === 'user' || message.role === 'assistant')
     .map(({ messageId, message, metadata }) => ({
       id: messageId,
@@ -310,6 +313,7 @@ async function sendMessage(payload, onRunCreated) {
     const projectSkills = await listProjectAgentSkills(current.projectDirectory)
     const skillContext = createDesktopAgentSkillContext(current.control, sessionId, selectedSkillId, projectSkills)
     const runtimeTools = createRuntimeTools(toolContext)
+    const memoryContext = await projectMemory.buildMemoryContext()
     turn = await runDramaTurn(
       {
         llmApiKey: apiKey,
@@ -326,7 +330,10 @@ async function sendMessage(payload, onRunCreated) {
         profile: selectProfile({ canvasDomain }),
         desktopMode: true,
         runtimeTools,
+        desktopMemoryTools: projectMemory.createTools(content.trim()),
+        desktopCompactionSummary: desktopCompactionSummary(priorContext),
         intentContext: `以下是本轮只读画布摘要：\n${JSON.stringify(canvasContext)}`,
+        memoryContext,
         onAgent(agent) {
           agent.subscribe(async (event) => {
             if (event.type !== 'message_end') return
@@ -439,9 +446,20 @@ async function dispatch(method, payload) {
     case 'agent:open': {
       if (!payload || typeof payload.projectDirectory !== 'string') throw new Error('AGENT_PROJECT_PATH_INVALID')
       if (stores) await stores.close()
-      stores = await openDesktopAgentStores(payload.projectDirectory)
-      await recoverDesktopAgentRuns(stores)
-      return { projectId: stores.projectId }
+      stores = null
+      projectMemory = null
+      const openedStores = await openDesktopAgentStores(payload.projectDirectory)
+      try {
+        const openedMemory = new DesktopProjectMemory(openedStores.projectDirectory, openedStores.projectId)
+        await openedMemory.initialize()
+        await recoverDesktopAgentRuns(openedStores)
+        stores = openedStores
+        projectMemory = openedMemory
+        return { projectId: openedStores.projectId }
+      } catch (error) {
+        await openedStores.close()
+        throw error
+      }
     }
     case 'agent:list-sessions':
       return listSessions(payload?.projectId)
@@ -487,6 +505,7 @@ async function dispatch(method, payload) {
       agentLocalCoreClient.close()
       if (stores) await stores.close()
       stores = null
+      projectMemory = null
       return null
     default:
       throw new Error('AGENT_METHOD_UNSUPPORTED')
