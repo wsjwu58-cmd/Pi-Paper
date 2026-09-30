@@ -1,4 +1,5 @@
 const { AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
+const { COMPOSE_MODEL_ID, COMPOSE_PROVIDER_ID, resolveFfmpegPath } = require('./compose-provider.cjs')
 
 function buildDesktopAgentModelDirectory(agnes, localTextModel, localAudioModel) {
   const models = []
@@ -58,12 +59,17 @@ function buildDesktopAgentModelDirectory(agnes, localTextModel, localAudioModel)
         : {}),
     })
   }
+  models.push({
+    name: COMPOSE_MODEL_ID, displayName: COMPOSE_MODEL_ID, modelType: 'compose',
+    providerId: COMPOSE_PROVIDER_ID, providerType: 'local', enabled: Boolean(resolveFfmpegPath()),
+    modalities: ['compose'], inputModes: ['video'], toolCalling: false, streaming: false, cancellation: true,
+  })
   return models
 }
 
 function isDesktopAgentGenerationTarget(node, modality) {
   return Boolean(node && typeof node === 'object' && !Array.isArray(node)
-    && ['text', 'image', 'video', 'audio'].includes(modality) && node.type === modality)
+    && ['text', 'image', 'video', 'audio', 'compose'].includes(modality) && node.type === modality)
 }
 
 module.exports = { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget }

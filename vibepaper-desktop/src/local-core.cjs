@@ -170,6 +170,10 @@ async function dispatch(method, payload) {
         canvas,
       }
     }
+    case 'canvas:get-delete-command':
+      return store.getDeletedNodeCommand(payload)
+    case 'agent:lookup-operation':
+      return store.lookupAgentOperation(payload)
     case 'canvas:save':
       return store.saveCanvas(payload)
     case 'canvas:connect':

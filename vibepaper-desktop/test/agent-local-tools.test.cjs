@@ -38,6 +38,8 @@ test('Main and Worker share the restricted agent:core method allowlist', () => {
     'agent:core:load-canvas',
     'agent:core:create-node',
     'agent:core:update-node',
+    'agent:core:delete-nodes',
+    'agent:core:lookup-operation',
     'agent:core:connect-edge',
     'agent:core:save-canvas',
     'agent:core:get-task',
@@ -116,7 +118,7 @@ test('model directory returns capability metadata without credentials or local e
   )
   const serialized = JSON.stringify(models)
 
-  assert.equal(models.length, 5)
+  assert.equal(models.length, 6)
   assert.equal(models.find((model) => model.providerType === 'local').name, 'local-text-model')
   assert.deepEqual(models.find((model) => model.modelType === 'audio'), {
     name: 'local-sapi-tts',

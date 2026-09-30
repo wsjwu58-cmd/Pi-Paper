@@ -3,6 +3,7 @@ import type { CanvasCommand, CanvasCommandGateway } from "../application/canvas-
 import type { AuditInput } from "../domain/continuity-rules.ts";
 import { ToolGatewayError } from "../infrastructure/tool-gateway.ts";
 import type { ReadToolsGateway } from "../tools/read-tools.ts";
+import type { DesktopAgentControlStore } from "./control-store.ts";
 
 export interface DesktopLocalToolClient {
 	request(method: string, payload: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
@@ -16,10 +17,15 @@ export interface DesktopLocalToolClient {
 export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandGateway {
 	private readonly client: DesktopLocalToolClient;
 	private readonly projectId: string;
+	private runScope?: { control: DesktopAgentControlStore; sessionId: string; runId: string };
 
 	constructor(client: DesktopLocalToolClient, projectId: string) {
 		this.client = client;
 		this.projectId = projectId;
+	}
+
+	attachRun(scope: { control: DesktopAgentControlStore; sessionId: string; runId: string }): void {
+		this.runScope = scope;
 	}
 
 	async getCanvasSummary(_userId: string, canvasId: string): Promise<Record<string, unknown>> {
@@ -99,11 +105,11 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 		const providerType = model.providerType;
 		const providerId = stringValue(model.providerId);
 		const modelId = stringValue(model.name);
-		const prompt = stringValue(input.modelParams.prompt)?.trim();
+		const prompt = stringValue(input.modelParams.prompt)?.trim() ?? "";
 		if (
 			!modality ||
-			!["text", "image", "video", "audio"].includes(modality) ||
-			!prompt ||
+			!["text", "image", "video", "audio", "compose"].includes(modality) ||
+			(modality !== "compose" && !prompt) ||
 			!providerId ||
 			!modelId ||
 			(providerType !== "local" && providerType !== "cloud")
@@ -164,6 +170,18 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 		if (command.operation === "connect_nodes") return this.connectNodes(command);
 		if (command.operation === "update_node_config") return this.updateNodeConfig(command);
 		if (command.operation === "layout_nodes") return this.layoutNodes(command);
+		if (command.operation === "delete_nodes") {
+			const nodeIds = strings(command.payload.nodeIds);
+			if (nodeIds.length < 1 || nodeIds.length > 20 || new Set(nodeIds).size !== nodeIds.length)
+				throw gatewayError("INVALID_INPUT", "删除需要 1 至 20 个不同节点", 400);
+			const response = await this.call("agent:core:delete-nodes", {
+				projectId: this.projectId, canvasId: command.canvasId,
+				expectedVersion: command.expectedVersion, idempotencyKey: command.idempotencyKey, nodeIds,
+			});
+			if (!isRecord(response) || !Number.isSafeInteger(response.canvasVersion))
+				throw gatewayError("INVALID_RESPONSE", "本地画布未返回有效的删除结果");
+			return response;
+		}
 		throw gatewayError("PERMISSION_DENIED", "该画布操作尚未开放", 403);
 	}
 
@@ -316,9 +334,43 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 	}
 
 	private async call(method: string, payload: Record<string, unknown>): Promise<unknown> {
+		const scope = this.runScope;
+		const key = stringValue(payload.idempotencyKey);
+		const mutating = /agent:core:(?:create-node|update-node|connect-edge|save-canvas|delete-nodes|create-generation-task)$/u.test(method);
+		const operation = scope && key && mutating ? scope.control.prepareOperation({
+			sessionId: scope.sessionId, runId: scope.runId,
+			toolCallId: createHash("sha256").update(`${scope.sessionId}\0${key}`).digest("hex"),
+			effect: method,
+			inputHash: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+			canvasVersion: typeof payload.expectedVersion === "number" ? payload.expectedVersion
+				: typeof payload.canvasVersion === "number" ? payload.canvasVersion : null,
+			idempotencyKey: key,
+		}) : undefined;
+		if (operation?.state === "succeeded" && operation.resultJson) return JSON.parse(operation.resultJson);
+		if (operation && operation.state !== "prepared") {
+			if ((operation.state === "dispatched" || operation.state === "uncertain") && method !== "agent:core:delete-nodes") {
+				const known = await this.client.request("agent:core:lookup-operation", {
+					projectId: this.projectId, canvasId: payload.canvasId, method, idempotencyKey: key,
+				});
+				if (isRecord(known)) {
+					scope!.control.transitionOperation(operation.operationId, "succeeded", {
+						resultJson: JSON.stringify(operationSnapshot(known)),
+					});
+					return known;
+				}
+			}
+			throw gatewayError("OPERATION_UNCERTAIN", "上次操作的结果需要核验，请读取最新画布和任务状态", 409);
+		}
+		if (operation) scope!.control.transitionOperation(operation.operationId, "dispatched");
 		try {
-			return await this.client.request(method, payload, method.endsWith("save-canvas") ? 60_000 : 30_000);
+			const response = await this.client.request(method, payload, method.endsWith("delete-nodes") ? 300_000 : method.endsWith("save-canvas") ? 60_000 : 30_000);
+			if (operation) {
+				const projected = isRecord(response) ? operationSnapshot(response) : response;
+				scope!.control.transitionOperation(operation.operationId, "succeeded", { resultJson: JSON.stringify(projected) });
+			}
+			return response;
 		} catch (error) {
+			if (operation) scope!.control.transitionOperation(operation.operationId, "uncertain");
 			if (error instanceof ToolGatewayError) throw error;
 			const raw = error instanceof Error ? error.message : String(error);
 			const code = mapLocalErrorCode(raw);
@@ -340,6 +392,25 @@ type LocalCanvas = {
 	groups?: unknown[];
 	stacks?: unknown[];
 };
+
+function operationSnapshot(response: Record<string, unknown>): Record<string, unknown> {
+	const result: Record<string, unknown> = {};
+	for (const key of ["version", "canvasVersion", "operation", "replayed", "taskId", "status", "modality", "nodeId", "staleNodeIds"])
+		if (response[key] !== undefined) result[key] = response[key];
+	if (isRecord(response.node)) {
+		const node = response.node;
+		const data = recordValue(node.data);
+		result.node = { id: node.id, type: node.type, position: node.position, width: node.width, height: node.height,
+			data: { label: data.label, creativeType: data.creativeType, status: data.status, execStatus: data.execStatus } };
+	}
+	if (response.edge !== undefined) result.edge = boundValue(stripPrivateFields(recordValue(response.edge)), 0);
+	if (Array.isArray(response.results)) result.results = response.results.map((entry) => {
+		const value = recordValue(entry);
+		return { deletedNodeId: value.deletedNodeId, connectedEdges: value.connectedEdges,
+			downstreamNodes: value.downstreamNodes, version: value.version };
+	});
+	return result;
+}
 
 function projectCanvas(canvas: LocalCanvas): Record<string, unknown> {
 	const nodes = canvas.nodes.map(projectNode);

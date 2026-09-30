@@ -460,9 +460,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 				);
 			},
 		),
-		...(context.desktopMode
-			? []
-			: [
+		...[
 					tool(
 						"delete_nodes",
 						"删除画布节点",
@@ -487,7 +485,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 							);
 						},
 					),
-				]),
+				],
 		...(canPrepareGeneration && generations
 			? [
 					tool(
@@ -851,6 +849,9 @@ async function withResolvedComposeInputs(
 	modelParams: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
 	if (modelType !== "compose" && modelType !== "compose-1.0") return modelParams;
+	// Local Core resolves authoritative output files by node identity after consent.
+	// Renderer URLs and model-supplied file paths cannot be trusted as compose inputs.
+	if (context.desktopMode) return modelParams;
 	if (Array.isArray(modelParams.inputUrls) || Array.isArray(modelParams.inputs)) return modelParams;
 	const nodeIds = Array.isArray(modelParams.inputNodeIds)
 		? modelParams.inputNodeIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim()))

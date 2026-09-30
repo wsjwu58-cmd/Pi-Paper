@@ -29,7 +29,7 @@ const TASK_SEARCH_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed'
 const MAX_AGENT_BACKUP_BYTES = 4 * 1024 * 1024 * 1024
 const MAX_AGENT_BACKUP_FILES = 100_000
 const MAX_AGENT_SESSION_HEADER_BYTES = 1024 * 1024
-const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'session-memory'])
+const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'session-memory', 'fragments'])
 const AGENT_BACKUP_EXTENSIONS = new Set(['.jsonl', '.json', '.md', '.zst'])
 const DIRECTOR_CAPTURE_ASSET_URL = /^vibe:\/\/app\/assets\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/iu
 const EDGE_COMPATIBLE_TARGET_TYPES = Object.freeze({
@@ -8034,7 +8034,47 @@ function createLocalProjectStore() {
     })
   }
 
+  function getDeletedNodeCommand(input) {
+    if (!active || !isRecord(input) || input.projectId !== active.metadata.projectId
+      || input.canvasId !== active.metadata.canvasId || typeof input.idempotencyKey !== 'string') {
+      throw new Error('当前项目已更改。')
+    }
+    const command = active.database.prepare(`SELECT operation, result_canvas_version, result_snapshot
+      FROM canvas_graph_commands WHERE canvas_id = ? AND idempotency_key = ?`)
+      .get(input.canvasId, input.idempotencyKey)
+    if (!command || command.operation !== 'delete_nodes' || command.result_snapshot === '{}') return null
+    const result = JSON.parse(command.result_snapshot)
+    if (!isRecord(result) || typeof result.deletedNodeId !== 'string'
+      || !Number.isSafeInteger(command.result_canvas_version)) throw new Error('画布命令结果快照损坏。')
+    return { ...result, version: command.result_canvas_version }
+  }
+
+  function lookupAgentOperation(input) {
+    if (!active || !isRecord(input) || input.projectId !== active.metadata.projectId
+      || input.canvasId !== active.metadata.canvasId || typeof input.idempotencyKey !== 'string') throw new Error('当前项目已更改。')
+    if (input.method === 'agent:core:create-generation-task') {
+      const row = active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.idempotency_key = ?`).get(input.idempotencyKey)
+      return row ? taskFromRow(row) : null
+    }
+    const expectedOperation = {
+      'agent:core:create-node': 'create_nodes', 'agent:core:update-node': 'update_node_config',
+      'agent:core:connect-edge': 'connect_nodes', 'agent:core:save-canvas': 'save_canvas',
+    }[input.method]
+    if (!expectedOperation) throw new Error('INVALID_INPUT')
+    const row = active.database.prepare(`SELECT operation, result_snapshot, result_canvas_version
+      FROM canvas_graph_commands WHERE canvas_id = ? AND idempotency_key = ?`).get(input.canvasId, input.idempotencyKey)
+    if (!row || row.operation !== expectedOperation || row.result_snapshot === '{}') return null
+    const result = JSON.parse(row.result_snapshot)
+    if (!isRecord(result) || !Number.isSafeInteger(row.result_canvas_version)) throw new Error('画布命令结果快照损坏。')
+    if (input.method === 'agent:core:create-node') return { node: flowNodeFromPayload(result), version: row.result_canvas_version, replayed: true }
+    if (input.method === 'agent:core:update-node') return { node: result, version: row.result_canvas_version, replayed: true }
+    if (input.method === 'agent:core:connect-edge') return { edge: result, version: row.result_canvas_version, replayed: true }
+    return { ...result, replayed: true }
+  }
+
   return {
+    getDeletedNodeCommand,
+    lookupAgentOperation,
     addGroup,
     addStack,
     backupProject,

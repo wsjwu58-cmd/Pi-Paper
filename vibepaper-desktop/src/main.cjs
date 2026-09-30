@@ -34,6 +34,7 @@ const {
 const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = require('./agent-model-directory.cjs')
 const { ALLOWED_AGENT_CORE_METHODS, getAgentCanvasDomain } = require('./agent-local-tools.cjs')
+const { deleteAgentNodes } = require('./agent-node-deletion.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
 const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
 const { createDramaBatchTaskInput } = require('./drama-render-batch.cjs')
@@ -323,6 +324,8 @@ function createAgentWorker() {
       'agent:core:load-canvas': ['projectId', 'canvasId'],
       'agent:core:create-node': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'type', 'creativeType', 'prompt', 'params', 'x', 'y', 'width', 'height', 'modelRef'],
       'agent:core:update-node': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'nodeId', 'x', 'y', 'width', 'height', 'params', 'prompt', 'modelRef', 'creativeType', 'status', 'execStatus', 'output', 'currentOutputId', 'groupId', 'stackId', 'stale'],
+      'agent:core:delete-nodes': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'nodeIds'],
+      'agent:core:lookup-operation': ['projectId', 'canvasId', 'method', 'idempotencyKey'],
       'agent:core:connect-edge': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'sourceNodeId', 'targetNodeId', 'sourcePort', 'targetPort', 'dependencyType'],
       'agent:core:save-canvas': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'nodes', 'edges', 'groups', 'stacks'],
       'agent:core:get-task': ['projectId', 'taskId'],
@@ -348,6 +351,23 @@ function createAgentWorker() {
         return localCore.request('canvas:create-node', input, 30_000)
       case 'agent:core:update-node':
         return localCore.request('canvas:update-node', input, 30_000)
+      case 'agent:core:lookup-operation':
+        return localCore.request('agent:lookup-operation', input, 15_000)
+      case 'agent:core:delete-nodes':
+        return deleteAgentNodes(input, {
+          loadCanvas: () => localCore.request('canvas:load', { projectId: input.projectId, canvasId: active.canvasId }, 15_000),
+          assertActive: async () => {
+            const current = await localCore.request('project:get-active', undefined, 15_000)
+            if (stopping || projectTransitionCount > 0 || agentWorker !== workerReference
+              || agentProjectId !== input.projectId || current?.projectId !== input.projectId) throw new Error('AGENT_PROJECT_CHANGED')
+          },
+          confirm: async (labels) => (await dialog.showMessageBox(mainWindow, {
+            type: 'question', title: '确认删除节点', message: `删除 ${labels.length} 个节点及关联连线？`,
+            detail: labels.join('\n'), buttons: ['取消', '删除'], defaultId: 0, cancelId: 0,
+          })).response === 1,
+          deleteNode: (payload) => localCore.request('canvas:delete-node', payload, 30_000),
+          lookupDeletedNode: (payload) => localCore.request('canvas:get-delete-command', payload, 15_000),
+        })
       case 'agent:core:connect-edge':
         return localCore.request('canvas:connect', input, 30_000)
       case 'agent:core:save-canvas':
@@ -361,7 +381,7 @@ function createAgentWorker() {
         return buildDesktopAgentModelDirectory(agnes, localTextModel, getLocalAudioModel())
       }
       case 'agent:core:create-generation-task': {
-        const modalities = ['text', 'image', 'video', 'audio']
+        const modalities = ['text', 'image', 'video', 'audio', 'compose']
         if (typeof input.canvasId !== 'string' || !input.canvasId
           || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
           || typeof input.nodeId !== 'string' || !input.nodeId
@@ -370,7 +390,7 @@ function createAgentWorker() {
           || typeof input.providerId !== 'string' || !input.providerId
           || typeof input.modelId !== 'string' || !input.modelId
           || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
-          || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 200_000
+          || typeof input.prompt !== 'string' || (input.modality !== 'compose' && !input.prompt.trim()) || input.prompt.length > 200_000
           || !input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)) {
           throw new Error('AGENT_GENERATION_INPUT_INVALID')
         }
@@ -388,7 +408,7 @@ function createAgentWorker() {
           entry.enabled === true && entry.name === input.modelId && entry.modelType === input.modality
           && entry.providerType === input.providerType && entry.providerId === input.providerId)
         if (!model) throw new Error('AGENT_GENERATION_MODEL_UNAVAILABLE')
-        if ((input.providerType === 'local' && !['text', 'audio'].includes(input.modality))
+        if ((input.providerType === 'local' && !['text', 'audio', 'compose'].includes(input.modality))
           || (input.providerType === 'cloud' && !agnes?.apiKeyConfigured)) {
           throw new Error(input.providerType === 'cloud' ? 'CLOUD_CREDENTIAL_MISSING' : 'UNSUPPORTED_MODALITY')
         }

@@ -4,6 +4,8 @@ const AGENT_CORE_METHODS = Object.freeze([
   'agent:core:load-canvas',
   'agent:core:create-node',
   'agent:core:update-node',
+  'agent:core:delete-nodes',
+  'agent:core:lookup-operation',
   'agent:core:connect-edge',
   'agent:core:save-canvas',
   'agent:core:get-task',
