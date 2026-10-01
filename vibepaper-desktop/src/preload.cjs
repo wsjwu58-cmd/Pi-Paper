@@ -79,6 +79,16 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   clearLocalTextModel: () => ipcRenderer.invoke('desktop:model:clear-local-text'),
   getLocalAudioModel: () => ipcRenderer.invoke('desktop:model:get-local-audio'),
   listAgentSessions: (projectId) => ipcRenderer.invoke('desktop:agent:list-sessions', projectId),
+  listAgentFragments: (projectId) => ipcRenderer.invoke('desktop:agent:list-fragments', projectId),
+  saveAgentSessionFragment: (projectId, sessionId, title) => ipcRenderer.invoke('desktop:agent:save-fragment', projectId, sessionId, title),
+  importAgentFragment: (projectId, fragmentId, canvasId) => ipcRenderer.invoke('desktop:agent:import-fragment', projectId, fragmentId, canvasId),
+  listAgentMemories: (projectId, scope, sessionId) => ipcRenderer.invoke('desktop:agent:memory:list', projectId, scope, sessionId),
+  createAgentMemory: (projectId, content, scope, sessionId) => ipcRenderer.invoke('desktop:agent:memory:create', projectId, content, scope, sessionId),
+  updateAgentMemory: (projectId, memoryId, content, scope, sessionId) => ipcRenderer.invoke('desktop:agent:memory:update', projectId, memoryId, content, scope, sessionId),
+  deleteAgentMemory: (projectId, memoryId, scope, sessionId) => ipcRenderer.invoke('desktop:agent:memory:delete', projectId, memoryId, scope, sessionId),
+  exportAgentMemories: (projectId) => ipcRenderer.invoke('desktop:agent:memory:export', projectId),
+  listAgentMemoryCandidates: (projectId) => ipcRenderer.invoke('desktop:agent:memory-candidates:list', projectId),
+  reviewAgentMemoryCandidate: (projectId, candidateId, action) => ipcRenderer.invoke('desktop:agent:memory-candidates:review', projectId, candidateId, action),
   listAgentSkills: (projectId, sessionId, keyword) => ipcRenderer.invoke('desktop:agent:list-skills', projectId, sessionId, keyword),
   createAgentSkill: (projectId, draft) => ipcRenderer.invoke('desktop:agent:skill:create', projectId, draft),
   updateAgentSkill: (projectId, skillId, patch) => ipcRenderer.invoke('desktop:agent:skill:update', projectId, skillId, patch),
@@ -90,6 +100,7 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   sendAgentMessage: (projectId, sessionId, content, selectedSkillId) => ipcRenderer.invoke('desktop:agent:send-message', projectId, sessionId, content, selectedSkillId),
   getAgentSessionSnapshot: (projectId, sessionId) => ipcRenderer.invoke('desktop:agent:get-snapshot', projectId, sessionId),
   startAgentRun: (input) => ipcRenderer.invoke('desktop:agent:start-run', input),
+  cancelAgentRun: (projectId, sessionId, runId) => ipcRenderer.invoke('desktop:agent:cancel-run', projectId, sessionId, runId),
   subscribeAgentEvents: (projectId, sessionId, afterSeq, listener) => {
     let active = true
     let polling = false

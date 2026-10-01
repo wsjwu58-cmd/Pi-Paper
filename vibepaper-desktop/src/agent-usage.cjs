@@ -12,6 +12,13 @@ function addUsage(target, usage) {
 }
 
 function buildAgentUsage(entries, sessionId) {
+  const importedTranscriptMessageIds = new Set(
+    (Array.isArray(entries) ? entries : [])
+      .filter((entry) => entry?.type === 'custom' && entry.customType === 'vibepaper_fragment_import')
+      .map((entry) => entry.data && typeof entry.data === 'object' && !Array.isArray(entry.data)
+        && typeof entry.data.messageId === 'string' ? entry.data.messageId : null)
+      .filter(Boolean),
+  )
   const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
   const summaryTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
   const toolResultTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
@@ -32,19 +39,21 @@ function buildAgentUsage(entries, sessionId) {
     if (entry.type === 'message' && entry.message && typeof entry.message === 'object') {
       const message = entry.message
       if (message.role === 'assistant') {
-        const provider = typeof message.provider === 'string' ? message.provider.trim() : ''
-        const model = typeof message.responseModel === 'string' && message.responseModel.trim()
-          ? message.responseModel.trim()
-          : typeof message.model === 'string' ? message.model.trim() : ''
-        const modelKey = provider && model ? `${provider}/${model}` : model || provider
-        if (modelKey) {
-          modelCallCount += 1
-          modelCalls[modelKey] = (modelCalls[modelKey] ?? 0) + 1
-          const tokens = addUsage(totals, message.usage)
-          modelUsage[modelKey] = (modelUsage[modelKey] ?? 0) + tokens
-        }
-        if (Array.isArray(message.content)) {
-          toolCallCount += message.content.filter((part) => part?.type === 'toolCall').length
+        if (!importedTranscriptMessageIds.has(entry.id)) {
+          const provider = typeof message.provider === 'string' ? message.provider.trim() : ''
+          const model = typeof message.responseModel === 'string' && message.responseModel.trim()
+            ? message.responseModel.trim()
+            : typeof message.model === 'string' ? message.model.trim() : ''
+          const modelKey = provider && model ? `${provider}/${model}` : model || provider
+          if (modelKey) {
+            modelCallCount += 1
+            modelCalls[modelKey] = (modelCalls[modelKey] ?? 0) + 1
+            const tokens = addUsage(totals, message.usage)
+            modelUsage[modelKey] = (modelUsage[modelKey] ?? 0) + tokens
+          }
+          if (Array.isArray(message.content)) {
+            toolCallCount += message.content.filter((part) => part?.type === 'toolCall').length
+          }
         }
       } else if (message.role === 'toolResult' && message.usage) {
         // Pi persists usage attached to tool results separately from assistant messages.
@@ -55,11 +64,20 @@ function buildAgentUsage(entries, sessionId) {
       continue
     }
 
-    if ((entry.type === 'compaction' || entry.type === 'branch_summary') && entry.usage) {
-      addUsage(totals, entry.usage)
-      addUsage(summaryTotals, entry.usage)
+    const summaryReceipt = entry.type === 'custom' && entry.customType === 'vibepaper_summary_usage'
+      ? entry.data : null
+    const summaryUsage = summaryReceipt?.usage ??
+      ((entry.type === 'compaction' || entry.type === 'branch_summary') ? entry.usage : null)
+    if (summaryUsage) {
+      const tokens = addUsage(totals, summaryUsage)
+      addUsage(summaryTotals, summaryUsage)
       summaryCallCount += 1
       modelCallCount += 1
+      if (summaryReceipt && typeof summaryReceipt.provider === 'string' && typeof summaryReceipt.model === 'string') {
+        const key = `${summaryReceipt.provider}/${summaryReceipt.model}`
+        modelCalls[key] = (modelCalls[key] ?? 0) + 1
+        modelUsage[key] = (modelUsage[key] ?? 0) + tokens
+      }
     }
   }
 

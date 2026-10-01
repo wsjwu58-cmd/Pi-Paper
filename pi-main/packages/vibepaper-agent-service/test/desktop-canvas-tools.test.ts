@@ -8,11 +8,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 describe("original Agent desktop canvas commands", () => {
+	it("uses the original model catalog name and unambiguous modality alias resolver", async () => {
+		const gateway = new DesktopLocalToolGateway({ request: async () => [
+			{ name: "compose-1.0", displayName: "视频合成", modelType: "compose", enabled: true },
+			{ name: "agnes-image-2.5-flash", modelType: "image", enabled: true },
+		] }, "p");
+		expect(await gateway.resolveGenerationModel("p", "compose")).toBe("compose-1.0");
+		expect(await gateway.resolveGenerationModel("p", "image")).toBe("agnes-image-2.5-flash");
+	});
 	it("persists write intent before dispatch and reconciles a lost response without replaying the write", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "vp-agent-operation-"));
 		const control = new DesktopAgentControlStore(join(directory, "control.sqlite"));
 		try {
 			const run = await new SessionRunService(control).startRun({ sessionId: "s", idempotencyKey: "run" });
+			control.updateStatus(run.runId, "running");
 			let writes = 0;
 			const gateway = new DesktopLocalToolGateway({ request: async (method) => {
 				if (method === "agent:core:lookup-operation") return { node: { id: "a", type: "text", data: {} }, version: 4 };
@@ -28,6 +37,9 @@ describe("original Agent desktop canvas commands", () => {
 			expect(await gateway.execute(command)).toMatchObject({ canvasVersion: 4 });
 			expect(writes).toBe(1);
 			expect(control.listRecoverableOperations("s")).toHaveLength(0);
+			control.cancelIfActiveAtomic(run.runId);
+			await expect(gateway.execute({ ...command, idempotencyKey: "after-stop" })).rejects.toThrow("当前回合已停止");
+			expect(writes).toBe(1);
 		} finally {
 			control.close();
 			await rm(directory, { recursive: true, force: true });

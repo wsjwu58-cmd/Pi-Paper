@@ -139,7 +139,7 @@ describe("desktop system Skill context", () => {
 		const { databasePath, store } = await createStore();
 		store.close();
 		const database = new DatabaseSync(databasePath);
-		database.exec("DROP TABLE agent_session_skill_state; PRAGMA user_version = 2;");
+		database.exec("DROP TABLE agent_session_skill_state; DROP TABLE desktop_memory_candidates; PRAGMA user_version = 2;");
 		database.close();
 
 		const migrated = new DesktopAgentControlStore(databasePath);

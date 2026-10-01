@@ -77,7 +77,42 @@ async function main() {
 
     const listed = await request(worker, 3, 'agent:list-skills', { projectId })
     assert.ok(listed.items.some((skill) => skill.id === created.id && skill.name === created.name))
-    console.log('Agent Worker bundle started, opened a local project, and discovered its project Skill.')
+
+    const initialFragments = await request(worker, 4, 'agent:list-fragments', { projectId })
+    assert.deepEqual(initialFragments, { items: [] })
+    const sourceSession = await request(worker, 5, 'agent:create-session', { projectId, title: 'Fragment source' })
+    const savedFragment = await request(worker, 6, 'agent:save-session-fragment', {
+      projectId,
+      sessionId: sourceSession.sessionId,
+      title: 'Worker fragment smoke',
+    })
+    const fragmentsBeforeRestart = await request(worker, 7, 'agent:list-fragments', { projectId })
+    assert.ok(fragmentsBeforeRestart.items.some((fragment) => fragment.id === savedFragment.fragmentId))
+    const imported = await request(worker, 8, 'agent:import-fragment', {
+      projectId,
+      fragmentId: savedFragment.fragmentId,
+      canvasId: '9f8e7d6c-5b4a-4321-9876-543210fedcba',
+    })
+    assert.notEqual(imported.sessionId, sourceSession.sessionId)
+
+    await request(worker, 9, 'agent:close', {})
+    opened = false
+    await worker.terminate()
+    worker = new Worker(workerSource(workerBundle), { eval: true })
+    await request(worker, 10, 'agent:open', { projectDirectory })
+    opened = true
+    const fragmentsAfterRestart = await request(worker, 11, 'agent:list-fragments', { projectId })
+    assert.ok(fragmentsAfterRestart.items.some((fragment) => fragment.id === savedFragment.fragmentId))
+    const importedAfterRestart = await request(worker, 12, 'agent:import-fragment', {
+      projectId,
+      fragmentId: savedFragment.fragmentId,
+      canvasId: '9f8e7d6c-5b4a-4321-9876-543210fedcba',
+    })
+    assert.notEqual(importedAfterRestart.sessionId, sourceSession.sessionId)
+    assert.notEqual(importedAfterRestart.sessionId, imported.sessionId)
+    const sessionsAfterRestart = await request(worker, 13, 'agent:list-sessions', { projectId })
+    assert.ok(sessionsAfterRestart.some((session) => session.sessionId === importedAfterRestart.sessionId))
+    console.log('Agent Worker bundle loaded a project Skill and saved/imported a project fragment across restart.')
   } finally {
     if (worker) {
       if (opened) await request(worker, 4, 'agent:close', {}).catch(() => undefined)

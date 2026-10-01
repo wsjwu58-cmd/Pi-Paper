@@ -1,4 +1,4 @@
-export type MemoryScope = "session" | "canvas" | "long_term" | "enterprise";
+export type MemoryScope = "session" | "canvas" | "long_term" | "daily" | "enterprise";
 
 export type MemoryRecord = {
 	id: string;

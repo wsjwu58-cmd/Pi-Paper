@@ -29,7 +29,7 @@ const TASK_SEARCH_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed'
 const MAX_AGENT_BACKUP_BYTES = 4 * 1024 * 1024 * 1024
 const MAX_AGENT_BACKUP_FILES = 100_000
 const MAX_AGENT_SESSION_HEADER_BYTES = 1024 * 1024
-const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'session-memory', 'fragments'])
+const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'session-memory', 'daily-memory', 'fragments'])
 const AGENT_BACKUP_EXTENSIONS = new Set(['.jsonl', '.json', '.md', '.zst'])
 const DIRECTOR_CAPTURE_ASSET_URL = /^vibe:\/\/app\/assets\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/iu
 const EDGE_COMPATIBLE_TARGET_TYPES = Object.freeze({
@@ -3377,6 +3377,24 @@ async function rebaseAgentProjectIdentity(dataDirectory, previousProjectId, next
     }).join('\n')
     await fs.writeFile(memoryFile.absolutePath, rebased, { mode: 0o600 })
   }
+  for (const file of files) {
+    const scope = file.relativePath.startsWith('agent/session-memory/') && file.relativePath.endsWith('/MEMORY.md') ? 'session'
+      : /^agent\/memory\/canvas\/[a-f0-9]{64}\.md$/u.test(file.relativePath) ? 'canvas'
+        : /^agent\/daily-memory\/\d{4}-\d{2}-\d{2}\.md$/u.test(file.relativePath) ? 'daily' : null
+    if (!scope) continue
+    if (file.sizeBytes > 1024 * 1024) throw new Error('项目记忆文件超过本地上限。')
+    const lines = (await fs.readFile(file.absolutePath, 'utf8')).split(/\r?\n/u)
+    if (lines[0] !== `# VibePaper ${scope} memory`) throw new Error('项目记忆文件格式无效。')
+    const rebased = lines.map((line) => {
+      if (!line.startsWith('- <!-- vibepaper-memory ')) return line
+      const match = /^- <!-- vibepaper-memory (\{.*?\}) --> (.*)$/u.exec(line)
+      if (!match) throw new Error('项目记忆文件格式无效。')
+      const metadata = JSON.parse(match[1])
+      if (!isRecord(metadata) || metadata.userId !== previousProjectId || metadata.scope !== scope) throw new Error('项目记忆与备份项目身份不匹配。')
+      return `- <!-- vibepaper-memory ${JSON.stringify({ ...metadata, userId: nextProjectId })} --> ${match[2]}`
+    }).join('\n')
+    await fs.writeFile(file.absolutePath, rebased, { mode: 0o600 })
+  }
   for (const file of files.filter((candidate) => candidate.relativePath.startsWith('agent/sessions/')
     && candidate.relativePath.endsWith('.jsonl'))) {
     const { header, lineEnding, nextByteOffset } = await readAgentSessionHeader(file.absolutePath)
@@ -3412,7 +3430,7 @@ async function rebaseAgentProjectIdentity(dataDirectory, previousProjectId, next
   const control = new DatabaseSync(controlPath, { timeout: 5000 })
   try {
     const version = Number(control.prepare('PRAGMA user_version').get().user_version)
-    if (![1, 2, 3].includes(version)) throw new Error('Agent 控制数据库版本当前不支持恢复。')
+    if (![1, 2, 3, 4].includes(version)) throw new Error('Agent 控制数据库版本当前不支持恢复。')
     const integrity = control.prepare('PRAGMA integrity_check').all()
     if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
       || control.prepare('PRAGMA foreign_key_check').all().length > 0) {
@@ -3423,6 +3441,10 @@ async function rebaseAgentProjectIdentity(dataDirectory, previousProjectId, next
     try {
       control.prepare(`UPDATE approvals SET project_id = ?, status = CASE WHEN status IN ('pending', 'accepted') THEN 'invalidated' ELSE status END, updated_at = ?`)
         .run(nextProjectId, now)
+      if (version >= 4) {
+        if (control.prepare('SELECT 1 FROM desktop_memory_candidates WHERE user_id != ? LIMIT 1').get(previousProjectId)) throw new Error('记忆候选与备份项目身份不匹配。')
+        control.prepare('UPDATE desktop_memory_candidates SET user_id = ? WHERE user_id = ?').run(nextProjectId, previousProjectId)
+      }
       const activeRuns = control.prepare(`SELECT id, session_id FROM agent_runs
         WHERE status IN ('queued', 'running', 'waiting_confirmation', 'waiting_task')`).all()
       for (const run of activeRuns) {
@@ -3477,7 +3499,7 @@ async function validateAgentControlDatabase(filePath, checkpointOnClose = false)
   try {
     const version = Number(database.prepare('PRAGMA user_version').get().user_version)
     const integrity = database.prepare('PRAGMA integrity_check').all()
-    if (![1, 2, 3].includes(version) || integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
+    if (![1, 2, 3, 4].includes(version) || integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
       || database.prepare('PRAGMA foreign_key_check').all().length > 0) {
       throw new Error('Agent 控制数据库版本或完整性校验失败。')
     }

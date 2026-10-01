@@ -253,6 +253,12 @@ export interface MemoryView {
   content: string;
   memoryType: string;
   createdAt: string;
+  scope?: 'session' | 'canvas' | 'project' | 'global' | 'daily';
+  sessionId?: string;
+  canvasId?: Id;
+  confidence?: number;
+  version?: number;
+  expiresAt?: string;
 }
 
 export interface SessionView {

@@ -28,6 +28,16 @@ let bridge: {
   listRenderReviews: ReturnType<typeof vi.fn>
   createRenderReview: ReturnType<typeof vi.fn>
   getAgentUsage: ReturnType<typeof vi.fn>
+  listAgentFragments: ReturnType<typeof vi.fn>
+  saveAgentSessionFragment: ReturnType<typeof vi.fn>
+  importAgentFragment: ReturnType<typeof vi.fn>
+  listAgentMemories: ReturnType<typeof vi.fn>
+  createAgentMemory: ReturnType<typeof vi.fn>
+  updateAgentMemory: ReturnType<typeof vi.fn>
+  deleteAgentMemory: ReturnType<typeof vi.fn>
+  exportAgentMemories: ReturnType<typeof vi.fn>
+  listAgentMemoryCandidates: ReturnType<typeof vi.fn>
+  reviewAgentMemoryCandidate: ReturnType<typeof vi.fn>
 }
 
 beforeAll(async () => {
@@ -82,6 +92,29 @@ beforeEach(() => {
     listRenderReviews: vi.fn(async () => ({ items: [] })),
     createRenderReview: vi.fn(async (input) => ({ ...input, id: 'review-1', verdict: 'pass' })),
     getAgentUsage: vi.fn(async () => ({ sessionId: 'session-1', tokenTotal: 15, modelUsage: { 'agnes/model-a': 15 } })),
+    listAgentFragments: vi.fn(async () => ({ items: [{ id: 'fragment-1', title: '参考片段', canvasId: 'canvas/1', createdAt: '2026-09-30T00:00:00.000Z' }] })),
+    saveAgentSessionFragment: vi.fn(async () => ({ fragmentId: 'fragment-2' })),
+    importAgentFragment: vi.fn(async () => ({ sessionId: 'session-2' })),
+    listAgentMemories: vi.fn(async (_projectId, scope = 'project') => ({
+      items: [{ id: 'memory-1', content: '暖色绘本风格', memoryType: 'preference', scope, confidence: 1, source: 'user', version: 1, createdAt: '2026-09-30T00:00:00.000Z' }],
+    })),
+    createAgentMemory: vi.fn(async (_projectId, content, scope = 'project') => ({
+      id: 'memory-created', content, memoryType: 'preference', scope, confidence: 1, source: 'user', version: 1, createdAt: '2026-09-30T00:00:00.000Z',
+    })),
+    updateAgentMemory: vi.fn(async (_projectId, memoryId, content, scope = 'project') => ({
+      id: memoryId, content, memoryType: 'preference', scope, confidence: 1, source: 'user', version: 2, createdAt: '2026-09-30T00:00:00.000Z',
+    })),
+    deleteAgentMemory: vi.fn(async () => ({ status: 'ok' })),
+    exportAgentMemories: vi.fn(async () => ({
+      schemaVersion: 1, exportedAt: '2026-09-30T00:00:00.000Z', items: [],
+    })),
+    listAgentMemoryCandidates: vi.fn(async () => ({
+      items: [{ id: 'candidate-1', content: '默认使用暖色', memoryType: 'preference', scope: 'global', confidence: 0.8, createdAt: '2026-09-30T00:00:00.000Z' }],
+    })),
+    reviewAgentMemoryCandidate: vi.fn(async (_projectId, _candidateId, action) => ({
+      status: action === 'accept' ? 'accepted' : 'rejected',
+      ...(action === 'accept' ? { item: { id: 'memory-accepted', content: '默认使用暖色', scope: 'global' } } : {}),
+    })),
   }
   vi.stubGlobal('window', {
     location: { protocol: 'vibe:' },
@@ -195,6 +228,57 @@ describe('desktop local API adapters', () => {
     expect(bridge.getAgentUsage).toHaveBeenCalledWith('project-1', 'session-1')
     expect(result).toMatchObject({ tokenTotal: 15, modelUsage: { 'agnes/model-a': 15 } })
     expect(result).not.toHaveProperty('pointsUsed')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('routes original session fragment list, save, and import endpoints through the local project bridge', async () => {
+    await expect(api('/agent/fragments')).resolves.toEqual({
+      items: [{ id: 'fragment-1', title: '参考片段', canvasId: 'canvas/1', createdAt: '2026-09-30T00:00:00.000Z' }],
+    })
+    expect(bridge.listAgentFragments).toHaveBeenCalledWith('project-1')
+
+    await expect(api('/agent/sessions/session-1/fragments', {
+      method: 'POST',
+      body: JSON.stringify({ title: '选中区域' }),
+    })).resolves.toEqual({ fragmentId: 'fragment-2' })
+    expect(bridge.saveAgentSessionFragment).toHaveBeenCalledWith('project-1', 'session-1', '选中区域')
+
+    await expect(api('/agent/fragments/fragment-1/import', {
+      method: 'POST',
+      body: JSON.stringify({ canvasId: 'canvas/1' }),
+    })).resolves.toEqual({ sessionId: 'session-2' })
+    expect(bridge.importAgentFragment).toHaveBeenCalledWith('project-1', 'fragment-1', 'canvas/1')
+    await expect(api('/agent/fragments/fragment-1/import', {
+      method: 'POST',
+      body: JSON.stringify({ canvasId: 'another-canvas' }),
+    })).rejects.toThrow('当前本地项目与请求的画布不匹配')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('routes memory management, export, and candidate review through the active local project', async () => {
+    await expect(api('/memories?scope=global')).resolves.toMatchObject({ items: [{ scope: 'global' }] })
+    expect(bridge.listAgentMemories).toHaveBeenCalledWith('project-1', 'global', undefined)
+
+    await api('/memories', {
+      method: 'POST',
+      body: JSON.stringify({ content: '默认使用暖色绘本', scope: 'global' }),
+    })
+    expect(bridge.createAgentMemory).toHaveBeenCalledWith('project-1', '默认使用暖色绘本', 'global', undefined)
+
+    await api('/memories/memory-1?scope=project', {
+      method: 'PATCH',
+      body: JSON.stringify({ content: '偏好低饱和暖色', scope: 'project' }),
+    })
+    expect(bridge.updateAgentMemory).toHaveBeenCalledWith('project-1', 'memory-1', '偏好低饱和暖色', 'project', undefined)
+    await api('/memories/memory-1?scope=project', { method: 'DELETE' })
+    expect(bridge.deleteAgentMemory).toHaveBeenCalledWith('project-1', 'memory-1', 'project', undefined)
+
+    await expect(api('/memories/export')).resolves.toMatchObject({ schemaVersion: 1, items: [] })
+    await expect(api('/memory-candidates')).resolves.toMatchObject({ items: [{ id: 'candidate-1' }] })
+    await api('/memory-candidates/candidate-1/accept', { method: 'POST' })
+    await api('/memory-candidates/candidate-1/reject', { method: 'POST' })
+    expect(bridge.reviewAgentMemoryCandidate).toHaveBeenNthCalledWith(1, 'project-1', 'candidate-1', 'accept')
+    expect(bridge.reviewAgentMemoryCandidate).toHaveBeenNthCalledWith(2, 'project-1', 'candidate-1', 'reject')
     expect(fetch).not.toHaveBeenCalled()
   })
 

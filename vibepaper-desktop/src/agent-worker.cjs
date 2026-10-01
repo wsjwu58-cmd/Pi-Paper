@@ -1,6 +1,14 @@
 const { openDesktopAgentStores } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/agent-stores.ts')
 const { DesktopProjectMemory } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/project-memory.ts')
+const { DesktopSessionFragments } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-fragments.ts')
+const { DesktopScopedMemoryStore, desktopCandidateScope } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/scoped-memory.ts')
 const { desktopCompactionSummary } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-store.ts')
+const {
+  assembleDesktopMemoryContext,
+  generateDesktopContextSummary,
+  planDesktopContextBudget,
+  projectDesktopSessionContext,
+} = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/context-assembler.ts')
 const { SessionRunService } = require('../../pi-main/packages/vibepaper-agent-service/src/application/session-run-service.ts')
 const { ApprovalService } = require('../../pi-main/packages/vibepaper-agent-service/src/application/approval-service.ts')
 const {
@@ -20,10 +28,14 @@ const {
 } = require('./project-agent-skills.cjs')
 const { selectNodeReferences } = require('../../pi-main/packages/vibepaper-agent-service/src/application/node-reference-context.ts')
 const {
+  agnesModel,
+  prepareDesktopAgentTurnContext,
   runDramaTurn,
   sanitizeAgentReply,
   sanitizeAssistantMessage,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/application/agent-runtime.ts')
+const { extractMemoryCandidates } = require('../../pi-main/packages/vibepaper-agent-service/src/application/memory-candidate-extractor.ts')
+const { extractDailyMemory } = require('../../pi-main/packages/vibepaper-agent-service/src/application/daily-memory-service.ts')
 const { selectProfile } = require('../../pi-main/packages/vibepaper-agent-service/src/application/profile-selector.ts')
 const { DesktopLocalToolGateway } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/local-tool-gateway.ts')
 const {
@@ -40,7 +52,10 @@ if (!parentPort) throw new Error('Agent Worker 必须由 Electron utility proces
 
 let stores = null
 let projectMemory = null
+let scopedMemory = null
+let sessionFragments = null
 let requestQueue = Promise.resolve()
+const activeRuns = new Map()
 const agentLocalCoreClient = createAgentLocalToolClient(parentPort)
 
 async function requireProject(projectId) {
@@ -172,6 +187,184 @@ async function recoverInterruptedRun(current, runService, sessionId) {
   throw new Error(activeRun.status === 'waiting_confirmation' ? 'CONFIRMATION_REQUIRED' : 'SESSION_BUSY')
 }
 
+async function prepareBudgetedDesktopHistory(input) {
+  let context = await input.current.sessions.buildContext(input.sessionId)
+  let history = context.messages.map(storedHistoryMessage).filter(Boolean)
+  if (history.some((message) => Array.isArray(message.piMessage?.content)
+    && message.piMessage.content.some((block) => block?.type === 'image'))) {
+    throw new Error('AGENT_INPUT_MODALITY_UNSUPPORTED')
+  }
+  let summary = desktopCompactionSummary(context)
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const hooks = {
+      profile: input.profile,
+      desktopMode: true,
+      desktopCompactionSummary: summary,
+      intentContext: input.intentContext,
+      sessionContext: input.sessionContext,
+      memoryContext: input.memoryContext,
+      runtimeTools: input.runtimeTools,
+      desktopMemoryTools: input.desktopMemoryTools,
+    }
+    const turnContext = prepareDesktopAgentTurnContext(
+      history,
+      input.content,
+      input.skillContext,
+      input.nodeReferences,
+      hooks,
+    )
+    const plan = planDesktopContextBudget({
+      history: turnContext.initialMessages,
+      currentUserInput: turnContext.currentUserInput,
+      systemPrompt: turnContext.systemPrompt,
+      toolSchemas: turnContext.toolSchemas,
+      contextWindowTokens: agnesModel({
+        llmModel: AGNES_MODELS.text,
+        llmBaseUrl: 'https://apihub.agnes-ai.com/v1',
+      }).contextWindow,
+      outputReserveTokens: agnesModel({
+        llmModel: AGNES_MODELS.text,
+        llmBaseUrl: 'https://apihub.agnes-ai.com/v1',
+      }).maxTokens,
+    })
+    if (!plan.requestFitsWithoutHistory) throw new Error('AGENT_CONTEXT_WINDOW_EXCEEDED')
+    if (!plan.compactionRequired) return { context, history, summary, turnContext, plan }
+
+    const nextSummary = await generateDesktopContextSummary({
+      messages: plan.summarizedHistory,
+      previousSummary: summary,
+      authoritativeState: input.sessionContext,
+      model: agnesModel({
+        llmModel: AGNES_MODELS.text,
+        llmBaseUrl: 'https://apihub.agnes-ai.com/v1',
+      }),
+      apiKey: input.apiKey,
+      sessionId: input.sessionId,
+      signal: input.signal,
+      onSummaryResponse: (response) => input.current.sessions.appendSummaryUsage(input.sessionId, response),
+    })
+    await input.current.sessions.appendCompaction(input.sessionId, {
+      summary: nextSummary,
+      retainLastMessages: plan.retainLastMessages,
+      tokensBefore: plan.requestTokens,
+    })
+    context = await input.current.sessions.buildContext(input.sessionId)
+    history = context.messages.map(storedHistoryMessage).filter(Boolean)
+    summary = desktopCompactionSummary(context)
+  }
+  throw new Error('AGENT_CONTEXT_COMPACTION_LIMIT')
+}
+
+function selectedCanvasState(value, canvasId, canvasVersion, canvasNodeCount) {
+  if (!value || typeof value !== 'object' || !value.canvas || !Array.isArray(value.nodes)) {
+    throw new Error('AGENT_CANVAS_CONTEXT_INVALID')
+  }
+  if (value.canvas.id !== canvasId || value.canvas.version !== canvasVersion || value.nodes.length !== canvasNodeCount) {
+    throw new Error('AGENT_CANVAS_CHANGED')
+  }
+  const nodeIds = value.nodes.map((node) => node?.id).filter((id) => typeof id === 'string' && id.length > 0)
+  if (nodeIds.length !== value.nodes.length) throw new Error('AGENT_CANVAS_CONTEXT_INVALID')
+  return { canvasId, version: value.canvas.version, nodeIds }
+}
+
+async function deriveDesktopSessionContext(current, sessionId, canvasId, canvasState) {
+  const runService = new SessionRunService(current.control)
+  const [events, transcript] = await Promise.all([
+    runService.listSessionEvents(sessionId),
+    current.sessions.listTranscriptMessages(sessionId),
+  ])
+  const firstUser = transcript.find(({ message }) => message.role === 'user')?.message
+  return projectDesktopSessionContext({
+    sessionId,
+    canvasId,
+    initialGoal: firstUser ? messageText(firstUser).slice(0, 512) : undefined,
+    events,
+    canvas: canvasState,
+  })
+}
+
+async function buildDesktopMemoryContext(sessionId, canvasId, query) {
+  const [project, global, session, canvas, daily] = await Promise.all([
+    scopedMemory.list('project'),
+    scopedMemory.list('global'),
+    scopedMemory.list('session', sessionId),
+    scopedMemory.list('canvas'),
+    scopedMemory.list('daily'),
+  ])
+  return assembleDesktopMemoryContext({
+    records: [
+    ...project.items,
+    ...global.items,
+    ...session.items,
+    ...canvas.items,
+    ...daily.items,
+    ],
+    query,
+    canvasId,
+  })
+}
+
+function desktopMemoryPayload(payload) {
+  const scope = payload?.scope
+  if (!['session', 'canvas', 'project', 'global', 'daily'].includes(scope)) throw new Error('MEMORY_SCOPE_INVALID')
+  if (scope === 'session') {
+    if (typeof payload?.sessionId !== 'string' || !payload.sessionId.trim()) throw new Error('SESSION_ID_INVALID')
+  }
+  return scope
+}
+
+async function agentMemoryDispatch(method, payload) {
+  const current = await requireProject(payload?.projectId)
+  if (method === 'agent:memory-candidates:list') return scopedMemory.listCandidates()
+  if (method === 'agent:memory-candidates:accept' || method === 'agent:memory-candidates:reject') {
+    if (typeof payload?.candidateId !== 'string' || payload.candidateId.length < 1 || payload.candidateId.length > 128) {
+      throw new Error('MEMORY_CANDIDATE_INVALID')
+    }
+    const decision = method.endsWith(':accept') ? 'accept' : 'reject'
+    const result = await scopedMemory.reviewCandidate(payload.candidateId, decision)
+    return { status: decision === 'accept' ? 'accepted' : 'rejected', ...(result.item ? { item: result.item } : {}) }
+  }
+  if (method === 'agent:memory:export') {
+    return scopedMemory.export()
+  }
+
+  const scope = payload?.scope
+  if (method === 'agent:memory:list') {
+    if (scope === undefined) return { items: (await scopedMemory.export()).items }
+    const validatedScope = desktopMemoryPayload(payload)
+    if (validatedScope === 'session') await current.sessions.openSession(payload.sessionId)
+    return await scopedMemory.list(validatedScope, payload.sessionId)
+  }
+  if (method === 'agent:memory:create') {
+    const validatedScope = desktopMemoryPayload(payload)
+    requireMemoryContent(payload?.content)
+    if (validatedScope === 'session') await current.sessions.openSession(payload.sessionId)
+    return await scopedMemory.create(validatedScope, payload.content, payload.sessionId)
+  }
+  if (method === 'agent:memory:update') {
+    const validatedScope = desktopMemoryPayload(payload)
+    requireMemoryContent(payload?.content)
+    if (typeof payload?.memoryId !== 'string' || payload.memoryId.length < 1 || payload.memoryId.length > 128) {
+      throw new Error('MEMORY_ID_INVALID')
+    }
+    if (validatedScope === 'session') await current.sessions.openSession(payload.sessionId)
+    return await scopedMemory.update(validatedScope, payload.memoryId, payload.content, payload.sessionId)
+  }
+  if (method === 'agent:memory:delete') {
+    const validatedScope = desktopMemoryPayload(payload)
+    if (typeof payload?.memoryId !== 'string' || payload.memoryId.length < 1 || payload.memoryId.length > 128) {
+      throw new Error('MEMORY_ID_INVALID')
+    }
+    if (validatedScope === 'session') await current.sessions.openSession(payload.sessionId)
+    return await scopedMemory.delete(validatedScope, payload.memoryId, payload.sessionId)
+  }
+  throw new Error('AGENT_METHOD_UNSUPPORTED')
+}
+
+function requireMemoryContent(value) {
+  if (typeof value !== 'string' || !value.trim() || value.length > 2_000) throw new Error('MEMORY_CONTENT_INVALID')
+}
+
 async function sendMessage(payload, onRunCreated) {
   const current = await requireProject(payload?.projectId)
   const {
@@ -233,42 +426,24 @@ async function sendMessage(payload, onRunCreated) {
   await recoverInterruptedRun(current, runService, sessionId)
   const selectedNodes = [...new Set(selectedNodeIds ?? [])]
   const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
+  const canvasSummary = await gateway.getCanvasSummary(current.projectId, canvasId)
+  const canvasState = selectedCanvasState(canvasSummary, canvasId, canvasVersion, canvasNodeCount)
   const nodeReferences = selectedNodes.length
     ? selectNodeReferences(await gateway.getSelectedNodes(current.projectId, canvasId, selectedNodes), selectedNodes)
     : []
-  // Capture the branch before appending this turn's user message. runDramaTurn
-  // prompts `content` itself; including the just-written user message here
-  // would send it twice to the model.
-  const priorContext = await current.sessions.buildContext(sessionId)
+  const sessionContext = await deriveDesktopSessionContext(current, sessionId, canvasId, canvasState)
   const run = await runService.startRun({ sessionId, idempotencyKey })
+  gateway.attachRun({ control: current.control, sessionId, runId: run.runId })
+  let resolveCompletion
+  const completion = new Promise((resolve) => { resolveCompletion = resolve })
+  const runControl = { controller: new AbortController(), agent: null, cancelled: false, completion, resolveCompletion }
+  activeRuns.set(run.runId, runControl)
   await runService.setStatus(run.runId, 'running')
   onRunCreated?.({ runId: run.runId })
-  const timestamp = Date.now()
-  try {
-    await current.sessions.appendMessage(sessionId, {
-      role: 'user',
-      content: [{ type: 'text', text: content.trim() }],
-      timestamp,
-    },
-      selectedNodes.length || selectedSkillId
-        ? {
-            selectedNodeIds: nodeReferences.map((reference) => reference.nodeId),
-            nodeReferences,
-            ...(selectedSkillId ? { selectedSkillId } : {}),
-          }
-        : undefined)
-    if (!(await session.getName())) await session.setName(content.trim().slice(0, 72))
-  } catch {
-    await runService.setStatus(run.runId, 'failed', { errorCode: 'AGENT_SESSION_WRITE_FAILED' })
-    await current.sessions.flushOutbox(current.control, sessionId)
-    throw new Error('AGENT_SESSION_WRITE_FAILED')
-  }
 
   const approvals = new ApprovalService(current.control, current.control.getOrCreateApprovalSecret(), 10 * 60)
-  const history = priorContext.messages.map(storedHistoryMessage).filter(Boolean)
   let persistenceQueue = Promise.resolve()
   let persistenceFailure = null
-  let timedOut = false
   const persistPiMessage = (message) => {
     const persisted = message.role === 'assistant' ? sanitizeAssistantMessage(message) : message
     persistenceQueue = persistenceQueue.then(() => current.sessions.appendMessage(sessionId, persisted))
@@ -278,42 +453,96 @@ async function sendMessage(payload, onRunCreated) {
     })
     return persistenceQueue
   }
-  const toolContext = {
-    userId: current.projectId,
-    sessionId,
-    runId: run.runId,
-    canvasId,
-    canvasVersion,
-    referenceNodeIds: selectedNodes,
-    gateway,
-    approvals,
-    desktopMode: true,
-    onAuditRequested: async (input) => gateway.requestRenderAudit(current.projectId, canvasId, toolContext.canvasVersion, input),
-    onApprovalRequired: async (action) => {
-      const generationItems = await desktopGenerationConfirmationItems(action, gateway)
-      await runService.appendEvent(run.runId, 'confirmation_required', {
-        actionId: action.actionId,
-        approvalToken: action.approvalToken,
-        tool: action.toolName,
-        summary: action.toolName === 'submit_generation_batch'
-          ? `确认提交 ${generationItems.length} 个本地生成任务`
-          : '确认提交本地生成任务',
-        confirmReason: '生成任务会写入当前本地项目的任务队列。',
-        estimatedCost: 0,
-        estimatedTotalCost: 0,
-        affectedNodeCount: generationItems.length,
-        generationItems,
-        canvasVersion: action.canvasVersion,
-        expiresAt: action.binding.expiresAt,
-      })
-    },
-  }
   let turn
+  let toolContext
   try {
     const projectSkills = await listProjectAgentSkills(current.projectDirectory)
     const skillContext = createDesktopAgentSkillContext(current.control, sessionId, selectedSkillId, projectSkills)
-    const runtimeTools = createRuntimeTools(toolContext)
-    const memoryContext = await projectMemory.buildMemoryContext()
+    const memoryContext = await buildDesktopMemoryContext(sessionId, canvasId, content.trim())
+    const profile = selectProfile({ canvasDomain })
+    const intentContext = `本轮画布摘要（只作线索；版本与节点身份以本地读取工具返回为准）：\n${JSON.stringify(canvasContext)}\n\n当前权威画布版本：${canvasState.version}；节点数：${canvasState.nodeIds.length}。`
+    toolContext = {
+      userId: current.projectId,
+      sessionId,
+      runId: run.runId,
+      canvasId,
+      canvasVersion,
+      referenceNodeIds: selectedNodes,
+      gateway,
+      approvals,
+      desktopMode: true,
+      onAuditRequested: async (input) => gateway.requestRenderAudit(current.projectId, canvasId, toolContext.canvasVersion, input),
+      onApprovalRequired: async (action) => {
+        const generationItems = await desktopGenerationConfirmationItems(action, gateway)
+        await runService.appendEvent(run.runId, 'confirmation_required', {
+          actionId: action.actionId,
+          approvalToken: action.approvalToken,
+          tool: action.toolName,
+          summary: action.toolName === 'submit_generation_batch'
+            ? `确认提交 ${generationItems.length} 个本地生成任务`
+            : '确认提交本地生成任务',
+          confirmReason: '生成任务会写入当前本地项目的任务队列。',
+          estimatedCost: 0,
+          estimatedTotalCost: 0,
+          affectedNodeCount: generationItems.length,
+          generationItems,
+          canvasVersion: action.canvasVersion,
+          expiresAt: action.binding.expiresAt,
+        })
+      },
+    }
+    const runtimeToolsForTurn = createRuntimeTools(toolContext)
+    const desktopMemoryTools = projectMemory.createTools(content.trim())
+    const prepared = await prepareBudgetedDesktopHistory({
+      current,
+      sessionId,
+      content: content.trim(),
+      apiKey,
+      signal: runControl.controller.signal,
+      profile,
+      skillContext,
+      nodeReferences,
+      runtimeTools: runtimeToolsForTurn,
+      desktopMemoryTools,
+      sessionContext,
+      intentContext,
+      memoryContext,
+    })
+    if (runControl.controller.signal.aborted) throw new Error('RUN_ABORTED')
+
+    // The persisted user entry is appended after compaction and remains separate
+    // from the prior-turn model history. Pi receives it once through prompt().
+    await current.sessions.appendMessage(sessionId, {
+      role: 'user',
+      content: [{ type: 'text', text: content.trim() }],
+      timestamp: Date.now(),
+    },
+      selectedNodes.length || selectedSkillId
+        ? {
+            selectedNodeIds: nodeReferences.map((reference) => reference.nodeId),
+            nodeReferences,
+            ...(selectedSkillId ? { selectedSkillId } : {}),
+          }
+        : undefined)
+    if (!(await session.getName())) await session.setName(content.trim().slice(0, 72))
+
+    for (const candidate of extractMemoryCandidates(content.trim())) {
+      // Match the original HTTP path: automatic hints must not gate a turn.
+      try {
+        await scopedMemory.proposeCandidate({
+          sessionId,
+          content: candidate.content,
+          scope: desktopCandidateScope(content, candidate.scope),
+          memoryType: candidate.memoryType,
+          confidence: candidate.confidence,
+        })
+      } catch { /* Explicit memory tools still report their own errors. */ }
+    }
+    const dailyContent = extractDailyMemory(content.trim())
+    if (dailyContent) {
+      try { await scopedMemory.create('daily', dailyContent, sessionId) } catch { /* Best-effort hint. */ }
+    }
+
     turn = await runDramaTurn(
       {
         llmApiKey: apiKey,
@@ -322,19 +551,23 @@ async function sendMessage(payload, onRunCreated) {
       },
       undefined,
       sessionId,
-      history,
+      prepared.history,
       content.trim(),
       skillContext,
-      [],
+      nodeReferences,
       {
-        profile: selectProfile({ canvasDomain }),
+        profile,
         desktopMode: true,
-        runtimeTools,
-        desktopMemoryTools: projectMemory.createTools(content.trim()),
-        desktopCompactionSummary: desktopCompactionSummary(priorContext),
-        intentContext: `以下是本轮只读画布摘要：\n${JSON.stringify(canvasContext)}`,
+        runtimeTools: runtimeToolsForTurn,
+        desktopMemoryTools,
+        desktopCompactionSummary: prepared.summary,
+        sessionContext,
+        desktopTurnContext: prepared.turnContext,
+        intentContext,
         memoryContext,
         onAgent(agent) {
+          runControl.agent = agent
+          if (runControl.cancelled) agent.abort()
           agent.subscribe(async (event) => {
             if (event.type !== 'message_end') return
             if (event.message.role !== 'assistant' && event.message.role !== 'toolResult') return
@@ -376,23 +609,35 @@ async function sendMessage(payload, onRunCreated) {
     )
     await persistenceQueue
   } catch (error) {
+    const cancelled = runControl.controller.signal.aborted || error?.message === 'RUN_ABORTED'
     const errorCode = persistenceFailure ? 'AGENT_SESSION_WRITE_FAILED'
-      : typeof error?.code === 'string' && /^[A-Z0-9_]{2,80}$/u.test(error.code) ? error.code
-        : 'AGENT_MODEL_REQUEST_FAILED'
+      : cancelled ? 'RUN_ABORTED'
+        : typeof error?.code === 'string' && /^[A-Z0-9_]{2,80}$/u.test(error.code) ? error.code
+          : typeof error?.message === 'string' && /^[A-Z0-9_]{2,80}$/u.test(error.message) ? error.message
+            : 'AGENT_MODEL_REQUEST_FAILED'
     current.control.invalidatePendingForRun(run.runId)
-    await runService.setStatus(run.runId, 'failed', { errorCode })
+    await runService.setStatus(run.runId, cancelled ? 'aborted' : 'failed',
+      cancelled ? { reason: 'user_cancelled' } : { errorCode })
     await current.sessions.flushOutbox(current.control, sessionId)
+    finishActiveRun(run.runId)
     throw new Error(errorCode)
   }
 
   const assistantText = sanitizeAgentReply(turn?.assistantText ?? '')
   const errorEvent = turn?.events?.find((event) => event.type === 'error')
-  if (timedOut || (!toolContext.confirmationPending && !assistantText.trim()) || errorEvent) {
-    const errorCode = timedOut ? 'AGENT_MODEL_TIMEOUT'
-      : typeof errorEvent?.errorCode === 'string' ? errorEvent.errorCode : 'AGENT_MODEL_REQUEST_FAILED'
+  if (runControl.controller.signal.aborted) {
+    current.control.invalidatePendingForRun(run.runId)
+    await runService.setStatus(run.runId, 'aborted', { reason: 'user_cancelled' })
+    await current.sessions.flushOutbox(current.control, sessionId)
+    finishActiveRun(run.runId)
+    throw new Error('RUN_ABORTED')
+  }
+  if ((!toolContext.confirmationPending && !assistantText.trim()) || errorEvent) {
+    const errorCode = typeof errorEvent?.errorCode === 'string' ? errorEvent.errorCode : 'AGENT_MODEL_REQUEST_FAILED'
     current.control.invalidatePendingForRun(run.runId)
     await runService.setStatus(run.runId, 'failed', { errorCode })
     await current.sessions.flushOutbox(current.control, sessionId)
+    finishActiveRun(run.runId)
     throw new Error(errorCode)
   }
   if (assistantText.trim()) await runService.appendEvent(run.runId, 'assistant_delta', { text: assistantText, replace: true })
@@ -403,11 +648,20 @@ async function sendMessage(payload, onRunCreated) {
   if (toolContext.confirmationPending) {
     await runService.setStatus(run.runId, 'waiting_confirmation')
     await current.sessions.flushOutbox(current.control, sessionId)
+    finishActiveRun(run.runId)
     return { runId: run.runId, assistantText, waitingConfirmation: true }
   }
   await runService.setStatus(run.runId, 'completed', { text: assistantText })
   await current.sessions.flushOutbox(current.control, sessionId)
+  finishActiveRun(run.runId)
   return { assistantText, events: toEventEnvelopes(await runService.listEvents(run.runId)) }
+}
+
+function finishActiveRun(runId) {
+  const active = activeRuns.get(runId)
+  if (!active) return
+  activeRuns.delete(runId)
+  active.resolveCompletion?.()
 }
 
 async function startMessage(payload) {
@@ -432,7 +686,62 @@ async function startMessage(payload) {
 
 async function confirmAgentAction(payload) {
   const current = await requireProject(payload?.projectId)
-  return confirmDesktopGenerationAction(payload ?? {}, current, new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId))
+  const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
+  const record = current.control.find(payload?.actionId)
+  const runId = record?.action?.runId
+  if (typeof runId === 'string') {
+    const run = current.control.findById(runId)
+    if (run && run.sessionId === payload?.sessionId) {
+      gateway.attachRun({ control: current.control, sessionId: run.sessionId, runId: run.runId })
+    }
+  }
+  return confirmDesktopGenerationAction(payload ?? {}, current, gateway)
+}
+
+async function cancelAgentRun(payload) {
+  const current = await requireProject(payload?.projectId)
+  if (typeof payload?.runId !== 'string' || payload.runId.length < 1 || payload.runId.length > 128) {
+    throw new Error('AGENT_RUN_INPUT_INVALID')
+  }
+  if (typeof payload?.sessionId !== 'string' || payload.sessionId.length < 1 || payload.sessionId.length > 128) {
+    throw new Error('AGENT_RUN_INPUT_INVALID')
+  }
+  const run = current.control.findById(payload.runId)
+  if (!run || run.sessionId !== payload.sessionId
+    || !['queued', 'running', 'waiting_confirmation', 'waiting_task'].includes(run.status)) {
+    return { cancelled: false }
+  }
+  const active = activeRuns.get(run.runId)
+  if (active) {
+    active.cancelled = true
+    active.controller.abort()
+    active.agent?.abort()
+    return { cancelled: true }
+  }
+  if (run.status === 'waiting_confirmation') {
+    current.control.invalidatePendingForRun(run.runId)
+    await new SessionRunService(current.control).setStatus(run.runId, 'aborted', { reason: 'user_cancelled' })
+    await current.sessions.flushOutbox(current.control, run.sessionId)
+    return { cancelled: true }
+  }
+  return { cancelled: false }
+}
+
+async function abortAndWaitForRuns() {
+  const active = [...activeRuns.values()]
+  for (const runControl of active) {
+    runControl.cancelled = true
+    runControl.controller.abort()
+    runControl.agent?.abort()
+  }
+  if (active.length) {
+    const completed = Promise.all(active.map((runControl) => runControl.completion))
+    let timeoutHandle
+    const timeout = new Promise((resolve) => { timeoutHandle = setTimeout(resolve, 10_000) })
+    await Promise.race([completed, timeout])
+    clearTimeout(timeoutHandle)
+  }
+  if (activeRuns.size) throw new Error('AGENT_RUN_SHUTDOWN_TIMEOUT')
 }
 
 function toEventEnvelopes(events) {
@@ -445,16 +754,37 @@ async function dispatch(method, payload) {
   switch (method) {
     case 'agent:open': {
       if (!payload || typeof payload.projectDirectory !== 'string') throw new Error('AGENT_PROJECT_PATH_INVALID')
+      await abortAndWaitForRuns()
       if (stores) await stores.close()
       stores = null
       projectMemory = null
+      scopedMemory = null
+      sessionFragments = null
       const openedStores = await openDesktopAgentStores(payload.projectDirectory)
       try {
-        const openedMemory = new DesktopProjectMemory(openedStores.projectDirectory, openedStores.projectId)
+        const openedMemory = new DesktopProjectMemory(openedStores.projectDirectory, openedStores.projectId, {
+          ...(typeof payload.userDataDirectory === 'string' ? { userDataDirectory: payload.userDataDirectory } : {}),
+        })
         await openedMemory.initialize()
+        const openedScopedMemory = new DesktopScopedMemoryStore(
+          openedStores.projectDirectory,
+          openedStores.projectId,
+          openedStores.sessions,
+          openedMemory,
+          openedStores.control,
+        )
+        await openedScopedMemory.initialize()
+        const openedFragments = new DesktopSessionFragments(
+          openedStores.projectDirectory,
+          openedStores.projectId,
+          openedStores.sessions,
+        )
+        await openedFragments.initialize()
         await recoverDesktopAgentRuns(openedStores)
         stores = openedStores
         projectMemory = openedMemory
+        scopedMemory = openedScopedMemory
+        sessionFragments = openedFragments
         return { projectId: openedStores.projectId }
       } catch (error) {
         await openedStores.close()
@@ -489,6 +819,27 @@ async function dispatch(method, payload) {
       return getSessionSnapshot(payload?.projectId, payload?.sessionId)
     case 'agent:list-events':
       return listSessionEvents(payload?.projectId, payload?.sessionId, payload?.afterSeq)
+    case 'agent:list-fragments': {
+      await requireProject(payload?.projectId)
+      return sessionFragments.list()
+    }
+    case 'agent:save-session-fragment': {
+      const current = await requireProject(payload?.projectId)
+      if (typeof payload?.sessionId !== 'string' || payload.sessionId.length < 1 || payload.sessionId.length > 128
+        || (payload.title !== undefined && (typeof payload.title !== 'string' || payload.title.length > 120))) {
+        throw new Error('AGENT_SESSION_FRAGMENT_INPUT_INVALID')
+      }
+      await current.sessions.openSession(payload.sessionId)
+      return sessionFragments.save(payload.sessionId, payload.title)
+    }
+    case 'agent:import-fragment': {
+      await requireProject(payload?.projectId)
+      if (typeof payload?.fragmentId !== 'string' || payload.fragmentId.length < 1 || payload.fragmentId.length > 128
+        || (payload.canvasId !== undefined && (typeof payload.canvasId !== 'string' || payload.canvasId.length < 1 || payload.canvasId.length > 128))) {
+        throw new Error('AGENT_SESSION_FRAGMENT_INPUT_INVALID')
+      }
+      return sessionFragments.import(payload.fragmentId, payload.canvasId)
+    }
     case 'agent:create-session': {
       const current = await requireProject(payload?.projectId)
       const title = typeof payload.title === 'string' ? payload.title.trim().slice(0, 120) : ''
@@ -501,11 +852,25 @@ async function dispatch(method, payload) {
       return startMessage(payload)
     case 'agent:confirm-action':
       return confirmAgentAction(payload)
+    case 'agent:cancel-run':
+      return cancelAgentRun(payload)
+    case 'agent:memory:list':
+    case 'agent:memory:create':
+    case 'agent:memory:update':
+    case 'agent:memory:delete':
+    case 'agent:memory:export':
+    case 'agent:memory-candidates:list':
+    case 'agent:memory-candidates:accept':
+    case 'agent:memory-candidates:reject':
+      return agentMemoryDispatch(method, payload)
     case 'agent:close':
+      await abortAndWaitForRuns()
       agentLocalCoreClient.close()
       if (stores) await stores.close()
       stores = null
       projectMemory = null
+      scopedMemory = null
+      sessionFragments = null
       return null
     default:
       throw new Error('AGENT_METHOD_UNSUPPORTED')
@@ -515,7 +880,7 @@ async function dispatch(method, payload) {
 parentPort.on('message', async (event) => {
   const request = event?.data ?? event
   if (!request || !Number.isSafeInteger(request.id) || typeof request.method !== 'string') return
-  requestQueue = requestQueue.then(async () => {
+  const executeRequest = async () => {
     try {
       const result = await dispatch(request.method, request.payload)
       parentPort.postMessage({ id: request.id, ok: true, result })
@@ -528,5 +893,10 @@ parentPort.on('message', async (event) => {
           : 'AGENT_SESSION_OPERATION_FAILED',
       })
     }
-  })
+  }
+  if (request.method === 'agent:cancel-run') {
+    void executeRequest()
+    return
+  }
+  requestQueue = requestQueue.then(executeRequest)
 })

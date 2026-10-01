@@ -15,7 +15,7 @@ import {
 	type SessionContext,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import { nodeReferencesFromMeta, type NodeReferenceSnapshot } from "../application/node-reference-context.ts";
+import { composeUserContent, nodeReferencesFromMeta, type NodeReferenceSnapshot } from "../application/node-reference-context.ts";
 import type { DesktopAgentControlStore } from "./control-store.ts";
 
 const RUN_EVENT_ENTRY_TYPE = "vibepaper_run_event";
@@ -122,11 +122,30 @@ export class DesktopAgentSessionStore {
 		const safeMetadata = metadata === undefined ? undefined : normalizeMessageMetadata(metadata);
 		return this.withSessionMutation(sessionId, async () => {
 			const session = await this.openSession(sessionId);
-			const messageId = await session.appendMessage(message);
+			const messageId = await session.appendMessage(omitOptionalUndefined(message));
 			if (safeMetadata) {
 				await session.appendCustomEntry(MESSAGE_METADATA_ENTRY_TYPE, { messageId, metadata: safeMetadata });
 			}
 			return messageId;
+		});
+	}
+
+	async appendSummaryUsage(sessionId: string, response: {
+		provider: string; model: string;
+		usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	}): Promise<void> {
+		const usage = Object.fromEntries(["input", "output", "cacheRead", "cacheWrite"].map((key) => {
+			const count = response.usage[key as keyof typeof response.usage];
+			if (!Number.isSafeInteger(count) || count < 0) throw new Error("AGENT_USAGE_INVALID");
+			return [key, count];
+		}));
+		if (typeof response.provider !== "string" || response.provider.length > 128 ||
+			typeof response.model !== "string" || response.model.length > 256) throw new Error("AGENT_USAGE_INVALID");
+		await this.withSessionMutation(sessionId, async () => {
+			const session = await this.openSession(sessionId);
+			await session.appendCustomEntry("vibepaper_summary_usage", {
+				provider: response.provider, model: response.model, usage,
+			});
 		});
 	}
 
@@ -201,7 +220,7 @@ export class DesktopAgentSessionStore {
 		if (leafId === null) return buildSessionContext([]);
 		const entries = await session.findEntriesOnBranch({ start: leafId, order: "oldestFirst" });
 		await this.refreshOptionalCompactionCheckpoint(sessionId, await session.getMetadata(), entries);
-		return buildSessionContext(entries);
+		return buildSessionContext(contextEntriesWithReferences(entries));
 	}
 
 	/** Full active-branch transcript for UI history; compaction only changes model input. */
@@ -329,6 +348,42 @@ export class DesktopAgentSessionStore {
 	}
 }
 
+// Pi tool results and local DTOs can contain optional properties set to undefined.
+// JSONL requires actual JSON values. Omit only those object properties; leave
+// invalid array entries, cycles and non-JSON objects for Pi's validator to reject.
+function omitOptionalUndefined<T>(value: T, seen = new WeakMap<object, unknown>()): T {
+	if (value === null || typeof value !== "object") return value;
+	if (seen.has(value)) return seen.get(value) as T;
+	if (Array.isArray(value)) {
+		if (Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length ||
+			Object.getOwnPropertyNames(value).length !== value.length + 1 ||
+			Array.from({ length: value.length }, (_, index) => Object.getOwnPropertyDescriptor(value, index))
+				.some((descriptor) => !descriptor || !("value" in descriptor))) return value;
+		const copy: unknown[] = new Array(value.length);
+		seen.set(value, copy);
+		for (let index = 0; index < value.length; index++) {
+			if (Object.hasOwn(value, index)) copy[index] = omitOptionalUndefined(value[index], seen);
+		}
+		return copy as T;
+	}
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype !== Object.prototype && prototype !== null) return value;
+	if (Reflect.ownKeys(value).some((key) => {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+		return typeof key !== "string" || !descriptor.enumerable || !("value" in descriptor);
+	})) return value;
+	const copy = Object.create(prototype) as Record<string, unknown>;
+	seen.set(value, copy);
+	for (const key of Reflect.ownKeys(value)) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+		if ("value" in descriptor && descriptor.value === undefined) continue;
+		Object.defineProperty(copy, key, "value" in descriptor
+			? { ...descriptor, value: omitOptionalUndefined(descriptor.value, seen) }
+			: descriptor);
+	}
+	return copy as T;
+}
+
 export function desktopCompactionSummary(context: SessionContext): string | undefined {
 	const summaries = context.messages.flatMap((message) => message.role === "compactionSummary" ? [message.summary] : []);
 	return summaries.length ? summaries.join("\n\n") : undefined;
@@ -348,7 +403,7 @@ function validateCompactionSummary(value: string): string {
 }
 
 function contextMessagesForRetention(entries: readonly Entry[]): AgentMessage[] {
-	const contextEntries = buildContextEntries(entries);
+	const contextEntries = buildContextEntries(contextEntriesWithReferences(entries));
 	return contextEntries.flatMap((entry, entryIndex) => {
 		if (entry.type === "compaction") return entry.retainedTail;
 		return sessionEntryToContextMessages(entry, entryIndex, contextEntries);
@@ -356,17 +411,45 @@ function contextMessagesForRetention(entries: readonly Entry[]): AgentMessage[] 
 }
 
 function retainCompleteToolPairs(messages: readonly AgentMessage[], requestedTailSize: number): AgentMessage[] {
+	if (requestedTailSize === 0) return [];
 	const desiredStart = Math.max(0, messages.length - requestedTailSize);
-	for (let start = desiredStart; start >= 0; start -= 1) {
-		if (hasCompleteToolPairs(messages, start)) return messages.slice(start).map((message) => structuredClone(message));
-	}
-	// A dangling call in the requested tail cannot be fixed by retaining more
-	// history. Trim forward past it, while still preferring to retain a complete
-	// pair when the requested boundary splits one.
-	for (let start = desiredStart + 1; start <= messages.length; start += 1) {
-		if (hasCompleteToolPairs(messages, start)) return messages.slice(start).map((message) => structuredClone(message));
+	const userTurnStarts = messages.flatMap((message, index) => message.role === "user" ? [index] : []);
+	if (userTurnStarts.length === 0) return [];
+	const candidates = [
+		...userTurnStarts.filter((index) => index <= desiredStart).reverse(),
+		...userTurnStarts.filter((index) => index > desiredStart),
+		messages.length,
+	];
+	for (const start of candidates) {
+		if (hasCompleteToolPairs(messages, start)) {
+			return messages.slice(start).map((message) => structuredClone(message));
+		}
 	}
 	throw new Error("AGENT_COMPACTION_UNPAIRED_TOOL_CALL");
+}
+
+function contextEntriesWithReferences(entries: readonly Entry[]): Entry[] {
+	const metadata = messageMetadataById(entries);
+	const originalUserIds = new Map(entries.flatMap((entry) => entry.type === "message" && entry.message.role === "user"
+		? [[JSON.stringify(entry.message), entry.id] as const] : []));
+	const project = (message: AgentMessage, messageId?: string): AgentMessage => {
+		if (message.role !== "user") return message;
+		const id = messageId ?? originalUserIds.get(JSON.stringify(message));
+		const references = nodeReferencesFromMeta(id ? metadata.get(id) : undefined);
+		if (!references.length) return message;
+		const content = message.content;
+		const text = typeof content === "string" ? content : content
+			.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+		return { ...message,
+			content: [{ type: "text" as const, text: composeUserContent(text, references) },
+				...(Array.isArray(content) ? content.filter((block) => block.type !== "text") : [])],
+		};
+	};
+	return entries.map((entry) => {
+		if (entry.type === "message") return { ...entry, message: project(entry.message, entry.id) };
+		if (entry.type === "compaction") return { ...entry, retainedTail: entry.retainedTail.map((message) => project(message)) };
+		return entry;
+	});
 }
 
 function hasCompleteToolPairs(messages: readonly AgentMessage[], start: number): boolean {

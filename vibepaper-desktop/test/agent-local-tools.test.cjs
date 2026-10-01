@@ -64,7 +64,8 @@ test('Main and Worker share the restricted agent:core method allowlist', () => {
 
   const workerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'agent-worker.cjs'), 'utf8')
   assert.match(workerSource, /onAuditRequested: async \(input\) => gateway\.requestRenderAudit\(current\.projectId, canvasId, toolContext\.canvasVersion, input\)/u)
-  assert.match(workerSource, /profile: selectProfile\(\{ canvasDomain \}\)/u)
+  assert.match(workerSource, /const profile = selectProfile\(\{ canvasDomain \}\)/u)
+  assert.match(workerSource, /prepareDesktopAgentTurnContext/u)
 })
 
 test('Agent canvas domain uses explicit short-drama node markers and defaults to general', () => {

@@ -138,6 +138,20 @@ function localDramaStatus<T extends string>(value: unknown, allowed: readonly T[
   return value as T
 }
 
+function localMemoryScope(value: unknown, optional = false): 'session' | 'canvas' | 'project' | 'global' | 'daily' | undefined {
+  if (optional && value === undefined) return undefined
+  if (value === 'long_term' || value === 'project') return 'project'
+  if (value === 'session' || value === 'canvas' || value === 'global' || value === 'daily') return value
+  throw new ApiError(400, 'AGENT_MEMORY_SCOPE_INVALID', '记忆范围无效。')
+}
+
+function localMemoryContent(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 2_000) {
+    throw new ApiError(400, 'AGENT_MEMORY_INPUT_INVALID', '记忆内容不能为空且不得超过 2000 个字符。')
+  }
+  return value.trim()
+}
+
 /** Authenticated fetch that retries once after refresh on 401. Use for SSE / non-JSON bodies. */
 export async function authedFetch(
   path: string,
@@ -192,6 +206,132 @@ export async function api<T = unknown>(
     }
     const pathname = url.pathname.replace(/^\/api\/v1(?=\/)/u, "")
     const method = (options.method ?? "GET").toUpperCase()
+    const fragmentListPath = pathname === '/agent/fragments'
+    const fragmentSaveMatch = /^\/agent\/sessions\/([^/]+)\/fragments$/u.exec(pathname)
+    const fragmentImportMatch = /^\/agent\/fragments\/([^/]+)\/import$/u.exec(pathname)
+    if (fragmentListPath || fragmentSaveMatch || fragmentImportMatch) {
+      const project = await bridge.getActiveProject()
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (fragmentListPath) {
+        if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '会话片段只支持读取。')
+        return await bridge.listAgentFragments(project.projectId) as T
+      }
+      if (fragmentSaveMatch) {
+        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '保存会话片段只支持提交。')
+        let sessionId: string
+        try { sessionId = decodeURIComponent(fragmentSaveMatch[1]) } catch {
+          throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+        }
+        if (!sessionId || sessionId.length > 128) {
+          throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+        }
+        const body = parseLocalJsonObject(options, '会话片段保存')
+        const title = body.title
+        if (title !== undefined && (typeof title !== 'string' || title.length > 120)) {
+          throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', '会话片段标题无效。')
+        }
+        return await bridge.saveAgentSessionFragment(project.projectId, sessionId, title) as T
+      }
+      if (!fragmentImportMatch) throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', '会话片段标识无效。')
+      if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '导入会话片段只支持提交。')
+      let fragmentId: string
+      try { fragmentId = decodeURIComponent(fragmentImportMatch[1]) } catch {
+        throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', '会话片段标识无效。')
+      }
+      if (!fragmentId || fragmentId.length > 128) {
+        throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', '会话片段标识无效。')
+      }
+      const body = parseLocalJsonObject(options, '会话片段导入')
+      const canvasId = body.canvasId
+      if (canvasId !== undefined && (typeof canvasId !== 'string' || canvasId !== project.canvasId)) {
+        throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+      }
+      return await bridge.importAgentFragment(project.projectId, fragmentId, canvasId) as T
+    }
+    const memoryListPath = pathname === '/memories'
+    const memoryExportPath = pathname === '/memories/export'
+    const memoryItemMatch = /^\/memories\/([^/]+)$/u.exec(pathname)
+    const memoryCandidatesPath = pathname === '/memory-candidates'
+    const memoryCandidateMatch = /^\/memory-candidates\/([^/]+)\/(accept|reject)$/u.exec(pathname)
+    if (memoryListPath || memoryExportPath || memoryItemMatch || memoryCandidatesPath || memoryCandidateMatch) {
+      const project = await bridge.getActiveProject()
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (memoryExportPath) {
+        if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆导出只支持读取。')
+        return await bridge.exportAgentMemories(project.projectId) as T
+      }
+      if (memoryListPath) {
+        if (method === 'GET') {
+          const scope = localMemoryScope(url.searchParams.get('scope') ?? undefined, true)
+          const sessionId = url.searchParams.get('sessionId') ?? undefined
+          if (sessionId !== undefined && (!/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId))) {
+            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+          }
+          if (scope === 'session' && !sessionId) {
+            throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', '请选择一个 Agent 会话。')
+          }
+          return await bridge.listAgentMemories(project.projectId, scope, sessionId) as T
+        }
+        if (method === 'POST') {
+          const body = parseLocalJsonObject(options, '记忆创建')
+          const scope = localMemoryScope(body.scope, true) ?? 'project'
+          const sessionId = body.sessionId
+          if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId))) {
+            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+          }
+          if (scope === 'session' && typeof sessionId !== 'string') {
+            throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', '请选择一个 Agent 会话。')
+          }
+          const saved = await bridge.createAgentMemory(project.projectId, localMemoryContent(body.content), scope, sessionId)
+          return { id: saved.id, content: saved.content, scope: saved.scope } as T
+        }
+        throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆接口不支持此请求方法。')
+      }
+      if (memoryCandidatesPath) {
+        if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆候选列表只支持读取。')
+        return await bridge.listAgentMemoryCandidates(project.projectId) as T
+      }
+      if (memoryItemMatch) {
+        let memoryId: string
+        try { memoryId = decodeURIComponent(memoryItemMatch[1]) } catch {
+          throw new ApiError(400, 'AGENT_MEMORY_INPUT_INVALID', '记忆标识无效。')
+        }
+        if (method === 'DELETE') {
+          const scope = localMemoryScope(url.searchParams.get('scope') ?? undefined, true)
+          const sessionId = url.searchParams.get('sessionId') ?? undefined
+          if (sessionId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) {
+            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+          }
+          if (scope === 'session' && !sessionId) throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', '请选择一个 Agent 会话。')
+          return await bridge.deleteAgentMemory(project.projectId, memoryId, scope, sessionId) as T
+        }
+        if (method === 'PATCH' || method === 'PUT') {
+          const body = parseLocalJsonObject(options, '记忆更新')
+          const scope = localMemoryScope(body.scope, true)
+          const sessionId = url.searchParams.get('sessionId') ?? undefined
+          if (sessionId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) {
+            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+          }
+          if (scope === 'session' && !sessionId) throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', '请选择一个 Agent 会话。')
+          return await bridge.updateAgentMemory(project.projectId, memoryId, localMemoryContent(body.content), scope, sessionId) as T
+        }
+        throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆条目只支持读取、修改或删除。')
+      }
+      if (memoryCandidateMatch) {
+        let candidateId: string
+        try { candidateId = decodeURIComponent(memoryCandidateMatch[1]) } catch {
+          throw new ApiError(400, 'AGENT_MEMORY_INPUT_INVALID', '记忆候选标识无效。')
+        }
+        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆候选审阅只支持提交。')
+        const action = memoryCandidateMatch[2] as 'accept' | 'reject'
+        const result = await bridge.reviewAgentMemoryCandidate(project.projectId, candidateId, action)
+        if (action === 'accept') {
+          if (!result.item) throw new ApiError(500, 'AGENT_MEMORY_CANDIDATE_INVALID', '保存记忆候选失败。')
+          return { id: result.item.id, content: result.item.content, scope: result.item.scope } as T
+        }
+        return { status: 'ok' } as T
+      }
+    }
     const dramaMatch = /^\/canvases\/([^/]+)\/drama-assets$/u.exec(pathname)
     if (dramaMatch) {
       let canvasId: string

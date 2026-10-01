@@ -108,34 +108,7 @@ export class ToolGateway implements CanvasCommandGateway {
 		const requested = requestedModel.trim();
 		if (!requested) return requestedModel;
 		try {
-			const models = (await this.listModels(userId, requestId))
-				.map((item) => objectValue(item))
-				.filter((item) => item.enabled !== false && typeof item.name === "string");
-			const normalized = normalizeModelIdentifier(requested);
-			const exact = models.find((item) =>
-				[item.name, item.displayName]
-					.filter((value): value is string => typeof value === "string")
-					.some((value) => normalizeModelIdentifier(value) === normalized),
-			);
-			if (typeof exact?.name === "string") return exact.name;
-
-			const matching = models.filter((item) =>
-				[item.name, item.displayName]
-					.filter((value): value is string => typeof value === "string")
-					.some((value) => normalizeModelIdentifier(value).startsWith(normalized)),
-			);
-			if (matching.length === 1 && typeof matching[0]?.name === "string") return matching[0].name;
-
-			// Older prompts may still emit a modality/model nickname such as
-			// "flux" or "kling". Only repair it when the live catalog has one
-			// enabled model for that modality; never guess between providers.
-			const modality = legacyModelModality(normalized);
-			if (modality) {
-				const modalityMatches = models.filter((item) => item.modelType === modality);
-				if (modalityMatches.length === 1 && typeof modalityMatches[0]?.name === "string")
-					return modalityMatches[0].name;
-			}
-			return requested;
+			return resolveCatalogGenerationModel(await this.listModels(userId, requestId), requested);
 		} catch {
 			// Preserve Generation's authoritative error when its model catalog is temporarily unavailable.
 			return requested;
@@ -730,4 +703,37 @@ function nodeRecord(value: unknown): Record<string, unknown> {
 
 function isEmptyObject(value: unknown): boolean {
 	return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0;
+}
+
+export function resolveCatalogGenerationModel(catalog: readonly unknown[], requestedModel: string): string {
+	const requested = requestedModel.trim();
+	if (!requested) return requestedModel;
+	const models = catalog
+		.map((item) => objectValue(item))
+		.filter((item) => item.enabled !== false && typeof item.name === "string");
+	const normalized = normalizeModelIdentifier(requested);
+	const exact = models.find((item) =>
+		[item.name, item.displayName]
+			.filter((value): value is string => typeof value === "string")
+			.some((value) => normalizeModelIdentifier(value) === normalized),
+	);
+	if (typeof exact?.name === "string") return exact.name;
+
+	const matching = models.filter((item) =>
+		[item.name, item.displayName]
+			.filter((value): value is string => typeof value === "string")
+			.some((value) => normalizeModelIdentifier(value).startsWith(normalized)),
+	);
+	if (matching.length === 1 && typeof matching[0]?.name === "string") return matching[0].name;
+
+	// Older prompts may still emit a modality/model nickname such as
+	// "flux" or "kling". Only repair it when the live catalog has one
+	// enabled model for that modality; never guess between providers.
+	const modality = legacyModelModality(normalized);
+	if (modality) {
+		const modalityMatches = models.filter((item) => item.modelType === modality);
+		if (modalityMatches.length === 1 && typeof modalityMatches[0]?.name === "string")
+			return modalityMatches[0].name;
+	}
+	return requested;
 }

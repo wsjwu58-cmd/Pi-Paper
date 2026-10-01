@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CanvasCommand, CanvasCommandGateway } from "../application/canvas-command-service.ts";
 import type { AuditInput } from "../domain/continuity-rules.ts";
-import { ToolGatewayError } from "../infrastructure/tool-gateway.ts";
+import { resolveCatalogGenerationModel, ToolGatewayError } from "../infrastructure/tool-gateway.ts";
 import type { ReadToolsGateway } from "../tools/read-tools.ts";
 import type { DesktopAgentControlStore } from "./control-store.ts";
 
@@ -81,10 +81,11 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 
 	async resolveGenerationModel(_userId: string, requestedModel: string): Promise<string> {
 		const models = await this.listModels();
-		const selected = models.find((entry) => isRecord(entry) && entry.name === requestedModel);
+		const resolved = resolveCatalogGenerationModel(models.filter((entry) => isRecord(entry) && entry.enabled === true), requestedModel);
+		const selected = models.find((entry) => isRecord(entry) && entry.name === resolved);
 		if (!isRecord(selected) || selected.enabled !== true)
 			throw new ToolGatewayError("MODEL_UNAVAILABLE", "所选模型当前不可用，请检查模型配置", {}, 400);
-		return requestedModel;
+		return resolved;
 	}
 
 	async createGenerationTask(input: {
@@ -337,6 +338,12 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 		const scope = this.runScope;
 		const key = stringValue(payload.idempotencyKey);
 		const mutating = /agent:core:(?:create-node|update-node|connect-edge|save-canvas|delete-nodes|create-generation-task)$/u.test(method);
+		if (scope && mutating) {
+			const run = scope.control.findById(scope.runId);
+			if (!run || !["running", "waiting_confirmation", "waiting_task"].includes(run.status))
+				throw gatewayError("RUN_ABORTED", "当前回合已停止，操作未执行", 409);
+			payload = { ...payload, runId: scope.runId };
+		}
 		const operation = scope && key && mutating ? scope.control.prepareOperation({
 			sessionId: scope.sessionId, runId: scope.runId,
 			toolCallId: createHash("sha256").update(`${scope.sessionId}\0${key}`).digest("hex"),

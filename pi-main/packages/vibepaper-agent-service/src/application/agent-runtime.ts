@@ -3,11 +3,15 @@ import type { AssistantMessage, Model, SimpleStreamOptions } from "@earendil-wor
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 
 import type { ServiceConfig } from "../config.ts";
+import { extractProtectedFacts } from "../domain/protected-facts.ts";
 import type { DramaStateStore } from "../domain/drama-state.ts";
-import type { SessionContext } from "../domain/session-context.ts";
+import { formatSessionContext, type SessionContext } from "../domain/session-context.ts";
 import type { AgentProfile } from "../domain/tool-manifest.ts";
 import { createDramaAgent } from "../pi/drama-agent.ts";
+import { profileSystemPrompt } from "../pi/profile-agents.ts";
+import { VERTICAL_SHORT_DRAMA_SYSTEM_PROMPT } from "../pi/system-prompt.ts";
 import { createLoadSkillTool, type LoadedSkillResource } from "../tools/skill-tools.ts";
+import { getToolsForProfile } from "../domain/tool-manifest.ts";
 import { dedupeRepeatedSegments, removeRepeatedOpening } from "./assistant-text.ts";
 import { compactContext } from "./context-compaction-service.ts";
 import { resolveInstructionPrecedence } from "./instruction-precedence.ts";
@@ -55,6 +59,7 @@ export interface AgentRuntimeHooks {
 	memoryContext?: string;
 	sessionContext?: SessionContext;
 	intentContext?: string;
+	desktopTurnContext?: DesktopAgentTurnContext;
 	/** Force the first model request to make one verified low-risk tool call. */
 	requiredToolName?: string;
 }
@@ -66,6 +71,17 @@ export interface AgentSkillContext {
 	loadedSkills: readonly LoadedSkillResource[];
 	onLoad(skill: LoadedSkillResource): Promise<void>;
 }
+
+export type DesktopAgentTurnContext = {
+	initialMessages: AgentMessage[];
+	currentUserInput: string;
+	systemPrompt: string;
+	systemPromptSuffix?: string;
+	toolSchemas: unknown[];
+	extraTools: AgentTool[];
+	runtimeTools?: AgentTool[];
+	desktopMemoryTools?: AgentTool[];
+};
 
 const MAX_REHYDRATED_SKILLS = 4;
 const MAX_REHYDRATED_SKILL_CHARACTERS = 1_200;
@@ -121,7 +137,10 @@ export async function runDramaTurn(
 	if (!config.llmApiKey) {
 		throw new AgentRuntimeError("MODEL_UNAVAILABLE", "未配置 VIBEPAPER_LLM_API_KEY 或 VIBEPAPER_AGNES_API_KEY");
 	}
-	const compacted = compactContext(
+	const desktopTurnContext = hooks.desktopMode
+		? (hooks.desktopTurnContext ?? prepareDesktopAgentTurnContext(history, content, skillContext, nodeReferences, hooks))
+		: undefined;
+	const compacted = desktopTurnContext ? undefined : compactContext(
 		history.map((message, sourceIndex) => ({
 			role: message.role,
 			content: message.content,
@@ -132,61 +151,62 @@ export async function runDramaTurn(
 		})),
 		{ maxTokens: 24_000, sessionContext: hooks.sessionContext },
 	);
-	const recentIndexes = new Set(compacted.recentMessages.map((message) => message.sourceIndex));
-	const recentByIndex = new Map(compacted.recentMessages.map((message) => [message.sourceIndex, message]));
-	const initialMessages: AgentMessage[] = [];
-	for (const [index, message] of history.entries()) {
-		if (!recentIndexes.has(index)) continue;
-		const compactedMessage = recentByIndex.get(index);
-		if (message.piMessage) {
-			if (
-				message.piMessage.role === "toolResult" &&
-				compactedMessage &&
-				compactedMessage.content !== message.content
-			) {
-				initialMessages.push({
-					...message.piMessage,
-					content: [{ type: "text", text: compactedMessage.content }],
-				} as AgentMessage);
-			} else {
-				initialMessages.push(message.piMessage);
+	const recentIndexes = new Set(compacted?.recentMessages.map((message) => message.sourceIndex) ?? []);
+	const recentByIndex = new Map(compacted?.recentMessages.map((message) => [message.sourceIndex, message]) ?? []);
+	const initialMessages: AgentMessage[] = desktopTurnContext?.initialMessages ?? [];
+	if (!desktopTurnContext) {
+		for (const [index, message] of history.entries()) {
+			if (!recentIndexes.has(index)) continue;
+			const compactedMessage = recentByIndex.get(index);
+			if (message.piMessage) {
+				if (
+					message.piMessage.role === "toolResult" &&
+					compactedMessage &&
+					compactedMessage.content !== message.content
+				) {
+					initialMessages.push({
+						...message.piMessage,
+						content: [{ type: "text", text: compactedMessage.content }],
+					} as AgentMessage);
+				} else {
+					initialMessages.push(message.piMessage);
+				}
+				continue;
 			}
-			continue;
-		}
-		if (message.role === "user") {
-			initialMessages.push({
-				role: "user",
-				content: [
-					{ type: "text", text: composeUserContent(message.content, nodeReferencesFromMeta(message.meta)) },
-				],
-				timestamp: message.createdAt.getTime(),
-			});
-		}
-		if (message.role === "assistant") {
-			const assistant: AssistantMessage = {
-				role: "assistant",
-				content: [{ type: "text", text: message.content }],
-				api: "openai-completions",
-				provider: "agnes",
-				model: hooks.modelId ?? config.llmModel,
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "stop",
-				timestamp: message.createdAt.getTime(),
-			};
-			initialMessages.push(assistant);
+			if (message.role === "user") {
+				initialMessages.push({
+					role: "user",
+					content: [
+						{ type: "text", text: composeUserContent(message.content, nodeReferencesFromMeta(message.meta)) },
+					],
+					timestamp: message.createdAt.getTime(),
+				});
+			}
+			if (message.role === "assistant") {
+				const assistant: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: message.content }],
+					api: "openai-completions",
+					provider: "agnes",
+					model: hooks.modelId ?? config.llmModel,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: message.createdAt.getTime(),
+				};
+				initialMessages.push(assistant);
+			}
 		}
 	}
-	const protectedFacts =
-		compacted.protectedFacts.length > 0
-			? `受保护业务事实（不可被模型删除）：\n${compacted.protectedFacts.join("\n")}`
-			: undefined;
+	const protectedFacts = !desktopTurnContext && (compacted?.protectedFacts.length ?? 0) > 0
+		? `受保护业务事实（不可被模型删除）：\n${compacted!.protectedFacts.join("\n")}`
+		: undefined;
 	const orderedInstructions = resolveInstructionPrecedence([
 		{ source: "confirmed-fact", text: protectedFacts ?? "" },
 		{ source: "skill", text: rehydratedSkillInstructions(skillContext.loadedSkills) ?? "" },
@@ -207,20 +227,20 @@ export async function runDramaTurn(
 		streamFn: hooks.requiredToolName ? forceInitialToolCall(hooks.requiredToolName) : streamSimple,
 		sessionId,
 		getApiKey: async (provider) => (provider === "agnes" ? config.llmApiKey : undefined),
-		systemPromptSuffix:
+		systemPromptSuffix: desktopTurnContext?.systemPromptSuffix ?? (
 			[
-				(hooks.desktopMode && hooks.desktopCompactionSummary ? hooks.desktopCompactionSummary : compacted.summary)
-					? `会话压缩摘要：${hooks.desktopMode && hooks.desktopCompactionSummary ? hooks.desktopCompactionSummary : compacted.summary}`
+				(hooks.desktopMode && hooks.desktopCompactionSummary ? hooks.desktopCompactionSummary : compacted?.summary)
+					? `会话压缩摘要：${hooks.desktopMode && hooks.desktopCompactionSummary ? hooks.desktopCompactionSummary : compacted?.summary}`
 					: undefined,
 				...orderedInstructions,
 				hooks.intentContext,
 				hooks.memoryContext,
 			]
 				.filter(Boolean)
-				.join("\n\n") || undefined,
-		extraTools: createLoadSkillTool(skillContext.skills, skillContext.loadedSkillIds, skillContext.onLoad),
-		runtimeTools: hooks.runtimeTools,
-		desktopMemoryTools: hooks.desktopMemoryTools,
+				.join("\n\n") || undefined),
+		extraTools: desktopTurnContext?.extraTools ?? createLoadSkillTool(skillContext.skills, skillContext.loadedSkillIds, skillContext.onLoad),
+		runtimeTools: desktopTurnContext?.runtimeTools ?? hooks.runtimeTools,
+		desktopMemoryTools: desktopTurnContext?.desktopMemoryTools ?? hooks.desktopMemoryTools,
 		profile: hooks.profile,
 		desktopMode: hooks.desktopMode,
 		transformContext: hooks.transformContext,
@@ -247,7 +267,7 @@ export async function runDramaTurn(
 		}
 	});
 	await awaitAgentTurn(
-		agent.prompt(composeUserContent(content, nodeReferences)),
+		agent.prompt(desktopTurnContext?.currentUserInput ?? composeUserContent(content, nodeReferences)),
 		() => agent.abort(),
 		MODEL_TURN_TIMEOUT_MS,
 	);
@@ -259,6 +279,103 @@ export async function runDramaTurn(
 		await hooks.onEvent?.(event);
 	}
 	return { events, assistantText, totalTokens };
+}
+
+/**
+ * Build the exact desktop prompt footprint before a turn starts. The Worker
+ * uses it for budget planning; runDramaTurn consumes the same descriptor so
+ * accounting and the actual model request share system text, tool schemas and
+ * current user input.
+ */
+export function prepareDesktopAgentTurnContext(
+	history: readonly StoredAgentMessage[],
+	content: string,
+	skillContext: AgentSkillContext,
+	nodeReferences: readonly NodeReferenceSnapshot[],
+	hooks: AgentRuntimeHooks,
+): DesktopAgentTurnContext {
+	const profile = hooks.profile;
+	const extraTools = createLoadSkillTool(skillContext.skills, skillContext.loadedSkillIds, skillContext.onLoad);
+	const allowedToolNames = profile ? new Set(getToolsForProfile(profile).map((entry) => entry.name)) : undefined;
+	const runtimeTools = hooks.runtimeTools;
+	const profileTools = [...(runtimeTools ?? []), ...extraTools].filter(
+		(tool) => !allowedToolNames || allowedToolNames.has(tool.name),
+	);
+	const memoryToolNames = new Set([
+		"read_project_memory", "remember_project_preference", "edit_project_memory", "delete_project_memory",
+	]);
+	const desktopMemoryTools = (hooks.desktopMemoryTools ?? []).filter((tool) =>
+		memoryToolNames.has(tool.name) && (profile !== "audit-readonly" || tool.name === "read_project_memory"),
+	);
+	const messageFacts = history.map((message) => ({ content: message.content, meta: message.meta }));
+	const protectedFacts = extractProtectedFacts(messageFacts);
+	const orderedInstructions = resolveInstructionPrecedence([
+		{
+			source: "confirmed-fact",
+			text: protectedFacts.length ? `受保护业务事实（不可被模型删除）：\n${protectedFacts.join("\n")}` : "",
+		},
+		{ source: "skill", text: rehydratedSkillInstructions(skillContext.loadedSkills) ?? "" },
+		{
+			source: "profile-default",
+			text: skillContext.indexLines.length
+				? `可用 Skill 索引（正文未预载）：\n${skillContext.indexLines.join("\n")}`
+				: "",
+		},
+	]);
+	const sessionState = hooks.sessionContext
+		? `当前会话权威状态（根据本地运行事件和当前画布重建；与旧摘要冲突时以此及读取工具为准）：\n${formatSessionContext(hooks.sessionContext, 6_000)}`
+		: undefined;
+	const suffix = [
+		hooks.desktopCompactionSummary ? `会话压缩摘要：${hooks.desktopCompactionSummary}` : undefined,
+		sessionState,
+		...orderedInstructions,
+		hooks.intentContext,
+		hooks.memoryContext,
+	].filter(Boolean).join("\n\n");
+	const baseSystemPrompt = profile
+		? profileSystemPrompt(profile, { desktopMode: true })
+		: VERTICAL_SHORT_DRAMA_SYSTEM_PROMPT;
+	const activeTools = [...profileTools, ...desktopMemoryTools];
+	const toolSchemas = activeTools.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.parameters,
+	}));
+	return {
+		initialMessages: history.flatMap((message): AgentMessage[] => {
+			if (message.piMessage) return [message.piMessage];
+			if (message.role === "user") return [{
+				role: "user",
+				content: [{ type: "text", text: composeUserContent(message.content, nodeReferencesFromMeta(message.meta)) }],
+				timestamp: message.createdAt.getTime(),
+			}];
+			if (message.role !== "assistant") return [];
+			return [{
+				role: "assistant",
+				content: [{ type: "text", text: message.content }],
+				api: "openai-completions",
+				provider: "agnes",
+				model: hooks.modelId ?? "agnes-2.5-flash",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: message.createdAt.getTime(),
+			} as AssistantMessage];
+		}),
+		currentUserInput: composeUserContent(content, nodeReferences),
+		systemPrompt: [baseSystemPrompt, suffix].filter(Boolean).join("\n\n"),
+		...(suffix ? { systemPromptSuffix: suffix } : {}),
+		toolSchemas,
+		extraTools,
+		...(runtimeTools ? { runtimeTools } : {}),
+		...(desktopMemoryTools.length ? { desktopMemoryTools } : {}),
+	};
 }
 
 /**

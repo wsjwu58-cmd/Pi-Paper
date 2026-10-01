@@ -7,8 +7,53 @@ import type { PlannedAction } from "../domain/action-approval.ts";
 import type { AgentRun, AgentRunEvent, AgentRunEventType, AgentRunStatus } from "../domain/agent-run.ts";
 import { isActiveRunStatus } from "../domain/agent-run.ts";
 
-const CONTROL_SCHEMA_VERSION = 3;
+const CONTROL_SCHEMA_VERSION = 4;
 const MAX_OPERATION_RESULT_BYTES = 1_000_000;
+
+export type DesktopMemoryCandidateScope = "session" | "canvas" | "project" | "global" | "daily";
+
+export type DesktopMemoryCandidateRecord = {
+	id: string;
+	userId: string;
+	canvasId?: string;
+	sessionId?: string;
+	sourceEventSeq?: number;
+	content: string;
+	memoryType: string;
+	scope: DesktopMemoryCandidateScope;
+	source: string;
+	confidence: number;
+	status: "pending" | "accepted" | "rejected";
+	dedupeKey: string;
+	expiresAt?: Date;
+	createdAt: Date;
+	reviewedAt?: Date;
+};
+
+const DESKTOP_MEMORY_CANDIDATES_SCHEMA = `
+  CREATE TABLE desktop_memory_candidates (
+    candidate_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT,
+    canvas_id TEXT,
+    source_event_seq INTEGER CHECK (source_event_seq IS NULL OR source_event_seq >= 0),
+    scope TEXT NOT NULL CHECK (scope IN ('session', 'canvas', 'project', 'global', 'daily')),
+    content_markdown TEXT NOT NULL CHECK (length(content_markdown) BETWEEN 1 AND 2000),
+    memory_type TEXT NOT NULL CHECK (length(memory_type) BETWEEN 1 AND 120),
+    source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 120),
+    confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected')),
+    dedupe_key TEXT NOT NULL CHECK (length(dedupe_key) = 64),
+    expires_at TEXT,
+    created_at TEXT NOT NULL,
+    reviewed_at TEXT
+  ) STRICT;
+  CREATE UNIQUE INDEX desktop_memory_candidates_pending_dedupe
+    ON desktop_memory_candidates(user_id, scope, dedupe_key)
+    WHERE status = 'pending';
+  CREATE INDEX desktop_memory_candidates_pending_by_user
+    ON desktop_memory_candidates(user_id, status, created_at DESC);
+`;
 
 const CONTROL_SCHEMA = `
   CREATE TABLE agent_runs (
@@ -111,6 +156,8 @@ const CONTROL_SCHEMA = `
     updated_at TEXT NOT NULL
   ) STRICT;
 
+  ${DESKTOP_MEMORY_CANDIDATES_SCHEMA}
+
   CREATE TABLE outbox (
     outbox_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -143,6 +190,24 @@ type EventRow = {
 	runtime_version: string;
 	data_json: string;
 	created_at: string;
+};
+
+type DesktopMemoryCandidateRow = {
+	candidate_id: string;
+	user_id: string;
+	session_id: string | null;
+	canvas_id: string | null;
+	source_event_seq: number | null;
+	scope: DesktopMemoryCandidateScope;
+	content_markdown: string;
+	memory_type: string;
+	source: string;
+	confidence: number;
+	status: DesktopMemoryCandidateRecord["status"];
+	dedupe_key: string;
+	expires_at: string | null;
+	created_at: string;
+	reviewed_at: string | null;
 };
 
 type OperationState = "prepared" | "dispatched" | "succeeded" | "failed" | "uncertain";
@@ -255,6 +320,31 @@ function toOutboxItem(row: Record<string, unknown>): DesktopOutboxItem {
 		createdAt: new Date(String(row.created_at)),
 	};
 }
+
+function toDesktopMemoryCandidate(row: DesktopMemoryCandidateRow): DesktopMemoryCandidateRecord {
+	return {
+		id: String(row.candidate_id),
+	userId: String(row.user_id),
+	...(row.session_id == null ? {} : { sessionId: String(row.session_id) }),
+	...(row.canvas_id == null ? {} : { canvasId: String(row.canvas_id) }),
+	...(row.source_event_seq == null ? {} : { sourceEventSeq: Number(row.source_event_seq) }),
+	scope: row.scope,
+	content: row.content_markdown,
+	memoryType: row.memory_type,
+	source: row.source,
+	confidence: Number(row.confidence),
+	status: row.status,
+	dedupeKey: row.dedupe_key,
+	...(row.expires_at == null ? {} : { expiresAt: new Date(row.expires_at) }),
+	createdAt: new Date(row.created_at),
+	...(row.reviewed_at == null ? {} : { reviewedAt: new Date(row.reviewed_at) }),
+	};
+}
+
+const DESKTOP_MEMORY_CANDIDATE_SELECT = `
+	SELECT candidate_id, user_id, session_id, canvas_id, source_event_seq, scope, content_markdown,
+		memory_type, source, confidence, status, dedupe_key, expires_at, created_at, reviewed_at
+	FROM desktop_memory_candidates`;
 
 function toApprovalRecord(row: ApprovalRow): ApprovalRecord {
 	const action = JSON.parse(row.action_json) as PlannedAction;
@@ -897,6 +987,67 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		return result.changes === 1;
 	}
 
+	listPendingDesktopMemoryCandidates(userId: string): DesktopMemoryCandidateRecord[] {
+		const rows = this.database.prepare(`${DESKTOP_MEMORY_CANDIDATE_SELECT}
+			WHERE user_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 500`).all(userId) as unknown as DesktopMemoryCandidateRow[];
+		return rows.map(toDesktopMemoryCandidate);
+	}
+
+	findPendingDesktopMemoryCandidate(
+		userId: string,
+		scope: DesktopMemoryCandidateScope,
+		dedupeKey: string,
+	): DesktopMemoryCandidateRecord | undefined {
+		const row = this.database.prepare(`${DESKTOP_MEMORY_CANDIDATE_SELECT}
+			WHERE user_id = ? AND scope = ? AND dedupe_key = ? AND status = 'pending' LIMIT 1`)
+			.get(userId, scope, dedupeKey) as unknown as DesktopMemoryCandidateRow | undefined;
+		return row ? toDesktopMemoryCandidate(row) : undefined;
+	}
+
+	getDesktopMemoryCandidate(id: string, userId: string): DesktopMemoryCandidateRecord | undefined {
+		const row = this.database.prepare(`${DESKTOP_MEMORY_CANDIDATE_SELECT}
+			WHERE candidate_id = ? AND user_id = ? LIMIT 1`).get(id, userId) as unknown as DesktopMemoryCandidateRow | undefined;
+		return row ? toDesktopMemoryCandidate(row) : undefined;
+	}
+
+	saveDesktopMemoryCandidate(candidate: DesktopMemoryCandidateRecord): boolean {
+		const result = this.database.prepare(`
+			INSERT OR IGNORE INTO desktop_memory_candidates
+			(candidate_id, user_id, session_id, canvas_id, source_event_seq, scope, content_markdown,
+			 memory_type, source, confidence, status, dedupe_key, expires_at, created_at, reviewed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`).run(
+			candidate.id,
+			candidate.userId,
+			candidate.sessionId ?? null,
+			candidate.canvasId ?? null,
+			candidate.sourceEventSeq ?? null,
+			candidate.scope,
+			candidate.content,
+			candidate.memoryType,
+			candidate.source,
+			candidate.confidence,
+			candidate.status,
+			candidate.dedupeKey,
+			candidate.expiresAt?.toISOString() ?? null,
+			candidate.createdAt.toISOString(),
+			candidate.reviewedAt?.toISOString() ?? null,
+		);
+		return result.changes === 1;
+	}
+
+	updateDesktopMemoryCandidateStatus(
+		id: string,
+		userId: string,
+		status: "accepted" | "rejected",
+	): boolean {
+		const result = this.database.prepare(`
+			UPDATE desktop_memory_candidates SET status = ?, reviewed_at = ?
+			WHERE candidate_id = ? AND user_id = ? AND status = 'pending'
+		`).run(status, new Date().toISOString(), id, userId);
+		return result.changes === 1;
+	}
+
 	close(): void {
 		if (this.closed) return;
 		this.closed = true;
@@ -983,6 +1134,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 					) STRICT;
 					UPDATE approvals SET status = 'rejected' WHERE status IN ('pending', 'accepted');
 				`);
+				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
 				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 			});
 			return;
@@ -996,6 +1148,14 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 						updated_at TEXT NOT NULL
 					) STRICT;
 				`);
+				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
+				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+			});
+			return;
+		}
+		if (version === 3) {
+			this.transaction(() => {
+				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
 				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 			});
 			return;

@@ -334,7 +334,11 @@ function createAgentWorker() {
       'agent:core:create-generation-task': ['projectId', 'canvasId', 'canvasVersion', 'nodeId', 'modality', 'providerType', 'providerId', 'modelId', 'idempotencyKey', 'prompt', 'parameters'],
       'agent:core:create-render-review': ['projectId', 'canvasId', 'canvasVersion', 'targetNodeId', 'shotDurationSeconds', 'expectedDurationSeconds', 'characterConsistent', 'audioDurationMs', 'videoDurationMs', 'previousCamera', 'currentCamera'],
     }[method]
-    if (Object.keys(input).some((key) => !allowedKeys.includes(key))) throw new Error('AGENT_LOCAL_CORE_INPUT_INVALID')
+    const mutating = ['agent:core:create-node', 'agent:core:update-node', 'agent:core:delete-nodes', 'agent:core:connect-edge', 'agent:core:save-canvas', 'agent:core:create-generation-task'].includes(method)
+    if (mutating) allowedKeys.push('runId')
+    if (Object.keys(input).some((key) => !allowedKeys.includes(key))
+      || (input.runId !== undefined && (typeof input.runId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runId)))) throw new Error('AGENT_LOCAL_CORE_INPUT_INVALID')
+    if (input.runId && workerReference?.cancelledRunIds.has(input.runId)) throw new Error('RUN_ABORTED')
     if (stopping || projectTransitionCount > 0 || agentWorker !== workerReference || agentProjectId !== input.projectId) {
       throw new Error('AGENT_PROJECT_CHANGED')
     }
@@ -344,13 +348,16 @@ function createAgentWorker() {
       || stopping || projectTransitionCount > 0 || agentWorker !== workerReference || agentProjectId !== input.projectId) {
       throw new Error('AGENT_PROJECT_CHANGED')
     }
+    const coreInput = { ...input }
+    delete coreInput.runId
+    if (mutating && input.runId && workerReference.cancelledRunIds.has(input.runId)) throw new Error('RUN_ABORTED')
     switch (method) {
       case 'agent:core:load-canvas':
         return localCore.request('canvas:load', { projectId: input.projectId, canvasId: active.canvasId }, 15_000)
       case 'agent:core:create-node':
-        return localCore.request('canvas:create-node', input, 30_000)
+        return localCore.request('canvas:create-node', coreInput, 30_000)
       case 'agent:core:update-node':
-        return localCore.request('canvas:update-node', input, 30_000)
+        return localCore.request('canvas:update-node', coreInput, 30_000)
       case 'agent:core:lookup-operation':
         return localCore.request('agent:lookup-operation', input, 15_000)
       case 'agent:core:delete-nodes':
@@ -360,6 +367,7 @@ function createAgentWorker() {
             const current = await localCore.request('project:get-active', undefined, 15_000)
             if (stopping || projectTransitionCount > 0 || agentWorker !== workerReference
               || agentProjectId !== input.projectId || current?.projectId !== input.projectId) throw new Error('AGENT_PROJECT_CHANGED')
+            if (input.runId && workerReference.cancelledRunIds.has(input.runId)) throw new Error('RUN_ABORTED')
           },
           confirm: async (labels) => (await dialog.showMessageBox(mainWindow, {
             type: 'question', title: '确认删除节点', message: `删除 ${labels.length} 个节点及关联连线？`,
@@ -369,9 +377,9 @@ function createAgentWorker() {
           lookupDeletedNode: (payload) => localCore.request('canvas:get-delete-command', payload, 15_000),
         })
       case 'agent:core:connect-edge':
-        return localCore.request('canvas:connect', input, 30_000)
+        return localCore.request('canvas:connect', coreInput, 30_000)
       case 'agent:core:save-canvas':
-        return localCore.request('canvas:save', input, 60_000)
+        return localCore.request('canvas:save', coreInput, 60_000)
       case 'agent:core:get-task':
         return localCore.request('task:get', input, 15_000)
       case 'agent:core:list-assets':
@@ -468,6 +476,7 @@ function createAgentWorker() {
 
   const worker = {
     child,
+    cancelledRunIds: new Set(),
     async request(method, payload, timeoutMs = 30_000) {
       await started
       if (exitError) throw exitError
@@ -548,7 +557,10 @@ async function startAgentWorker(projectDirectory) {
   const worker = createAgentWorker()
   agentWorker = worker
   try {
-    const opened = await worker.request('agent:open', { projectDirectory })
+    const opened = await worker.request('agent:open', {
+      projectDirectory,
+      userDataDirectory: app.getPath('userData'),
+    })
     agentProjectId = opened.projectId
     activeProjectDirectory = projectDirectory
     return opened
@@ -2371,6 +2383,122 @@ function registerAgentIpc() {
     const worker = await getAgentWorker(projectId)
     return worker.request('agent:list-sessions', { projectId })
   })
+  ipcMain.handle('desktop:agent:list-fragments', async (event, projectId) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:list-fragments', { projectId })
+  })
+  ipcMain.handle('desktop:agent:save-fragment', async (event, projectId, sessionId, title) => {
+    assertTrustedSender(event)
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)
+      || (title !== undefined && (typeof title !== 'string' || title.length > 120))) {
+      throw codedError('AGENT_SESSION_FRAGMENT_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:save-session-fragment', { projectId, sessionId, title })
+  })
+  ipcMain.handle('desktop:agent:import-fragment', async (event, projectId, fragmentId, canvasId) => {
+    assertTrustedSender(event)
+    if (typeof fragmentId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(fragmentId)
+      || (canvasId !== undefined && (typeof canvasId !== 'string' || canvasId.length > 128))) {
+      throw codedError('AGENT_SESSION_FRAGMENT_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:import-fragment', { projectId, fragmentId, canvasId })
+  })
+  const memoryScopes = new Set(['session', 'canvas', 'project', 'global', 'daily'])
+  const validateMemoryScope = (scope, optional = false) => {
+    if (optional && scope === undefined) return undefined
+    if (typeof scope !== 'string' || !memoryScopes.has(scope)) throw codedError('AGENT_MEMORY_SCOPE_INVALID')
+    return scope
+  }
+  const validateMemoryId = (memoryId) => {
+    if (typeof memoryId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(memoryId)) {
+      throw codedError('AGENT_MEMORY_INPUT_INVALID')
+    }
+    return memoryId
+  }
+  const validateMemoryContent = (content) => {
+    if (typeof content !== 'string' || !content.trim() || content.length > 2_000) {
+      throw codedError('AGENT_MEMORY_INPUT_INVALID')
+    }
+    return content.trim()
+  }
+  ipcMain.handle('desktop:agent:memory:list', async (event, projectId, scope, sessionId) => {
+    assertTrustedSender(event)
+    const normalizedScope = validateMemoryScope(scope, true)
+    if (sessionId !== undefined && (typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 128)) {
+      throw codedError('AGENT_SESSION_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:memory:list', {
+      projectId,
+      ...(normalizedScope ? { scope: normalizedScope } : {}),
+      ...(sessionId ? { sessionId } : {}),
+    })
+  })
+  ipcMain.handle('desktop:agent:memory:create', async (event, projectId, content, scope, sessionId) => {
+    assertTrustedSender(event)
+    const normalizedScope = validateMemoryScope(scope, true) || 'project'
+    if (sessionId !== undefined && (typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 128)) {
+      throw codedError('AGENT_SESSION_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:memory:create', {
+      projectId,
+      content: validateMemoryContent(content),
+      scope: normalizedScope,
+      ...(sessionId ? { sessionId } : {}),
+    })
+  })
+  ipcMain.handle('desktop:agent:memory:update', async (event, projectId, memoryId, content, scope, sessionId) => {
+    assertTrustedSender(event)
+    if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId))) {
+      throw codedError('AGENT_SESSION_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:memory:update', {
+      projectId,
+      memoryId: validateMemoryId(memoryId),
+      content: validateMemoryContent(content),
+      scope: validateMemoryScope(scope, true) || 'project',
+      ...(sessionId ? { sessionId } : {}),
+    })
+  })
+  ipcMain.handle('desktop:agent:memory:delete', async (event, projectId, memoryId, scope, sessionId) => {
+    assertTrustedSender(event)
+    if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId))) {
+      throw codedError('AGENT_SESSION_INPUT_INVALID')
+    }
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:memory:delete', {
+      projectId,
+      memoryId: validateMemoryId(memoryId),
+      scope: validateMemoryScope(scope, true) || 'project',
+      ...(sessionId ? { sessionId } : {}),
+    })
+  })
+  ipcMain.handle('desktop:agent:memory:export', async (event, projectId) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:memory:export', { projectId })
+  })
+  ipcMain.handle('desktop:agent:memory-candidates:list', async (event, projectId) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:memory-candidates:list', { projectId })
+  })
+  ipcMain.handle('desktop:agent:memory-candidates:review', async (event, projectId, candidateId, action) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    const method = action === 'accept'
+      ? 'agent:memory-candidates:accept'
+      : action === 'reject'
+        ? 'agent:memory-candidates:reject'
+        : null
+    if (!method) throw codedError('AGENT_MEMORY_CANDIDATE_ACTION_INVALID')
+    return worker.request(method, { projectId, candidateId: validateMemoryId(candidateId) })
+  })
   ipcMain.handle('desktop:agent:list-skills', async (event, projectId, sessionId, keyword) => {
     assertTrustedSender(event)
     if ((typeof sessionId !== 'undefined' && (typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 128))
@@ -2525,6 +2653,24 @@ function registerAgentIpc() {
     if (!active || active.projectId !== input.projectId || active.canvasId !== input.canvasId) throw codedError('AGENT_PROJECT_CHANGED')
     const canvas = await localCore.request('canvas:load', { projectId: input.projectId, canvasId: input.canvasId })
     return worker.request('agent:confirm-action', { ...input, currentCanvasVersion: canvas.version }, 60_000)
+  })
+  ipcMain.handle('desktop:agent:cancel-run', async (event, projectId, sessionId, runId) => {
+    assertTrustedSender(event)
+    if (typeof projectId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/u.test(projectId)
+      || typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)
+      || typeof runId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(runId)) {
+      throw codedError('AGENT_RUN_INPUT_INVALID')
+    }
+    const active = await localCore.request('project:get-active')
+    if (!active || active.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
+    const worker = await getAgentWorker(projectId)
+    worker.cancelledRunIds.add(runId)
+    while (worker.cancelledRunIds.size > 512) {
+      const oldestRunId = worker.cancelledRunIds.values().next().value
+      if (oldestRunId === undefined) break
+      worker.cancelledRunIds.delete(oldestRunId)
+    }
+    return worker.request('agent:cancel-run', { projectId, sessionId, runId })
   })
   ipcMain.handle('desktop:agent:send-message', async (event, projectId, sessionId, content, selectedSkillId) => {
     assertTrustedSender(event)

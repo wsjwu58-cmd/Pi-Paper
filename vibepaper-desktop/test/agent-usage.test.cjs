@@ -2,6 +2,16 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 const { buildAgentUsage } = require('../src/agent-usage.cjs')
 
+test('summary receipts count every chunk exactly once and attribute the real model', () => {
+  const receipt = { id: 'receipt-1', type: 'custom', customType: 'vibepaper_summary_usage',
+    data: { provider: 'agnes', model: 'agnes-2.5-flash', usage: { input: 70, output: 10, cacheRead: 3, cacheWrite: 0 } } }
+  const usage = buildAgentUsage([receipt, receipt, { ...receipt, id: 'receipt-2' }], 'summary')
+  assert.equal(usage.summaryCallCount, 2)
+  assert.equal(usage.modelCallCount, 2)
+  assert.equal(usage.summaryTokens, 166)
+  assert.deepEqual(usage.modelUsage, { 'agnes/agnes-2.5-flash': 166 })
+})
+
 test('agent usage aggregates persisted Pi token fields and ignores duplicate entry IDs', () => {
   const entries = [
     {
@@ -64,4 +74,30 @@ test('agent usage returns actual zero usage when no persisted entries contain mo
   assert.equal(usage.tokenTotal, 0)
   assert.equal(usage.modelCallCount, 0)
   assert.deepEqual(usage.modelUsage, {})
+})
+
+test('agent usage excludes model identity and tokens from imported transcript entries', () => {
+  const usage = buildAgentUsage([
+    {
+      id: 'fragment-assistant-1',
+      type: 'message',
+      message: {
+        role: 'assistant', provider: 'agnes', model: 'historical-model',
+        usage: { input: 80, output: 20, cacheRead: 4, cacheWrite: 2 },
+        content: [{ type: 'text', text: 'copied text' }, { type: 'toolCall' }],
+      },
+    },
+    {
+      id: 'fragment-import-marker-1',
+      type: 'custom',
+      customType: 'vibepaper_fragment_import',
+      data: { messageId: 'fragment-assistant-1' },
+    },
+  ], 'imported-session')
+
+  assert.equal(usage.tokenTotal, 0)
+  assert.equal(usage.modelCallCount, 0)
+  assert.equal(usage.toolCallCount, 0)
+  assert.deepEqual(usage.modelUsage, {})
+  assert.deepEqual(usage.modelCalls, {})
 })

@@ -15,11 +15,13 @@ import {
   SlidersHorizontal,
   Clapperboard,
   AlertTriangle,
+  Brain,
 } from 'lucide-react'
 import { api, ApiError, authedFetch } from '@/lib/api'
 import { parseJsonPreserveIds } from '@/lib/ids'
 import { useAuth } from '@/lib/auth'
 import type { MemoryView, ModelInfo, SkillView } from '@/lib/types'
+import type { DesktopMemoryScope } from '@/desktop/desktop-bridge'
 import { SkillsPanel } from './SkillsPanel'
 import { AgentEmptyState } from './AgentEmptyState'
 import { ModelPicker } from '@/components/ui/ModelPicker'
@@ -34,6 +36,7 @@ import {
 import { isActionableConfirmation } from './confirmationState'
 import { toolLabel, type AgentChatMsg, type AgentConfirmation, type AgentSuggestion, type ExecutionStep } from './agentTypes'
 import { AgentNextActions, AgentTaskBadge, AgentTurnTimeline } from './AgentExecutionRecord'
+import { AgentSkillHistoryCard } from './AgentSkillHistoryCard'
 import {
   applyAgentEvent,
   isChatVisibleMessage,
@@ -1144,15 +1147,18 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
           <NavIcon tab="history" current={tab} set={setTab} icon={History} label="历史" />
           <NavIcon tab="usage" current={tab} set={setTab} icon={BarChart3} label="用量" />
           {desktop ? (
-            <button
-              type="button"
-              onClick={openConfiguration}
-              title="模型设置"
-              aria-label="模型设置"
-              className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04]"
-            >
-              <Settings2 size={16} />
-            </button>
+            <>
+              <NavIcon tab="pref" current={tab} set={setTab} icon={Brain} label="记忆" />
+              <button
+                type="button"
+                onClick={openConfiguration}
+                title="模型设置"
+                aria-label="模型设置"
+                className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04]"
+              >
+                <Settings2 size={16} />
+              </button>
+            </>
           ) : (
             <NavIcon tab="pref" current={tab} set={setTab} icon={Settings2} label="偏好" />
           )}
@@ -1228,6 +1234,10 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                     </>
                   ) : (
                     <>
+                      <AgentSkillHistoryCard
+                        skillId={m.meta?.selectedSkillId}
+                        skills={panelSkills}
+                      />
                       <AgentNodeReferenceCards references={m.meta?.nodeReferences ?? []} />
                       <div className={m.meta?.nodeReferences?.length ? 'mt-2' : undefined}>{m.content}</div>
                     </>
@@ -1409,7 +1419,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
         </div>
       )}
 
-      {tab === 'pref' && <PreferencesTab />}
+      {tab === 'pref' && <PreferencesTab desktop={desktop} sessionId={panelSessionId} />}
       {desktop && desktopAdapter?.error && tab === 'chat' && (
         <p role="alert" className="mx-3 mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{desktopAdapter.error}</p>
       )}
@@ -1549,7 +1559,12 @@ function NavIcon({
   )
 }
 
-function PreferencesTab() {
+function PreferencesTab({ desktop = false, sessionId }: { desktop?: boolean; sessionId: string | number | null }) {
+  if (desktop) return <DesktopMemoryPreferences sessionId={sessionId} />
+  return <WebPreferencesTab />
+}
+
+function WebPreferencesTab() {
   const preferences = useAuth((s) => s.preferences)
   const updatePreferences = useAuth((s) => s.updatePreferences)
   const [models, setModels] = useState<ModelInfo[]>([])
@@ -1666,6 +1681,172 @@ function Memories() {
           </button>
         </div>
       ))}
+    </div>
+  )
+}
+
+interface DesktopMemoryCandidateView {
+  id: string
+  content: string
+  memoryType: string
+  scope: DesktopMemoryScope
+  confidence: number
+  createdAt: string
+  sessionId?: string
+  canvasId?: string
+}
+
+const DESKTOP_MEMORY_SCOPE_LABELS: Record<DesktopMemoryScope, string> = {
+  session: '会话记忆',
+  canvas: '画布偏好',
+  project: '项目偏好',
+  global: '全局偏好',
+  daily: '当日记忆',
+}
+
+function DesktopMemoryPreferences({ sessionId }: { sessionId: string | number | null }) {
+  const [scope, setScope] = useState<DesktopMemoryScope>('project')
+  const [items, setItems] = useState<MemoryView[]>([])
+  const [candidates, setCandidates] = useState<DesktopMemoryCandidateView[]>([])
+  const [draft, setDraft] = useState('')
+  const [editingId, setEditingId] = useState<string | number | null>(null)
+  const [editingDraft, setEditingDraft] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const sessionQuery = scope === 'session' && sessionId
+        ? `&sessionId=${encodeURIComponent(String(sessionId))}`
+        : ''
+      const result = scope === 'session' && !sessionId
+        ? { items: [] }
+        : await api<{ items: MemoryView[] }>(`/memories?scope=${encodeURIComponent(scope)}${sessionQuery}`)
+      const pending = await api<{ items: DesktopMemoryCandidateView[] }>('/memory-candidates')
+      setItems(result.items)
+      setCandidates(pending.items)
+    } catch (cause) {
+      setError((cause as Error).message || '记忆读取失败。')
+    } finally {
+      setLoading(false)
+    }
+  }, [scope, sessionId])
+
+  useEffect(() => { void refresh() }, [refresh])
+
+  const createMemory = async () => {
+    try {
+      await api('/memories', {
+        method: 'POST',
+        body: JSON.stringify({ content: draft, scope, ...(scope === 'session' && sessionId ? { sessionId: String(sessionId) } : {}) }),
+      })
+      setDraft('')
+      await refresh()
+      toastSuccess('记忆已保存')
+    } catch (cause) { toastError((cause as Error).message) }
+  }
+
+  const editMemory = async (memory: MemoryView) => {
+    try {
+      const sessionQuery = scope === 'session' && sessionId ? `&sessionId=${encodeURIComponent(String(sessionId))}` : ''
+      await api(`/memories/${encodeURIComponent(String(memory.id))}?scope=${encodeURIComponent(scope)}${sessionQuery}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ content: editingDraft, scope }),
+      })
+      setEditingId(null)
+      setEditingDraft('')
+      await refresh()
+      toastSuccess('记忆已更新')
+    } catch (cause) { toastError((cause as Error).message) }
+  }
+
+  const deleteMemory = async (memory: MemoryView) => {
+    try {
+      await api(`/memories/${encodeURIComponent(String(memory.id))}?scope=${encodeURIComponent(scope)}${scope === 'session' && sessionId ? `&sessionId=${encodeURIComponent(String(sessionId))}` : ''}`, { method: 'DELETE' })
+      setItems((previous) => previous.filter((item) => item.id !== memory.id))
+    } catch (cause) { toastError((cause as Error).message) }
+  }
+
+  const reviewCandidate = async (candidate: DesktopMemoryCandidateView, action: 'accept' | 'reject') => {
+    try {
+      await api(`/memory-candidates/${encodeURIComponent(candidate.id)}/${action}`, { method: 'POST' })
+      await refresh()
+      toastSuccess(action === 'accept' ? '已保存这项记忆' : '已忽略这项候选')
+    } catch (cause) { toastError((cause as Error).message) }
+  }
+
+  const exportMemories = async () => {
+    try {
+      const result = await api<{ schemaVersion: number; exportedAt: string; items: MemoryView[] }>('/memories/export')
+      const objectUrl = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' }))
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = `vibepaper-memory-${new Date().toISOString().slice(0, 10)}.json`
+      anchor.click()
+      URL.revokeObjectURL(objectUrl)
+      toastSuccess('记忆已导出')
+    } catch (cause) { toastError((cause as Error).message) }
+  }
+
+  return (
+    <div className="flex-1 space-y-3 overflow-auto p-4">
+      <p className="text-[13px] font-bold text-[#111]">记忆管理</p>
+      <div className="rounded-[18px] bg-[#f7f7f7] p-3">
+        <div className="mb-2 flex items-center gap-2">
+          <p className="min-w-0 flex-1 text-[12px] font-bold text-[#555]">Agent 记忆</p>
+          <button type="button" onClick={() => void refresh()} disabled={loading} className="rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-[11px] text-[#555] disabled:opacity-50">刷新</button>
+          <button type="button" onClick={() => void exportMemories()} className="rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-[11px] text-[#555]">导出</button>
+        </div>
+        <p className="mb-2 text-[11px] leading-relaxed text-[#888]">项目记忆随项目备份；全局偏好保存在本机用户数据中。候选内容只有经你确认后才会保存。</p>
+        <label className="mb-2 block text-[11px] font-semibold text-[#555]">
+          范围
+          <select aria-label="记忆范围" className="mt-1 h-9 w-full rounded-lg border border-black/10 bg-white px-2 text-[12px] font-normal" value={scope} onChange={(event) => setScope(event.target.value as DesktopMemoryScope)}>
+            {Object.entries(DESKTOP_MEMORY_SCOPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
+        {scope === 'session' && !sessionId && <p className="mb-2 text-[11px] text-amber-700">请先选择一个 Agent 会话。</p>}
+        <textarea aria-label="新记忆内容" value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={2_000} rows={2} placeholder={`添加${DESKTOP_MEMORY_SCOPE_LABELS[scope]}`} className="w-full resize-y rounded-lg border border-black/10 bg-white px-2.5 py-2 text-[12px] outline-none focus:border-black/30" />
+        <button type="button" disabled={!draft.trim() || loading || (scope === 'session' && !sessionId)} onClick={() => void createMemory()} className="mt-2 h-8 rounded-full bg-[#111] px-3 text-[11px] font-semibold text-white disabled:opacity-40">保存记忆</button>
+        {error && <p role="alert" className="mt-2 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] text-red-700">{error}</p>}
+        {loading && <p className="mt-2 text-[11px] text-[#999]">正在读取…</p>}
+        {!loading && items.length === 0 && <p className="mt-2 text-[12px] text-[#999]">暂无{DESKTOP_MEMORY_SCOPE_LABELS[scope]}</p>}
+        <div className="mt-2 space-y-1.5">
+          {items.map((memory) => (
+            <div key={memory.id} className="rounded-lg bg-white px-2.5 py-2 text-[12px]">
+              {editingId === memory.id ? (
+                <div>
+                  <textarea aria-label="编辑记忆内容" value={editingDraft} onChange={(event) => setEditingDraft(event.target.value)} maxLength={2_000} rows={2} className="w-full resize-y rounded-md border border-black/10 px-2 py-1.5 text-[12px] outline-none focus:border-black/30" />
+                  <div className="mt-2 flex justify-end gap-3">
+                    <button type="button" onClick={() => setEditingId(null)} className="text-[#777]">取消</button>
+                    <button type="button" disabled={!editingDraft.trim()} onClick={() => void editMemory(memory)} className="font-semibold text-[#111] disabled:opacity-40">保存</button>
+                  </div>
+                </div>
+              ) : <div className="flex items-start gap-2">
+                <span className="flex-1 whitespace-pre-wrap text-[#555]">{memory.content}</span>
+                <button type="button" aria-label="编辑记忆" onClick={() => { setEditingId(memory.id); setEditingDraft(memory.content) }} className="shrink-0 text-[#888] hover:text-[#111]">编辑</button>
+                <button type="button" aria-label="删除记忆" onClick={() => void deleteMemory(memory)} className="shrink-0 text-red-400 hover:text-red-600"><X size={12} /></button>
+              </div>}
+            </div>
+          ))}
+        </div>
+        {candidates.length > 0 && <div className="mt-3 space-y-2 border-t border-black/5 pt-3">
+          <p className="text-[11px] font-semibold text-[#555]">待确认的记忆候选</p>
+          {candidates.map((candidate) => (
+            <div key={candidate.id} className="rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-2">
+              <p className="text-[12px] leading-relaxed text-[#555]">{candidate.content}</p>
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="text-[10px] text-[#888]">{DESKTOP_MEMORY_SCOPE_LABELS[candidate.scope] ?? candidate.scope}</span>
+                <div className="flex gap-3 text-[11px]">
+                  <button type="button" onClick={() => void reviewCandidate(candidate, 'reject')} className="text-[#777] hover:text-[#111]">忽略</button>
+                  <button type="button" onClick={() => void reviewCandidate(candidate, 'accept')} className="font-semibold text-[#111]">保存</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>}
+      </div>
     </div>
   )
 }
@@ -1796,23 +1977,22 @@ function HistoryTab({
   onImported: (id: string | number) => void
 }) {
   const [sessions, setSessions] = useState<HistorySession[]>([])
-  const [fragments, setFragments] = useState<Array<{ id: number; title: string }>>([])
+  const [fragments, setFragments] = useState<Array<{ id: string | number; title: string; canvasId?: string | null; createdAt?: string }>>([])
   const reload = () => {
-    if (desktop) return
-    const q = canvasId != null ? `?canvasId=${encodeURIComponent(String(canvasId))}` : ''
-    void api<{ items: typeof sessions }>(`/agent/sessions${q}`)
-      .then((r) => setSessions(r.items))
-      .catch(() => undefined)
+    if (!desktop) {
+      const q = canvasId != null ? `?canvasId=${encodeURIComponent(String(canvasId))}` : ''
+      void api<{ items: typeof sessions }>(`/agent/sessions${q}`)
+        .then((r) => setSessions(r.items))
+        .catch(() => undefined)
+    }
     void api<{ items: typeof fragments }>('/agent/fragments')
       .then((r) => setFragments(r.items))
       .catch(() => undefined)
   }
   useEffect(() => {
-    if (desktop) return
     reload()
   }, [canvasId, desktop])
   const saveFragment = async () => {
-    if (desktop) return
     if (!sessionId) return
     try {
       await api(`/agent/sessions/${sessionId}/fragments`, {
@@ -1825,9 +2005,29 @@ function HistoryTab({
       toastError((e as Error).message)
     }
   }
+  const importFragment = async (fragmentId: string | number) => {
+    try {
+      const result = await api<{ sessionId: string | number }>(`/agent/fragments/${encodeURIComponent(String(fragmentId))}/import`, {
+        method: 'POST',
+        body: JSON.stringify({ canvasId }),
+      })
+      toastSuccess('片段已导入当前画布')
+      onImported(result.sessionId)
+    } catch (e) {
+      toastError((e as Error).message)
+    }
+  }
   if (desktop) {
     return (
       <div className="flex-1 space-y-3 overflow-auto p-3">
+        <button
+          type="button"
+          disabled={!sessionId}
+          onClick={() => void saveFragment()}
+          className="flex h-9 w-full items-center justify-center gap-1 rounded-full bg-[#111] text-[12px] font-bold text-white disabled:opacity-40"
+        >
+          <Plus size={13} /> 保存当前会话片段
+        </button>
         <p className="text-[12px] font-bold text-[#555]">本地对话历史</p>
         {!desktopSessions?.length && <p className="py-8 text-center text-[12px] text-[#888]">此项目还没有 Agent 会话。</p>}
         {desktopSessions?.map((session) => (
@@ -1841,6 +2041,20 @@ function HistoryTab({
             active={String(session.sessionId) === String(sessionId)}
             onOpen={() => onOpenSession(session.sessionId, session.title)}
           />
+        ))}
+        <p className="text-[12px] font-bold text-[#555]">可复用片段</p>
+        {!fragments.length && <p className="py-3 text-center text-[12px] text-[#888]">暂无可复用片段。</p>}
+        {fragments.map((fragment) => (
+          <div key={fragment.id} className="flex items-center gap-2 rounded-[16px] bg-[#f7f7f7] px-2.5 py-2 text-[12px]">
+            <span className="flex-1 font-semibold text-[#555]">{fragment.title}</span>
+            <button
+              type="button"
+              onClick={() => void importFragment(fragment.id)}
+              className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-[#111] shadow-sm"
+            >
+              导入
+            </button>
+          </div>
         ))}
       </div>
     )
@@ -1868,17 +2082,7 @@ function HistoryTab({
           <span className="flex-1 font-semibold text-[#555]">{f.title}</span>
           <button
             type="button"
-            onClick={() => {
-              void api<{ sessionId: string | number }>(`/agent/fragments/${f.id}/import`, {
-                method: 'POST',
-                body: JSON.stringify({ canvasId }),
-              })
-                .then((r) => {
-                  toastSuccess('片段已导入当前画布')
-                  onImported(r.sessionId)
-                })
-                .catch((e) => toastError((e as Error).message))
-            }}
+            onClick={() => void importFragment(f.id)}
             className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-[#111] shadow-sm"
           >
             导入

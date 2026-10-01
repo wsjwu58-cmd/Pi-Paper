@@ -294,6 +294,40 @@ export interface DesktopAgentUsage {
   modelCalls: Record<string, number>
 }
 
+export type DesktopMemoryScope = 'session' | 'canvas' | 'project' | 'global' | 'daily'
+
+export interface DesktopAgentMemory {
+  id: string
+  content: string
+  memoryType: string
+  scope: DesktopMemoryScope
+  sessionId?: string
+  canvasId?: string
+  confidence: number
+  source: string
+  version: number
+  createdAt: string
+  expiresAt?: string
+}
+
+export interface DesktopAgentMemoryCandidate {
+  id: string
+  content: string
+  memoryType: string
+  scope: DesktopMemoryScope
+  sessionId?: string
+  canvasId?: string
+  confidence: number
+  createdAt: string
+}
+
+export interface DesktopAgentSessionFragment {
+  id: string
+  title: string
+  canvasId: string | null
+  createdAt: string
+}
+
 export interface DesktopCanvasExportDocument {
   schema_version: string
   schemaVersion: string
@@ -801,6 +835,19 @@ export interface DesktopBridge {
   saveLocalTextModel(config: Pick<DesktopLocalTextModel, 'endpoint' | 'modelId'>): Promise<DesktopLocalTextModel>
   clearLocalTextModel(): Promise<null>
   listAgentSessions(projectId: string): Promise<DesktopAgentSession[]>
+  listAgentFragments(projectId: string): Promise<{ items: DesktopAgentSessionFragment[] }>
+  saveAgentSessionFragment(projectId: string, sessionId: string, title?: string): Promise<{ fragmentId: string }>
+  importAgentFragment(projectId: string, fragmentId: string, canvasId?: string): Promise<{ sessionId: string }>
+  listAgentMemories(projectId: string, scope?: DesktopMemoryScope, sessionId?: string): Promise<{ items: DesktopAgentMemory[] }>
+  createAgentMemory(projectId: string, content: string, scope?: DesktopMemoryScope, sessionId?: string): Promise<DesktopAgentMemory>
+  updateAgentMemory(projectId: string, memoryId: string, content: string, scope?: DesktopMemoryScope, sessionId?: string): Promise<DesktopAgentMemory>
+  deleteAgentMemory(projectId: string, memoryId: string, scope?: DesktopMemoryScope, sessionId?: string): Promise<{ status: 'ok' }>
+  exportAgentMemories(projectId: string): Promise<{ schemaVersion: 1; exportedAt: string; items: DesktopAgentMemory[] }>
+  listAgentMemoryCandidates(projectId: string): Promise<{ items: DesktopAgentMemoryCandidate[] }>
+  reviewAgentMemoryCandidate(projectId: string, candidateId: string, action: 'accept' | 'reject'): Promise<{
+    status: 'accepted' | 'rejected'
+    item?: DesktopAgentMemory
+  }>
   listAgentSkills(projectId: string, sessionId?: string, keyword?: string): Promise<{
     items: DesktopAgentSkill[]
     loadedSkillIds: string[]
@@ -822,7 +869,7 @@ export interface DesktopBridge {
     listener: (event: AgentEventEnvelope) => void,
   ): () => void
   confirmAgentAction?(input: DesktopConfirmAgentActionInput): Promise<DesktopConfirmAgentActionResult>
-  cancelAgentRun?(projectId: string, sessionId: string, runId: string): Promise<void>
+  cancelAgentRun?(projectId: string, sessionId: string, runId: string): Promise<{ cancelled: boolean }>
 }
 
 declare global {

@@ -305,12 +305,18 @@ export function useDesktopAgentController({
     setActiveSessionId(sessionId)
     setError('')
     try {
+      if (!sessions.some((session) => session.sessionId === sessionId)) {
+        const listed = await bridge.listAgentSessions(projectId)
+        if (epoch !== requestEpochRef.current) return
+        setSessions(listed)
+        if (!listed.some((session) => session.sessionId === sessionId)) throw new Error('SESSION_NOT_FOUND')
+      }
       await loadSession(sessionId, epoch)
       await loadSkills(sessionId)
     } catch (cause) {
       if (epoch === requestEpochRef.current) setError(normalizeError(cause))
     }
-  }, [loadSession, loadSkills, projectId])
+  }, [loadSession, loadSkills, projectId, sessions])
 
   const sendWithReferences = useCallback(async (input: { selectedNodeIds: string[]; selectedSkillId?: string }): Promise<boolean> => {
     const content = draft.trim()
@@ -436,6 +442,26 @@ export function useDesktopAgentController({
     }
   }, [canvasId, onCanvasChanged, projectId, refreshSessions])
 
+  const onStop = useCallback(async () => {
+    const sessionId = activeRunSessionIdRef.current
+    const runId = activeRunIdRef.current
+    if (!bridge || !projectId || !sessionId || !runId) return
+    if (!bridge.cancelAgentRun) {
+      setError('本地 Agent 取消接口尚未接入。')
+      return
+    }
+    setError('')
+    try {
+      const result = await bridge.cancelAgentRun(projectId, sessionId, runId)
+      if (!result.cancelled && sessionId === activeSessionRef.current) {
+        const epoch = ++requestEpochRef.current
+        await loadSession(sessionId, epoch)
+      }
+    } catch (cause) {
+      setError(normalizeError(cause))
+    }
+  }, [loadSession, projectId])
+
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
   const refreshSkills = useCallback(async () => loadSkills(activeSessionId), [activeSessionId, loadSkills])
   const settingsDialog = settingsOpen && projectId
@@ -468,6 +494,7 @@ export function useDesktopAgentController({
     onSelectSession,
     onSend,
     onSendWithReferences: sendWithReferences,
+    onStop,
     onConfirm,
     onConfigure: () => setSettingsOpen(true),
     onClose: () => useCanvasStore.getState().setAgentOpen(false),

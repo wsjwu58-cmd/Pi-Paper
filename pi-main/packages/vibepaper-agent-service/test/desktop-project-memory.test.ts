@@ -99,6 +99,34 @@ describe("desktop project memory", () => {
 		expect(await memory.read()).toEqual([]);
 	});
 
+	it("keeps global preferences in user data and exports them separately from project backup scope", async () => {
+		const firstDirectory = await createProject("global-memory-a", "project-global-a");
+		const first = new DesktopProjectMemory(firstDirectory, "project-global-a", { userDataDirectory: temporaryRoot });
+		await first.initialize();
+		const projectPreference = await first.createManaged("此项目使用复古胶片质感", "project");
+		const globalPreference = await first.createManaged("默认优先使用暖色调", "global");
+
+		const exported = await first.exportManaged();
+		expect(exported.map((entry) => entry.scope)).toEqual(["project", "global"]);
+		expect(exported.map((entry) => entry.record.id)).toEqual([projectPreference.id, globalPreference.id]);
+
+		const secondDirectory = await createProject("global-memory-b", "project-global-b");
+		const reopened = new DesktopProjectMemory(secondDirectory, "project-global-b", { userDataDirectory: temporaryRoot });
+		await reopened.initialize();
+		expect(await reopened.listManaged("project")).toEqual([]);
+		expect(await reopened.listManaged("global")).toEqual([expect.objectContaining({
+			id: globalPreference.id,
+			userId: "vibepaper-local-user-v1",
+			content: "默认优先使用暖色调",
+		})]);
+
+		await reopened.editManaged(globalPreference.id, "全局默认优先使用暖色绘本风格", "global");
+		expect((await first.listManaged("global"))[0]?.content).toBe("全局默认优先使用暖色绘本风格");
+		await reopened.removeManaged(globalPreference.id, "global");
+		expect(await first.listManaged("global")).toEqual([]);
+		expect(await first.listManaged("project")).toEqual([expect.objectContaining({ id: projectPreference.id })]);
+	});
+
 	it("makes memory tools available according to the user's explicit request", async () => {
 		const memory = await createMemory("tools", "project-tools");
 		const names = (userText: string) => memory.createTools(userText).map((tool) => tool.name);
