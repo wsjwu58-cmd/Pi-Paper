@@ -36,6 +36,7 @@ const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = requ
 const { ALLOWED_AGENT_CORE_METHODS, getAgentCanvasDomain } = require('./agent-local-tools.cjs')
 const { deleteAgentNodes } = require('./agent-node-deletion.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
+const { isDesktopRendererRoute, isTrustedRendererUrl: checkRendererUrl } = require('./renderer-trust.cjs')
 const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
 const { createDramaBatchTaskInput } = require('./drama-render-batch.cjs')
 
@@ -73,14 +74,7 @@ const rendererIndex = path.join(rendererRoot, 'index.html')
 const developmentUrl = process.env.VITE_DEV_SERVER_URL
 
 function isTrustedRendererUrl(value) {
-  try {
-    const candidate = new URL(value)
-    if (developmentUrl) return candidate.origin === new URL(developmentUrl).origin
-    return candidate.protocol === 'vibe:' && candidate.host === 'app'
-      && candidate.pathname === '/' && !candidate.search && !candidate.hash
-  } catch {
-    return false
-  }
+  return checkRendererUrl(value, developmentUrl)
 }
 
 function assertTrustedSender(event) {
@@ -1184,7 +1178,8 @@ function registerRendererProtocol() {
         return new Response('Asset not found', { status: 404, headers: { 'content-type': 'text/plain' } })
       }
     }
-    const relativePath = requestedPath === '/' ? 'index.html' : requestedPath.replace(/^\/+/, '')
+    const relativePath = isTrustedRendererUrl(request.url) && isDesktopRendererRoute(requestedPath)
+      ? 'index.html' : requestedPath.replace(/^\/+/, '')
     const targetPath = path.resolve(rendererRoot, relativePath)
     const relativeToRoot = path.relative(rendererRoot, targetPath)
     if (!relativeToRoot || relativeToRoot === '.' || relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
