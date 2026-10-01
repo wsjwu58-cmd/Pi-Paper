@@ -593,7 +593,7 @@ export interface DesktopAgentMessage {
   createdAt: number
   id?: string | number
   type?: string
-  meta?: AgentChatMsg['meta']
+  meta?: NonNullable<AgentChatMsg['meta']> & { runId?: string }
 }
 
 export interface DesktopAgentSessionSnapshot {

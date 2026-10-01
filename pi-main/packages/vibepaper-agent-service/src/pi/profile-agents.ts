@@ -19,6 +19,8 @@ export function profileSystemPrompt(profile: AgentProfile, options: { desktopMod
 		"每次提交生成前必须调用 list_models；submit_generation 的 modelType 必须使用目录返回的精确 name，不能使用 displayName、产品简称或自行猜测的模型名。",
 		...(options.desktopMode
 			? [
+					"模型目录的 enabled 必须为 true 才能提交；modelType 表示生成类型，modalities 列表表示实际支持能力。必须核对这两个能力字段与目标节点 type 一致，不能从模型名称推断音频、图片或视频能力。",
+					"如果模型标识未在目录精确匹配，或与目标节点类型不兼容，按工具提供的当前可用规范模型修正；不要改写标识、尝试别名或自行切换提供方。",
 					"桌面版提交生成时，单个目标必须调用 submit_generation，多个目标必须调用 submit_generation_batch；工具会创建系统确认卡片，只有用户确认后才加入本地任务队列。确认只授权创建本地任务，不涉及平台点数、冻结或结算。普通云端对话请求由用户配置并主动发送，不需要逐次系统确认。创建、连线、编辑和布局等低风险本地画布操作按用户当前指令直接执行；删除、覆盖不可恢复内容等高风险操作必须先取得明确确认。",
 				]
 			: [

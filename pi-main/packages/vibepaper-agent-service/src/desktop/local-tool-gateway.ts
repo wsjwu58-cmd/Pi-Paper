@@ -1,9 +1,103 @@
 import { createHash } from "node:crypto";
 import type { CanvasCommand, CanvasCommandGateway } from "../application/canvas-command-service.ts";
 import type { AuditInput } from "../domain/continuity-rules.ts";
-import { resolveCatalogGenerationModel, ToolGatewayError } from "../infrastructure/tool-gateway.ts";
+import { ToolGatewayError } from "../infrastructure/tool-gateway.ts";
 import type { ReadToolsGateway } from "../tools/read-tools.ts";
 import type { DesktopAgentControlStore } from "./control-store.ts";
+
+const DESKTOP_GENERATION_MODALITIES = ["text", "image", "video", "audio", "compose"] as const;
+type DesktopGenerationModality = (typeof DESKTOP_GENERATION_MODALITIES)[number];
+
+type DesktopModelDirectoryEntry = {
+	name: string;
+	modelType: DesktopGenerationModality;
+	providerId: string;
+	providerType: "local" | "cloud";
+	enabled: boolean;
+	modalities: readonly DesktopGenerationModality[];
+	[key: string]: unknown;
+};
+
+function isDesktopGenerationModality(value: unknown): value is DesktopGenerationModality {
+	return typeof value === "string" && DESKTOP_GENERATION_MODALITIES.includes(value as DesktopGenerationModality);
+}
+
+function isDesktopModelDirectoryEntry(value: unknown): value is DesktopModelDirectoryEntry {
+	if (!isRecord(value)) return false;
+	return (
+		typeof value.name === "string" &&
+		value.name.length > 0 &&
+		isDesktopGenerationModality(value.modelType) &&
+		typeof value.providerId === "string" &&
+		value.providerId.length > 0 &&
+		(value.providerType === "local" || value.providerType === "cloud") &&
+		typeof value.enabled === "boolean" &&
+		Array.isArray(value.modalities) &&
+		value.modalities.length > 0 &&
+		value.modalities.every(isDesktopGenerationModality) &&
+		value.modalities.includes(value.modelType)
+	);
+}
+
+function modelSummary(model: DesktopModelDirectoryEntry) {
+	return { name: model.name, modelType: model.modelType, modalities: [...model.modalities] };
+}
+
+function modelNamesForMessage(models: readonly DesktopModelDirectoryEntry[]): string {
+	return models.length > 0
+		? models.map((model) => `${JSON.stringify(model.name)} (${model.modelType})`).join(", ")
+		: "无已启用模型";
+}
+
+function requireEnabledDesktopModel(
+	models: readonly DesktopModelDirectoryEntry[],
+	requestedModel: string,
+): DesktopModelDirectoryEntry {
+	const selected = models.find((model) => model.name === requestedModel);
+	if (!selected) {
+		const available = models.filter((model) => model.enabled).map(modelSummary);
+		throw new ToolGatewayError(
+			"MODEL_NOT_FOUND",
+			`未找到精确模型标识 ${JSON.stringify(requestedModel.slice(0, 256))}。请从 list_models 返回的 name 中选择；当前可用模型：${modelNamesForMessage(models.filter((model) => model.enabled))}`,
+			{ requestedModel: requestedModel.slice(0, 256), availableModels: available },
+			400,
+		);
+	}
+	if (!selected.enabled) {
+		const reason = stringValue(selected.unavailableReason)
+			?.replace(/[\r\n\t]+/gu, " ")
+			.slice(0, 300);
+		throw new ToolGatewayError(
+			"MODEL_DISABLED",
+			`模型 ${JSON.stringify(selected.name)} 当前未启用${reason ? `：${reason}` : "；请检查提供方凭据或本地模型状态"}。`,
+			{ model: modelSummary(selected), unavailableReason: reason ?? null },
+			400,
+		);
+	}
+	return selected;
+}
+
+function assertDesktopModelSupportsTarget(
+	model: DesktopModelDirectoryEntry,
+	node: Record<string, unknown>,
+	models: readonly DesktopModelDirectoryEntry[],
+): void {
+	const targetType = stringValue(node.type) ?? "unknown";
+	if (model.modelType === targetType && model.modalities.includes(model.modelType)) return;
+	const compatibleModels = models.filter(
+		(candidate) =>
+			candidate.enabled &&
+			candidate.modelType === targetType &&
+			candidate.modalities.includes(targetType as DesktopGenerationModality),
+	);
+	const available = compatibleModels.map(modelSummary);
+	throw new ToolGatewayError(
+		"MODEL_MODALITY_MISMATCH",
+		`所选模型 ${JSON.stringify(model.name)} 的生成类型是 ${model.modelType}，支持能力为 ${JSON.stringify(model.modalities)}；目标节点类型是 ${targetType}。可用于该目标的模型：${modelNamesForMessage(compatibleModels)}`,
+		{ model: modelSummary(model), targetType, availableModels: available },
+		400,
+	);
+}
 
 export interface DesktopLocalToolClient {
 	request(method: string, payload: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
@@ -45,10 +139,14 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 		return node;
 	}
 
-	async listModels(): Promise<readonly unknown[]> {
+	async listModels(): Promise<readonly DesktopModelDirectoryEntry[]> {
 		const response = await this.call("agent:core:list-models", { projectId: this.projectId });
 		if (!Array.isArray(response)) throw gatewayError("INVALID_RESPONSE", "模型目录响应无效");
-		return response.map((entry) => (isRecord(entry) ? stripPrivateFields(entry) : entry));
+		const entries = response.map((entry) => (isRecord(entry) ? stripPrivateFields(entry) : entry));
+		const models = entries.filter(isDesktopModelDirectoryEntry);
+		if (models.length !== entries.length)
+			throw gatewayError("INVALID_RESPONSE", "模型目录条目缺少有效的 name、modelType、modalities 或提供方信息");
+		return models;
 	}
 
 	async requestRenderAudit(
@@ -81,11 +179,21 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 
 	async resolveGenerationModel(_userId: string, requestedModel: string): Promise<string> {
 		const models = await this.listModels();
-		const resolved = resolveCatalogGenerationModel(models.filter((entry) => isRecord(entry) && entry.enabled === true), requestedModel);
-		const selected = models.find((entry) => isRecord(entry) && entry.name === resolved);
-		if (!isRecord(selected) || selected.enabled !== true)
-			throw new ToolGatewayError("MODEL_UNAVAILABLE", "所选模型当前不可用，请检查模型配置", {}, 400);
-		return resolved;
+		return requireEnabledDesktopModel(models, requestedModel).name;
+	}
+
+	async resolveGenerationModelForTarget(
+		userId: string,
+		requestedModel: string,
+		canvasId: string,
+		targetNodeId: string,
+	): Promise<string> {
+		if (userId !== this.projectId) throw gatewayError("PERMISSION_DENIED", "当前项目已更改", 403);
+		const models = await this.listModels();
+		const model = requireEnabledDesktopModel(models, requestedModel);
+		const node = await this.getNodeDetail(userId, canvasId, targetNodeId);
+		assertDesktopModelSupportsTarget(model, node, models);
+		return model.name;
 	}
 
 	async createGenerationTask(input: {
@@ -99,22 +207,15 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 	}): Promise<Record<string, unknown>> {
 		if (input.userId !== this.projectId) throw gatewayError("PERMISSION_DENIED", "当前项目已更改", 403);
 		const models = await this.listModels();
-		const model = models.find((entry) => isRecord(entry) && entry.name === input.modelType);
-		if (!isRecord(model) || model.enabled !== true)
-			throw new ToolGatewayError("MODEL_UNAVAILABLE", "所选模型当前不可用，请检查模型配置", {}, 400);
-		const modality = stringValue(model.modelType);
+		const model = requireEnabledDesktopModel(models, input.modelType);
+		const node = await this.getNodeDetail(input.userId, input.canvasId, input.nodeId);
+		assertDesktopModelSupportsTarget(model, node, models);
+		const modality = model.modelType;
 		const providerType = model.providerType;
-		const providerId = stringValue(model.providerId);
-		const modelId = stringValue(model.name);
+		const providerId = model.providerId;
+		const modelId = model.name;
 		const prompt = stringValue(input.modelParams.prompt)?.trim() ?? "";
-		if (
-			!modality ||
-			!["text", "image", "video", "audio", "compose"].includes(modality) ||
-			(modality !== "compose" && !prompt) ||
-			!providerId ||
-			!modelId ||
-			(providerType !== "local" && providerType !== "cloud")
-		) {
+		if (modality !== "compose" && !prompt) {
 			throw new ToolGatewayError("INVALID_INPUT", "模型、生成类型或提示词无效", {}, 400);
 		}
 		const parameters = Object.fromEntries(Object.entries(input.modelParams).filter(([key]) => key !== "prompt"));
@@ -176,8 +277,11 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 			if (nodeIds.length < 1 || nodeIds.length > 20 || new Set(nodeIds).size !== nodeIds.length)
 				throw gatewayError("INVALID_INPUT", "删除需要 1 至 20 个不同节点", 400);
 			const response = await this.call("agent:core:delete-nodes", {
-				projectId: this.projectId, canvasId: command.canvasId,
-				expectedVersion: command.expectedVersion, idempotencyKey: command.idempotencyKey, nodeIds,
+				projectId: this.projectId,
+				canvasId: command.canvasId,
+				expectedVersion: command.expectedVersion,
+				idempotencyKey: command.idempotencyKey,
+				nodeIds,
 			});
 			if (!isRecord(response) || !Number.isSafeInteger(response.canvasVersion))
 				throw gatewayError("INVALID_RESPONSE", "本地画布未返回有效的删除结果");
@@ -337,27 +441,44 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 	private async call(method: string, payload: Record<string, unknown>): Promise<unknown> {
 		const scope = this.runScope;
 		const key = stringValue(payload.idempotencyKey);
-		const mutating = /agent:core:(?:create-node|update-node|connect-edge|save-canvas|delete-nodes|create-generation-task)$/u.test(method);
+		const mutating =
+			/agent:core:(?:create-node|update-node|connect-edge|save-canvas|delete-nodes|create-generation-task)$/u.test(
+				method,
+			);
 		if (scope && mutating) {
 			const run = scope.control.findById(scope.runId);
 			if (!run || !["running", "waiting_confirmation", "waiting_task"].includes(run.status))
 				throw gatewayError("RUN_ABORTED", "当前回合已停止，操作未执行", 409);
 			payload = { ...payload, runId: scope.runId };
 		}
-		const operation = scope && key && mutating ? scope.control.prepareOperation({
-			sessionId: scope.sessionId, runId: scope.runId,
-			toolCallId: createHash("sha256").update(`${scope.sessionId}\0${key}`).digest("hex"),
-			effect: method,
-			inputHash: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
-			canvasVersion: typeof payload.expectedVersion === "number" ? payload.expectedVersion
-				: typeof payload.canvasVersion === "number" ? payload.canvasVersion : null,
-			idempotencyKey: key,
-		}) : undefined;
+		const operation =
+			scope && key && mutating
+				? scope.control.prepareOperation({
+						sessionId: scope.sessionId,
+						runId: scope.runId,
+						toolCallId: createHash("sha256").update(`${scope.sessionId}\0${key}`).digest("hex"),
+						effect: method,
+						inputHash: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+						canvasVersion:
+							typeof payload.expectedVersion === "number"
+								? payload.expectedVersion
+								: typeof payload.canvasVersion === "number"
+									? payload.canvasVersion
+									: null,
+						idempotencyKey: key,
+					})
+				: undefined;
 		if (operation?.state === "succeeded" && operation.resultJson) return JSON.parse(operation.resultJson);
 		if (operation && operation.state !== "prepared") {
-			if ((operation.state === "dispatched" || operation.state === "uncertain") && method !== "agent:core:delete-nodes") {
+			if (
+				(operation.state === "dispatched" || operation.state === "uncertain") &&
+				method !== "agent:core:delete-nodes"
+			) {
 				const known = await this.client.request("agent:core:lookup-operation", {
-					projectId: this.projectId, canvasId: payload.canvasId, method, idempotencyKey: key,
+					projectId: this.projectId,
+					canvasId: payload.canvasId,
+					method,
+					idempotencyKey: key,
 				});
 				if (isRecord(known)) {
 					scope!.control.transitionOperation(operation.operationId, "succeeded", {
@@ -370,10 +491,16 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 		}
 		if (operation) scope!.control.transitionOperation(operation.operationId, "dispatched");
 		try {
-			const response = await this.client.request(method, payload, method.endsWith("delete-nodes") ? 300_000 : method.endsWith("save-canvas") ? 60_000 : 30_000);
+			const response = await this.client.request(
+				method,
+				payload,
+				method.endsWith("delete-nodes") ? 300_000 : method.endsWith("save-canvas") ? 60_000 : 30_000,
+			);
 			if (operation) {
 				const projected = isRecord(response) ? operationSnapshot(response) : response;
-				scope!.control.transitionOperation(operation.operationId, "succeeded", { resultJson: JSON.stringify(projected) });
+				scope!.control.transitionOperation(operation.operationId, "succeeded", {
+					resultJson: JSON.stringify(projected),
+				});
 			}
 			return response;
 		} catch (error) {
@@ -402,20 +529,41 @@ type LocalCanvas = {
 
 function operationSnapshot(response: Record<string, unknown>): Record<string, unknown> {
 	const result: Record<string, unknown> = {};
-	for (const key of ["version", "canvasVersion", "operation", "replayed", "taskId", "status", "modality", "nodeId", "staleNodeIds"])
+	for (const key of [
+		"version",
+		"canvasVersion",
+		"operation",
+		"replayed",
+		"taskId",
+		"status",
+		"modality",
+		"nodeId",
+		"staleNodeIds",
+	])
 		if (response[key] !== undefined) result[key] = response[key];
 	if (isRecord(response.node)) {
 		const node = response.node;
 		const data = recordValue(node.data);
-		result.node = { id: node.id, type: node.type, position: node.position, width: node.width, height: node.height,
-			data: { label: data.label, creativeType: data.creativeType, status: data.status, execStatus: data.execStatus } };
+		result.node = {
+			id: node.id,
+			type: node.type,
+			position: node.position,
+			width: node.width,
+			height: node.height,
+			data: { label: data.label, creativeType: data.creativeType, status: data.status, execStatus: data.execStatus },
+		};
 	}
 	if (response.edge !== undefined) result.edge = boundValue(stripPrivateFields(recordValue(response.edge)), 0);
-	if (Array.isArray(response.results)) result.results = response.results.map((entry) => {
-		const value = recordValue(entry);
-		return { deletedNodeId: value.deletedNodeId, connectedEdges: value.connectedEdges,
-			downstreamNodes: value.downstreamNodes, version: value.version };
-	});
+	if (Array.isArray(response.results))
+		result.results = response.results.map((entry) => {
+			const value = recordValue(entry);
+			return {
+				deletedNodeId: value.deletedNodeId,
+				connectedEdges: value.connectedEdges,
+				downstreamNodes: value.downstreamNodes,
+				version: value.version,
+			};
+		});
 	return result;
 }
 
@@ -486,21 +634,36 @@ function projectTask(task: Record<string, unknown>): Record<string, unknown> {
 		status: task.status,
 		outputAvailable: task.status === "succeeded" && task.outputVerified === true,
 	};
-	for (const key of ["modality", "attemptCount", "errorCode", "errorMessage", "createdAt", "updatedAt", "startedAt", "completedAt"])
+	for (const key of [
+		"modality",
+		"attemptCount",
+		"errorCode",
+		"errorMessage",
+		"createdAt",
+		"updatedAt",
+		"startedAt",
+		"completedAt",
+	])
 		if (task[key] !== undefined) result[key] = task[key];
 	return result;
 }
 
 function projectRenderAudit(value: unknown): Record<string, unknown> {
-	if (!isRecord(value) || !["pass", "fail"].includes(String(value.verdict))
-		|| typeof value.ruleVersion !== "string" || !Array.isArray(value.findings)) {
+	if (
+		!isRecord(value) ||
+		!["pass", "fail"].includes(String(value.verdict)) ||
+		typeof value.ruleVersion !== "string" ||
+		!Array.isArray(value.findings)
+	) {
 		throw gatewayError("INVALID_RESPONSE", "审校服务未返回有效结果");
 	}
 	const findings = value.findings.map((finding) => {
-		if (!isRecord(finding)
-			|| !["SHOT_DURATION", "CHARACTER_CONTINUITY", "AUDIO_VIDEO_SYNC"].includes(String(finding.ruleId))
-			|| !["error", "warning"].includes(String(finding.severity))
-			|| typeof finding.evidence !== "string") {
+		if (
+			!isRecord(finding) ||
+			!["SHOT_DURATION", "CHARACTER_CONTINUITY", "AUDIO_VIDEO_SYNC"].includes(String(finding.ruleId)) ||
+			!["error", "warning"].includes(String(finding.severity)) ||
+			typeof finding.evidence !== "string"
+		) {
 			throw gatewayError("INVALID_RESPONSE", "审校服务未返回有效规则结果");
 		}
 		return { ruleId: finding.ruleId, severity: finding.severity, evidence: finding.evidence };

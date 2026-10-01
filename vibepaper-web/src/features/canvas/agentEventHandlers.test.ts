@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { AgentTaskBadge } from './AgentExecutionRecord'
-import { friendlyAgentErrorMessage, isAgentRunActive, mergeSessionMessages, reduceAgentEvent, setConfirmationStatus, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
+import { AgentTaskBadge, AgentTurnTimeline } from './AgentExecutionRecord'
+import { friendlyAgentErrorMessage, isAgentRunActive, mergeSessionMessages, reduceAgentEvent, restoreDesktopAgentEventState, setConfirmationStatus, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
 import { shouldRefreshCanvasEvent } from './agentEventHandlers'
+import type { AgentChatMsg } from './agentTypes'
 
 const base: AgentEventState = {
   messages: [], seenEventIds: new Set(), runStatus: 'running', messageIdByRun: new Map(), persistedAssistantRunIds: new Set(),
@@ -24,6 +25,16 @@ function event(type: AgentEventEnvelope['type'], data: Record<string, unknown>, 
 
 function eventForRun(runId: string, type: AgentEventEnvelope['type'], data: Record<string, unknown>, eventId: string): AgentEventEnvelope {
   return { ...event(type, data, eventId), runId }
+}
+
+function eventAtRunSeq(
+  runId: string,
+  type: AgentEventEnvelope['type'],
+  data: Record<string, unknown>,
+  eventSeq: number,
+  eventId: string,
+): AgentEventEnvelope {
+  return { ...eventForRun(runId, type, data, eventId), eventSeq }
 }
 
 describe('agent event envelope reducer', () => {
@@ -282,6 +293,136 @@ describe('agent event envelope reducer', () => {
 
     expect(state.messages).toHaveLength(1)
     expect(state.messages[0]?.meta?.executionSteps?.[0]).toMatchObject({ tool: 'get_canvas_summary' })
+  })
+
+  it('restores desktop messages by Run, keeping Pi speech in timeline order and one final reply per Run', () => {
+    const messages: AgentChatMsg[] = [
+      { id: 'user-1', role: 'user', type: 'text', content: '第一轮', meta: { runId: 'run-1' } },
+      { id: 'speech-1a', role: 'assistant', type: 'text', content: '先查画布，再告诉你。', meta: { runId: 'run-1' } },
+      { id: 'final-1', role: 'assistant', type: 'text', content: '第一轮最终回复。', meta: { runId: 'run-1' } },
+      { id: 'user-2', role: 'user', type: 'text', content: '第二轮', meta: { runId: 'run-2' } },
+      { id: 'speech-2a', role: 'assistant', type: 'text', content: '正在整理素材。', meta: { runId: 'run-2' } },
+      { id: 'speech-2b', role: 'assistant', type: 'text', content: '现在开始执行。', meta: { runId: 'run-2' } },
+      { id: 'final-2', role: 'assistant', type: 'text', content: '第二轮最终回复。', meta: { runId: 'run-2' } },
+      // A transcript without replayable Run events must retain its native rows.
+      { id: 'legacy-a', role: 'assistant', type: 'text', content: '没有事件的旧消息 A。', meta: { runId: 'run-legacy' } },
+      { id: 'legacy-b', role: 'assistant', type: 'text', content: '没有事件的旧消息 B。', meta: { runId: 'run-legacy' } },
+    ]
+    const events = [
+      eventAtRunSeq('run-1', 'thinking', { text: '核对画布状态。' }, 1, 'r1-thought-a'),
+      eventAtRunSeq('run-1', 'thinking', { text: '核对画布状态。' }, 2, 'r1-thought-b'),
+      eventAtRunSeq('run-1', 'assistant_delta', { text: '先查画布，再告诉你。', replace: true }, 3, 'r1-speech-a'),
+      eventAtRunSeq('run-1', 'tool_started', { tool: 'get_canvas_summary' }, 4, 'r1-tool-start'),
+      eventAtRunSeq('run-1', 'tool_completed', { tool: 'get_canvas_summary', ok: true }, 5, 'r1-tool-done'),
+      eventAtRunSeq('run-1', 'thinking', { text: '核对画布状态。' }, 6, 'r1-thought-c'),
+      eventAtRunSeq('run-1', 'assistant_delta', { text: '第一轮最终回复。', replace: true }, 7, 'r1-final'),
+      eventAtRunSeq('run-1', 'run_completed', { text: '第一轮最终回复。' }, 8, 'r1-complete'),
+      eventAtRunSeq('run-2', 'thinking', { text: '先查找可用素材。' }, 9, 'r2-thought-a'),
+      eventAtRunSeq('run-2', 'assistant_delta', { text: '正在整理素材。', replace: true }, 10, 'r2-speech-a'),
+      eventAtRunSeq('run-2', 'tool_started', { tool: 'search_assets' }, 11, 'r2-tool-start'),
+      eventAtRunSeq('run-2', 'tool_completed', { tool: 'search_assets', ok: true }, 12, 'r2-tool-done'),
+      eventAtRunSeq('run-2', 'thinking', { text: '选择最合适的素材。' }, 13, 'r2-thought-b'),
+      eventAtRunSeq('run-2', 'assistant_delta', { text: '现在开始执行。', replace: true }, 14, 'r2-speech-b'),
+      eventAtRunSeq('run-2', 'assistant_delta', { text: '现在开始执行。', replace: true }, 15, 'r2-speech-b-repeat'),
+      eventAtRunSeq('run-2', 'tool_started', { tool: 'create_nodes' }, 16, 'r2-tool2-start'),
+      eventAtRunSeq('run-2', 'tool_completed', { tool: 'create_nodes', ok: true }, 17, 'r2-tool2-done'),
+      eventAtRunSeq('run-2', 'thinking', { text: '总结本轮结果。' }, 18, 'r2-thought-c'),
+      eventAtRunSeq('run-2', 'assistant_delta', { text: '第二轮最终回复。', replace: true }, 19, 'r2-final'),
+      eventAtRunSeq('run-2', 'run_completed', { text: '第二轮最终回复。' }, 20, 'r2-complete'),
+    ].reverse()
+
+    const state = restoreDesktopAgentEventState(messages, events)
+    const reopened = restoreDesktopAgentEventState(messages, events)
+
+    expect(state.messages.map((message) => message.id)).toEqual([
+      'user-1', 'final-1', 'user-2', 'final-2', 'legacy-a', 'legacy-b',
+    ])
+    const first = state.messages[1]!
+    const second = state.messages[3]!
+    expect(first.content).toBe('第一轮最终回复。')
+    expect(second.content).toBe('第二轮最终回复。')
+    expect(first.meta?.executionSteps?.map((step) => step.kind)).toEqual([
+      'reasoning', 'speech', 'plan', 'result', 'reasoning', 'speech',
+    ])
+    expect(first.meta?.executionSteps?.filter((step) => step.kind === 'reasoning')).toHaveLength(2)
+    expect(second.meta?.executionSteps?.map((step) => step.kind)).toEqual([
+      'reasoning', 'speech', 'plan', 'result', 'reasoning', 'speech', 'plan', 'result', 'reasoning', 'speech',
+    ])
+    expect(second.meta?.executionSteps?.filter((step) => step.kind === 'speech').map((step) => step.summary)).toEqual([
+      '正在整理素材。', '现在开始执行。', '第二轮最终回复。',
+    ])
+    expect(state.runStatusById?.get('run-1')).toBe('completed')
+    expect(state.runStatusById?.get('run-2')).toBe('completed')
+    const stepIds = state.messages.flatMap((message) => message.meta?.executionSteps?.map((step) => step.id) ?? [])
+    const reopenedStepIds = reopened.messages.flatMap((message) => message.meta?.executionSteps?.map((step) => step.id) ?? [])
+    expect(new Set(stepIds).size).toBe(stepIds.length)
+    expect(reopenedStepIds).toEqual(stepIds)
+    const markup = renderToStaticMarkup(createElement(AgentTurnTimeline, {
+      steps: second.meta?.executionSteps ?? [],
+      content: second.content,
+    }))
+    expect(markup.split('第二轮最终回复。')).toHaveLength(2)
+  })
+
+  it('restores equal text from different desktop Runs independently and does not replace a short durable final with cached interim text', () => {
+    const repeated = '同一段内容'
+    const persisted: AgentChatMsg[] = [
+      { id: 'user-1', role: 'user', type: 'text', content: '第一轮', meta: { runId: 'run-1' } },
+      { id: 'reply-1', role: 'assistant', type: 'text', content: repeated, meta: { runId: 'run-1' } },
+      { id: 'user-2', role: 'user', type: 'text', content: '第二轮', meta: { runId: 'run-2' } },
+      { id: 'reply-2', role: 'assistant', type: 'text', content: repeated, meta: { runId: 'run-2' } },
+    ]
+    const cached: AgentEventState = {
+      ...base,
+      messages: [
+        { id: 'run-run-1', role: 'assistant', type: 'text', content: '这是一段更长但尚未完成的中间发言。', meta: { runId: 'run-1' } },
+      ],
+      runStatusById: new Map([['run-1', 'completed']]),
+      seenEventIds: new Set(['run-1-done']),
+    }
+    const events = [
+      eventAtRunSeq('run-1', 'run_completed', { text: repeated }, 1, 'run-1-done'),
+      eventAtRunSeq('run-2', 'run_completed', { text: repeated }, 2, 'run-2-done'),
+    ]
+
+    const state = restoreDesktopAgentEventState(persisted, events, cached)
+
+    expect(state.messages.map((message) => message.id)).toEqual(['user-1', 'reply-1', 'user-2', 'reply-2'])
+    expect(state.messages[1]?.content).toBe(repeated)
+    expect(state.messages[3]?.content).toBe(repeated)
+  })
+
+  it('replaces a desktop speech segment when a shorter or differently opened reply arrives before a tool boundary', () => {
+    const state = restoreDesktopAgentEventState([
+      { id: 'user-1', role: 'user', type: 'text', content: '继续', meta: { runId: 'run-1' } },
+    ], [
+      eventAtRunSeq('run-1', 'assistant_delta', {
+        text: '这是一段较长的中间发言，之后会被模型最终回复替换。', replace: true,
+      }, 1, 'interim'),
+      eventAtRunSeq('run-1', 'assistant_delta', { text: '短答。', replace: true }, 2, 'short-final'),
+      eventAtRunSeq('run-1', 'run_completed', { text: '短答。' }, 3, 'completed'),
+    ])
+
+    const assistant = state.messages[1]
+    expect(assistant?.content).toBe('短答。')
+    expect(assistant?.meta?.executionSteps?.filter((step) => step.kind === 'speech')).toHaveLength(1)
+    expect(assistant?.meta?.executionSteps?.find((step) => step.kind === 'speech')?.summary).toBe('短答。')
+  })
+
+  it('keeps the same user text as separate turns when Run IDs differ', () => {
+    const samePrompt = '帮我检查画布。'
+    const state = restoreDesktopAgentEventState([
+      { id: 'user-1', role: 'user', type: 'text', content: samePrompt, meta: { runId: 'run-1' } },
+      { id: 'reply-1', role: 'assistant', type: 'text', content: '检查完成。', meta: { runId: 'run-1' } },
+      { id: 'user-2', role: 'user', type: 'text', content: samePrompt, meta: { runId: 'run-2' } },
+      { id: 'reply-2', role: 'assistant', type: 'text', content: '检查完成。', meta: { runId: 'run-2' } },
+    ], [
+      eventAtRunSeq('run-1', 'run_completed', {}, 1, 'run-1-complete'),
+      eventAtRunSeq('run-2', 'run_completed', {}, 2, 'run-2-complete'),
+    ])
+
+    expect(state.messages.map((message) => message.id)).toEqual(['user-1', 'reply-1', 'user-2', 'reply-2'])
+    expect(state.messages.filter((message) => message.role === 'user' && message.content === samePrompt)).toHaveLength(2)
   })
 
   it('does not append historical text deltas to an already persisted reply', () => {

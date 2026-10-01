@@ -5,8 +5,8 @@ import { isChatVisibleMessage } from './agentEventHandlers'
 import {
   friendlyAgentErrorMessage,
   isAgentRunActive,
-  mergeSessionMessages,
   reduceAgentEvent,
+  restoreDesktopAgentEventState,
   setConfirmationStatus,
   type AgentEventState,
 } from './agentEventEnvelope'
@@ -49,6 +49,7 @@ function createEventState(messages: AgentChatMsg[]): AgentEventState {
     runStatus: 'running',
     runStatusById: new Map(),
     messageIdByRun: new Map(),
+    assistantTextByRun: new Map(),
     persistedAssistantRunIds: new Set(messages.flatMap((message) =>
       message.role === 'assistant' && message.content.trim() && message.meta?.runId ? [message.meta.runId] : [],
     )),
@@ -134,10 +135,7 @@ export function useDesktopAgentController({
       const snapshot = await bridge.getAgentSessionSnapshot(projectId, sessionId)
       const persistedMessages = toChatMessages(snapshot.messages)
       const cachedState = eventStatesRef.current.get(sessionId)
-      let state = cachedState
-        ? { ...cachedState, messages: mergeSessionMessages(persistedMessages, cachedState.messages) }
-        : createEventState(persistedMessages)
-      for (const event of snapshot.events) state = reduceAgentEvent(state, event)
+      const state = restoreDesktopAgentEventState(persistedMessages, snapshot.events, cachedState)
       if (epoch !== requestEpochRef.current) return
       eventStatesRef.current.set(sessionId, state)
       eventSequencesRef.current.set(sessionId, snapshot.lastEventSeq)
@@ -243,7 +241,7 @@ export function useDesktopAgentController({
     const unsubscribe = bridge.subscribeAgentEvents(projectId, activeSessionId, afterSeq, (event) => {
       if (!active || event.sessionId !== activeSessionId) return
       const previous = eventStatesRef.current.get(activeSessionId) ?? createEventState([])
-      const next = reduceAgentEvent(previous, event)
+      const next = reduceAgentEvent(previous, event, { recordAssistantSpeech: true })
       eventStatesRef.current.set(activeSessionId, next)
       eventSequencesRef.current.set(activeSessionId, Math.max(eventSequencesRef.current.get(activeSessionId) ?? afterSeq, event.eventSeq))
       setMessages(next.messages)
@@ -393,6 +391,7 @@ export function useDesktopAgentController({
           type: 'text',
           content,
           meta: {
+            runId: started.runId,
             selectedNodeIds,
             nodeReferences,
             ...(input?.selectedSkillId ? { selectedSkillId: input.selectedSkillId } : {}),

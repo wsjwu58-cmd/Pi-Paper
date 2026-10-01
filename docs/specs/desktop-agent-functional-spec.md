@@ -8,6 +8,8 @@
 
 ## 2026-10-01 实现进度更新
 
+历史恢复按原 Run 重建交错的发言、推理及工具时间线；消息的 `meta.runId` 来自 Pi JSONL 的 `vibepaper_message_metadata`，不进入模型正文，参考卡片及 Skill 元数据继续独立保存。旧消息依据活动分支事件与同会话控制记录只读关联，未知归属不猜测；片段导入不继承原 Run。快照事件附带毫秒 `createdAt`，以 `eventSeq` 保持事件顺序。相同正文的不同回合均须保留，重复装载不得重复回复或执行记录。桌面生成工具精确使用目录 `name`，名称不存在、禁用及模态不匹配分别返回 `MODEL_NOT_FOUND`、`MODEL_DISABLED`、`MODEL_MODALITY_MISMATCH`，在创建确认及任务前拒绝错误请求。真实旧会话及定向回归证据见上述迁移审查记录。
+
 本节更新下方较早的实现状态：原 TS runtime 已接完整请求预算、真实模型摘要与 Pi compaction；原 AgentPanel 已接五范围记忆及候选审核、会话片段复用、Skill 历史、停止 IPC 和逐摘要实际用量。真实 Agnes 小P回合已验证节点/连线、三组一对一编排、生成确认拒绝、停止及片段；真实摘要已验证目标保留、落盘和重启。验收数据、限制及仍未完成的逐屏和跨平台门槛见 [本轮记录](../plans/2026-10-01-agent-context-memory-validation.md)。模型提供方扩展按当前 AGENTS.md 在完整迁移后推进，本轮仍使用 Agnes。不得把此进度记为完整 1:1 验收。
 
 > 日期：2026-09-29。状态：桌面 Agent 功能与验收契约；实现进行中。本地存储、备份/恢复、Worker 生命周期、会话历史查看和 Agnes 文本回合已有实现。受限 Local Tool Gateway 已接通画布摘要、节点详情、任务状态、模型目录读取，以及 `create_nodes`、`connect_nodes`、`update_node_config`、`layout_nodes` 等画布工具；生成确认与本地任务提交也已接入。原 `AgentPanel` 中短剧资产、用量、剧集/镜头/关键帧状态及生产批次确认、TaskStore 提交和局部重跑已接本地服务。短剧领域数据使用项目 SQLite schema v16，生产批次和任务确认使用 schema v17。Agnes 实际端点的 Agent tool calling 和批次请求尚未完成端到端实测；短期/长期记忆与上下文压缩、本地模型回合、多平台安装包及完整迁移验收仍有缺口。原 Pi runtime 不含结构化短剧资产或生产批次工具，这些自然语言操作若需要应另行扩展，不列为 1:1 前置。审校目前运行规则并保存调用方提供的测量值，没有媒体实测分析器。本文规定目标行为，不代表 Agent 1:1 迁移已完成。对应技术方案见 [Agent 本地化迁移设计](../plans/2026-09-23-local-agent-migration-design.md)，全服务范围见 [桌面本地化方案](../plans/2026-09-23-desktop-full-service-local-migration-plan.md)。根目录 `AGENTS.md` 是桌面版工程契约；旧 Web PRD 与 V1.0 Spec 仅供迁移对照。

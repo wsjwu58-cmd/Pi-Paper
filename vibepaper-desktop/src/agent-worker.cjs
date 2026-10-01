@@ -157,10 +157,22 @@ function storedHistoryMessage(message) {
   }
 }
 
-async function getSessionMessages(projectId, sessionId) {
+function sessionTimelineRuns(current, sessionId, events) {
+  return [...new Set(events.map((event) => event.runId))].flatMap((runId) => {
+    if (typeof runId !== 'string' || runId.length < 1 || runId.length > 128) return []
+    const run = current.control.findById(runId)
+    const createdAt = run?.createdAt instanceof Date ? run.createdAt.getTime() : Number.NaN
+    if (!run || run.sessionId !== sessionId || !Number.isSafeInteger(createdAt) || createdAt < 0) return []
+    return [{ runId, sessionId: run.sessionId, createdAt }]
+  })
+}
+
+async function getSessionMessages(projectId, sessionId, sessionEvents) {
   const current = await requireProject(projectId)
   if (typeof sessionId !== 'string' || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
-  return (await current.sessions.listTranscriptMessages(sessionId))
+  const events = sessionEvents ?? await new SessionRunService(current.control).listSessionEvents(sessionId)
+  const timelineRuns = sessionTimelineRuns(current, sessionId, events)
+  return (await current.sessions.listTranscriptMessages(sessionId, timelineRuns))
     .filter(({ message }) => (message.role === 'user' || message.role === 'assistant')
       && !isSyntheticTaskContinuationProgressMessage(message))
     .map(({ messageId, message, metadata }) => ({
@@ -186,8 +198,9 @@ async function getSessionUsage(projectId, sessionId) {
 async function getSessionSnapshot(projectId, sessionId) {
   const current = await requireProject(projectId)
   await reconcileSessionTasks(current, sessionId)
-  const messages = await getSessionMessages(projectId, sessionId)
-  const events = toEventEnvelopes(await new SessionRunService(current.control).listSessionEvents(sessionId))
+  const sessionEvents = await new SessionRunService(current.control).listSessionEvents(sessionId)
+  const messages = await getSessionMessages(projectId, sessionId, sessionEvents)
+  const events = toEventEnvelopes(sessionEvents)
   return { messages, events, lastEventSeq: events.reduce((highest, event) => Math.max(highest, event.eventSeq), 0) }
 }
 
@@ -614,7 +627,9 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
   let persistenceFailure = null
   const persistPiMessage = (message) => {
     const persisted = message.role === 'assistant' ? sanitizeAssistantMessage(message) : message
-    persistenceQueue = persistenceQueue.then(() => current.sessions.appendMessage(sessionId, persisted))
+    persistenceQueue = persistenceQueue.then(() => current.sessions.appendMessage(sessionId, persisted, {
+      selectedNodeIds: [], nodeReferences: [], runId: run.runId,
+    }))
     persistenceQueue = persistenceQueue.catch((error) => {
       persistenceFailure = error
       throw error
@@ -694,13 +709,12 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
         content: [{ type: 'text', text: content.trim() }],
         timestamp: Date.now(),
       },
-        selectedNodes.length || selectedSkillId
-          ? {
-              selectedNodeIds: nodeReferences.map((reference) => reference.nodeId),
-              nodeReferences,
-              ...(selectedSkillId ? { selectedSkillId } : {}),
-            }
-          : undefined)
+        {
+          selectedNodeIds: nodeReferences.map((reference) => reference.nodeId),
+          nodeReferences,
+          ...(selectedSkillId ? { selectedSkillId } : {}),
+          runId: run.runId,
+        })
       await current.sessions.resolveSessionTitle(sessionId)
     }
 
@@ -931,9 +945,14 @@ async function abortAndWaitForRuns() {
 }
 
 function toEventEnvelopes(events) {
-  return events.map(({ eventId, runId, sessionId, eventSeq, type, runtime, runtimeVersion, data }) => ({
-    eventId, runId, sessionId, eventSeq, type, runtime, runtimeVersion, data,
-  }))
+  return [...events]
+    .sort((left, right) => left.eventSeq - right.eventSeq)
+    .map(({ eventId, runId, sessionId, eventSeq, type, runtime, runtimeVersion, data, createdAt }) => ({
+      eventId, runId, sessionId, eventSeq, type, runtime, runtimeVersion, data,
+      ...(createdAt instanceof Date && Number.isSafeInteger(createdAt.getTime())
+        ? { createdAt: createdAt.getTime() }
+        : {}),
+    }))
 }
 
 async function dispatch(method, payload) {

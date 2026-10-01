@@ -24,8 +24,15 @@ describe("desktop Agent local audio generation adapter", () => {
 				request: async (method, payload) => {
 					calls.push({ method, payload });
 					if (method === "agent:core:list-models") return [availableSapiModel];
-					if (method === "agent:core:create-generation-task")
-						return { taskId: "task-audio-1", status: "queued" };
+					if (method === "agent:core:load-canvas")
+						return {
+							projectId: "project-1",
+							canvasId: "canvas-1",
+							version: 6,
+							nodes: [{ id: "audio-node-1", type: "audio", position: { x: 0, y: 0 }, data: {} }],
+							edges: [],
+						};
+					if (method === "agent:core:create-generation-task") return { taskId: "task-audio-1", status: "queued" };
 					throw new Error(`unexpected method: ${method}`);
 				},
 			},
@@ -50,7 +57,7 @@ describe("desktop Agent local audio generation adapter", () => {
 			}),
 		).resolves.toEqual({ taskId: "task-audio-1", status: "queued", modality: "audio", nodeId: "audio-node-1" });
 
-		expect(calls[1]).toEqual({
+		expect(calls[2]).toEqual({
 			method: "agent:core:create-generation-task",
 			payload: {
 				projectId: "project-1",
@@ -76,12 +83,23 @@ describe("desktop Agent local audio generation adapter", () => {
 			"project-1",
 		);
 		await expect(disabledGateway.resolveGenerationModel("project-1", "local-sapi-tts")).rejects.toMatchObject({
-			code: "MODEL_UNAVAILABLE",
+			code: "MODEL_DISABLED",
 		});
 
 		const gateway = new DesktopLocalToolGateway(
 			{
-				request: async (method) => method === "agent:core:list-models" ? [availableSapiModel] : null,
+				request: async (method) => {
+					if (method === "agent:core:list-models") return [availableSapiModel];
+					if (method === "agent:core:load-canvas")
+						return {
+							projectId: "project-1",
+							canvasId: "canvas-1",
+							version: 1,
+							nodes: [{ id: "audio-node-1", type: "audio", position: { x: 0, y: 0 }, data: {} }],
+							edges: [],
+						};
+					return null;
+				},
 			},
 			"project-1",
 		);

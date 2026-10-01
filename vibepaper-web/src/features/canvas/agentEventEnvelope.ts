@@ -23,6 +23,8 @@ export type AgentEventEnvelope = {
   runtime: 'pi'
   runtimeVersion: string
   data: Record<string, unknown>
+  /** Durable event time, exposed as epoch milliseconds by the desktop Worker. */
+  createdAt?: number
 }
 
 export type AgentEventState = {
@@ -39,6 +41,8 @@ export type AgentEventState = {
   messageIdByRun: Map<string, string | number>
   /** Runs whose complete assistant reply already came from durable history. */
   persistedAssistantRunIds: Set<string>
+  /** Text reconstructed from assistant deltas, used to restore desktop speech segments. */
+  assistantTextByRun?: Map<string, string>
 }
 
 export function isAgentEventEnvelope(value: unknown): value is AgentEventEnvelope {
@@ -75,13 +79,18 @@ export function friendlyAgentErrorMessage(value: unknown): string {
   return message || '模型调用失败，请稍后重试。'
 }
 
-export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelope): AgentEventState {
+export function reduceAgentEvent(
+  state: AgentEventState,
+  event: AgentEventEnvelope,
+  options: { recordAssistantSpeech?: boolean } = {},
+): AgentEventState {
   if (state.seenEventIds.has(event.eventId)) return state
   const next: AgentEventState = {
     ...state,
     seenEventIds: new Set([...state.seenEventIds, event.eventId]),
     messageIdByRun: new Map(state.messageIdByRun),
     persistedAssistantRunIds: new Set(state.persistedAssistantRunIds),
+    assistantTextByRun: new Map(state.assistantTextByRun),
     lastEventRunId: event.runId,
     runStatusById: new Map(state.runStatusById),
     lastEventType: event.type,
@@ -131,27 +140,58 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
   }
   const updateAssistant = (update: (message: AgentChatMsg) => AgentChatMsg): void => {
     const current = assistant()
-    next.messages = next.messages.includes(current)
-      ? next.messages.map((message) => (message === current ? update(message) : message))
-      : [...next.messages, update(current)]
+    if (next.messages.includes(current)) {
+      next.messages = next.messages.map((message) => (message === current ? update(message) : message))
+      return
+    }
+    const anchorIndex = next.messages.findIndex((message) =>
+      message.role === 'user' && message.meta?.runId === event.runId,
+    )
+    const updated = update(current)
+    next.messages = anchorIndex < 0
+      ? [...next.messages, updated]
+      : [...next.messages.slice(0, anchorIndex + 1), updated, ...next.messages.slice(anchorIndex + 1)]
   }
   const withRun = (message: AgentChatMsg): AgentChatMsg['meta'] => ({ ...message.meta, runId: event.runId })
 
   if (event.type === 'assistant_delta') {
     const delta = typeof event.data.text === 'string' ? event.data.text : ''
     const replace = event.data.replace === true
+    const previousRunText = next.assistantTextByRun?.get(event.runId) ?? ''
+    const streamedText = dedupeRepeatedSegments(removeRepeatedOpening(replace ? delta : `${previousRunText}${delta}`))
+    if (options.recordAssistantSpeech) next.assistantTextByRun?.set(event.runId, streamedText)
+    if (options.recordAssistantSpeech && streamedText.trim()) {
+      updateAssistant((message) => ({
+        ...message,
+        meta: {
+          ...message.meta,
+          runId: event.runId,
+          executionSteps: upsertRunSpeech(message.meta?.executionSteps ?? [], streamedText, event),
+        },
+      }))
+    }
     // Historical deltas restore the execution record after refresh. The
     // durable assistant message already contains their complete visible text.
     if (!next.persistedAssistantRunIds.has(event.runId)) {
       updateAssistant((message) => ({
         ...message,
         meta: withRun(message),
-        content: dedupeRepeatedSegments(removeRepeatedOpening(replace ? delta : `${message.content}${delta}`)),
+        content: options.recordAssistantSpeech
+          ? streamedText
+          : dedupeRepeatedSegments(removeRepeatedOpening(replace ? delta : `${message.content}${delta}`)),
       }))
     }
   } else if (event.type === 'thinking') {
     const text = typeof event.data.text === 'string' ? event.data.text.trim() : ''
-    if (text) updateAssistant((message) => ({ ...message, meta: { ...withRun(message), executionSteps: appendReasoning(message.meta?.executionSteps ?? [], text) } }))
+    if (text) updateAssistant((message) => ({
+      ...message,
+      meta: {
+        ...withRun(message),
+        executionSteps: options.recordAssistantSpeech
+          ? upsertRunReasoning(message.meta?.executionSteps ?? [], text, event)
+          : appendReasoning(message.meta?.executionSteps ?? [], text),
+      },
+    }))
   } else if (event.type === 'tool_started' || event.type === 'tool_completed' || event.type === 'tool_retry') {
     const tool = typeof event.data.tool === 'string' ? event.data.tool : 'operation'
     const retry = event.type === 'tool_retry'
@@ -211,6 +251,18 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
     }))
   } else if (event.type === 'run_completed') {
     next.runStatus = 'completed'
+    if (options.recordAssistantSpeech && typeof event.data.text === 'string' && event.data.text.trim()) {
+      const previousText = next.assistantTextByRun?.get(event.runId) ?? ''
+      const completedText = appendUniqueText(previousText, event.data.text)
+      next.assistantTextByRun?.set(event.runId, completedText)
+      updateAssistant((message) => ({
+        ...message,
+        meta: {
+          ...withRun(message),
+          executionSteps: upsertRunSpeech(message.meta?.executionSteps ?? [], completedText, event),
+        },
+      }))
+    }
     if (typeof event.data.text === 'string' && !next.persistedAssistantRunIds.has(event.runId)) updateAssistant((message) => ({
       ...message,
       meta: withRun(message),
@@ -255,6 +307,128 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
     }))
   }
   return next
+}
+
+/** Build the desktop history from durable turns and their ordered Run trace. */
+export function restoreDesktopAgentEventState(
+  messages: AgentChatMsg[],
+  events: AgentEventEnvelope[],
+  cached?: AgentEventState,
+): AgentEventState {
+  const eventRunIds = new Set(events.map((event) => event.runId))
+  const durableMessages = coalesceDesktopAssistantMessages(messages, eventRunIds)
+  const activeRunIds = new Set(
+    [...(cached?.runStatusById ?? [])]
+      .filter(([, status]) => status === 'running')
+      .map(([runId]) => runId),
+  )
+  const mergedMessages = cached
+    ? mergeDesktopSessionMessages(durableMessages, cached.messages, activeRunIds)
+    : durableMessages
+  const persistedAssistantRunIds = new Set(cached?.persistedAssistantRunIds ?? [])
+  for (const message of durableMessages) {
+    if (message.role === 'assistant' && message.content.trim() && message.meta?.runId) {
+      persistedAssistantRunIds.add(message.meta.runId)
+    }
+  }
+  const messageIdByRun = new Map<string, string | number>()
+  for (const message of mergedMessages) {
+    if (message.role === 'assistant' && message.meta?.runId) {
+      messageIdByRun.set(message.meta.runId, message.id)
+    }
+  }
+  let state: AgentEventState = {
+    ...(cached ?? {
+      messages: [],
+      seenEventIds: new Set<string>(),
+      runStatus: 'running' as const,
+      runStatusById: new Map<string, 'running' | 'waiting_confirmation' | 'completed' | 'failed' | 'aborted'>(),
+      messageIdByRun: new Map<string, string | number>(),
+      persistedAssistantRunIds: new Set<string>(),
+    }),
+    messages: mergedMessages,
+    messageIdByRun,
+    persistedAssistantRunIds,
+    assistantTextByRun: new Map(cached?.assistantTextByRun),
+  }
+  for (const event of [...events].sort((left, right) => left.eventSeq - right.eventSeq)) {
+    state = reduceAgentEvent(state, event, { recordAssistantSpeech: true })
+  }
+  return state
+}
+
+function coalesceDesktopAssistantMessages(messages: AgentChatMsg[], replayableRunIds: Set<string>): AgentChatMsg[] {
+  const lastAssistantIndexByRun = new Map<string, number>()
+  messages.forEach((message, index) => {
+    if (message.role === 'assistant' && message.meta?.runId && replayableRunIds.has(message.meta.runId)) {
+      lastAssistantIndexByRun.set(message.meta.runId, index)
+    }
+  })
+  return messages.filter((message, index) =>
+    message.role !== 'assistant' || !message.meta?.runId || !replayableRunIds.has(message.meta.runId)
+      || lastAssistantIndexByRun.get(message.meta.runId) === index,
+  )
+}
+
+function mergeDesktopSessionMessages(
+  persisted: AgentChatMsg[],
+  runtime: AgentChatMsg[],
+  activeRunIds: Set<string>,
+): AgentChatMsg[] {
+  const merged = [...persisted]
+  for (const live of runtime) {
+    const matchIndex = merged.findIndex((stored) => stored.id === live.id || sameRunMessage(stored, live))
+    if (matchIndex >= 0) {
+      const stored = merged[matchIndex]!
+      const runId = live.meta?.runId
+      merged[matchIndex] = {
+        ...stored,
+        content: runId && activeRunIds.has(runId)
+          ? live.content.trim() ? live.content : stored.content
+          : stored.content.trim() ? stored.content : live.content,
+        meta: {
+          ...stored.meta,
+          ...live.meta,
+          confirmation: mergeConfirmation(stored.meta?.confirmation, live.meta?.confirmation),
+          executionSteps: live.meta?.executionSteps?.length
+            ? live.meta.executionSteps
+            : stored.meta?.executionSteps,
+        },
+      }
+      continue
+    }
+    if (live.role === 'assistant' && !live.content?.trim() && !(live.meta?.executionSteps?.length) && !live.meta?.confirmation) continue
+    const anchorIndex = live.role === 'assistant' && live.meta?.runId
+      ? merged.findIndex((message) => message.role === 'user' && message.meta?.runId === live.meta?.runId)
+      : -1
+    if (anchorIndex < 0) merged.push(live)
+    else merged.splice(anchorIndex + 1, 0, live)
+  }
+  return placeAssistantRunsAfterUserAnchors(merged)
+}
+
+function placeAssistantRunsAfterUserAnchors(messages: AgentChatMsg[]): AgentChatMsg[] {
+  const ordered = [...messages]
+  for (let index = 0; index < ordered.length; index += 1) {
+    const message = ordered[index]
+    if (message?.role !== 'assistant' || !message.meta?.runId) continue
+    const userIndex = ordered.findIndex((candidate) =>
+      candidate.role === 'user' && candidate.meta?.runId === message.meta?.runId,
+    )
+    if (userIndex < 0 || index === userIndex + 1) continue
+    ordered.splice(index, 1)
+    const updatedUserIndex = ordered.findIndex((candidate) =>
+      candidate.role === 'user' && candidate.meta?.runId === message.meta?.runId,
+    )
+    ordered.splice(updatedUserIndex + 1, 0, message)
+  }
+  return ordered
+}
+
+function sameRunMessage(stored: AgentChatMsg, live: AgentChatMsg): boolean {
+  return stored.role === live.role &&
+    (stored.role === 'user' || stored.role === 'assistant') &&
+    Boolean(stored.meta?.runId) && stored.meta?.runId === live.meta?.runId
 }
 
 /** Keep a successfully handled approval terminal across a durable history refresh. */
@@ -398,6 +572,63 @@ function appendReasoning(steps: ExecutionStep[], text: string): ExecutionStep[] 
     return next
   }
   return [...next, stepFromThinking(text, Date.now())]
+}
+
+/** Desktop snapshots contain cumulative model deltas; update within the current tool-delimited turn segment. */
+function upsertRunReasoning(steps: ExecutionStep[], text: string, event: AgentEventEnvelope): ExecutionStep[] {
+  const summary = text.trim()
+  if (!summary) return steps
+  const boundary = lastToolStepIndex(steps)
+  const existingIndex = lastStepIndexAfter(steps, boundary, 'reasoning')
+  if (existingIndex < 0) return [...steps, {
+    ...stepFromThinking(summary, event.eventSeq),
+    id: `reason-${event.eventSeq}-${event.eventId}`,
+  }]
+  const previous = steps[existingIndex]!.summary.trim()
+  const merged = summary.startsWith(previous) || previous.startsWith(summary)
+    ? (summary.length >= previous.length ? summary : previous)
+    : appendUniqueText(previous, summary)
+  if (merged === previous) return steps
+  const next = [...steps]
+  next[existingIndex] = { ...next[existingIndex]!, summary: merged }
+  return next
+}
+
+/** Keep cumulative speech deltas in one step until a tool operation starts. */
+function upsertRunSpeech(steps: ExecutionStep[], text: string, event: AgentEventEnvelope): ExecutionStep[] {
+  const summary = text.trim()
+  if (!summary) return steps
+  const boundary = lastToolStepIndex(steps)
+  const existingIndex = lastStepIndexAfter(steps, boundary, 'speech')
+  if (existingIndex >= 0) {
+    const previous = steps[existingIndex]!.summary.trim()
+    if (summary === previous) return steps
+    // A Pi assistant message replaces the current speech segment even when the
+    // new text is shorter or starts differently. Tool steps freeze that segment.
+    const next = [...steps]
+    next[existingIndex] = { ...next[existingIndex]!, summary }
+    return next
+  }
+  return [...steps, {
+    id: `speech-${event.eventSeq}-${event.eventId}`,
+    kind: 'speech',
+    label: '回复',
+    summary,
+  }]
+}
+
+function lastToolStepIndex(steps: ExecutionStep[]): number {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    if (steps[index]?.kind === 'plan' || steps[index]?.kind === 'result') return index
+  }
+  return -1
+}
+
+function lastStepIndexAfter(steps: ExecutionStep[], boundary: number, kind: ExecutionStep['kind']): number {
+  for (let index = steps.length - 1; index > boundary; index -= 1) {
+    if (steps[index]?.kind === kind) return index
+  }
+  return -1
 }
 
 function numberValue(value: unknown): number | undefined {

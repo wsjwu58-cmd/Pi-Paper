@@ -26,8 +26,10 @@ const RUN_EVENT_ENTRY_TYPE = "vibepaper_run_event";
 const MESSAGE_METADATA_ENTRY_TYPE = "vibepaper_message_metadata";
 const MAX_MESSAGE_REFERENCES = 8;
 const MAX_MESSAGE_ID_LENGTH = 128;
+const MAX_MESSAGE_RUN_ID_LENGTH = 128;
 const MAX_SKILL_ID_LENGTH = 160;
 const MAX_METADATA_BYTES = 96 * 1024;
+const LEGACY_RUN_TIMESTAMP_SKEW_MS = 1_000;
 const DEFAULT_SESSION_TITLE = "新对话";
 const MAX_SESSION_TITLE_CHARACTERS = 48;
 
@@ -40,6 +42,13 @@ export type DesktopAgentMessageMetadata = {
 	selectedNodeIds: string[];
 	nodeReferences: DesktopAgentReferenceCard[];
 	selectedSkillId?: string;
+	runId?: string;
+};
+
+export type DesktopAgentTimelineRun = {
+	runId: string;
+	sessionId: string;
+	createdAt: number;
 };
 
 export type DesktopStoredMessage = {
@@ -259,23 +268,31 @@ export class DesktopAgentSessionStore {
 	}
 
 	/** Full active-branch transcript for UI history; compaction only changes model input. */
-	async listTranscriptMessages(sessionId: string): Promise<DesktopStoredMessage[]> {
+	async listTranscriptMessages(
+		sessionId: string,
+		runs: readonly DesktopAgentTimelineRun[] = [],
+	): Promise<DesktopStoredMessage[]> {
 		const session = await this.openSession(sessionId);
 		const leafId = await session.getLeafId();
 		if (leafId === null) return [];
 		const entries = await session.findEntriesOnBranch({ start: leafId, order: "oldestFirst" });
 		const metadata = messageMetadataById(entries);
-		return entries.flatMap((entry) =>
-			entry.type === "message"
-				? [
-						{
-							messageId: entry.id,
-							message: entry.message,
-							...(metadata.has(entry.id) ? { metadata: metadata.get(entry.id) } : {}),
-						},
-					]
-				: [],
-		);
+		const legacyRunBindings = buildDesktopLegacyMessageRunBindings(entries, sessionId, runs);
+		return entries.flatMap((entry) => {
+			if (entry.type !== "message") return [];
+			const savedMetadata = metadata.get(entry.id);
+			const runId = savedMetadata?.runId ?? legacyRunBindings.get(entry.id);
+			const messageMetadata = runId
+				? { ...(savedMetadata ?? { selectedNodeIds: [], nodeReferences: [] }), runId }
+				: savedMetadata;
+			return [
+				{
+					messageId: entry.id,
+					message: entry.message,
+					...(messageMetadata ? { metadata: messageMetadata } : {}),
+				},
+			];
+		});
 	}
 
 	async flushOutbox(controlStore: DesktopAgentControlStore, sessionId?: string): Promise<number> {
@@ -622,6 +639,210 @@ function isMatchingCheckpoint(value: string, expected: DesktopAgentCompactionChe
 	}
 }
 
+type DesktopLegacyRunEventMarker = {
+	entrySeq: number;
+	runId: string;
+	eventSeq: number;
+	type: string;
+	createdAt: number;
+};
+
+type DesktopLegacyRunLifecycle = DesktopAgentTimelineRun & {
+	firstEventAt: number;
+	lastEventAt: number;
+	lastEntrySeq: number;
+	terminalAt?: number;
+};
+
+/**
+ * Reassociate legacy transcript messages from their original JSONL branch order.
+ * The returned IDs are a read-only projection: this helper never edits entries.
+ */
+export function buildDesktopLegacyMessageRunBindings(
+	entries: readonly Entry[],
+	sessionId: string,
+	runs: readonly DesktopAgentTimelineRun[],
+): Map<string, string> {
+	const runById = new Map(
+		runs
+			.filter(
+				(run) =>
+					run.sessionId === sessionId &&
+					isBoundedString(run.runId, 1, MAX_MESSAGE_RUN_ID_LENGTH) &&
+					Number.isSafeInteger(run.createdAt) &&
+					run.createdAt >= 0,
+			)
+			.map((run) => [run.runId, run] as const),
+	);
+	if (runById.size === 0 || sessionId.length < 1 || sessionId.length > MAX_MESSAGE_ID_LENGTH) return new Map();
+
+	const eventMarkers: DesktopLegacyRunEventMarker[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== RUN_EVENT_ENTRY_TYPE) continue;
+		const data = recordValue(entry.data);
+		const event = recordValue(data?.event);
+		const runId = boundedString(event?.runId, MAX_MESSAGE_RUN_ID_LENGTH);
+		const eventSessionId = boundedString(event?.sessionId, MAX_MESSAGE_ID_LENGTH);
+		const eventSeq = event?.eventSeq;
+		const eventType = boundedString(event?.type, 64);
+		const createdAt = timestampValue(event?.createdAt);
+		const run = runId ? runById.get(runId) : undefined;
+		if (
+			!run ||
+			eventSessionId !== sessionId ||
+			!Number.isSafeInteger(entry.seq) ||
+			!Number.isSafeInteger(eventSeq) ||
+			Number(eventSeq) < 1 ||
+			!eventType ||
+			createdAt === undefined ||
+			createdAt + LEGACY_RUN_TIMESTAMP_SKEW_MS < run.createdAt
+		) {
+			continue;
+		}
+		eventMarkers.push({
+			entrySeq: entry.seq,
+			runId: run.runId,
+			eventSeq: Number(eventSeq),
+			type: eventType,
+			createdAt,
+		});
+	}
+	if (eventMarkers.length === 0) return new Map();
+	eventMarkers.sort((left, right) => left.entrySeq - right.entrySeq || left.eventSeq - right.eventSeq);
+
+	const messages = entries.flatMap((entry) =>
+		entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant")
+			? [{ entry, role: entry.message.role }]
+			: [],
+	);
+	const bindings = new Map<string, string>();
+	const userMessages = messages.filter((candidate) => candidate.role === "user");
+	let messageIndex = 0;
+	let eventIndex = 0;
+	for (let userIndex = 0; userIndex < userMessages.length; userIndex += 1) {
+		const userMessage = userMessages[userIndex];
+		if (!userMessage) continue;
+		const nextUserSeq = userMessages[userIndex + 1]?.entry.seq ?? Number.POSITIVE_INFINITY;
+		while (eventIndex < eventMarkers.length && (eventMarkers[eventIndex]?.entrySeq ?? 0) <= userMessage.entry.seq) {
+			eventIndex += 1;
+		}
+		const segmentEvents: DesktopLegacyRunEventMarker[] = [];
+		while (eventIndex < eventMarkers.length && (eventMarkers[eventIndex]?.entrySeq ?? 0) < nextUserSeq) {
+			const marker = eventMarkers[eventIndex];
+			if (marker) segmentEvents.push(marker);
+			eventIndex += 1;
+		}
+		if (segmentEvents.length === 0) continue;
+
+		const lifecycles = legacyRunLifecycles(segmentEvents, runById);
+		const userTimestamp = entryTimestamp(userMessage.entry);
+		if (userTimestamp === undefined) continue;
+		const userRunCandidates = lifecycles.filter(
+			(lifecycle) =>
+				lifecycle.createdAt <= userTimestamp + LEGACY_RUN_TIMESTAMP_SKEW_MS &&
+				lifecycle.firstEventAt + LEGACY_RUN_TIMESTAMP_SKEW_MS >= userTimestamp &&
+				lifecycle.lastEventAt + LEGACY_RUN_TIMESTAMP_SKEW_MS >= userTimestamp,
+		);
+		if (userRunCandidates.length !== 1) continue;
+		const userRun = userRunCandidates[0];
+		if (!userRun) continue;
+		bindings.set(userMessage.entry.id, userRun.runId);
+
+		while (messageIndex < messages.length && (messages[messageIndex]?.entry.seq ?? 0) <= userMessage.entry.seq) {
+			messageIndex += 1;
+		}
+		while (messageIndex < messages.length && (messages[messageIndex]?.entry.seq ?? 0) < nextUserSeq) {
+			const candidate = messages[messageIndex];
+			messageIndex += 1;
+			if (!candidate || candidate.role !== "assistant") continue;
+			const messageTimestamp = entryTimestamp(candidate.entry);
+			if (messageTimestamp === undefined) continue;
+			const messageRunCandidates = lifecycles.filter(
+				(lifecycle) =>
+					lifecycle.createdAt <= messageTimestamp + LEGACY_RUN_TIMESTAMP_SKEW_MS &&
+					lifecycle.endAt + LEGACY_RUN_TIMESTAMP_SKEW_MS >= messageTimestamp &&
+					lifecycle.lastEntrySeq > candidate.entry.seq &&
+					lifecycle.lastEventAt + LEGACY_RUN_TIMESTAMP_SKEW_MS >= messageTimestamp,
+			);
+			if (messageRunCandidates.length === 1) {
+				const messageRun = messageRunCandidates[0];
+				if (messageRun) bindings.set(candidate.entry.id, messageRun.runId);
+			}
+		}
+	}
+	return bindings;
+}
+
+function legacyRunLifecycles(
+	markers: readonly DesktopLegacyRunEventMarker[],
+	runById: ReadonlyMap<string, DesktopAgentTimelineRun>,
+): Array<DesktopLegacyRunLifecycle & { endAt: number }> {
+	const grouped = new Map<string, DesktopLegacyRunEventMarker[]>();
+	for (const marker of markers) {
+		const group = grouped.get(marker.runId) ?? [];
+		group.push(marker);
+		grouped.set(marker.runId, group);
+	}
+	return [...grouped].flatMap(([runId, runMarkers]) => {
+		const run = runById.get(runId);
+		if (!run || runMarkers.length === 0) return [];
+		const bounds = runMarkers.reduce(
+			(current, marker) => ({
+				firstEventAt: Math.min(current.firstEventAt, marker.createdAt),
+				lastEventAt: Math.max(current.lastEventAt, marker.createdAt),
+				lastEntrySeq: Math.max(current.lastEntrySeq, marker.entrySeq),
+				terminalAt:
+					marker.type === "run_completed" || marker.type === "run_failed" || marker.type === "run_aborted"
+						? Math.max(current.terminalAt ?? 0, marker.createdAt)
+						: current.terminalAt,
+			}),
+			{
+				firstEventAt: Number.POSITIVE_INFINITY,
+				lastEventAt: 0,
+				lastEntrySeq: 0,
+				terminalAt: undefined as number | undefined,
+			},
+		);
+		const { firstEventAt, lastEventAt, lastEntrySeq, terminalAt } = bounds;
+		return [
+			{
+				...run,
+				firstEventAt,
+				lastEventAt,
+				lastEntrySeq,
+				...(terminalAt === undefined ? {} : { terminalAt }),
+				endAt: terminalAt ?? lastEventAt,
+			},
+		];
+	});
+}
+
+function entryTimestamp(entry: Extract<Entry, { type: "message" }>): number | undefined {
+	return Number.isSafeInteger(entry.timestamp) && entry.timestamp >= 0 ? entry.timestamp : undefined;
+}
+
+function timestampValue(value: unknown): number | undefined {
+	const timestamp =
+		value instanceof Date
+			? value.getTime()
+			: typeof value === "number"
+				? value
+				: typeof value === "string"
+					? Date.parse(value)
+					: Number.NaN;
+	return Number.isSafeInteger(timestamp) && timestamp >= 0 ? timestamp : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function isBoundedString(value: unknown, minimum: number, maximum: number): value is string {
+	return typeof value === "string" && value.length >= minimum && value.length <= maximum;
+}
+
 function normalizeMessageMetadata(value: unknown): DesktopAgentMessageMetadata {
 	const raw = objectValue(value);
 	const rawReferences = raw.nodeReferences;
@@ -667,10 +888,15 @@ function normalizeMessageMetadata(value: unknown): DesktopAgentMessageMetadata {
 	) {
 		throw new Error("AGENT_REFERENCE_METADATA_INVALID");
 	}
+	const runId = raw.runId;
+	if (runId !== undefined && !isBoundedString(runId, 1, MAX_MESSAGE_RUN_ID_LENGTH)) {
+		throw new Error("AGENT_REFERENCE_METADATA_INVALID");
+	}
 	const metadata: DesktopAgentMessageMetadata = {
 		selectedNodeIds: [...selectedNodeIds],
 		nodeReferences,
 		...(typeof selectedSkillId === "string" ? { selectedSkillId } : {}),
+		...(typeof runId === "string" ? { runId } : {}),
 	};
 	if (Buffer.byteLength(JSON.stringify(metadata), "utf8") > MAX_METADATA_BYTES) {
 		throw new Error("AGENT_REFERENCE_METADATA_INVALID");

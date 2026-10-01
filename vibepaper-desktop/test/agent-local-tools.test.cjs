@@ -121,6 +121,16 @@ test('model directory returns capability metadata without credentials or local e
 
   assert.equal(models.length, 6)
   assert.equal(models.find((model) => model.providerType === 'local').name, 'local-text-model')
+  assert.deepEqual(models.filter((model) => model.providerId === 'agnes').map((model) => ({
+    name: model.name,
+    modelType: model.modelType,
+    modalities: model.modalities,
+  })), [
+    { name: 'agnes-2.5-flash', modelType: 'text', modalities: ['text'] },
+    { name: 'agnes-image-2.5-flash', modelType: 'image', modalities: ['image'] },
+    { name: 'agnes-video-2.5-flash', modelType: 'video', modalities: ['video'] },
+  ])
+  assert.equal(models.some((model) => model.providerId === 'agnes' && model.modelType === 'audio'), false)
   assert.deepEqual(models.find((model) => model.modelType === 'audio'), {
     name: 'local-sapi-tts',
     displayName: 'Windows SAPI 语音合成',

@@ -513,6 +513,7 @@ async function runFakeOriginalContinuation(scenario) {
       displayName: 'Test image model',
       enabled: true,
       modelType: 'image',
+      modalities: ['image'],
       providerType: 'local',
       providerId: 'test-local',
     }],

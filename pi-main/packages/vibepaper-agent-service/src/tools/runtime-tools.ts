@@ -157,6 +157,13 @@ export type RuntimeToolContext = {
 export type RuntimeToolGateway = ReadToolsGateway &
 	CanvasCommandGateway & {
 		resolveGenerationModel?(userId: string, requestedModel: string, requestId?: string): Promise<string>;
+		resolveGenerationModelForTarget?(
+			userId: string,
+			requestedModel: string,
+			canvasId: string,
+			targetNodeId: string,
+			requestId?: string,
+		): Promise<string>;
 		estimateGeneration?(input: {
 			userId: string;
 			modelType: string;
@@ -346,8 +353,14 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 		tool("get_node_detail", "读取节点详情", "读取一个节点的权威详情。", NodeDetailSchema, async (_id, params) =>
 			result(await read.getNodeDetail(context.userId, context.canvasId, params.nodeId, context.requestId)),
 		),
-		tool("list_models", "读取模型目录", "读取当前可用模型和真实能力目录。", EmptySchema, async () =>
-			result(await read.listModels(context.userId, context.requestId)),
+		tool(
+			"list_models",
+			"读取模型目录",
+			context.desktopMode
+				? "读取桌面权威模型目录。name 是唯一接受的精确模型标识，enabled 表示当前是否可用，modelType 是生成类型，modalities 是实际能力；不能改写 name 或按名称猜测能力。"
+				: "读取当前可用模型和真实能力目录。",
+			EmptySchema,
+			async () => result(await read.listModels(context.userId, context.requestId)),
 		),
 		tool("search_assets", "搜索素材", "只读搜索当前用户可访问的素材。", SearchSchema, async (_id, params) =>
 			result(await read.searchAssets(context.userId, params.query, context.requestId)),
@@ -494,12 +507,12 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 						"submit_generation",
 						"提交生成任务",
 						context.desktopMode
-							? "先读取模型目录和目标节点，再创建桌面确认卡片；确认前不会创建本地生成任务。桌面任务不涉及平台点数。"
+							? "modelType 必须逐字使用 list_models 的 name；目录 modelType 和 modalities 必须支持目标节点类型。先校验模型与目标，再创建桌面确认卡片；确认前不会创建本地生成任务。"
 							: "先生成确认 action；用户确认后才会估价、冻结点数并提交生成。",
 						GenerationSchema,
 						async (_id, params) => {
 							assertNoPendingConfirmation(context);
-							const modelType = await resolveGenerationModel(context, params.modelType);
+							const modelType = await resolveGenerationModel(context, params.modelType, params.nodeId);
 							const modelParams = inferImageOperation(
 								await withResolvedComposeInputs(
 									read,
@@ -554,7 +567,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 						"submit_generation_batch",
 						"批量提交生成",
 						context.desktopMode
-							? "为多个已创建的目标节点创建一份合并桌面确认；确认前不会创建本地生成任务。"
+							? "每项 modelType 必须逐字使用 list_models 的 name，且目录 modelType 和 modalities 必须支持对应目标节点类型；校验全部项目后创建一份合并桌面确认。"
 							: "为多个已创建的目标节点创建一份合并确认；确认后全部任务会提交，Agent 静默等待每个任务终态。",
 						GenerationBatchSchema,
 						async (_id, params) => {
@@ -568,7 +581,11 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 								overwrite: boolean;
 							}>;
 							for (const generation of params.generations) {
-								const modelType = await resolveGenerationModel(context, generation.modelType);
+								const modelType = await resolveGenerationModel(
+									context,
+									generation.modelType,
+									generation.nodeId,
+								);
 								const modelParams = inferImageOperation(
 									await withResolvedComposeInputs(
 										read,
@@ -806,6 +823,9 @@ function isRetryableToolError(error: unknown): boolean {
 			"INSUFFICIENT_POINTS",
 			"CONTENT_BLOCKED",
 			"COST_CAP_EXCEEDED",
+			"MODEL_NOT_FOUND",
+			"MODEL_DISABLED",
+			"MODEL_MODALITY_MISMATCH",
 		].includes(error.code)
 	)
 		return false;
@@ -837,7 +857,21 @@ function retryDelay(attempt: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
-async function resolveGenerationModel(context: RuntimeToolContext, requestedModel: string): Promise<string> {
+async function resolveGenerationModel(
+	context: RuntimeToolContext,
+	requestedModel: string,
+	targetNodeId: string,
+): Promise<string> {
+	const targetResolver = context.desktopMode ? context.gateway.resolveGenerationModelForTarget : undefined;
+	if (typeof targetResolver === "function")
+		return targetResolver.call(
+			context.gateway,
+			context.userId,
+			requestedModel,
+			context.canvasId,
+			targetNodeId,
+			context.requestId,
+		);
 	const resolver = context.gateway.resolveGenerationModel;
 	return typeof resolver === "function"
 		? resolver.call(context.gateway, context.userId, requestedModel, context.requestId)
@@ -907,6 +941,9 @@ function toolErrorCodeFromMessage(error: unknown): string | undefined {
 		"VERSION_CONFLICT",
 		"INSUFFICIENT_POINTS",
 		"MODEL_UNAVAILABLE",
+		"MODEL_NOT_FOUND",
+		"MODEL_DISABLED",
+		"MODEL_MODALITY_MISMATCH",
 		"MODEL_TIMEOUT",
 		"CONTENT_BLOCKED",
 		"COST_CAP_EXCEEDED",
