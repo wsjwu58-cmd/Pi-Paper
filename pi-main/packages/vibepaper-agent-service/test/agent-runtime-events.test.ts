@@ -1,18 +1,16 @@
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
-
-import type { ServiceConfig } from "../src/config.ts";
 import {
-	type AgentRuntimeError,
 	type AgentTurnEvent,
-	awaitAgentTurn,
 	agnesModel,
+	awaitAgentTurn,
 	captureEvent,
 	forceInitialToolCall,
 	sanitizeAgentReply,
 	sanitizeAssistantMessage,
 } from "../src/application/agent-runtime.ts";
+import type { ServiceConfig } from "../src/config.ts";
 
 describe("Pi runtime event mapping", () => {
 	it("sends the documented thinking opt-in only for desktop Agnes runs", async () => {
@@ -187,7 +185,7 @@ describe("Pi runtime event mapping", () => {
 				},
 				1,
 			),
-		).rejects.toMatchObject<Partial<AgentRuntimeError>>({ code: "MODEL_TIMEOUT" });
+		).rejects.toMatchObject({ code: "MODEL_TIMEOUT" });
 		expect(aborted).toBe(true);
 	});
 
@@ -251,10 +249,14 @@ describe("Pi runtime event mapping", () => {
 
 	it("forces the requested canvas tool only on the initial model request", () => {
 		const choices: unknown[] = [];
-		const forced = forceInitialToolCall("create_nodes", ((_, __, options) => {
-			choices.push(options?.toolChoice);
-			return {} as ReturnType<typeof import("@earendil-works/pi-ai").streamSimple>;
-		}) as typeof import("@earendil-works/pi-ai").streamSimple);
+		const forced = forceInitialToolCall(
+			"create_nodes",
+			((...args: Parameters<typeof streamSimple>) => {
+				const [, , options] = args;
+				choices.push(options?.toolChoice);
+				return {} as ReturnType<typeof streamSimple>;
+			}) as typeof streamSimple,
+		);
 		forced({} as never, {} as never, {});
 		forced({} as never, {} as never, {});
 		expect(choices).toEqual([{ type: "function", function: { name: "create_nodes" } }, undefined]);

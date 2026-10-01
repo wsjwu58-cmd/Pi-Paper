@@ -559,6 +559,7 @@ async function startAgentWorker(projectDirectory) {
     })
     agentProjectId = opened.projectId
     activeProjectDirectory = projectDirectory
+    void notifyAgentTaskState(opened.projectId)
     return opened
   } catch (error) {
     await worker.stop()
@@ -572,6 +573,19 @@ async function stopAgentWorker() {
   agentWorker = null
   agentProjectId = null
   await worker.stop()
+}
+
+async function notifyAgentTaskState(projectId) {
+  const worker = agentWorker
+  if (stopping || !worker || typeof projectId !== 'string' || !projectId || agentProjectId !== projectId) return
+  try {
+    const apiKey = await getAgnesApiKey().catch(() => null)
+    if (stopping || agentWorker !== worker || agentProjectId !== projectId) return
+    await worker.request('agent:reconcile-tasks', { projectId, apiKey: apiKey ?? '' })
+  } catch {
+    // Snapshot polling retries reconciliation; task results remain authoritative.
+    console.warn('AGENT_TASK_RECONCILIATION_UNAVAILABLE')
+  }
 }
 
 async function drainTaskQueue(projectId) {
@@ -753,6 +767,7 @@ async function drainTaskQueue(projectId) {
       if (activeGenerationExecution?.taskId === task.taskId && activeGenerationExecution.projectId === projectId) {
         activeGenerationExecution = null
       }
+      void notifyAgentTaskState(projectId)
     }
   }
 }
@@ -2246,6 +2261,7 @@ function registerProjectIpc() {
       await stopGenerationWorker()
       await localCore.request('task:cleanup-cancelled-output', { projectId, taskId })
     }
+    void notifyAgentTaskState(projectId)
     return task
   })
   ipcMain.handle('desktop:task:retry', async (event, projectId, taskId) => {
@@ -2320,11 +2336,15 @@ function registerProjectIpc() {
   })
   ipcMain.handle('desktop:model:save-agnes-key', async (event, apiKey) => {
     assertTrustedSender(event)
-    return saveAgnesApiKey(apiKey)
+    const settings = await saveAgnesApiKey(apiKey)
+    void notifyAgentTaskState(agentProjectId)
+    return settings
   })
   ipcMain.handle('desktop:model:clear-agnes-key', async (event) => {
     assertTrustedSender(event)
-    return clearAgnesApiKey()
+    const settings = await clearAgnesApiKey()
+    void notifyAgentTaskState(agentProjectId)
+    return settings
   })
   ipcMain.handle('desktop:model:get-ark', async (event) => {
     assertTrustedSender(event)

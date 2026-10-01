@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import { DesktopAgentControlStore } from "./control-store.ts";
+import { backup, DatabaseSync } from "node:sqlite";
+import { DESKTOP_AGENT_CONTROL_SCHEMA_VERSION, DesktopAgentControlStore } from "./control-store.ts";
 import { DesktopAgentSessionStore } from "./session-store.ts";
 
 type ProjectMetadata = { projectId: string; schemaVersion: number };
@@ -133,6 +134,76 @@ async function acquireProjectWriterLock(lockPath: string): Promise<() => Promise
 	throw new Error("无法取得该项目的 Agent 写入锁，请稍后重试。");
 }
 
+async function backupControlDatabaseBeforeUpgrade(controlPath: string, agentDirectory: string): Promise<void> {
+	const sourceInfo = await lstat(controlPath).catch((error: unknown) => {
+		if (nodeErrorCode(error) === "ENOENT") return null;
+		throw error;
+	});
+	if (!sourceInfo) return;
+	if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) throw new Error("Agent 控制数据库路径无效。");
+
+	const source = new DatabaseSync(controlPath, { readOnly: true, timeout: 5000 });
+	try {
+		const versionRow = source.prepare("PRAGMA user_version").get() as { user_version: number } | undefined;
+		const version = Number(versionRow?.user_version);
+		if (!Number.isSafeInteger(version) || version < 1 || version >= DESKTOP_AGENT_CONTROL_SCHEMA_VERSION) return;
+
+		const snapshotName = `control-v${version}-${randomUUID()}.pre-migration.sqlite`;
+		const snapshotPath = join(agentDirectory, snapshotName);
+		const existingSnapshot = await lstat(snapshotPath).catch((error: unknown) => {
+			if (nodeErrorCode(error) === "ENOENT") return null;
+			throw error;
+		});
+		if (existingSnapshot) throw new Error("Agent 控制数据库升级快照路径已存在。");
+
+		try {
+			await backup(source, snapshotPath);
+			const snapshotInfo = await lstat(snapshotPath).catch(() => null);
+			if (!snapshotInfo?.isFile() || snapshotInfo.isSymbolicLink())
+				throw new Error("Agent 控制数据库升级快照文件无效。");
+			if (relative(agentDirectory, await realpath(snapshotPath)) !== snapshotName)
+				throw new Error("Agent 控制数据库升级快照路径越界。");
+			await chmod(snapshotPath, 0o600).catch(() => undefined);
+
+			const snapshot = new DatabaseSync(snapshotPath, { timeout: 5000 });
+			try {
+				const journalMode = snapshot.prepare("PRAGMA journal_mode = DELETE").get() as
+					| { journal_mode: string }
+					| undefined;
+				const snapshotVersionRow = snapshot.prepare("PRAGMA user_version").get() as
+					| { user_version: number }
+					| undefined;
+				const integrityRow = snapshot.prepare("PRAGMA integrity_check").get() as
+					| { integrity_check: string }
+					| undefined;
+				if (
+					journalMode?.journal_mode.toLowerCase() !== "delete" ||
+					Number(snapshotVersionRow?.user_version) !== version ||
+					integrityRow?.integrity_check !== "ok"
+				) {
+					throw new Error("Agent 控制数据库升级快照校验失败。");
+				}
+			} finally {
+				snapshot.close();
+			}
+			for (const sidecarPath of [`${snapshotPath}-wal`, `${snapshotPath}-shm`]) {
+				const sidecarInfo = await lstat(sidecarPath).catch((error: unknown) => {
+					if (nodeErrorCode(error) === "ENOENT") return null;
+					throw error;
+				});
+				if (sidecarInfo) throw new Error("Agent 控制数据库升级快照仍有 SQLite sidecar 文件。");
+			}
+		} catch (error) {
+			await rm(snapshotPath, { force: true }).catch(() => undefined);
+			await rm(`${snapshotPath}-wal`, { force: true }).catch(() => undefined);
+			await rm(`${snapshotPath}-shm`, { force: true }).catch(() => undefined);
+			throw error;
+		}
+	} finally {
+		source.close();
+	}
+}
+
 export async function openDesktopAgentStores(projectDirectoryInput: string): Promise<DesktopAgentStores> {
 	const projectDirectory = await realpath(resolve(projectDirectoryInput));
 	const dataDirectory = join(projectDirectory, ".vibepaper");
@@ -163,6 +234,7 @@ export async function openDesktopAgentStores(projectDirectoryInput: string): Pro
 	let control: DesktopAgentControlStore | undefined;
 	let sessions: DesktopAgentSessionStore | undefined;
 	try {
+		await backupControlDatabaseBeforeUpgrade(controlPath, agentDirectory);
 		control = new DesktopAgentControlStore(controlPath);
 		sessions = new DesktopAgentSessionStore(metadata.projectId, projectDirectory, sessionsDirectory);
 		let closed = false;

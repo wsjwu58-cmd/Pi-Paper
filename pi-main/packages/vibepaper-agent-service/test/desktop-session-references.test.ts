@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
+	type DesktopAgentMessageMetadata,
 	DesktopAgentSessionStore,
 	desktopCompactionSummary,
-	type DesktopAgentMessageMetadata,
 } from "../src/desktop/session-store.ts";
 
 const temporaryDirectories: string[] = [];
@@ -51,7 +51,8 @@ describe("desktop Pi session reference metadata", () => {
 			}],
 		});
 		expect(JSON.stringify((await store.buildContext(session.id)).messages)).toContain("image-source");
-		expect((await store.listTranscriptMessages(session.id))[0]?.message.content).toBe("继续这张图");
+		const firstTranscriptMessage = (await store.listTranscriptMessages(session.id))[0]?.message;
+		expect(firstTranscriptMessage?.role === "user" ? firstTranscriptMessage.content : undefined).toBe("继续这张图");
 		await store.appendCompaction(session.id, { summary: "用户正在引用人物图继续整理画布。", retainLastMessages: 1, tokensBefore: 100 });
 		const context = await store.buildContext(session.id);
 		expect(JSON.stringify(context.messages)).toContain("image-source");

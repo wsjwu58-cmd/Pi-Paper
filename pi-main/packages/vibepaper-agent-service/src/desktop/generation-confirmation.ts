@@ -28,13 +28,24 @@ export async function recoverDesktopAgentRuns(
 		const activeRun = await runService.findActive(session.id);
 		if (!activeRun) continue;
 		if (activeRun.status === "waiting_task") continue;
+		const continuation = stores.control.findTaskContinuationForRun(activeRun.runId);
+		if (
+			activeRun.status === "queued" &&
+			stores.control.canRecoverQueuedTaskContinuation(activeRun.runId, stores.projectId)
+		)
+			continue;
 		const accepted =
 			activeRun.status === "waiting_confirmation"
 				? stores.control.findConsumedApprovalForRun(activeRun.runId)
 				: undefined;
 		if (accepted) continue;
+		if (continuation?.status === "claimed")
+			stores.control.markTaskContinuationInterrupted(activeRun.runId, stores.projectId);
 		if (activeRun.status === "waiting_confirmation") stores.control.invalidatePendingForRun(activeRun.runId);
-		await runService.setStatus(activeRun.runId, "aborted", { reason: "worker_restarted" });
+		await runService.setStatus(activeRun.runId, "aborted", {
+			reason: "worker_restarted",
+			...(continuation?.status === "claimed" ? { continuationInterrupted: true } : {}),
+		});
 	}
 	await stores.sessions.flushOutbox(stores.control);
 }
@@ -189,10 +200,10 @@ export async function confirmDesktopGenerationAction(
 		if (
 			events.some(
 				(event) =>
-				event.type === "task_status" &&
-				event.data.actionId === input.actionId &&
-				event.data.actionStatus === "accepted" &&
-				event.data.task_id === task.taskId,
+					event.type === "task_status" &&
+					event.data.actionId === input.actionId &&
+					event.data.actionStatus === "accepted" &&
+					event.data.task_id === task.taskId,
 			)
 		)
 			continue;
@@ -207,15 +218,21 @@ export async function confirmDesktopGenerationAction(
 			}),
 		];
 	}
-	if (!events.some((event) =>
-		event.type === "tool_completed" && event.data.actionId === input.actionId && event.data.actionStatus === "accepted",
-	)) {
+	if (
+		!events.some(
+			(event) =>
+				event.type === "tool_completed" &&
+				event.data.actionId === input.actionId &&
+				event.data.actionStatus === "accepted",
+		)
+	) {
 		await runService.appendEvent(run.runId, "tool_completed", {
 			actionId: input.actionId,
 			actionStatus: "accepted",
 			tool: record.action.toolName,
 			ok: true,
-			details: tasks.length === 1 ? "已确认，生成任务已加入本地队列" : `已确认，${tasks.length} 个生成任务已加入本地队列`,
+			details:
+				tasks.length === 1 ? "已确认，生成任务已加入本地队列" : `已确认，${tasks.length} 个生成任务已加入本地队列`,
 		});
 	}
 

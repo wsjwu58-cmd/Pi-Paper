@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { DesktopSessionFragments } from "../src/desktop/session-fragments.ts";
 import { DesktopAgentSessionStore } from "../src/desktop/session-store.ts";
@@ -116,7 +116,9 @@ describe("desktop session fragments", () => {
 		expect(copiedMessages.map(({ message }) => message.role)).toEqual(["user", "assistant"]);
 		expect(copiedMessages.map(({ message }) => message.role === "user"
 			? message.content
-			: message.content.filter((item) => item.type === "text").map((item) => item.text).join("")))
+			: message.role === "assistant"
+				? message.content.filter((item) => item.type === "text").map((item) => item.text).join("")
+				: ""))
 			.toEqual(["保留这段对话", "我会继续这个方案。"]);
 		const copiedAssistant = copiedMessages[1]?.message;
 		expect(copiedAssistant).toMatchObject({

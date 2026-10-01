@@ -3,19 +3,23 @@ import { lstat, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
 	type AgentMessage,
-	buildSessionContext,
 	buildContextEntries,
-	type FileError,
+	buildSessionContext,
 	type Entry,
+	type FileError,
 	type JsonlSessionMetadata,
 	JsonlSessionRepo,
-	sessionEntryToContextMessages,
 	type Result,
 	type Session,
 	type SessionContext,
+	sessionEntryToContextMessages,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import { composeUserContent, nodeReferencesFromMeta, type NodeReferenceSnapshot } from "../application/node-reference-context.ts";
+import {
+	composeUserContent,
+	type NodeReferenceSnapshot,
+	nodeReferencesFromMeta,
+} from "../application/node-reference-context.ts";
 import type { DesktopAgentControlStore } from "./control-store.ts";
 
 const RUN_EVENT_ENTRY_TYPE = "vibepaper_run_event";
@@ -24,6 +28,8 @@ const MAX_MESSAGE_REFERENCES = 8;
 const MAX_MESSAGE_ID_LENGTH = 128;
 const MAX_SKILL_ID_LENGTH = 160;
 const MAX_METADATA_BYTES = 96 * 1024;
+const DEFAULT_SESSION_TITLE = "新对话";
+const MAX_SESSION_TITLE_CHARACTERS = 48;
 
 export type DesktopAgentReferenceCard = Pick<
 	NodeReferenceSnapshot,
@@ -114,6 +120,22 @@ export class DesktopAgentSessionStore {
 		return await this.repo.open(metadata);
 	}
 
+	async resolveSessionTitle(sessionId: string): Promise<string> {
+		return this.withSessionMutation(sessionId, async () => {
+			const session = await this.openSession(sessionId);
+			const currentTitle = (await session.getName())?.trim() ?? "";
+			if (currentTitle && !isPlaceholderSessionTitle(currentTitle)) return currentTitle;
+
+			const entries = await session.findEntries({ order: "oldestFirst" });
+			const recoveredTitle = firstUserTextTitle(entries);
+			if (recoveredTitle) {
+				if (currentTitle !== recoveredTitle) await session.setName(recoveredTitle);
+				return recoveredTitle;
+			}
+			return currentTitle || DEFAULT_SESSION_TITLE;
+		});
+	}
+
 	async appendMessage(
 		sessionId: string,
 		message: AgentMessage,
@@ -130,21 +152,34 @@ export class DesktopAgentSessionStore {
 		});
 	}
 
-	async appendSummaryUsage(sessionId: string, response: {
-		provider: string; model: string;
-		usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
-	}): Promise<void> {
-		const usage = Object.fromEntries(["input", "output", "cacheRead", "cacheWrite"].map((key) => {
-			const count = response.usage[key as keyof typeof response.usage];
-			if (!Number.isSafeInteger(count) || count < 0) throw new Error("AGENT_USAGE_INVALID");
-			return [key, count];
-		}));
-		if (typeof response.provider !== "string" || response.provider.length > 128 ||
-			typeof response.model !== "string" || response.model.length > 256) throw new Error("AGENT_USAGE_INVALID");
+	async appendSummaryUsage(
+		sessionId: string,
+		response: {
+			provider: string;
+			model: string;
+			usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
+		},
+	): Promise<void> {
+		const usage = Object.fromEntries(
+			["input", "output", "cacheRead", "cacheWrite"].map((key) => {
+				const count = response.usage[key as keyof typeof response.usage];
+				if (!Number.isSafeInteger(count) || count < 0) throw new Error("AGENT_USAGE_INVALID");
+				return [key, count];
+			}),
+		);
+		if (
+			typeof response.provider !== "string" ||
+			response.provider.length > 128 ||
+			typeof response.model !== "string" ||
+			response.model.length > 256
+		)
+			throw new Error("AGENT_USAGE_INVALID");
 		await this.withSessionMutation(sessionId, async () => {
 			const session = await this.openSession(sessionId);
 			await session.appendCustomEntry("vibepaper_summary_usage", {
-				provider: response.provider, model: response.model, usage,
+				provider: response.provider,
+				model: response.model,
+				usage,
 			});
 		});
 	}
@@ -230,11 +265,17 @@ export class DesktopAgentSessionStore {
 		if (leafId === null) return [];
 		const entries = await session.findEntriesOnBranch({ start: leafId, order: "oldestFirst" });
 		const metadata = messageMetadataById(entries);
-		return entries.flatMap((entry) => entry.type === "message" ? [{
-			messageId: entry.id,
-			message: entry.message,
-			...(metadata.has(entry.id) ? { metadata: metadata.get(entry.id) } : {}),
-		}] : []);
+		return entries.flatMap((entry) =>
+			entry.type === "message"
+				? [
+						{
+							messageId: entry.id,
+							message: entry.message,
+							...(metadata.has(entry.id) ? { metadata: metadata.get(entry.id) } : {}),
+						},
+					]
+				: [],
+		);
 	}
 
 	async flushOutbox(controlStore: DesktopAgentControlStore, sessionId?: string): Promise<number> {
@@ -316,11 +357,15 @@ export class DesktopAgentSessionStore {
 		const checkpointPath = `${metadata.path}${COMPACTION_CHECKPOINT_SUFFIX}`;
 		try {
 			const parent = dirname(checkpointPath);
-			if (await realpath(parent) !== parent) return;
+			if ((await realpath(parent)) !== parent) return;
 			const info = await lstat(checkpointPath).catch(() => null);
 			if (info && (!info.isFile() || info.isSymbolicLink())) return;
-			if (info && info.size <= 1024 * 1024
-				&& isMatchingCheckpoint(await readFile(checkpointPath, "utf8"), checkpoint)) return;
+			if (
+				info &&
+				info.size <= 1024 * 1024 &&
+				isMatchingCheckpoint(await readFile(checkpointPath, "utf8"), checkpoint)
+			)
+				return;
 			await this.writeOptionalCheckpoint(checkpointPath, checkpoint);
 		} catch {
 			// Checkpoints are optional caches; JSONL remains the recovery source.
@@ -355,10 +400,15 @@ function omitOptionalUndefined<T>(value: T, seen = new WeakMap<object, unknown>(
 	if (value === null || typeof value !== "object") return value;
 	if (seen.has(value)) return seen.get(value) as T;
 	if (Array.isArray(value)) {
-		if (Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length ||
+		if (
+			Object.getPrototypeOf(value) !== Array.prototype ||
+			Object.getOwnPropertySymbols(value).length ||
 			Object.getOwnPropertyNames(value).length !== value.length + 1 ||
-			Array.from({ length: value.length }, (_, index) => Object.getOwnPropertyDescriptor(value, index))
-				.some((descriptor) => !descriptor || !("value" in descriptor))) return value;
+			Array.from({ length: value.length }, (_, index) => Object.getOwnPropertyDescriptor(value, index)).some(
+				(descriptor) => !descriptor || !("value" in descriptor),
+			)
+		)
+			return value;
 		const copy: unknown[] = new Array(value.length);
 		seen.set(value, copy);
 		for (let index = 0; index < value.length; index++) {
@@ -368,24 +418,31 @@ function omitOptionalUndefined<T>(value: T, seen = new WeakMap<object, unknown>(
 	}
 	const prototype = Object.getPrototypeOf(value);
 	if (prototype !== Object.prototype && prototype !== null) return value;
-	if (Reflect.ownKeys(value).some((key) => {
-		const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
-		return typeof key !== "string" || !descriptor.enumerable || !("value" in descriptor);
-	})) return value;
+	if (
+		Reflect.ownKeys(value).some((key) => {
+			const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+			return typeof key !== "string" || !descriptor.enumerable || !("value" in descriptor);
+		})
+	)
+		return value;
 	const copy = Object.create(prototype) as Record<string, unknown>;
 	seen.set(value, copy);
 	for (const key of Reflect.ownKeys(value)) {
 		const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
 		if ("value" in descriptor && descriptor.value === undefined) continue;
-		Object.defineProperty(copy, key, "value" in descriptor
-			? { ...descriptor, value: omitOptionalUndefined(descriptor.value, seen) }
-			: descriptor);
+		Object.defineProperty(
+			copy,
+			key,
+			"value" in descriptor ? { ...descriptor, value: omitOptionalUndefined(descriptor.value, seen) } : descriptor,
+		);
 	}
 	return copy as T;
 }
 
 export function desktopCompactionSummary(context: SessionContext): string | undefined {
-	const summaries = context.messages.flatMap((message) => message.role === "compactionSummary" ? [message.summary] : []);
+	const summaries = context.messages.flatMap((message) =>
+		message.role === "compactionSummary" ? [message.summary] : [],
+	);
 	return summaries.length ? summaries.join("\n\n") : undefined;
 }
 
@@ -413,7 +470,7 @@ function contextMessagesForRetention(entries: readonly Entry[]): AgentMessage[] 
 function retainCompleteToolPairs(messages: readonly AgentMessage[], requestedTailSize: number): AgentMessage[] {
 	if (requestedTailSize === 0) return [];
 	const desiredStart = Math.max(0, messages.length - requestedTailSize);
-	const userTurnStarts = messages.flatMap((message, index) => message.role === "user" ? [index] : []);
+	const userTurnStarts = messages.flatMap((message, index) => (message.role === "user" ? [index] : []));
 	if (userTurnStarts.length === 0) return [];
 	const candidates = [
 		...userTurnStarts.filter((index) => index <= desiredStart).reverse(),
@@ -430,24 +487,38 @@ function retainCompleteToolPairs(messages: readonly AgentMessage[], requestedTai
 
 function contextEntriesWithReferences(entries: readonly Entry[]): Entry[] {
 	const metadata = messageMetadataById(entries);
-	const originalUserIds = new Map(entries.flatMap((entry) => entry.type === "message" && entry.message.role === "user"
-		? [[JSON.stringify(entry.message), entry.id] as const] : []));
+	const originalUserIds = new Map(
+		entries.flatMap((entry) =>
+			entry.type === "message" && entry.message.role === "user"
+				? [[JSON.stringify(entry.message), entry.id] as const]
+				: [],
+		),
+	);
 	const project = (message: AgentMessage, messageId?: string): AgentMessage => {
 		if (message.role !== "user") return message;
 		const id = messageId ?? originalUserIds.get(JSON.stringify(message));
 		const references = nodeReferencesFromMeta(id ? metadata.get(id) : undefined);
 		if (!references.length) return message;
 		const content = message.content;
-		const text = typeof content === "string" ? content : content
-			.filter((block) => block.type === "text").map((block) => block.text).join("\n");
-		return { ...message,
-			content: [{ type: "text" as const, text: composeUserContent(text, references) },
-				...(Array.isArray(content) ? content.filter((block) => block.type !== "text") : [])],
+		const text =
+			typeof content === "string"
+				? content
+				: content
+						.filter((block) => block.type === "text")
+						.map((block) => block.text)
+						.join("\n");
+		return {
+			...message,
+			content: [
+				{ type: "text" as const, text: composeUserContent(text, references) },
+				...(Array.isArray(content) ? content.filter((block) => block.type !== "text") : []),
+			],
 		};
 	};
 	return entries.map((entry) => {
 		if (entry.type === "message") return { ...entry, message: project(entry.message, entry.id) };
-		if (entry.type === "compaction") return { ...entry, retainedTail: entry.retainedTail.map((message) => project(message)) };
+		if (entry.type === "compaction")
+			return { ...entry, retainedTail: entry.retainedTail.map((message) => project(message)) };
 		return entry;
 	});
 }
@@ -576,11 +647,12 @@ function normalizeMessageMetadata(value: unknown): DesktopAgentMessageMetadata {
 	if (
 		!Array.isArray(selectedNodeIds) ||
 		selectedNodeIds.length !== nodeReferences.length ||
-		selectedNodeIds.some((nodeId, index) =>
-			typeof nodeId !== "string" ||
-			nodeId.length < 1 ||
-			nodeId.length > MAX_MESSAGE_ID_LENGTH ||
-			nodeId !== nodeReferences[index]?.nodeId,
+		selectedNodeIds.some(
+			(nodeId, index) =>
+				typeof nodeId !== "string" ||
+				nodeId.length < 1 ||
+				nodeId.length > MAX_MESSAGE_ID_LENGTH ||
+				nodeId !== nodeReferences[index]?.nodeId,
 		)
 	) {
 		throw new Error("AGENT_REFERENCE_METADATA_INVALID");
@@ -589,7 +661,9 @@ function normalizeMessageMetadata(value: unknown): DesktopAgentMessageMetadata {
 	const selectedSkillId = raw.selectedSkillId;
 	if (
 		selectedSkillId !== undefined &&
-		(typeof selectedSkillId !== "string" || selectedSkillId.length < 1 || selectedSkillId.length > MAX_SKILL_ID_LENGTH)
+		(typeof selectedSkillId !== "string" ||
+			selectedSkillId.length < 1 ||
+			selectedSkillId.length > MAX_SKILL_ID_LENGTH)
 	) {
 		throw new Error("AGENT_REFERENCE_METADATA_INVALID");
 	}
@@ -649,7 +723,9 @@ function safeLocalPreviewUrl(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	const assetMatch = /^vibe:\/\/app\/assets\/([A-Za-z0-9_-]{1,128})$/u.exec(value);
 	if (assetMatch) return `vibe://app/assets/${assetMatch[1]}`;
-	const taskMatch = /^vibe:\/\/app\/tasks\/([A-Za-z0-9_-]{1,128})\/output(?:\?index=(0|[1-9][0-9]{0,5}))?$/u.exec(value);
+	const taskMatch = /^vibe:\/\/app\/tasks\/([A-Za-z0-9_-]{1,128})\/output(?:\?index=(0|[1-9][0-9]{0,5}))?$/u.exec(
+		value,
+	);
 	if (!taskMatch) return undefined;
 	const index = taskMatch[2];
 	return `vibe://app/tasks/${taskMatch[1]}/output${index && index !== "0" ? `?index=${index}` : ""}`;
@@ -665,4 +741,25 @@ function boundedString(value: unknown, maxLength: number): string | undefined {
 	if (typeof value !== "string" && typeof value !== "number") return undefined;
 	const normalized = String(value).replace(/\s+/g, " ").trim();
 	return normalized ? normalized.slice(0, maxLength) : undefined;
+}
+
+function isPlaceholderSessionTitle(title: string): boolean {
+	return title === DEFAULT_SESSION_TITLE || title === "画布对话";
+}
+
+function firstUserTextTitle(entries: readonly Entry[]): string | undefined {
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		const content = entry.message.content;
+		const text =
+			typeof content === "string"
+				? content
+				: content
+						.filter((block) => block.type === "text")
+						.map((block) => block.text)
+						.join("");
+		const title = text.trim().slice(0, MAX_SESSION_TITLE_CHARACTERS);
+		if (title) return title;
+	}
+	return undefined;
 }

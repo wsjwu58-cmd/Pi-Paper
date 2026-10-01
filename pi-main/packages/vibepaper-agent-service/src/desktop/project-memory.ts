@@ -73,9 +73,6 @@ type StoredMemoryMetadata = {
 export class DesktopProjectMemoryRepository implements MemoryRepository {
 	private readonly projectDirectoryInput: string;
 	private readonly projectId: string;
-	private projectDirectory: string | undefined;
-	private memoryDirectory: string | undefined;
-	private memoryFile: string | undefined;
 
 	constructor(projectDirectory: string, projectId: string) {
 		this.projectDirectoryInput = projectDirectory;
@@ -187,9 +184,6 @@ export class DesktopProjectMemoryRepository implements MemoryRepository {
 			throw new Error("PROJECT_MEMORY_PATH_INVALID");
 		}
 		const memoryFile = join(memoryDirectory, MEMORY_FILE_NAME);
-		this.projectDirectory = projectDirectory;
-		this.memoryDirectory = memoryDirectory;
-		this.memoryFile = memoryFile;
 		return { projectDirectory, memoryDirectory, memoryFile };
 	}
 }
@@ -197,8 +191,6 @@ export class DesktopProjectMemoryRepository implements MemoryRepository {
 /** Persists user-wide preferences outside any project so they survive project deletion and switching. */
 export class DesktopGlobalMemoryRepository implements MemoryRepository {
 	private readonly userDataDirectoryInput: string;
-	private memoryDirectory: string | undefined;
-	private memoryFile: string | undefined;
 
 	constructor(userDataDirectory: string) {
 		this.userDataDirectoryInput = userDataDirectory;
@@ -279,8 +271,6 @@ export class DesktopGlobalMemoryRepository implements MemoryRepository {
 		const resolvedDirectory = await realpath(memoryDirectory);
 		if (relative(userDataDirectory, resolvedDirectory).startsWith("..")) throw new Error("GLOBAL_MEMORY_PATH_INVALID");
 		const memoryFile = join(memoryDirectory, MEMORY_FILE_NAME);
-		this.memoryDirectory = memoryDirectory;
-		this.memoryFile = memoryFile;
 		return { memoryDirectory, memoryFile };
 	}
 }

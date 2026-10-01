@@ -460,7 +460,8 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 				);
 			},
 		),
-		...[
+		...(!context.desktopMode
+			? [
 					tool(
 						"delete_nodes",
 						"删除画布节点",
@@ -485,7 +486,8 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 							);
 						},
 					),
-				],
+				]
+			: []),
 		...(canPrepareGeneration && generations
 			? [
 					tool(

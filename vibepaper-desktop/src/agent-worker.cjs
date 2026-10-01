@@ -15,7 +15,9 @@ const {
   confirmDesktopGenerationAction,
   recoverDesktopAgentRuns,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/generation-confirmation.ts')
-const { reconcileDesktopAgentTasks } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/task-status-sync.ts')
+const {
+  reconcileDesktopAgentTasks,
+} = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/task-status-sync.ts')
 const {
   createDesktopAgentSkillContext,
   listDesktopAgentSkills,
@@ -44,7 +46,8 @@ const {
   desktopGenerationConfirmationItems,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/tools/runtime-tools.ts')
 const { AGNES_MODELS } = require('./agnes-model-catalog.cjs')
-const { createAgentLocalToolClient } = require('./agent-local-tools.cjs')
+const { getAgentCanvasDomain, createAgentLocalToolClient } = require('./agent-local-tools.cjs')
+const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildAgentUsage } = require('./agent-usage.cjs')
 const { summarizeAgentToolActivity, summarizeAgentToolRetry } = require('./agent-activity.cjs')
 
@@ -57,6 +60,8 @@ let scopedMemory = null
 let sessionFragments = null
 let requestQueue = Promise.resolve()
 const activeRuns = new Map()
+const scheduledTaskContinuations = new Set()
+let continuationApiKey = null
 const agentLocalCoreClient = createAgentLocalToolClient(parentPort)
 
 async function requireProject(projectId) {
@@ -71,8 +76,7 @@ async function listSessions(projectId) {
   const current = await requireProject(projectId)
   const sessions = await current.sessions.listSessions()
   return Promise.all(sessions.map(async ({ id, createdAt, modifiedAt }) => {
-    const session = await current.sessions.openSession(id)
-    const title = await session.getName()
+    const title = await current.sessions.resolveSessionTitle(id)
     return { sessionId: id, title: title || '新对话', createdAt, modifiedAt }
   }))
 }
@@ -122,7 +126,18 @@ function historyText(message) {
     .join('')
 }
 
+function isSyntheticTaskContinuationProgressMessage(message) {
+  if (message?.role !== 'assistant') return false
+  const content = historyText(message).trim()
+  const isProgress = content === '上一阶段生成已完成，正在读取画布并继续执行后续步骤。'
+    || content === '上一阶段生成已结束，正在读取画布并整理失败影响与后续步骤。'
+  const hasModelUsage = typeof message.model === 'string' && message.model.length > 0
+    && typeof message.usage?.totalTokens === 'number'
+  return isProgress && !hasModelUsage
+}
+
 function storedHistoryMessage(message) {
+  if (isSyntheticTaskContinuationProgressMessage(message)) return null
   if (!message || !['user', 'assistant', 'toolResult'].includes(message.role)) return null
   const piMessage = message.role === 'assistant' ? sanitizeAssistantMessage(message) : message
   const content = historyText(piMessage)
@@ -146,7 +161,8 @@ async function getSessionMessages(projectId, sessionId) {
   const current = await requireProject(projectId)
   if (typeof sessionId !== 'string' || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
   return (await current.sessions.listTranscriptMessages(sessionId))
-    .filter(({ message }) => message.role === 'user' || message.role === 'assistant')
+    .filter(({ message }) => (message.role === 'user' || message.role === 'assistant')
+      && !isSyntheticTaskContinuationProgressMessage(message))
     .map(({ messageId, message, metadata }) => ({
       id: messageId,
       role: message.role,
@@ -186,9 +202,139 @@ async function listSessionEvents(projectId, sessionId, afterSeq) {
 
 async function reconcileSessionTasks(current, sessionId) {
   if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
-  return reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
+  const reconciled = await reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
     'agent:core:get-task', { projectId: current.projectId, taskId },
-  ), { sessionId })
+  ), { sessionId, ...(continuationApiKey ? { apiKey: continuationApiKey } : {}) })
+  const continuations = continuationApiKey
+    ? await scheduleTaskContinuationClaims(current, reconciled.continuationClaims, continuationApiKey)
+    : { scheduled: 0, failed: 0 }
+  const { continuationClaims, ...counts } = reconciled
+  return { ...counts, ...continuations }
+}
+
+async function reconcileProjectTasks(payload) {
+  const current = await requireProject(payload?.projectId)
+  const apiKey = payload?.apiKey
+  if (typeof apiKey !== 'string' || apiKey.length > 4096) {
+    continuationApiKey = null
+    stopTaskContinuationRuns()
+    throw new Error('AGENT_RECONCILIATION_INPUT_INVALID')
+  }
+  const nextApiKey = apiKey || null
+  if (continuationApiKey && continuationApiKey !== nextApiKey) stopTaskContinuationRuns()
+  continuationApiKey = nextApiKey
+
+  const reconciled = await reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
+    'agent:core:get-task', { projectId: current.projectId, taskId },
+  ), { ...(continuationApiKey ? { apiKey: continuationApiKey } : {}) })
+  const continuations = continuationApiKey
+    ? await scheduleTaskContinuationClaims(current, reconciled.continuationClaims, continuationApiKey)
+    : { scheduled: 0, failed: 0 }
+  const { continuationClaims, ...counts } = reconciled
+  return { ...counts, ...continuations }
+}
+
+function stopTaskContinuationRuns() {
+  for (const runControl of activeRuns.values()) {
+    if (!runControl.taskContinuation) continue
+    runControl.cancelled = true
+    runControl.controller.abort()
+    runControl.agent?.abort()
+  }
+}
+
+async function scheduleTaskContinuationClaims(current, claims, apiKey) {
+  if (!apiKey || continuationApiKey !== apiKey || !Array.isArray(claims)) return { scheduled: 0, failed: 0 }
+  let scheduled = 0
+  let failed = 0
+  for (const claim of claims) {
+    if (claim?.status !== 'claimed' || claim.shouldStart !== true || !claim.request || !claim.run) continue
+    const runId = claim.run.runId
+    if (typeof runId !== 'string' || scheduledTaskContinuations.has(runId)) continue
+    scheduledTaskContinuations.add(runId)
+    try {
+      const payload = await taskContinuationPayload(current, claim.request, apiKey)
+      if (continuationApiKey !== apiKey) {
+        scheduledTaskContinuations.delete(runId)
+        continue
+      }
+      const allSucceeded = claim.request.taskResults.length > 0
+        && claim.request.taskResults.every((task) => task.status === 'succeeded')
+      const mode = {
+        kind: 'task-continuation',
+        request: claim.request,
+        run: claim.run,
+        allSucceeded,
+        onSettled: () => scheduledTaskContinuations.delete(runId),
+      }
+      await startMessage(payload, mode)
+      scheduled += 1
+    } catch {
+      scheduledTaskContinuations.delete(runId)
+      failed += 1
+      await recordTaskContinuationScheduleFailure(current, claim).catch(() => undefined)
+    }
+  }
+  return { scheduled, failed }
+}
+
+async function recordTaskContinuationScheduleFailure(current, claim) {
+  const runId = claim?.run?.runId
+  const run = typeof runId === 'string' ? current.control.findById(runId) : undefined
+  if (!run || run.status !== 'queued') return
+  const runService = new SessionRunService(current.control)
+  const events = await runService.listEvents(run.runId)
+  if (events.some((event) => event.type === 'assistant_delta'
+    && event.data?.errorCode === 'AGENT_CONTINUATION_START_FAILED')) return
+  await runService.appendEvent(run.runId, 'assistant_delta', {
+    text: '自动续跑暂时无法启动，将在下次任务状态检查时重试。',
+    errorCode: 'AGENT_CONTINUATION_START_FAILED',
+    replace: true,
+  })
+  await current.sessions.flushOutbox(current.control, run.sessionId)
+}
+
+function markTaskContinuationInterrupted(current, runId) {
+  try {
+    current.control.markTaskContinuationInterrupted(runId, current.projectId)
+  } catch {
+    // A failed/aborted run is already excluded from queued continuation recovery.
+  }
+}
+
+function markTaskContinuationCompleted(current, runId) {
+  try {
+    current.control.markTaskContinuationCompleted(runId, current.projectId)
+  } catch {
+    // The terminal run remains authoritative if this secondary status write fails.
+  }
+}
+
+async function taskContinuationPayload(current, request, apiKey) {
+  if (request.projectId !== current.projectId || typeof request.sessionId !== 'string'
+    || typeof request.idempotencyKey !== 'string' || typeof request.prompt !== 'string') {
+    throw new Error('AGENT_CONTINUATION_INVALID')
+  }
+  const canvas = await agentLocalCoreClient.request('agent:core:load-canvas', { projectId: current.projectId })
+  if (!canvas || typeof canvas !== 'object' || Array.isArray(canvas)
+    || typeof canvas.canvasId !== 'string' || !canvas.canvasId
+    || !Number.isSafeInteger(canvas.version) || canvas.version < 0
+    || !Array.isArray(canvas.nodes) || canvas.nodes.length > 1_000_000) {
+    throw new Error('AGENT_CANVAS_CONTEXT_INVALID')
+  }
+  return {
+    projectId: current.projectId,
+    sessionId: request.sessionId,
+    content: request.prompt,
+    apiKey,
+    idempotencyKey: request.idempotencyKey,
+    canvasContext: buildAgentCanvasContext(canvas),
+    canvasId: canvas.canvasId,
+    canvasVersion: canvas.version,
+    canvasNodeCount: canvas.nodes.length,
+    selectedNodeIds: [],
+    canvasDomain: getAgentCanvasDomain(canvas),
+  }
 }
 
 async function recoverInterruptedRun(current, runService, sessionId) {
@@ -207,6 +353,7 @@ async function prepareBudgetedDesktopHistory(input) {
   }
   let summary = desktopCompactionSummary(context)
   for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (input.taskContinuation && continuationApiKey !== input.apiKey) throw new Error('CLOUD_CREDENTIAL_MISSING')
     const hooks = {
       profile: input.profile,
       desktopMode: true,
@@ -241,6 +388,7 @@ async function prepareBudgetedDesktopHistory(input) {
     if (!plan.requestFitsWithoutHistory) throw new Error('AGENT_CONTEXT_WINDOW_EXCEEDED')
     if (!plan.compactionRequired) return { context, history, summary, turnContext, plan }
 
+    if (input.taskContinuation && continuationApiKey !== input.apiKey) throw new Error('CLOUD_CREDENTIAL_MISSING')
     const nextSummary = await generateDesktopContextSummary({
       messages: plan.summarizedHistory,
       previousSummary: summary,
@@ -376,7 +524,7 @@ function requireMemoryContent(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > 2_000) throw new Error('MEMORY_CONTENT_INVALID')
 }
 
-async function sendMessage(payload, onRunCreated) {
+async function sendMessage(payload, onRunCreated, continuationMode) {
   const current = await requireProject(payload?.projectId)
   const {
     sessionId,
@@ -416,10 +564,16 @@ async function sendMessage(payload, onRunCreated) {
     throw new Error('SKILL_ID_INVALID')
   }
 
-  const session = await current.sessions.openSession(sessionId)
+  await current.sessions.openSession(sessionId)
   const runService = new SessionRunService(current.control)
   const existing = current.control.findByIdempotency(sessionId, idempotencyKey)
-  if (existing) {
+  if (continuationMode) {
+    if (continuationMode.kind !== 'task-continuation' || continuationApiKey !== apiKey
+      || !existing || existing.runId !== continuationMode.run?.runId || existing.status !== 'queued'
+      || continuationMode.run.sessionId !== sessionId || continuationMode.run.idempotencyKey !== idempotencyKey) {
+      throw new Error(continuationApiKey === apiKey ? 'AGENT_CONTINUATION_RUN_INVALID' : 'CLOUD_CREDENTIAL_MISSING')
+    }
+  } else if (existing) {
     onRunCreated?.({ runId: existing.runId })
     if (existing.status === 'completed') {
       const events = await runService.listEvents(existing.runId)
@@ -434,7 +588,7 @@ async function sendMessage(payload, onRunCreated) {
     throw new Error('AGENT_RUN_ALREADY_PROCESSED')
   }
 
-  await recoverInterruptedRun(current, runService, sessionId)
+  if (!continuationMode) await recoverInterruptedRun(current, runService, sessionId)
   const selectedNodes = [...new Set(selectedNodeIds ?? [])]
   const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
   const canvasSummary = await gateway.getCanvasSummary(current.projectId, canvasId)
@@ -443,11 +597,14 @@ async function sendMessage(payload, onRunCreated) {
     ? selectNodeReferences(await gateway.getSelectedNodes(current.projectId, canvasId, selectedNodes), selectedNodes)
     : []
   const sessionContext = await deriveDesktopSessionContext(current, sessionId, canvasId, canvasState)
-  const run = await runService.startRun({ sessionId, idempotencyKey })
+  const run = continuationMode?.run ?? await runService.startRun({ sessionId, idempotencyKey })
   gateway.attachRun({ control: current.control, sessionId, runId: run.runId })
   let resolveCompletion
   const completion = new Promise((resolve) => { resolveCompletion = resolve })
-  const runControl = { controller: new AbortController(), agent: null, cancelled: false, completion, resolveCompletion }
+  const runControl = {
+    controller: new AbortController(), agent: null, cancelled: false, completion, resolveCompletion,
+    taskContinuation: Boolean(continuationMode),
+  }
   activeRuns.set(run.runId, runControl)
   await runService.setStatus(run.runId, 'running')
   onRunCreated?.({ runId: run.runId })
@@ -467,6 +624,12 @@ async function sendMessage(payload, onRunCreated) {
   let turn
   let toolContext
   try {
+    if (continuationMode) {
+      const progressMessage = continuationMode.allSucceeded
+        ? '上一阶段生成已完成，正在读取画布并继续执行后续步骤。'
+        : '上一阶段生成已结束，正在读取画布并整理失败影响与后续步骤。'
+      await runService.appendEvent(run.runId, 'assistant_delta', { text: progressMessage, replace: true })
+    }
     const projectSkills = await listProjectAgentSkills(current.projectDirectory)
     const skillContext = createDesktopAgentSkillContext(current.control, sessionId, selectedSkillId, projectSkills)
     const memoryContext = await buildDesktopMemoryContext(sessionId, canvasId, content.trim())
@@ -482,6 +645,7 @@ async function sendMessage(payload, onRunCreated) {
       gateway,
       approvals,
       desktopMode: true,
+      continueAfterTask: continuationMode ? true : undefined,
       onAuditRequested: async (input) => gateway.requestRenderAudit(current.projectId, canvasId, toolContext.canvasVersion, input),
       onApprovalRequired: async (action) => {
         const generationItems = await desktopGenerationConfirmationItems(action, gateway)
@@ -518,42 +682,48 @@ async function sendMessage(payload, onRunCreated) {
       sessionContext,
       intentContext,
       memoryContext,
+      taskContinuation: Boolean(continuationMode),
     })
     if (runControl.controller.signal.aborted) throw new Error('RUN_ABORTED')
 
     // The persisted user entry is appended after compaction and remains separate
     // from the prior-turn model history. Pi receives it once through prompt().
-    await current.sessions.appendMessage(sessionId, {
-      role: 'user',
-      content: [{ type: 'text', text: content.trim() }],
-      timestamp: Date.now(),
-    },
-      selectedNodes.length || selectedSkillId
-        ? {
-            selectedNodeIds: nodeReferences.map((reference) => reference.nodeId),
-            nodeReferences,
-            ...(selectedSkillId ? { selectedSkillId } : {}),
-          }
-        : undefined)
-    if (!(await session.getName())) await session.setName(content.trim().slice(0, 72))
-
-    for (const candidate of extractMemoryCandidates(content.trim())) {
-      // Match the original HTTP path: automatic hints must not gate a turn.
-      try {
-        await scopedMemory.proposeCandidate({
-          sessionId,
-          content: candidate.content,
-          scope: desktopCandidateScope(content, candidate.scope),
-          memoryType: candidate.memoryType,
-          confidence: candidate.confidence,
-        })
-      } catch { /* Explicit memory tools still report their own errors. */ }
-    }
-    const dailyContent = extractDailyMemory(content.trim())
-    if (dailyContent) {
-      try { await scopedMemory.create('daily', dailyContent, sessionId) } catch { /* Best-effort hint. */ }
+    if (!continuationMode) {
+      await current.sessions.appendMessage(sessionId, {
+        role: 'user',
+        content: [{ type: 'text', text: content.trim() }],
+        timestamp: Date.now(),
+      },
+        selectedNodes.length || selectedSkillId
+          ? {
+              selectedNodeIds: nodeReferences.map((reference) => reference.nodeId),
+              nodeReferences,
+              ...(selectedSkillId ? { selectedSkillId } : {}),
+            }
+          : undefined)
+      await current.sessions.resolveSessionTitle(sessionId)
     }
 
+    if (!continuationMode) {
+      for (const candidate of extractMemoryCandidates(content.trim())) {
+        // Match the original HTTP path: automatic hints must not gate a turn.
+        try {
+          await scopedMemory.proposeCandidate({
+            sessionId,
+            content: candidate.content,
+            scope: desktopCandidateScope(content, candidate.scope),
+            memoryType: candidate.memoryType,
+            confidence: candidate.confidence,
+          })
+        } catch { /* Explicit memory tools still report their own errors. */ }
+      }
+      const dailyContent = extractDailyMemory(content.trim())
+      if (dailyContent) {
+        try { await scopedMemory.create('daily', dailyContent, sessionId) } catch { /* Best-effort hint. */ }
+      }
+    }
+
+    if (continuationMode && continuationApiKey !== apiKey) throw new Error('CLOUD_CREDENTIAL_MISSING')
     turn = await runDramaTurn(
       {
         llmApiKey: apiKey,
@@ -629,6 +799,7 @@ async function sendMessage(payload, onRunCreated) {
     current.control.invalidatePendingForRun(run.runId)
     await runService.setStatus(run.runId, cancelled ? 'aborted' : 'failed',
       cancelled ? { reason: 'user_cancelled' } : { errorCode })
+    if (continuationMode) markTaskContinuationInterrupted(current, run.runId)
     await current.sessions.flushOutbox(current.control, sessionId)
     finishActiveRun(run.runId)
     throw new Error(errorCode)
@@ -639,6 +810,7 @@ async function sendMessage(payload, onRunCreated) {
   if (runControl.controller.signal.aborted) {
     current.control.invalidatePendingForRun(run.runId)
     await runService.setStatus(run.runId, 'aborted', { reason: 'user_cancelled' })
+    if (continuationMode) markTaskContinuationInterrupted(current, run.runId)
     await current.sessions.flushOutbox(current.control, sessionId)
     finishActiveRun(run.runId)
     throw new Error('RUN_ABORTED')
@@ -647,6 +819,7 @@ async function sendMessage(payload, onRunCreated) {
     const errorCode = typeof errorEvent?.errorCode === 'string' ? errorEvent.errorCode : 'AGENT_MODEL_REQUEST_FAILED'
     current.control.invalidatePendingForRun(run.runId)
     await runService.setStatus(run.runId, 'failed', { errorCode })
+    if (continuationMode) markTaskContinuationInterrupted(current, run.runId)
     await current.sessions.flushOutbox(current.control, sessionId)
     finishActiveRun(run.runId)
     throw new Error(errorCode)
@@ -663,6 +836,7 @@ async function sendMessage(payload, onRunCreated) {
     return { runId: run.runId, assistantText, waitingConfirmation: true }
   }
   await runService.setStatus(run.runId, 'completed', { text: assistantText })
+  if (continuationMode) markTaskContinuationCompleted(current, run.runId)
   await current.sessions.flushOutbox(current.control, sessionId)
   finishActiveRun(run.runId)
   return { assistantText, events: toEventEnvelopes(await runService.listEvents(run.runId)) }
@@ -675,7 +849,7 @@ function finishActiveRun(runId) {
   active.resolveCompletion?.()
 }
 
-async function startMessage(payload) {
+async function startMessage(payload, continuationMode) {
   let resolveCreated
   let rejectCreated
   let settled = false
@@ -687,11 +861,11 @@ async function startMessage(payload) {
     if (settled) return
     settled = true
     resolveCreated(run)
-  }).catch((error) => {
+  }, continuationMode).catch((error) => {
     if (settled) return
     settled = true
     rejectCreated(error)
-  })
+  }).finally(() => continuationMode?.onSettled?.())
   return created
 }
 
@@ -732,6 +906,7 @@ async function cancelAgentRun(payload) {
   if (run.status === 'waiting_confirmation') {
     current.control.invalidatePendingForRun(run.runId)
     await new SessionRunService(current.control).setStatus(run.runId, 'aborted', { reason: 'user_cancelled' })
+    markTaskContinuationInterrupted(current, run.runId)
     await current.sessions.flushOutbox(current.control, run.sessionId)
     return { cancelled: true }
   }
@@ -765,6 +940,8 @@ async function dispatch(method, payload) {
   switch (method) {
     case 'agent:open': {
       if (!payload || typeof payload.projectDirectory !== 'string') throw new Error('AGENT_PROJECT_PATH_INVALID')
+      continuationApiKey = null
+      scheduledTaskContinuations.clear()
       await abortAndWaitForRuns()
       if (stores) await stores.close()
       stores = null
@@ -861,6 +1038,8 @@ async function dispatch(method, payload) {
       return sendMessage(payload)
     case 'agent:start-run':
       return startMessage(payload)
+    case 'agent:reconcile-tasks':
+      return reconcileProjectTasks(payload)
     case 'agent:confirm-action':
       return confirmAgentAction(payload)
     case 'agent:cancel-run':
@@ -875,6 +1054,8 @@ async function dispatch(method, payload) {
     case 'agent:memory-candidates:reject':
       return agentMemoryDispatch(method, payload)
     case 'agent:close':
+      continuationApiKey = null
+      scheduledTaskContinuations.clear()
       await abortAndWaitForRuns()
       agentLocalCoreClient.close()
       if (stores) await stores.close()

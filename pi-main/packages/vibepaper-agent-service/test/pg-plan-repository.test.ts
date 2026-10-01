@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentPlan, PlanStep } from "../src/domain/agent-plan.ts";
+import type { AgentPlan } from "../src/domain/agent-plan.ts";
 import { PgPlanRepository } from "../src/infrastructure/pg-plan-repository.ts";
 import type { MigrationDatabase } from "../src/infrastructure/migrations.ts";
 
@@ -44,7 +44,7 @@ class PlanDatabase implements MigrationDatabase {
 						status: this.status,
 						plan_json: this.planJson,
 					},
-				] as T[],
+				] as unknown as T[],
 			};
 		}
 		if (text.includes("FROM agent_plans plan JOIN agent_sessions") && text.includes("FOR UPDATE")) {
@@ -58,14 +58,14 @@ class PlanDatabase implements MigrationDatabase {
 						status: this.status,
 						plan_json: this.planJson,
 					},
-				] as T[],
+				] as unknown as T[],
 			};
 		}
 		if (text.includes("UPDATE agent_plans SET version")) {
 			this.version = values[0] as number;
 			this.status = values[1] as string;
 			this.planJson = JSON.parse(values[2] as string) as AgentPlan;
-			return { rows: [{ id: this.planJson.id }] as T[] };
+			return { rows: [{ id: this.planJson.id }] as unknown as T[] };
 		}
 		if (text.includes("UPDATE agent_plan_steps SET")) {
 			this.stepUpdates.push(values);

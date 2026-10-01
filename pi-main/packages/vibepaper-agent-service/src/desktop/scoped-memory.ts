@@ -5,7 +5,7 @@ import { MemoryService, type MemoryRepository } from "../application/memory-serv
 import type { MemoryRecord } from "../domain/memory.ts";
 import type { DesktopAgentSessionStore } from "./session-store.ts";
 import {
-	DesktopProjectMemory,
+	type DesktopProjectMemory,
 	normalizeDesktopMemoryContent,
 	readMarkdownMemoryFile,
 	replaceMarkdownMemoryContent,
@@ -13,7 +13,6 @@ import {
 } from "./project-memory.ts";
 import type {
 	DesktopMemoryCandidateRecord,
-	DesktopMemoryCandidateScope,
 	DesktopAgentControlStore,
 } from "./control-store.ts";
 

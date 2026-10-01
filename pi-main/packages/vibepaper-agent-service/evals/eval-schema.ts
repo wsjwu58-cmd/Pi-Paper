@@ -171,7 +171,8 @@ export function buildCoverage(cases: readonly EvalCase[]) {
 			if (["img2img", "keyframe", "clip_video", "extract_frame", "upscale_image", "upscale_video", "outpaint_image", "mux_audio", "compose_videos"].includes(tag)) operations.add(tag);
 		}
 		for (const assertion of value.assertions) {
-			if (assertion.type === "node" || assertion.type === "media") modalities.add(assertion.nodeType ?? assertion.kind);
+			if (assertion.type === "node") modalities.add(assertion.nodeType);
+			else if (assertion.type === "media") modalities.add(assertion.kind);
 			if (assertion.type === "lineage") operations.add(assertion.operation);
 		}
 	}

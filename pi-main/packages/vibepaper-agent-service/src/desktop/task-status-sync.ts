@@ -1,7 +1,7 @@
-import type { DesktopAgentStores } from "./agent-stores.ts";
-import type { DesktopTaskStatusUpdate } from "./control-store.ts";
-import { SessionRunService } from "../application/session-run-service.ts";
 import { parseConfirmationExpiry } from "../application/confirmation-expiry.ts";
+import { SessionRunService } from "../application/session-run-service.ts";
+import type { DesktopAgentStores } from "./agent-stores.ts";
+import type { DesktopTaskContinuationClaimResult, DesktopTaskStatusUpdate } from "./control-store.ts";
 
 export type DesktopAuthoritativeTask = {
 	taskId: string;
@@ -17,6 +17,7 @@ export type DesktopTaskReader = (taskId: string) => Promise<unknown>;
 export type ReconcileDesktopAgentTasksOptions = {
 	sessionId?: string;
 	runId?: string;
+	apiKey?: string;
 };
 
 export type ReconcileDesktopAgentTasksResult = {
@@ -25,6 +26,7 @@ export type ReconcileDesktopAgentTasksResult = {
 	finalizedRuns: number;
 	unreadable: number;
 	expiredConfirmations: number;
+	continuationClaims: DesktopTaskContinuationClaimResult[];
 };
 
 const TASK_STATUSES = new Set<DesktopTaskStatusUpdate["status"]>([
@@ -41,21 +43,26 @@ const TASK_STATUSES = new Set<DesktopTaskStatusUpdate["status"]>([
  * a scoped, read-only LocalCore lookup; this service never creates or retries a task.
  */
 export async function reconcileDesktopAgentTasks(
-	stores: Pick<DesktopAgentStores, "control" | "sessions">,
+	stores: Pick<DesktopAgentStores, "projectId" | "control" | "sessions">,
 	readTask: DesktopTaskReader,
 	options: ReconcileDesktopAgentTasksOptions = {},
 ): Promise<ReconcileDesktopAgentTasksResult> {
-	const links = stores.control.listTaskLinks().filter((link) =>
-		(options.sessionId === undefined || link.sessionId === options.sessionId) &&
-		(options.runId === undefined || link.runId === options.runId),
-	);
+	const links = stores.control
+		.listTaskLinks()
+		.filter(
+			(link) =>
+				(options.sessionId === undefined || link.sessionId === options.sessionId) &&
+				(options.runId === undefined || link.runId === options.runId),
+		);
 	const result: ReconcileDesktopAgentTasksResult = {
 		checked: 0,
 		updated: 0,
 		finalizedRuns: 0,
 		unreadable: 0,
 		expiredConfirmations: 0,
+		continuationClaims: [],
 	};
+	result.finalizedRuns += stores.control.finalizeWaitingTaskRuns(stores.projectId);
 	const linkedSessions = new Set(links.map((link) => link.sessionId));
 	if (options.sessionId) linkedSessions.add(options.sessionId);
 	const runService = new SessionRunService(stores.control);
@@ -73,7 +80,9 @@ export async function reconcileDesktopAgentTasks(
 		if (stores.control.findConsumedApprovalForRun(activeRun.runId)) continue;
 		const events = await runService.listEvents(activeRun.runId);
 		const confirmationEvent = [...events].reverse().find((event) => event.type === "confirmation_required");
-		const expiresAt = parseConfirmationExpiry(confirmationEvent?.data.expiresAt ?? confirmationEvent?.data.expires_at);
+		const expiresAt = parseConfirmationExpiry(
+			confirmationEvent?.data.expiresAt ?? confirmationEvent?.data.expires_at,
+		);
 		if (expiresAt === undefined || expiresAt > Date.now()) continue;
 		const expired = stores.control.expireUnconsumedConfirmation(activeRun.runId, {
 			reason: "confirmation_expired",
@@ -94,7 +103,12 @@ export async function reconcileDesktopAgentTasks(
 			result.unreadable += 1;
 			continue;
 		}
-		if (!isRecord(raw) || raw.taskId !== link.taskId || typeof raw.nodeId !== "string" || raw.nodeId !== link.nodeId) {
+		if (
+			!isRecord(raw) ||
+			raw.taskId !== link.taskId ||
+			typeof raw.nodeId !== "string" ||
+			raw.nodeId !== link.nodeId
+		) {
 			result.unreadable += 1;
 			continue;
 		}
@@ -105,7 +119,7 @@ export async function reconcileDesktopAgentTasks(
 
 		const task = raw as unknown as DesktopAuthoritativeTask;
 		const update = toTaskStatusUpdate(task);
-		const stored = stores.control.recordTaskStatus(update);
+		const stored = stores.control.recordTaskStatus(update, { projectId: stores.projectId });
 		if (stored.changed || stored.event) {
 			result.updated += 1;
 		}
@@ -113,7 +127,32 @@ export async function reconcileDesktopAgentTasks(
 	}
 
 	for (const sessionId of linkedSessions) await stores.sessions.flushOutbox(stores.control, sessionId);
+	if (options.apiKey !== undefined) {
+		result.continuationClaims = await requestDesktopTaskContinuations(stores, {
+			projectId: stores.projectId,
+			apiKey: options.apiKey,
+		});
+	}
 	return result;
+}
+
+export async function requestDesktopTaskContinuations(
+	stores: Pick<DesktopAgentStores, "projectId" | "control">,
+	input: { projectId: string; apiKey: string },
+): Promise<DesktopTaskContinuationClaimResult[]> {
+	if (input.projectId !== stores.projectId) throw new Error("AGENT_PROJECT_CHANGED");
+	const pending = stores.control.listPendingTaskContinuations(input.projectId);
+	const results: DesktopTaskContinuationClaimResult[] = [];
+	for (const request of pending) {
+		results.push(
+			await stores.control.claimTaskContinuation({
+				originRunId: request.originRunId,
+				projectId: input.projectId,
+				apiKey: input.apiKey,
+			}),
+		);
+	}
+	return results;
 }
 
 function toTaskStatusUpdate(task: DesktopAuthoritativeTask): DesktopTaskStatusUpdate {
@@ -136,7 +175,8 @@ function toTaskStatusUpdate(task: DesktopAuthoritativeTask): DesktopTaskStatusUp
 	if (status === "cancelled" && !errorMessage) errorMessage = "生成任务已取消。";
 	if (status === "interrupted" && !errorMessage) errorMessage = "生成任务已中断，可能需要重新提交。";
 	if ((status === "failed" || status === "cancelled" || status === "interrupted") && !errorCode) {
-		errorCode = status === "cancelled" ? "TASK_CANCELLED" : status === "interrupted" ? "TASK_INTERRUPTED" : "TASK_FAILED";
+		errorCode =
+			status === "cancelled" ? "TASK_CANCELLED" : status === "interrupted" ? "TASK_INTERRUPTED" : "TASK_FAILED";
 	}
 
 	return {
@@ -166,7 +206,7 @@ function safeTaskMessage(value: unknown): string | undefined {
 		.replace(/\s+/gu, " ")
 		.trim()
 		.slice(0, 400);
-	if (!message || /^[\[\]，。；:：\s]+$/u.test(message)) return undefined;
+	if (!message || /^[[\]，。；:：\s]+$/u.test(message)) return undefined;
 	return message;
 }
 

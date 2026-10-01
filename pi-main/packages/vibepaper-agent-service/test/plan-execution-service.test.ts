@@ -18,7 +18,11 @@ const step = (id: string, overrides: Partial<PlanStep> = {}): PlanStep => ({
 });
 
 class MemoryPlanRepository implements PlanExecutionRepository {
-	constructor(private plan: AgentPlan) {}
+	private plan: AgentPlan;
+
+	constructor(plan: AgentPlan) {
+		this.plan = plan;
+	}
 
 	async readySet(planId: string, _ownerId: string, profile: AgentProfile) {
 		expect(planId).toBe(this.plan.id);

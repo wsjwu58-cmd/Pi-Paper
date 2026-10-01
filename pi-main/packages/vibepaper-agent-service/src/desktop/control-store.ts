@@ -1,13 +1,19 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { ApprovalRecord, ApprovalRepository } from "../application/approval-service.ts";
-import type { RunRepository, StartRunInput } from "../application/session-run-service.ts";
-import { RunConflictError } from "../application/session-run-service.ts";
+import {
+	RunConflictError,
+	type RunRepository,
+	SessionRunService,
+	type StartRunInput,
+} from "../application/session-run-service.ts";
+import { buildTaskContinuationPrompt } from "../application/task-continuation-prompt.ts";
 import type { PlannedAction } from "../domain/action-approval.ts";
 import type { AgentRun, AgentRunEvent, AgentRunEventType, AgentRunStatus } from "../domain/agent-run.ts";
 import { isActiveRunStatus } from "../domain/agent-run.ts";
 
-const CONTROL_SCHEMA_VERSION = 5;
+export const DESKTOP_AGENT_CONTROL_SCHEMA_VERSION = 6;
+const CONTROL_SCHEMA_VERSION = DESKTOP_AGENT_CONTROL_SCHEMA_VERSION;
 const MAX_OPERATION_RESULT_BYTES = 1_000_000;
 
 export type DesktopMemoryCandidateScope = "session" | "canvas" | "project" | "global" | "daily";
@@ -53,6 +59,23 @@ const DESKTOP_MEMORY_CANDIDATES_SCHEMA = `
     WHERE status = 'pending';
   CREATE INDEX desktop_memory_candidates_pending_by_user
     ON desktop_memory_candidates(user_id, status, created_at DESC);
+`;
+
+const DESKTOP_TASK_CONTINUATIONS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS desktop_task_continuations (
+    origin_run_id TEXT PRIMARY KEY REFERENCES agent_runs(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 255),
+    prompt TEXT NOT NULL CHECK (length(prompt) BETWEEN 1 AND 4000),
+    task_results_json TEXT NOT NULL CHECK (json_valid(task_results_json)),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'interrupted', 'invalidated', 'completed')),
+    continuation_run_id TEXT UNIQUE REFERENCES agent_runs(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS desktop_task_continuations_by_project_status
+    ON desktop_task_continuations(project_id, status, created_at);
 `;
 
 const CONTROL_SCHEMA = `
@@ -146,6 +169,8 @@ const CONTROL_SCHEMA = `
     updated_at TEXT NOT NULL
   ) STRICT;
 
+  ${DESKTOP_TASK_CONTINUATIONS_SCHEMA}
+
   CREATE TABLE memory_candidates (
     candidate_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -238,6 +263,30 @@ export type DesktopTaskLink = {
 	status: string;
 };
 
+export type DesktopTaskContinuationTask = {
+	taskId: string;
+	status: "succeeded" | "failed" | "cancelled" | "interrupted";
+	errorCode?: string;
+	errorMessage?: string;
+	outputRef?: string;
+};
+
+export type DesktopTaskContinuationRequest = {
+	originRunId: string;
+	sessionId: string;
+	projectId: string;
+	idempotencyKey: string;
+	prompt: string;
+	taskResults: DesktopTaskContinuationTask[];
+	status: "pending" | "claimed" | "interrupted" | "invalidated" | "completed";
+	continuationRunId?: string;
+};
+
+export type DesktopTaskContinuationClaimResult =
+	| { status: "claimed"; request: DesktopTaskContinuationRequest; run: AgentRun; shouldStart: boolean }
+	| { status: "deferred"; reason: "api_key_missing" | "session_active"; request?: DesktopTaskContinuationRequest }
+	| { status: "interrupted" | "invalidated" | "completed" | "not_found"; request?: DesktopTaskContinuationRequest };
+
 export type DesktopTaskStatusUpdate = {
 	taskId: string;
 	status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
@@ -251,6 +300,7 @@ export type DesktopTaskStatusUpdateResult = {
 	event?: AgentRunEvent;
 	runStatus: AgentRunStatus;
 	runFinalized: boolean;
+	continuationCreated?: boolean;
 };
 
 export type PrepareDesktopOperation = Pick<
@@ -333,6 +383,21 @@ function toTaskLink(row: Record<string, unknown>): DesktopTaskLink {
 	};
 }
 
+function toTaskContinuation(row: Record<string, unknown>): DesktopTaskContinuationRequest {
+	const taskResults = JSON.parse(String(row.task_results_json)) as unknown;
+	if (!Array.isArray(taskResults)) throw new Error("TASK_CONTINUATION_RECORD_INVALID");
+	return {
+		originRunId: String(row.origin_run_id),
+		sessionId: String(row.session_id),
+		projectId: String(row.project_id),
+		idempotencyKey: String(row.idempotency_key),
+		prompt: String(row.prompt),
+		taskResults: taskResults as DesktopTaskContinuationTask[],
+		status: row.status as DesktopTaskContinuationRequest["status"],
+		...(row.continuation_run_id == null ? {} : { continuationRunId: String(row.continuation_run_id) }),
+	};
+}
+
 function jsonObject(value: string): Record<string, unknown> {
 	const decoded: unknown = JSON.parse(value);
 	return typeof decoded === "object" && decoded !== null && !Array.isArray(decoded)
@@ -397,20 +462,20 @@ function toOutboxItem(row: Record<string, unknown>): DesktopOutboxItem {
 function toDesktopMemoryCandidate(row: DesktopMemoryCandidateRow): DesktopMemoryCandidateRecord {
 	return {
 		id: String(row.candidate_id),
-	userId: String(row.user_id),
-	...(row.session_id == null ? {} : { sessionId: String(row.session_id) }),
-	...(row.canvas_id == null ? {} : { canvasId: String(row.canvas_id) }),
-	...(row.source_event_seq == null ? {} : { sourceEventSeq: Number(row.source_event_seq) }),
-	scope: row.scope,
-	content: row.content_markdown,
-	memoryType: row.memory_type,
-	source: row.source,
-	confidence: Number(row.confidence),
-	status: row.status,
-	dedupeKey: row.dedupe_key,
-	...(row.expires_at == null ? {} : { expiresAt: new Date(row.expires_at) }),
-	createdAt: new Date(row.created_at),
-	...(row.reviewed_at == null ? {} : { reviewedAt: new Date(row.reviewed_at) }),
+		userId: String(row.user_id),
+		...(row.session_id == null ? {} : { sessionId: String(row.session_id) }),
+		...(row.canvas_id == null ? {} : { canvasId: String(row.canvas_id) }),
+		...(row.source_event_seq == null ? {} : { sourceEventSeq: Number(row.source_event_seq) }),
+		scope: row.scope,
+		content: row.content_markdown,
+		memoryType: row.memory_type,
+		source: row.source,
+		confidence: Number(row.confidence),
+		status: row.status,
+		dedupeKey: row.dedupe_key,
+		...(row.expires_at == null ? {} : { expiresAt: new Date(row.expires_at) }),
+		createdAt: new Date(row.created_at),
+		...(row.reviewed_at == null ? {} : { reviewedAt: new Date(row.reviewed_at) }),
 	};
 }
 
@@ -606,6 +671,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 					.prepare("UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ?")
 					.run(input.status, new Date().toISOString(), input.runId);
 			}
+			this.updateTaskContinuationRunStatusInTransaction(input.runId, input.status);
 			if (!input.terminalEvent) return;
 			const existing = this.database
 				.prepare("SELECT 1 AS present FROM run_events WHERE run_id = ? AND type = ? LIMIT 1")
@@ -688,6 +754,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			this.database
 				.prepare("UPDATE agent_runs SET status = 'aborted', updated_at = ? WHERE id = ?")
 				.run(now.toISOString(), runId);
+			this.updateTaskContinuationRunStatusInTransaction(runId, "aborted", now);
 			const existing = this.database
 				.prepare("SELECT 1 AS present FROM run_events WHERE run_id = ? AND type = 'run_aborted' LIMIT 1")
 				.get(runId);
@@ -854,7 +921,9 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 
 			const now = new Date();
 			this.database
-				.prepare("UPDATE approvals SET status = 'invalidated', updated_at = ? WHERE run_id = ? AND status = 'pending'")
+				.prepare(
+					"UPDATE approvals SET status = 'invalidated', updated_at = ? WHERE run_id = ? AND status = 'pending'",
+				)
 				.run(now.toISOString(), runId);
 			this.database
 				.prepare("UPDATE agent_runs SET status = 'aborted', updated_at = ? WHERE id = ?")
@@ -933,25 +1002,207 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				INSERT INTO task_links (task_id, session_id, run_id, action_id, node_id, status, created_at, updated_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			`)
-				.run(input.taskId, input.sessionId, input.runId, input.actionId ?? null, input.nodeId, input.status, now, now);
+				.run(
+					input.taskId,
+					input.sessionId,
+					input.runId,
+					input.actionId ?? null,
+					input.nodeId,
+					input.status,
+					now,
+					now,
+				);
 		});
 	}
 
 	listTaskLinks(runId?: string): DesktopTaskLink[] {
-		const rows = runId === undefined
-			? this.database.prepare(`${TASK_LINK_SELECT} ORDER BY task_links.created_at, task_links.task_id`).all()
-			: this.database.prepare(`${TASK_LINK_SELECT} WHERE task_links.run_id = ? ORDER BY task_links.created_at, task_links.task_id`).all(runId);
+		const rows =
+			runId === undefined
+				? this.database.prepare(`${TASK_LINK_SELECT} ORDER BY task_links.created_at, task_links.task_id`).all()
+				: this.database
+						.prepare(
+							`${TASK_LINK_SELECT} WHERE task_links.run_id = ? ORDER BY task_links.created_at, task_links.task_id`,
+						)
+						.all(runId);
 		return (rows as unknown as Record<string, unknown>[]).map(toTaskLink);
 	}
 
-	recordTaskStatus(input: DesktopTaskStatusUpdate): DesktopTaskStatusUpdateResult {
+	listPendingTaskContinuations(projectId: string): DesktopTaskContinuationRequest[] {
+		if (!projectId) throw new Error("PROJECT_ID_INVALID");
+		const rows = this.database
+			.prepare(`
+			SELECT continuations.*
+			FROM desktop_task_continuations AS continuations
+			LEFT JOIN agent_runs AS continuation_runs ON continuation_runs.id = continuations.continuation_run_id
+			WHERE continuations.project_id = ?
+				AND (continuations.status = 'pending'
+					OR (continuations.status = 'claimed' AND continuation_runs.status = 'queued'))
+			ORDER BY continuations.created_at, continuations.origin_run_id
+		`)
+			.all(projectId) as unknown as Record<string, unknown>[];
+		return rows.map(toTaskContinuation);
+	}
+
+	findTaskContinuationForRun(runId: string): DesktopTaskContinuationRequest | undefined {
+		const row = this.database
+			.prepare(`
+			SELECT * FROM desktop_task_continuations
+			WHERE origin_run_id = ? OR continuation_run_id = ?
+			ORDER BY CASE WHEN continuation_run_id = ? THEN 0 ELSE 1 END LIMIT 1
+		`)
+			.get(runId, runId, runId) as Record<string, unknown> | undefined;
+		return row ? toTaskContinuation(row) : undefined;
+	}
+
+	async claimTaskContinuation(input: {
+		originRunId: string;
+		projectId: string;
+		apiKey: string;
+	}): Promise<DesktopTaskContinuationClaimResult> {
+		if (typeof input.apiKey !== "string" || input.apiKey.trim().length === 0)
+			return { status: "deferred", reason: "api_key_missing" };
+		const request = this.findTaskContinuationForOrigin(input.originRunId);
+		if (!request) return { status: "not_found" };
+		if (request.projectId !== input.projectId || request.status === "invalidated")
+			return { status: "invalidated", request };
+		if (request.status === "interrupted") return { status: "interrupted", request };
+		if (request.status === "completed") return { status: "completed", request };
+
+		const runService = new SessionRunService(this);
+		const existing = this.findByIdempotency(request.sessionId, request.idempotencyKey);
+		if (existing) {
+			if (existing.status === "queued") {
+				if (this.hasOperationForRun(existing.runId)) {
+					this.markTaskContinuationInterrupted(existing.runId, input.projectId);
+					return {
+						status: "interrupted",
+						request: this.findTaskContinuationForOrigin(input.originRunId) ?? request,
+					};
+				}
+				const claimed = this.markTaskContinuationClaimed(request, existing.runId, input.projectId);
+				return claimed
+					? { status: "claimed", request: claimed, run: existing, shouldStart: true }
+					: { status: "invalidated", request };
+			}
+			if (existing.status === "completed") {
+				this.markTaskContinuationCompleted(existing.runId, input.projectId);
+				return { status: "completed", request: this.findTaskContinuationForOrigin(input.originRunId) ?? request };
+			}
+			if (existing.status === "failed" || existing.status === "aborted") {
+				this.markTaskContinuationInterrupted(existing.runId, input.projectId);
+				return { status: "interrupted", request: this.findTaskContinuationForOrigin(input.originRunId) ?? request };
+			}
+			return { status: "deferred", reason: "session_active", request };
+		}
+
+		const activeRun = await runService.findActive(request.sessionId);
+		if (activeRun) return { status: "deferred", reason: "session_active", request };
+		let run: AgentRun;
+		try {
+			run = await runService.startRun({ sessionId: request.sessionId, idempotencyKey: request.idempotencyKey });
+		} catch (error) {
+			if (error instanceof RunConflictError) return { status: "deferred", reason: "session_active", request };
+			throw error;
+		}
+		if (run.status !== "queued" || this.hasOperationForRun(run.runId)) {
+			this.markTaskContinuationInterrupted(run.runId, input.projectId);
+			return { status: "interrupted", request: this.findTaskContinuationForOrigin(input.originRunId) ?? request };
+		}
+		const claimed = this.markTaskContinuationClaimed(request, run.runId, input.projectId);
+		return claimed
+			? { status: "claimed", request: claimed, run, shouldStart: true }
+			: { status: "invalidated", request };
+	}
+
+	canRecoverQueuedTaskContinuation(runId: string, projectId: string): boolean {
+		const request = this.findTaskContinuationForRun(runId);
+		if (
+			!request ||
+			request.projectId !== projectId ||
+			request.status !== "claimed" ||
+			request.continuationRunId !== runId
+		)
+			return false;
+		const run = this.findById(runId);
+		return run?.status === "queued" && !this.hasOperationForRun(runId);
+	}
+
+	markTaskContinuationInterrupted(runId: string, projectId: string): void {
+		this.database
+			.prepare(`
+			UPDATE desktop_task_continuations SET status = 'interrupted', updated_at = ?
+			WHERE continuation_run_id = ? AND project_id = ? AND status = 'claimed'
+		`)
+			.run(new Date().toISOString(), runId, projectId);
+	}
+
+	markTaskContinuationCompleted(runId: string, projectId: string): void {
+		this.database
+			.prepare(`
+			UPDATE desktop_task_continuations SET status = 'completed', updated_at = ?
+			WHERE continuation_run_id = ? AND project_id = ? AND status = 'claimed'
+		`)
+			.run(new Date().toISOString(), runId, projectId);
+	}
+
+	finalizeWaitingTaskRuns(projectId: string): number {
+		if (!projectId) throw new Error("PROJECT_ID_INVALID");
+		return this.transaction(() => {
+			const runRows = this.database
+				.prepare(`
+				SELECT id, session_id FROM agent_runs AS runs
+				WHERE status = 'waiting_task'
+					AND EXISTS (SELECT 1 FROM task_links WHERE task_links.run_id = runs.id)
+				ORDER BY created_at, id
+			`)
+				.all() as Array<{ id: string; session_id: string }>;
+			let finalized = 0;
+			for (const run of runRows) {
+				const statuses = this.database
+					.prepare("SELECT status FROM task_links WHERE run_id = ?")
+					.all(run.id) as Array<{ status: string }>;
+				if (statuses.length === 0 || !statuses.every((row) => isTerminalDesktopTaskStatus(row.status))) continue;
+				const allSucceeded = statuses.every((row) => row.status === "succeeded");
+				const nextStatus: AgentRunStatus = allSucceeded ? "completed" : "failed";
+				const terminalType: AgentRunEventType = allSucceeded ? "run_completed" : "run_failed";
+				const terminalData = allSucceeded
+					? { text: "生成任务已完成。" }
+					: {
+							text: "生成任务未成功完成，请查看对应节点的任务详情。",
+							message: "生成任务未成功完成，请查看对应节点的任务详情。",
+							errorCode: "GENERATION_TASK_FAILED",
+						};
+				const now = new Date();
+				this.database
+					.prepare("UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ?")
+					.run(nextStatus, now.toISOString(), run.id);
+				this.updateTaskContinuationRunStatusInTransaction(run.id, nextStatus, now);
+				const existingTerminal = this.database
+					.prepare("SELECT 1 AS present FROM run_events WHERE run_id = ? AND type = ? LIMIT 1")
+					.get(run.id, terminalType);
+				if (!existingTerminal)
+					this.appendEventInTransaction(run.id, run.session_id, terminalType, terminalData, now);
+				this.createTaskContinuationInTransaction(run.id, projectId);
+				finalized += 1;
+			}
+			return finalized;
+		});
+	}
+
+	recordTaskStatus(
+		input: DesktopTaskStatusUpdate,
+		options: { projectId?: string } = {},
+	): DesktopTaskStatusUpdateResult {
 		if (!input.taskId || input.taskId.length > 200 || !isDesktopTaskStatus(input.status))
 			throw new Error("TASK_STATUS_INVALID");
 		if (input.errorCode !== undefined && !/^[A-Z0-9_]{1,120}$/u.test(input.errorCode))
 			throw new Error("TASK_ERROR_CODE_INVALID");
 		if (input.errorMessage !== undefined && input.errorMessage.length > 500)
 			throw new Error("TASK_ERROR_MESSAGE_TOO_LONG");
-		if (input.outputRef !== undefined && !/^vibe:\/\/app\/tasks\/[A-Za-z0-9_-]{1,128}\/output(?:\?index=(?:0|[1-9][0-9]{0,5}))?$/u.test(input.outputRef))
+		if (
+			input.outputRef !== undefined &&
+			!/^vibe:\/\/app\/tasks\/[A-Za-z0-9_-]{1,128}\/output(?:\?index=(?:0|[1-9][0-9]{0,5}))?$/u.test(input.outputRef)
+		)
 			throw new Error("TASK_OUTPUT_REF_INVALID");
 
 		return this.transaction(() => {
@@ -960,9 +1211,9 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				| undefined;
 			if (!linkRow) throw new Error("TASK_LINK_NOT_FOUND");
 			const link = toTaskLink(linkRow);
-			const runRow = this.database.prepare("SELECT session_id, status FROM agent_runs WHERE id = ?").get(link.runId) as
-				| { session_id: string; status: AgentRunStatus }
-				| undefined;
+			const runRow = this.database
+				.prepare("SELECT session_id, status FROM agent_runs WHERE id = ?")
+				.get(link.runId) as { session_id: string; status: AgentRunStatus } | undefined;
 			if (!runRow || runRow.session_id !== link.sessionId) throw new Error("RUN_NOT_FOUND");
 
 			let event: AgentRunEvent | undefined;
@@ -977,14 +1228,16 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 					.run(input.status, now.toISOString(), input.taskId);
 				changed = true;
 			}
-			const matchingEvent = this.database.prepare(`
+			const matchingEvent = this.database
+				.prepare(`
 				SELECT 1 AS present FROM run_events
 				WHERE run_id = ? AND type = 'task_status'
 					AND json_extract(data_json, '$.task_id') = ?
 					AND json_extract(data_json, '$.status') = ?
 					AND (? IS NULL OR json_extract(data_json, '$.actionId') = ?)
 				LIMIT 1
-			`).get(link.runId, link.taskId, input.status, link.actionId ?? null, link.actionId ?? null);
+			`)
+				.get(link.runId, link.taskId, input.status, link.actionId ?? null, link.actionId ?? null);
 			if (!matchingEvent && canApplyStatus) {
 				const data: Record<string, unknown> = {
 					...(link.actionId ? { actionId: link.actionId, actionStatus: "accepted" } : {}),
@@ -998,11 +1251,14 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				event = this.appendEventInTransaction(link.runId, link.sessionId, "task_status", data);
 			}
 
-			const statusRows = this.database.prepare("SELECT status FROM task_links WHERE run_id = ?").all(link.runId) as
-				Array<{ status: string }>;
-			const allTerminal = statusRows.length > 0 && statusRows.every((row) => isTerminalDesktopTaskStatus(row.status));
+			const statusRows = this.database
+				.prepare("SELECT status FROM task_links WHERE run_id = ?")
+				.all(link.runId) as Array<{ status: string }>;
+			const allTerminal =
+				statusRows.length > 0 && statusRows.every((row) => isTerminalDesktopTaskStatus(row.status));
 			let runStatus = runRow.status;
 			let runFinalized = false;
+			let continuationCreated = false;
 
 			// A linked task proves approval was already consumed. Repair a crash between
 			// task creation and changing the run to waiting_task without submitting it again.
@@ -1031,15 +1287,36 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.database
 					.prepare("UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ?")
 					.run(nextRunStatus, new Date().toISOString(), link.runId);
+				this.updateTaskContinuationRunStatusInTransaction(link.runId, nextRunStatus);
 				runStatus = nextRunStatus;
 				const existingTerminal = this.database
 					.prepare("SELECT 1 AS present FROM run_events WHERE run_id = ? AND type = ? LIMIT 1")
 					.get(link.runId, terminalType);
-				if (!existingTerminal) this.appendEventInTransaction(link.runId, link.sessionId, terminalType, terminalData);
+				if (!existingTerminal)
+					this.appendEventInTransaction(link.runId, link.sessionId, terminalType, terminalData);
 				runFinalized = true;
+				if (options.projectId)
+					continuationCreated = this.createTaskContinuationInTransaction(link.runId, options.projectId);
+			} else if (
+				allTerminal &&
+				changed &&
+				!previousIsTerminal &&
+				(runStatus === "completed" || runStatus === "failed") &&
+				options.projectId
+			) {
+				// Older runs could close before their linked task snapshots reached a
+				// terminal state. Only the current nonterminal-to-terminal transition
+				// may enqueue recovery; completed history is never backfilled.
+				continuationCreated = this.createTaskContinuationInTransaction(link.runId, options.projectId);
 			}
 
-			return { changed, ...(event ? { event } : {}), runStatus, runFinalized };
+			return {
+				changed,
+				...(event ? { event } : {}),
+				runStatus,
+				runFinalized,
+				...(options.projectId ? { continuationCreated } : {}),
+			};
 		});
 	}
 
@@ -1235,8 +1512,10 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 	}
 
 	listPendingDesktopMemoryCandidates(userId: string): DesktopMemoryCandidateRecord[] {
-		const rows = this.database.prepare(`${DESKTOP_MEMORY_CANDIDATE_SELECT}
-			WHERE user_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 500`).all(userId) as unknown as DesktopMemoryCandidateRow[];
+		const rows = this.database
+			.prepare(`${DESKTOP_MEMORY_CANDIDATE_SELECT}
+			WHERE user_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 500`)
+			.all(userId) as unknown as DesktopMemoryCandidateRow[];
 		return rows.map(toDesktopMemoryCandidate);
 	}
 
@@ -1245,53 +1524,56 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		scope: DesktopMemoryCandidateScope,
 		dedupeKey: string,
 	): DesktopMemoryCandidateRecord | undefined {
-		const row = this.database.prepare(`${DESKTOP_MEMORY_CANDIDATE_SELECT}
+		const row = this.database
+			.prepare(`${DESKTOP_MEMORY_CANDIDATE_SELECT}
 			WHERE user_id = ? AND scope = ? AND dedupe_key = ? AND status = 'pending' LIMIT 1`)
 			.get(userId, scope, dedupeKey) as unknown as DesktopMemoryCandidateRow | undefined;
 		return row ? toDesktopMemoryCandidate(row) : undefined;
 	}
 
 	getDesktopMemoryCandidate(id: string, userId: string): DesktopMemoryCandidateRecord | undefined {
-		const row = this.database.prepare(`${DESKTOP_MEMORY_CANDIDATE_SELECT}
-			WHERE candidate_id = ? AND user_id = ? LIMIT 1`).get(id, userId) as unknown as DesktopMemoryCandidateRow | undefined;
+		const row = this.database
+			.prepare(`${DESKTOP_MEMORY_CANDIDATE_SELECT}
+			WHERE candidate_id = ? AND user_id = ? LIMIT 1`)
+			.get(id, userId) as unknown as DesktopMemoryCandidateRow | undefined;
 		return row ? toDesktopMemoryCandidate(row) : undefined;
 	}
 
 	saveDesktopMemoryCandidate(candidate: DesktopMemoryCandidateRecord): boolean {
-		const result = this.database.prepare(`
+		const result = this.database
+			.prepare(`
 			INSERT OR IGNORE INTO desktop_memory_candidates
 			(candidate_id, user_id, session_id, canvas_id, source_event_seq, scope, content_markdown,
 			 memory_type, source, confidence, status, dedupe_key, expires_at, created_at, reviewed_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
-			candidate.id,
-			candidate.userId,
-			candidate.sessionId ?? null,
-			candidate.canvasId ?? null,
-			candidate.sourceEventSeq ?? null,
-			candidate.scope,
-			candidate.content,
-			candidate.memoryType,
-			candidate.source,
-			candidate.confidence,
-			candidate.status,
-			candidate.dedupeKey,
-			candidate.expiresAt?.toISOString() ?? null,
-			candidate.createdAt.toISOString(),
-			candidate.reviewedAt?.toISOString() ?? null,
-		);
+		`)
+			.run(
+				candidate.id,
+				candidate.userId,
+				candidate.sessionId ?? null,
+				candidate.canvasId ?? null,
+				candidate.sourceEventSeq ?? null,
+				candidate.scope,
+				candidate.content,
+				candidate.memoryType,
+				candidate.source,
+				candidate.confidence,
+				candidate.status,
+				candidate.dedupeKey,
+				candidate.expiresAt?.toISOString() ?? null,
+				candidate.createdAt.toISOString(),
+				candidate.reviewedAt?.toISOString() ?? null,
+			);
 		return result.changes === 1;
 	}
 
-	updateDesktopMemoryCandidateStatus(
-		id: string,
-		userId: string,
-		status: "accepted" | "rejected",
-	): boolean {
-		const result = this.database.prepare(`
+	updateDesktopMemoryCandidateStatus(id: string, userId: string, status: "accepted" | "rejected"): boolean {
+		const result = this.database
+			.prepare(`
 			UPDATE desktop_memory_candidates SET status = ?, reviewed_at = ?
 			WHERE candidate_id = ? AND user_id = ? AND status = 'pending'
-		`).run(status, new Date().toISOString(), id, userId);
+		`)
+			.run(status, new Date().toISOString(), id, userId);
 		return result.changes === 1;
 	}
 
@@ -1361,6 +1643,114 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			.run(outboxId, event.sessionId, event.runId, event.eventSeq, payload, createdAt);
 	}
 
+	private findTaskContinuationForOrigin(originRunId: string): DesktopTaskContinuationRequest | undefined {
+		const row = this.database
+			.prepare("SELECT * FROM desktop_task_continuations WHERE origin_run_id = ?")
+			.get(originRunId) as Record<string, unknown> | undefined;
+		return row ? toTaskContinuation(row) : undefined;
+	}
+
+	private markTaskContinuationClaimed(
+		request: DesktopTaskContinuationRequest,
+		runId: string,
+		projectId: string,
+	): DesktopTaskContinuationRequest | undefined {
+		return this.transaction(() => {
+			const updated = this.database
+				.prepare(`
+				UPDATE desktop_task_continuations
+				SET status = 'claimed', continuation_run_id = ?, updated_at = ?
+				WHERE origin_run_id = ? AND project_id = ? AND status IN ('pending', 'claimed')
+					AND (continuation_run_id IS NULL OR continuation_run_id = ?)
+			`)
+				.run(runId, new Date().toISOString(), request.originRunId, projectId, runId);
+			if (Number(updated.changes) === 0) return undefined;
+			return this.findTaskContinuationForOrigin(request.originRunId);
+		});
+	}
+
+	private hasOperationForRun(runId: string): boolean {
+		return Boolean(this.database.prepare("SELECT 1 AS present FROM operations WHERE run_id = ? LIMIT 1").get(runId));
+	}
+
+	private updateTaskContinuationRunStatusInTransaction(runId: string, status: AgentRunStatus, now = new Date()): void {
+		if (status !== "completed" && status !== "failed" && status !== "aborted") return;
+		const continuationStatus = status === "completed" ? "completed" : "interrupted";
+		this.database
+			.prepare(`
+			UPDATE desktop_task_continuations SET status = ?, updated_at = ?
+			WHERE continuation_run_id = ? AND status = 'claimed'
+		`)
+			.run(continuationStatus, now.toISOString(), runId);
+	}
+
+	private createTaskContinuationInTransaction(originRunId: string, projectId: string): boolean {
+		if (!projectId) throw new Error("PROJECT_ID_INVALID");
+		const existing = this.database
+			.prepare("SELECT 1 AS present FROM desktop_task_continuations WHERE origin_run_id = ?")
+			.get(originRunId);
+		if (existing) return false;
+		const run = this.database.prepare("SELECT session_id, status FROM agent_runs WHERE id = ?").get(originRunId) as
+			| { session_id: string; status: AgentRunStatus }
+			| undefined;
+		if (!run || (run.status !== "completed" && run.status !== "failed")) return false;
+		const rows = this.database
+			.prepare(`
+			SELECT task_links.task_id, task_links.status,
+				(SELECT json_extract(events.data_json, '$.error_code') FROM run_events AS events
+					WHERE events.run_id = task_links.run_id AND events.type = 'task_status'
+						AND json_extract(events.data_json, '$.task_id') = task_links.task_id
+					ORDER BY events.event_seq DESC LIMIT 1) AS error_code,
+				(SELECT json_extract(events.data_json, '$.error_message') FROM run_events AS events
+					WHERE events.run_id = task_links.run_id AND events.type = 'task_status'
+						AND json_extract(events.data_json, '$.task_id') = task_links.task_id
+					ORDER BY events.event_seq DESC LIMIT 1) AS error_message,
+				(SELECT json_extract(events.data_json, '$.output_ref') FROM run_events AS events
+					WHERE events.run_id = task_links.run_id AND events.type = 'task_status'
+						AND json_extract(events.data_json, '$.task_id') = task_links.task_id
+					ORDER BY events.event_seq DESC LIMIT 1) AS output_ref
+			FROM task_links WHERE task_links.run_id = ? ORDER BY task_links.created_at, task_links.task_id
+		`)
+			.all(originRunId) as Array<{
+			task_id: string;
+			status: string;
+			error_code: string | null;
+			error_message: string | null;
+			output_ref: string | null;
+		}>;
+		if (rows.length === 0 || !rows.every((row) => isTerminalDesktopTaskStatus(row.status))) return false;
+		const taskResults = rows.map(
+			(row): DesktopTaskContinuationTask => ({
+				taskId: row.task_id,
+				status: row.status as DesktopTaskContinuationTask["status"],
+				...(row.error_code ? { errorCode: row.error_code } : {}),
+				...(row.error_message ? { errorMessage: row.error_message } : {}),
+				...(row.output_ref ? { outputRef: row.output_ref } : {}),
+			}),
+		);
+		const idempotencyKey = `task-continuation:${originRunId}`;
+		if (idempotencyKey.length > 255) throw new Error("TASK_CONTINUATION_KEY_TOO_LONG");
+		const now = new Date().toISOString();
+		this.database
+			.prepare(`
+			INSERT INTO desktop_task_continuations (
+				origin_run_id, session_id, project_id, idempotency_key, prompt,
+				task_results_json, status, continuation_run_id, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+		`)
+			.run(
+				originRunId,
+				run.session_id,
+				projectId,
+				idempotencyKey,
+				buildTaskContinuationPrompt(taskResults.every((task) => task.status === "succeeded")),
+				JSON.stringify(taskResults),
+				now,
+				now,
+			);
+		return true;
+	}
+
 	private nextEventSequence(sessionId: string): number {
 		const row = this.database
 			.prepare("SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq FROM run_events WHERE session_id = ?")
@@ -1405,6 +1795,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				`);
 				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
 				this.ensureTaskLinkActionColumn();
+				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 			});
 			return;
@@ -1420,6 +1811,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				`);
 				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
 				this.ensureTaskLinkActionColumn();
+				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 			});
 			return;
@@ -1428,6 +1820,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			this.transaction(() => {
 				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
 				this.ensureTaskLinkActionColumn();
+				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 			});
 			return;
@@ -1435,6 +1828,14 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		if (version === 4) {
 			this.transaction(() => {
 				this.ensureTaskLinkActionColumn();
+				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
+				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+			});
+			return;
+		}
+		if (version === 5) {
+			this.transaction(() => {
+				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 			});
 			return;

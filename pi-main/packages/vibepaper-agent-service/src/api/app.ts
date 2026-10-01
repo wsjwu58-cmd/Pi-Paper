@@ -53,6 +53,7 @@ import { AgentEventStream } from "../application/run-event-stream.ts";
 import { SessionContextService } from "../application/session-context-service.ts";
 import { MemoryUpdateWorker, type MemoryUpdateQueue } from "../application/memory-update-queue.ts";
 import {
+import { buildTaskContinuationPrompt } from "../application/task-continuation-prompt.ts";
 	InMemoryRunRepository,
 	RunConflictError,
 	type RunRepository,
@@ -226,10 +227,7 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 			});
 			const canvasVersion = await taskGateway.getCanvasVersion(userId, canvasId, requestId);
 			const profile = selectProfile({ canvasDomain: "short-drama" });
-			const content =
-				notice.status === "succeeded"
-					? "上一阶段生成任务已完成。请读取当前画布，严格按照用户上一条创作请求继续执行尚未完成的后续步骤：不要重复已完成的生成；如果请求包含创建视频片段，请使用已完成的关键帧作为上游，创建并连接对应的视频节点，再按确认规则提交生成。若没有后续动作，请总结已完成内容和下一步建议。"
-					: "上一阶段全部生成任务已结束，其中至少一个未成功。请读取当前画布，保留已完成产物，明确失败影响和可恢复的下一步；不要自动新建收费生成任务，也不要执行依赖失败产物的下游步骤。";
+			const content = buildTaskContinuationPrompt(notice.status === "succeeded");
 			const history = await readHistory(database, association.sessionId);
 			const skillContext = await resolveSkillContext(database, userId, association.sessionId);
 			const memoryContext = await resolveMemoryContext(

@@ -13,7 +13,7 @@ function toolTurn(index: number): AgentMessage[] {
 	return [
 		{
 			role: "user",
-			content: [{ type: "text", text: `历史需求 ${index} ` + `需要保留的用户背景 ${index}。`.repeat(24) }],
+			content: [{ type: "text", text: `历史需求 ${index} ${`需要保留的用户背景 ${index}。`.repeat(24)}` }],
 			timestamp: index * 4,
 		},
 		{
@@ -37,7 +37,7 @@ function toolTurn(index: number): AgentMessage[] {
 			role: "toolResult",
 			toolCallId: callId,
 			toolName: "read_canvas",
-			content: [{ type: "text", text: `画布查询结果 ${index}。` + `本轮权威读取的画布数据。`.repeat(10) }],
+			content: [{ type: "text", text: `画布查询结果 ${index}。${`本轮权威读取的画布数据。`.repeat(10)}` }],
 			isError: false,
 			timestamp: index * 4 + 2,
 		},

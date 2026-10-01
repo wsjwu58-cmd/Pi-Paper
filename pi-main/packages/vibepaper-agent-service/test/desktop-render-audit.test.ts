@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { selectProfile } from "../src/application/profile-selector.ts";
 import { DesktopLocalToolGateway } from "../src/desktop/local-tool-gateway.ts";
-import { createRuntimeTools } from "../src/tools/runtime-tools.ts";
+import type { AgentProfile } from "../src/domain/tool-manifest.ts";
 import { createDramaAgent } from "../src/pi/drama-agent.ts";
+import { createRuntimeTools } from "../src/tools/runtime-tools.ts";
 
 const auditInput = {
 	targetNodeId: "clip-node-1",
@@ -26,7 +27,7 @@ describe("desktop Agent render audit adapter", () => {
 			gateway: {} as never,
 			onAuditRequested: async () => ({ verdict: "pass", findings: [], ruleVersion: "continuity-v1" }),
 		});
-		const makeAgent = (profile: "canvas-general" | "vertical-short-drama") => createDramaAgent({} as never, {
+		const makeAgent = (profile: AgentProfile) => createDramaAgent({} as never, {
 			profile,
 			streamFn: (() => undefined) as never,
 			runtimeTools,
