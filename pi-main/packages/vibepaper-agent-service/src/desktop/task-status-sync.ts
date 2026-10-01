@@ -75,11 +75,11 @@ export async function reconcileDesktopAgentTasks(
 		const confirmationEvent = [...events].reverse().find((event) => event.type === "confirmation_required");
 		const expiresAt = parseConfirmationExpiry(confirmationEvent?.data.expiresAt ?? confirmationEvent?.data.expires_at);
 		if (expiresAt === undefined || expiresAt > Date.now()) continue;
-		stores.control.invalidatePendingForRun(activeRun.runId);
-		await runService.setStatus(activeRun.runId, "aborted", {
+		const expired = stores.control.expireUnconsumedConfirmation(activeRun.runId, {
 			reason: "confirmation_expired",
 			text: "确认已过期，未提交生成任务。",
 		});
+		if (!expired) continue;
 		linkedSessions.add(session.id);
 		result.expiredConfirmations += 1;
 	}
