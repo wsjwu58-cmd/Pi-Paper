@@ -109,6 +109,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
   const source = await fs.readFile(path.join(root, 'vibepaper-desktop/src/main.cjs'), 'utf8')
   const handlers = new Map()
   const protocolHandlers = new Map()
+  const registeredSchemes = []
   const headerHandlers = []
   const electron = {
     app: { setName() {}, requestSingleInstanceLock: () => false, quit() {}, getPath: (name) => name === 'temp' ? os.tmpdir() : os.tmpdir() },
@@ -116,13 +117,17 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showMessageBox: async () => ({}) },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     net: {},
-    protocol: { registerSchemesAsPrivileged() {}, handle: (scheme, handler) => protocolHandlers.set(scheme, handler) },
+    protocol: {
+      registerSchemesAsPrivileged: (schemes) => registeredSchemes.push(...schemes),
+      handle: (scheme, handler) => protocolHandlers.set(scheme, handler),
+    },
     safeStorage: {},
     session: { defaultSession: { webRequest: { onHeadersReceived: (handler) => headerHandlers.push(handler) } } },
     utilityProcess: {},
   }
   const mainRequire = (name) => {
     if (name === 'electron') return electron
+    if (name === './renderer-trust.cjs') return require('../src/renderer-trust.cjs')
     if (name.startsWith('.')) return {}
     return require(name)
   }
@@ -148,6 +153,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
   return {
     handlers,
     protocolHandlers,
+    registeredSchemes,
     headerHandlers,
     electron,
     event: { sender, senderFrame: frame },
@@ -1630,6 +1636,18 @@ test('generic replacement IPC stays project-scoped and offers all supported loca
   assert.equal(result.mimeType, 'text/markdown')
 })
 
+test('local media protocol enables streaming playback in dev and packaged modes', async () => {
+  for (const devServerUrl of [undefined, 'http://127.0.0.1:5173']) {
+    const { registeredSchemes } = await createMainIpcHarness({ devServerUrl })
+    const mediaScheme = registeredSchemes.find(({ scheme }) => scheme === 'vibe')
+    assert.ok(mediaScheme)
+    assert.equal(mediaScheme.privileges.stream, true)
+    assert.equal(mediaScheme.privileges.standard, true)
+    assert.equal(mediaScheme.privileges.secure, true)
+    assert.equal(mediaScheme.privileges.supportFetchAPI, true)
+  }
+})
+
 test('local asset preview IPC serves detected MIME with nosniff and supports byte ranges', async (t) => {
   const { store, parentDirectory, project } = await openTestProject(t)
   const textPath = await writeImage(parentDirectory, 'preview.md', Buffer.from('# Local preview\n'))
@@ -1831,4 +1849,64 @@ test('drama state IPC allowlists operations and forwards active project scope to
   assert.equal(calls[0].method, 'project:get-active')
   assert.deepEqual(calls[1], { method: 'drama:series:create', payload: input })
   await assert.rejects(handler(harness.event, 'deleteSeries', input), /短剧状态操作无效/u)
+})
+
+test('local video task and asset previews accept playback fragments with byte ranges', async (t) => {
+  const { store, project, parentDirectory } = await openTestProject(t)
+  const videoBytes = Buffer.concat([minimalFtyp('isom'), Buffer.from('range-preview-payload')])
+  const assetPath = await writeImage(parentDirectory, 'playback-preview.mp4', videoBytes)
+  const asset = await store.importAsset(assetPath, project.projectId, 'local')
+  const task = await store.createTask({
+    projectId: project.projectId,
+    canvasId: project.canvasId,
+    canvasVersion: 0,
+    nodeId: null,
+    modality: 'video',
+    providerType: 'cloud',
+    providerId: 'provider-test',
+    modelId: 'video-test',
+    idempotencyKey: 'video-playback-protocol-fragment',
+    parameters: { prompt: 'Protocol range fixture' },
+  })
+  const claimed = await store.claimNextTask(project.projectId)
+  assert.equal(claimed.task.taskId, task.taskId)
+  await fs.writeFile(path.join(claimed.outputDirectory, 'result.mp4'), videoBytes)
+  await store.recordTaskSucceeded(project.projectId, task.taskId, `generated/${task.taskId}/result.mp4`)
+
+  const harness = await createMainIpcHarness()
+  harness.setLocalCore({
+    async request(method, payload) {
+      if (method === 'project:get-active') return { projectId: project.projectId }
+      if (method === 'task:resolve-output-preview') {
+        return store.resolveTaskOutputForPreview(payload.projectId, payload.taskId, payload.outputIndex)
+      }
+      if (method === 'asset:resolve') return store.resolveAsset(payload.assetId)
+      throw new Error(`Unexpected Local Core call: ${method}`)
+    },
+  })
+  const handler = harness.protocolHandlers.get('vibe')
+  const request = (url, range = 'bytes=4-7') => ({
+    url,
+    method: 'GET',
+    headers: new Headers({ range }),
+  })
+
+  const taskResponse = await handler(request(`vibe://app/tasks/${task.taskId}/output?index=0#t=0.001`))
+  assert.equal(taskResponse.status, 206)
+  assert.equal(taskResponse.headers.get('content-type'), 'video/mp4')
+  assert.equal(taskResponse.headers.get('content-range'), `bytes 4-7/${videoBytes.length}`)
+  assert.equal(await taskResponse.text(), 'ftyp')
+
+  const assetResponse = await handler(request(`vibe://app/assets/${asset.assetId}#t=0.001`))
+  assert.equal(assetResponse.status, 206)
+  assert.equal(assetResponse.headers.get('content-type'), 'video/mp4')
+  assert.equal(assetResponse.headers.get('content-range'), `bytes 4-7/${videoBytes.length}`)
+  assert.equal(await assetResponse.text(), 'ftyp')
+
+  const invalidTaskFragment = await handler(request(`vibe://app/tasks/${task.taskId}/output#download`))
+  assert.equal(invalidTaskFragment.status, 404)
+  const invalidTaskQuery = await handler(request(`vibe://app/tasks/${task.taskId}/output?other=1#t=0.001`))
+  assert.equal(invalidTaskQuery.status, 404)
+  const invalidAssetFragment = await handler(request(`vibe://app/assets/${asset.assetId}#download`))
+  assert.equal(invalidAssetFragment.status, 404)
 })

@@ -44,7 +44,8 @@ const { createDramaBatchTaskInput } = require('./drama-render-batch.cjs')
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
   scheme: 'vibe',
-  privileges: { standard: true, secure: true, supportFetchAPI: true },
+  // Local video/audio responses use file streams, including byte-range requests.
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
 }])
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
@@ -1081,10 +1082,14 @@ function registerRendererProtocol() {
       return new Response('Bad path', { status: 400, headers: { 'content-type': 'text/plain' } })
     }
     const taskOutputMatch = /^\/tasks\/([a-f0-9-]{36})\/output$/iu.exec(requestedPath)
+    // Chromium forwards media fragments to custom protocols. The original video
+    // player uses #t=0.001 to load its first frame; this does not change the file.
+    const hasValidMediaFragment = !url.hash || url.hash.length <= 80
+      && /^#t=\d+(?:\.\d+)?(?:,\d+(?:\.\d+)?)?$/u.test(url.hash)
     const hasValidTaskOutputQuery = !url.search
       || url.searchParams.size === 1 && url.searchParams.has('index')
         && /^[0-3]$/u.test(url.searchParams.get('index') ?? '')
-    if (taskOutputMatch && hasValidTaskOutputQuery && !url.hash) {
+    if (taskOutputMatch && hasValidTaskOutputQuery && hasValidMediaFragment) {
       try {
         const activeProject = await localCore.request('project:get-active')
         if (!activeProject) throw new Error('NO_ACTIVE_PROJECT')
@@ -1134,7 +1139,7 @@ function registerRendererProtocol() {
       }
     }
     const assetMatch = /^\/assets\/([a-f0-9-]{36})(\/thumbnail)?$/iu.exec(requestedPath)
-    if (assetMatch && !url.search && !url.hash) {
+    if (assetMatch && !url.search && hasValidMediaFragment) {
       try {
         const asset = await localCore.request(assetMatch[2] ? 'asset:resolve-thumbnail' : 'asset:resolve', { assetId: assetMatch[1] })
         const sizeBytes = asset.sizeBytes
