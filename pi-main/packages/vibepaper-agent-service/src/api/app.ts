@@ -53,13 +53,13 @@ import { AgentEventStream } from "../application/run-event-stream.ts";
 import { SessionContextService } from "../application/session-context-service.ts";
 import { MemoryUpdateWorker, type MemoryUpdateQueue } from "../application/memory-update-queue.ts";
 import {
-import { buildTaskContinuationPrompt } from "../application/task-continuation-prompt.ts";
 	InMemoryRunRepository,
 	RunConflictError,
 	type RunRepository,
 	SessionRunService,
 } from "../application/session-run-service.ts";
 import { BUILTIN_SKILL_INSERT_SQL } from "../application/skill-bootstrap.ts";
+import { buildTaskContinuationPrompt } from "../application/task-continuation-prompt.ts";
 import {
 	type TaskAssociation,
 	TaskTerminalService,
