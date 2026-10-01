@@ -484,9 +484,9 @@ function projectTask(task: Record<string, unknown>): Record<string, unknown> {
 	const result: Record<string, unknown> = {
 		taskId: task.taskId,
 		status: task.status,
-		outputAvailable: task.status === "succeeded" && typeof task.outputPath === "string" && task.outputPath.length > 0,
+		outputAvailable: task.status === "succeeded" && task.outputVerified === true,
 	};
-	for (const key of ["modality", "attemptCount", "errorCode", "createdAt", "updatedAt", "startedAt", "completedAt"])
+	for (const key of ["modality", "attemptCount", "errorCode", "errorMessage", "createdAt", "updatedAt", "startedAt", "completedAt"])
 		if (task[key] !== undefined) result[key] = task[key];
 	return result;
 }

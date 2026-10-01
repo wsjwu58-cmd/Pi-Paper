@@ -11,6 +11,7 @@ import { confirmDesktopGenerationAction, recoverDesktopAgentRuns } from "../src/
 import type { RuntimeToolGateway } from "../src/tools/runtime-tools.ts";
 
 const temporaryDirectories: string[] = [];
+let nextGatewayTaskNumber = 0;
 
 async function createStore() {
 	const directory = await mkdtemp(join(tmpdir(), "vibepaper-agent-approval-"));
@@ -39,7 +40,7 @@ function createGateway(options: { version?: number; failAfterFirstCreate?: boole
 			const existing = tasks.get(input.idempotencyKey);
 			if (existing) return existing;
 			const created = {
-				taskId: `task-${creationWrites + 1}`,
+				taskId: `task-${++nextGatewayTaskNumber}`,
 				status: "queued",
 				modality: input.modelType === "local-sapi-tts" ? "audio" : "image",
 				nodeId: input.nodeId,
@@ -350,9 +351,14 @@ describe("desktop persisted approvals", () => {
 				confirmDesktopGenerationAction(confirmation(single), stores, singleGateway.gateway),
 			).resolves.toMatchObject({ status: "accepted" });
 			expect(singleGateway.creationWrites).toBe(1);
-			expect([...singleGateway.tasks.values()]).toEqual([
-				{ taskId: "task-1", status: "queued", modality: "audio", nodeId: "audio-node-1" },
-			]);
+			expect((await store.findById(single.run.runId))?.status).toBe("waiting_task");
+			const singleTask = [...singleGateway.tasks.values()][0]!;
+			const acceptedTaskEvent = (await store.listEvents(single.run.runId)).find(
+				(event) => event.type === "task_status" && event.data.task_id === singleTask.taskId,
+			);
+			expect(acceptedTaskEvent?.data).toMatchObject({ actionId: single.action.actionId, actionStatus: "accepted", status: "queued" });
+			expect((await store.listEvents(single.run.runId)).filter((event) => event.type === "run_completed")).toHaveLength(0);
+			expect(singleTask).toMatchObject({ status: "queued", modality: "audio", nodeId: "audio-node-1" });
 			await confirmDesktopGenerationAction(confirmation(single), stores, singleGateway.gateway);
 			expect(singleGateway.creationWrites).toBe(1);
 

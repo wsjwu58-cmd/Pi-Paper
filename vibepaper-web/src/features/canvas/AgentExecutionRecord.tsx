@@ -316,11 +316,38 @@ export function AgentNextActions({
 
 export function AgentTaskBadge({
   status,
+  errorCode,
+  errorMessage,
 }: {
   status?: string
   taskId?: string
+  errorCode?: string
+  errorMessage?: string
 }) {
-  if (!status || status === 'succeeded' || status === 'failed') return null
+  if (!status || status === 'succeeded') return null
+  const terminalLabels: Record<string, string> = {
+    failed: '生成失败',
+    cancelled: '任务已取消',
+    expired: '任务已过期',
+    settlement_error: '任务状态更新失败',
+    interrupted: '任务已中断',
+  }
+  const terminalLabel = terminalLabels[status]
+  if (terminalLabel) {
+    const detail = errorMessage?.trim() || (status === 'failed'
+      ? errorCode === 'TASK_OUTPUT_UNAVAILABLE'
+        ? '本地任务结果无法读取或校验。'
+        : errorCode?.includes('TIMEOUT')
+          ? '模型响应超时，请检查模型连接后重试。'
+          : '请检查模型配置或网络后重试。'
+      : undefined)
+    if (!detail) return null
+    return (
+      <p role="alert" className="mt-2 rounded-md bg-red-50 px-2 py-1.5 text-[12px] leading-5 text-red-700">
+        {terminalLabel}：{detail}
+      </p>
+    )
+  }
   const label =
     status === 'running' ? '生成中…' : status === 'queued' ? '排队中…' : `任务 ${status}`
   return (

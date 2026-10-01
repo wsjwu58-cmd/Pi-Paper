@@ -27,6 +27,7 @@ export async function recoverDesktopAgentRuns(
 	for (const session of sessions) {
 		const activeRun = await runService.findActive(session.id);
 		if (!activeRun) continue;
+		if (activeRun.status === "waiting_task") continue;
 		const accepted =
 			activeRun.status === "waiting_confirmation"
 				? stores.control.findConsumedApprovalForRun(activeRun.runId)
@@ -63,10 +64,26 @@ export async function confirmDesktopGenerationAction(
 	const runService = new SessionRunService(stores.control);
 	const run = await stores.control.findById(record.action.runId);
 	if (!run || run.sessionId !== input.sessionId) throw new Error("CONFIRMATION_REQUIRED");
+	const priorEvents = await runService.listEvents(run.runId);
+	if (record.status === "consumed" && !input.accept) throw new Error("CONFIRMATION_DECISION_ALREADY_ACCEPTED");
+	const acceptedEvent = priorEvents.some(
+		(event) =>
+			event.type === "tool_completed" &&
+			event.data.actionId === input.actionId &&
+			event.data.actionStatus === "accepted",
+	);
+	if (record.status === "consumed" && acceptedEvent) {
+		if (run.status === "waiting_confirmation") await runService.setStatus(run.runId, "waiting_task");
+		await stores.sessions.flushOutbox(stores.control, input.sessionId);
+		return {
+			actionId: input.actionId,
+			status: "accepted",
+			lastEventSeq: (await runService.listSessionEvents(input.sessionId)).at(-1)?.eventSeq ?? 0,
+		};
+	}
 
 	if (run.status === "completed") {
-		const events = await runService.listEvents(run.runId);
-		const prior = [...events]
+		const prior = [...priorEvents]
 			.reverse()
 			.find((event) => event.type === "run_completed" && event.data.actionId === input.actionId);
 		if (!prior || (prior.data.actionStatus !== "accepted" && prior.data.actionStatus !== "rejected"))
@@ -77,14 +94,11 @@ export async function confirmDesktopGenerationAction(
 			lastEventSeq: (await runService.listSessionEvents(input.sessionId)).at(-1)?.eventSeq ?? prior.eventSeq,
 		};
 	}
-	if (run.status !== "waiting_confirmation") throw new Error("CONFIRMATION_REQUIRED");
+	if (run.status !== "waiting_confirmation" && !(run.status === "waiting_task" && record.status === "consumed"))
+		throw new Error("CONFIRMATION_REQUIRED");
 
 	// A prior acceptance is durable consent. Do not let a later reject request
 	// accidentally enter the replay path and create tasks after a worker restart.
-	if (record.status === "consumed" && !input.accept) {
-		throw new Error("CONFIRMATION_DECISION_ALREADY_ACCEPTED");
-	}
-
 	const rejectRun = async (text: string, errorCode?: string): Promise<DesktopGenerationConfirmationResult> => {
 		await runService.setStatus(run.runId, "completed", {
 			actionId: input.actionId,
@@ -151,6 +165,9 @@ export async function confirmDesktopGenerationAction(
 			return rejectRun("确认已过期，未提交生成任务。", "CONFIRMATION_EXPIRED");
 		throw error;
 	}
+	// Approval consumption is durable before task creation. Mark the run as
+	// waiting_task so a restart never presents an accepted action as pending.
+	await runService.setStatus(run.runId, "waiting_task");
 
 	// TaskStore uses actionId:index as the stable idempotency key. If the Worker
 	// stops after acceptance or after any batch item, accepting the same action
@@ -161,8 +178,9 @@ export async function confirmDesktopGenerationAction(
 			taskId: task.taskId,
 			sessionId: input.sessionId,
 			runId: run.runId,
+			actionId: input.actionId,
 			nodeId: task.nodeId,
-			status: task.status,
+			status: initialTaskStatus(task.status),
 		});
 	}
 
@@ -171,9 +189,10 @@ export async function confirmDesktopGenerationAction(
 		if (
 			events.some(
 				(event) =>
-					event.type === "task_status" &&
-					event.data.actionId === input.actionId &&
-					event.data.task_id === task.taskId,
+				event.type === "task_status" &&
+				event.data.actionId === input.actionId &&
+				event.data.actionStatus === "accepted" &&
+				event.data.task_id === task.taskId,
 			)
 		)
 			continue;
@@ -181,27 +200,26 @@ export async function confirmDesktopGenerationAction(
 			...events,
 			await runService.appendEvent(run.runId, "task_status", {
 				actionId: input.actionId,
+				actionStatus: "accepted",
 				task_id: task.taskId,
 				node_id: task.nodeId,
-				status: task.status,
+				status: initialTaskStatus(task.status),
 			}),
 		];
 	}
-	if (!events.some((event) => event.type === "tool_completed" && event.data.actionId === input.actionId)) {
+	if (!events.some((event) =>
+		event.type === "tool_completed" && event.data.actionId === input.actionId && event.data.actionStatus === "accepted",
+	)) {
 		await runService.appendEvent(run.runId, "tool_completed", {
 			actionId: input.actionId,
+			actionStatus: "accepted",
 			tool: record.action.toolName,
 			ok: true,
-			details: tasks.length === 1 ? "生成任务已加入本地队列" : `${tasks.length} 个生成任务已加入本地队列`,
+			details: tasks.length === 1 ? "已确认，生成任务已加入本地队列" : `已确认，${tasks.length} 个生成任务已加入本地队列`,
 		});
 	}
 
-	await runService.setStatus(run.runId, "completed", {
-		actionId: input.actionId,
-		actionStatus: "accepted",
-		taskStatus: { taskId: tasks[0]?.taskId, nodeId: tasks[0]?.nodeId, status: tasks[0]?.status },
-		text: tasks.length === 1 ? "生成任务已加入本地队列。" : `${tasks.length} 个生成任务已加入本地队列。`,
-	});
+	await runService.setStatus(run.runId, "waiting_task");
 	await stores.sessions.flushOutbox(stores.control, input.sessionId);
 	return {
 		actionId: input.actionId,
@@ -230,6 +248,10 @@ function validateInput(input: DesktopGenerationConfirmationInput): void {
 
 function isGenerationTool(toolName: string): boolean {
 	return toolName === "submit_generation" || toolName === "submit_generation_batch";
+}
+
+function initialTaskStatus(status: string): "queued" | "running" {
+	return status === "running" ? "running" : "queued";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

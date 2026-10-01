@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { friendlyAgentErrorMessage, isAgentRunActive, mergeSessionMessages, reduceAgentEvent, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { AgentTaskBadge } from './AgentExecutionRecord'
+import { friendlyAgentErrorMessage, isAgentRunActive, mergeSessionMessages, reduceAgentEvent, setConfirmationStatus, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
 import { shouldRefreshCanvasEvent } from './agentEventHandlers'
 
 const base: AgentEventState = {
@@ -53,6 +56,14 @@ describe('agent event envelope reducer', () => {
     let state = reduceAgentEvent(base, event('task_status', { status: 'succeeded' }, 'task-finished'))
     expect(isAgentRunActive(state)).toBe(true)
     state = reduceAgentEvent(state, event('run_completed', {}, 'run-finished'))
+    expect(isAgentRunActive(state)).toBe(false)
+  })
+
+  it('does not let a late task update revive a completed Agent run', () => {
+    let state = reduceAgentEvent(base, event('run_completed', {}, 'run-finished'))
+    state = reduceAgentEvent(state, event('task_status', { task_id: 'task-1', status: 'succeeded' }, 'task-finished-late'))
+
+    expect(state.runStatusById?.get('run-1')).toBe('completed')
     expect(isAgentRunActive(state)).toBe(false)
   })
 
@@ -206,6 +217,59 @@ describe('agent event envelope reducer', () => {
     }]
 
     expect(mergeSessionMessages(persisted, runtime)[0]?.meta?.confirmation?.status).toBe('accepted')
+  })
+
+  it('keeps a locally confirmed action terminal across a session refresh', () => {
+    const pending = [{
+      id: 'turn-1', role: 'assistant' as const, type: 'text' as const, content: '请确认生成。',
+      meta: { requiresConfirmation: true, confirmation: { actionId: 'action-1', status: 'pending' as const, approvalToken: 'token', summary: '生成' } },
+    }]
+    const confirmed = setConfirmationStatus(pending, 'action-1', 'accepted')
+    const persisted = [{
+      id: 'turn-1', role: 'assistant' as const, type: 'text' as const, content: '请确认生成。',
+      meta: { confirmation: { actionId: 'action-1', status: 'pending' as const, approvalToken: 'token', summary: '生成' } },
+    }]
+    const refreshed = mergeSessionMessages(persisted, confirmed)
+
+    expect(confirmed[0]?.meta).toMatchObject({ requiresConfirmation: false, confirmation: { status: 'accepted' } })
+    expect(refreshed[0]?.meta?.confirmation?.status).toBe('accepted')
+  })
+
+  it('replays accepted confirmation state from task_status and shows task failure details', () => {
+    const snapshot: AgentEventState = {
+      ...base,
+      messages: [{
+        id: 'turn-1', role: 'assistant', type: 'text', content: '正在提交生成任务。',
+        meta: {
+          runId: 'run-1',
+          requiresConfirmation: true,
+          confirmation: { actionId: 'action-1', approvalToken: 'token', summary: '生成', status: 'pending' },
+        },
+      }],
+    }
+    const accepted = reduceAgentEvent(snapshot, event('task_status', {
+      actionId: 'action-1', actionStatus: 'accepted', task_id: 'task-1', node_id: 'node-1', status: 'queued',
+    }, 'task-queued'))
+
+    expect(accepted.messages[0]?.meta).toMatchObject({
+      requiresConfirmation: false,
+      confirmation: { actionId: 'action-1', status: 'accepted' },
+      taskStatus: { taskId: 'task-1', nodeId: 'node-1', status: 'queued' },
+    })
+
+    const failed = reduceAgentEvent(base, event('task_status', {
+      task_id: 'task-1', node_id: 'node-1', status: 'failed',
+      error_code: 'TASK_OUTPUT_UNAVAILABLE', error_message: '本地任务结果无法读取或校验。',
+    }, 'task-failed'))
+    expect(failed.messages[0]?.meta?.taskStatus).toMatchObject({
+      status: 'failed', errorCode: 'TASK_OUTPUT_UNAVAILABLE', errorMessage: '本地任务结果无法读取或校验。',
+    })
+    const failureMarkup = renderToStaticMarkup(createElement(AgentTaskBadge, {
+      status: failed.messages[0]?.meta?.taskStatus?.status,
+      errorCode: failed.messages[0]?.meta?.taskStatus?.errorCode,
+      errorMessage: failed.messages[0]?.meta?.taskStatus?.errorMessage,
+    }))
+    expect(failureMarkup).toContain('生成失败：本地任务结果无法读取或校验。')
   })
 
   it('replays persisted run events into the assistant message that owns the run', () => {

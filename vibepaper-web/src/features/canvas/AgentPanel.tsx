@@ -33,7 +33,7 @@ import {
   resolveBoundConfirmationCanvasVersion,
   resolveConfirmationCanvasVersion,
 } from './confirmationVersion'
-import { isActionableConfirmation } from './confirmationState'
+import { isActionableConfirmation, parseConfirmationExpiry } from './confirmationState'
 import { toolLabel, type AgentChatMsg, type AgentConfirmation, type AgentSuggestion, type ExecutionStep } from './agentTypes'
 import { AgentNextActions, AgentTaskBadge, AgentTurnTimeline } from './AgentExecutionRecord'
 import { AgentSkillHistoryCard } from './AgentSkillHistoryCard'
@@ -153,6 +153,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   const [skillOptions, setSkillOptions] = useState<SkillView[]>([])
   const [skillPickerLoading, setSkillPickerLoading] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [confirmationClock, setConfirmationClock] = useState(0)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [tab, setTab] = useState<'chat' | 'pref' | 'skills' | 'usage' | 'history' | 'drama'>('chat')
   const [composerRefs, setComposerRefs] = useState<ComposerRef[]>([])
@@ -875,6 +876,22 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   const activeConfirmation = pendingConfirmations.at(-1)
   const hasPendingConfirmation = pendingConfirmations.length > 0
 
+  // Expiry is time based, so trigger one render when the nearest approval
+  // expires even if no new Agent event arrives.
+  useEffect(() => {
+    const now = Date.now()
+    const nextExpiry = panelMessages
+      .map((message) => message.meta?.confirmation)
+      .filter((confirmation) => confirmation?.status === 'pending' || confirmation?.status === 'submitting')
+      .map((confirmation) => parseConfirmationExpiry(confirmation?.expiresAt))
+      .filter((expiresAt): expiresAt is number => expiresAt !== undefined && expiresAt > now)
+      .sort((left, right) => left - right)[0]
+    if (nextExpiry === undefined) return
+    const delay = Math.min(2_147_483_647, Math.max(0, nextExpiry - now + 1))
+    const timer = window.setTimeout(() => setConfirmationClock((value) => value + 1), delay)
+    return () => window.clearTimeout(timer)
+  }, [confirmationClock, panelMessages])
+
   const send = async () => {
     if (desktop) {
       const content = panelDraft.trim()
@@ -1224,7 +1241,12 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                           if (!desktop) setTypingTurnId((cur) => (cur === m.id ? null : cur))
                         }}
                       />
-                      <AgentTaskBadge status={m.meta?.taskStatus?.status} taskId={m.meta?.taskStatus?.taskId} />
+                      <AgentTaskBadge
+                        status={m.meta?.taskStatus?.status}
+                        taskId={m.meta?.taskStatus?.taskId}
+                        errorCode={m.meta?.taskStatus?.errorCode}
+                        errorMessage={m.meta?.taskStatus?.errorMessage}
+                      />
                       {m.meta?.nextActions && m.meta.nextActions.length > 0 && (
                         <AgentNextActions
                           actions={m.meta.nextActions}

@@ -7,7 +7,7 @@ import type { PlannedAction } from "../domain/action-approval.ts";
 import type { AgentRun, AgentRunEvent, AgentRunEventType, AgentRunStatus } from "../domain/agent-run.ts";
 import { isActiveRunStatus } from "../domain/agent-run.ts";
 
-const CONTROL_SCHEMA_VERSION = 4;
+const CONTROL_SCHEMA_VERSION = 5;
 const MAX_OPERATION_RESULT_BYTES = 1_000_000;
 
 export type DesktopMemoryCandidateScope = "session" | "canvas" | "project" | "global" | "daily";
@@ -139,6 +139,7 @@ const CONTROL_SCHEMA = `
     task_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    action_id TEXT,
     node_id TEXT,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -228,6 +229,30 @@ export type DesktopOperation = {
 	updatedAt: Date;
 };
 
+export type DesktopTaskLink = {
+	taskId: string;
+	sessionId: string;
+	runId: string;
+	actionId?: string;
+	nodeId?: string;
+	status: string;
+};
+
+export type DesktopTaskStatusUpdate = {
+	taskId: string;
+	status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
+	errorCode?: string;
+	errorMessage?: string;
+	outputRef?: string;
+};
+
+export type DesktopTaskStatusUpdateResult = {
+	changed: boolean;
+	event?: AgentRunEvent;
+	runStatus: AgentRunStatus;
+	runFinalized: boolean;
+};
+
 export type PrepareDesktopOperation = Pick<
 	DesktopOperation,
 	"sessionId" | "runId" | "toolCallId" | "effect" | "inputHash" | "canvasVersion" | "idempotencyKey"
@@ -259,6 +284,54 @@ type ApprovalRow = {
 };
 
 const ACTIVE_STATUS_SQL = "('queued', 'running', 'waiting_confirmation', 'waiting_task')";
+const DESKTOP_TASK_STATUSES = new Set(["queued", "running", "succeeded", "failed", "cancelled", "interrupted"]);
+const TERMINAL_DESKTOP_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
+const TASK_LINK_SELECT = `
+	SELECT task_links.*,
+		COALESCE(task_links.action_id,
+			(SELECT json_extract(events.data_json, '$.actionId') FROM run_events AS events
+			 WHERE events.run_id = task_links.run_id AND events.type = 'task_status'
+				AND json_extract(events.data_json, '$.task_id') = task_links.task_id
+				AND json_extract(events.data_json, '$.actionId') IS NOT NULL
+			 ORDER BY events.event_seq DESC LIMIT 1),
+			(SELECT json_extract(events.data_json, '$.actionId') FROM run_events AS events
+			 WHERE events.run_id = task_links.run_id AND events.type = 'run_completed'
+				AND json_extract(events.data_json, '$.actionStatus') = 'accepted'
+				AND json_extract(events.data_json, '$.actionId') IS NOT NULL
+			 ORDER BY events.event_seq DESC LIMIT 1),
+			(SELECT json_extract(events.data_json, '$.actionId') FROM run_events AS events
+			 WHERE events.run_id = task_links.run_id AND events.type = 'tool_completed'
+				AND json_extract(events.data_json, '$.actionStatus') = 'accepted'
+				AND json_extract(events.data_json, '$.actionId') IS NOT NULL
+			 ORDER BY events.event_seq DESC LIMIT 1)) AS resolved_action_id
+	FROM task_links`;
+
+function isDesktopTaskStatus(value: string): value is DesktopTaskStatusUpdate["status"] {
+	return DESKTOP_TASK_STATUSES.has(value);
+}
+
+function isTerminalDesktopTaskStatus(value: string): boolean {
+	return TERMINAL_DESKTOP_TASK_STATUSES.has(value);
+}
+
+function shouldAdvanceTaskStatus(current: string, next: string): boolean {
+	if (!isDesktopTaskStatus(next) || isTerminalDesktopTaskStatus(current)) return false;
+	if (current === "running" && next === "queued") return false;
+	return true;
+}
+
+function toTaskLink(row: Record<string, unknown>): DesktopTaskLink {
+	return {
+		taskId: String(row.task_id),
+		sessionId: String(row.session_id),
+		runId: String(row.run_id),
+		...(row.resolved_action_id == null && row.action_id == null
+			? {}
+			: { actionId: String(row.resolved_action_id ?? row.action_id) }),
+		...(row.node_id == null ? {} : { nodeId: String(row.node_id) }),
+		status: String(row.status),
+	};
+}
 
 function jsonObject(value: string): Record<string, unknown> {
 	const decoded: unknown = JSON.parse(value);
@@ -767,6 +840,33 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			.run(new Date().toISOString(), runId);
 	}
 
+	expireUnconsumedConfirmation(runId: string, data: Record<string, unknown>): boolean {
+		if (typeof runId !== "string" || !runId) return false;
+		return this.transaction(() => {
+			const row = this.database.prepare("SELECT session_id, status FROM agent_runs WHERE id = ?").get(runId) as
+				| { session_id: string; status: AgentRunStatus }
+				| undefined;
+			if (!row || row.status !== "waiting_confirmation") return false;
+			const accepted = this.database
+				.prepare("SELECT 1 AS present FROM approvals WHERE run_id = ? AND status = 'accepted' LIMIT 1")
+				.get(runId);
+			if (accepted) return false;
+
+			const now = new Date();
+			this.database
+				.prepare("UPDATE approvals SET status = 'invalidated', updated_at = ? WHERE run_id = ? AND status = 'pending'")
+				.run(now.toISOString(), runId);
+			this.database
+				.prepare("UPDATE agent_runs SET status = 'aborted', updated_at = ? WHERE id = ?")
+				.run(now.toISOString(), runId);
+			const terminalEvent = this.database
+				.prepare("SELECT 1 AS present FROM run_events WHERE run_id = ? AND type = 'run_aborted' LIMIT 1")
+				.get(runId);
+			if (!terminalEvent) this.appendEventInTransaction(runId, row.session_id, "run_aborted", data, now);
+			return true;
+		});
+	}
+
 	getOrCreateApprovalSecret(): string {
 		const existing = this.database
 			.prepare("SELECT value FROM control_metadata WHERE key = 'approval_secret'")
@@ -783,17 +883,164 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		return stored.value;
 	}
 
-	linkTask(input: { taskId: string; sessionId: string; runId: string; nodeId: string; status: string }): void {
-		if (!input.taskId || !input.sessionId || !input.runId || !input.nodeId || !input.status)
+	linkTask(input: {
+		taskId: string;
+		sessionId: string;
+		runId: string;
+		actionId?: string;
+		nodeId: string;
+		status: string;
+	}): void {
+		if (
+			!input.taskId ||
+			input.taskId.length > 200 ||
+			!input.sessionId ||
+			!input.runId ||
+			!input.nodeId ||
+			!isDesktopTaskStatus(input.status) ||
+			(input.actionId !== undefined && (!input.actionId || input.actionId.length > 128))
+		)
 			throw new Error("TASK_LINK_INVALID");
-		const now = new Date().toISOString();
-		this.database
-			.prepare(`
-			INSERT INTO task_links (task_id, session_id, run_id, node_id, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(task_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at
-		`)
-			.run(input.taskId, input.sessionId, input.runId, input.nodeId, input.status, now, now);
+		this.transaction(() => {
+			const run = this.database.prepare("SELECT session_id FROM agent_runs WHERE id = ?").get(input.runId) as
+				| { session_id: string }
+				| undefined;
+			if (!run || run.session_id !== input.sessionId) throw new Error("RUN_NOT_FOUND");
+			const existing = this.database.prepare("SELECT * FROM task_links WHERE task_id = ?").get(input.taskId) as
+				| Record<string, unknown>
+				| undefined;
+			const now = new Date().toISOString();
+			if (existing) {
+				const link = toTaskLink(existing);
+				if (
+					link.sessionId !== input.sessionId ||
+					link.runId !== input.runId ||
+					(link.nodeId && link.nodeId !== input.nodeId) ||
+					(link.actionId && input.actionId && link.actionId !== input.actionId)
+				)
+					throw new Error("TASK_LINK_CONFLICT");
+				const nextStatus = shouldAdvanceTaskStatus(link.status, input.status) ? input.status : link.status;
+				this.database
+					.prepare(`
+					UPDATE task_links SET action_id = COALESCE(action_id, ?), node_id = COALESCE(node_id, ?),
+						status = ?, updated_at = ? WHERE task_id = ?
+				`)
+					.run(input.actionId ?? null, input.nodeId, nextStatus, now, input.taskId);
+				return;
+			}
+			this.database
+				.prepare(`
+				INSERT INTO task_links (task_id, session_id, run_id, action_id, node_id, status, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`)
+				.run(input.taskId, input.sessionId, input.runId, input.actionId ?? null, input.nodeId, input.status, now, now);
+		});
+	}
+
+	listTaskLinks(runId?: string): DesktopTaskLink[] {
+		const rows = runId === undefined
+			? this.database.prepare(`${TASK_LINK_SELECT} ORDER BY task_links.created_at, task_links.task_id`).all()
+			: this.database.prepare(`${TASK_LINK_SELECT} WHERE task_links.run_id = ? ORDER BY task_links.created_at, task_links.task_id`).all(runId);
+		return (rows as unknown as Record<string, unknown>[]).map(toTaskLink);
+	}
+
+	recordTaskStatus(input: DesktopTaskStatusUpdate): DesktopTaskStatusUpdateResult {
+		if (!input.taskId || input.taskId.length > 200 || !isDesktopTaskStatus(input.status))
+			throw new Error("TASK_STATUS_INVALID");
+		if (input.errorCode !== undefined && !/^[A-Z0-9_]{1,120}$/u.test(input.errorCode))
+			throw new Error("TASK_ERROR_CODE_INVALID");
+		if (input.errorMessage !== undefined && input.errorMessage.length > 500)
+			throw new Error("TASK_ERROR_MESSAGE_TOO_LONG");
+		if (input.outputRef !== undefined && !/^vibe:\/\/app\/tasks\/[A-Za-z0-9_-]{1,128}\/output(?:\?index=(?:0|[1-9][0-9]{0,5}))?$/u.test(input.outputRef))
+			throw new Error("TASK_OUTPUT_REF_INVALID");
+
+		return this.transaction(() => {
+			const linkRow = this.database.prepare(`${TASK_LINK_SELECT} WHERE task_links.task_id = ?`).get(input.taskId) as
+				| Record<string, unknown>
+				| undefined;
+			if (!linkRow) throw new Error("TASK_LINK_NOT_FOUND");
+			const link = toTaskLink(linkRow);
+			const runRow = this.database.prepare("SELECT session_id, status FROM agent_runs WHERE id = ?").get(link.runId) as
+				| { session_id: string; status: AgentRunStatus }
+				| undefined;
+			if (!runRow || runRow.session_id !== link.sessionId) throw new Error("RUN_NOT_FOUND");
+
+			let event: AgentRunEvent | undefined;
+			let changed = false;
+			const previousIsTerminal = isTerminalDesktopTaskStatus(link.status);
+			const canApplyStatus =
+				link.status === input.status || (!previousIsTerminal && shouldAdvanceTaskStatus(link.status, input.status));
+			if (!previousIsTerminal && link.status !== input.status && canApplyStatus) {
+				const now = new Date();
+				this.database
+					.prepare("UPDATE task_links SET status = ?, updated_at = ? WHERE task_id = ?")
+					.run(input.status, now.toISOString(), input.taskId);
+				changed = true;
+			}
+			const matchingEvent = this.database.prepare(`
+				SELECT 1 AS present FROM run_events
+				WHERE run_id = ? AND type = 'task_status'
+					AND json_extract(data_json, '$.task_id') = ?
+					AND json_extract(data_json, '$.status') = ?
+					AND (? IS NULL OR json_extract(data_json, '$.actionId') = ?)
+				LIMIT 1
+			`).get(link.runId, link.taskId, input.status, link.actionId ?? null, link.actionId ?? null);
+			if (!matchingEvent && canApplyStatus) {
+				const data: Record<string, unknown> = {
+					...(link.actionId ? { actionId: link.actionId, actionStatus: "accepted" } : {}),
+					task_id: link.taskId,
+					...(link.nodeId ? { node_id: link.nodeId } : {}),
+					status: input.status,
+					...(input.errorCode ? { error_code: input.errorCode } : {}),
+					...(input.errorMessage ? { error_message: input.errorMessage } : {}),
+					...(input.outputRef ? { output_ref: input.outputRef } : {}),
+				};
+				event = this.appendEventInTransaction(link.runId, link.sessionId, "task_status", data);
+			}
+
+			const statusRows = this.database.prepare("SELECT status FROM task_links WHERE run_id = ?").all(link.runId) as
+				Array<{ status: string }>;
+			const allTerminal = statusRows.length > 0 && statusRows.every((row) => isTerminalDesktopTaskStatus(row.status));
+			let runStatus = runRow.status;
+			let runFinalized = false;
+
+			// A linked task proves approval was already consumed. Repair a crash between
+			// task creation and changing the run to waiting_task without submitting it again.
+			if (
+				statusRows.length > 0 &&
+				(runStatus === "waiting_confirmation" || runStatus === "queued" || runStatus === "running")
+			) {
+				this.database
+					.prepare("UPDATE agent_runs SET status = 'waiting_task', updated_at = ? WHERE id = ?")
+					.run(new Date().toISOString(), link.runId);
+				runStatus = "waiting_task";
+			}
+
+			if (allTerminal && runStatus === "waiting_task") {
+				const taskStatuses = statusRows.map((row) => row.status);
+				const success = taskStatuses.every((status) => status === "succeeded");
+				const nextRunStatus: AgentRunStatus = success ? "completed" : "failed";
+				const terminalType: AgentRunEventType = success ? "run_completed" : "run_failed";
+				const terminalData = success
+					? { text: "生成任务已完成。" }
+					: {
+							text: "生成任务未成功完成，请查看对应节点的任务详情。",
+							message: "生成任务未成功完成，请查看对应节点的任务详情。",
+							errorCode: "GENERATION_TASK_FAILED",
+						};
+				this.database
+					.prepare("UPDATE agent_runs SET status = ?, updated_at = ? WHERE id = ?")
+					.run(nextRunStatus, new Date().toISOString(), link.runId);
+				runStatus = nextRunStatus;
+				const existingTerminal = this.database
+					.prepare("SELECT 1 AS present FROM run_events WHERE run_id = ? AND type = ? LIMIT 1")
+					.get(link.runId, terminalType);
+				if (!existingTerminal) this.appendEventInTransaction(link.runId, link.sessionId, terminalType, terminalData);
+				runFinalized = true;
+			}
+
+			return { changed, ...(event ? { event } : {}), runStatus, runFinalized };
+		});
 	}
 
 	listEvents(runId: string): readonly AgentRunEvent[] {
@@ -1058,6 +1305,28 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		}
 	}
 
+	private appendEventInTransaction(
+		runId: string,
+		sessionId: string,
+		type: AgentRunEventType,
+		data: Record<string, unknown>,
+		createdAt = new Date(),
+	): AgentRunEvent {
+		const event: AgentRunEvent = {
+			eventId: randomUUID(),
+			runId,
+			sessionId,
+			eventSeq: this.nextEventSequence(sessionId),
+			type,
+			runtime: "pi",
+			runtimeVersion: "0.1.0",
+			data,
+			createdAt,
+		};
+		this.insertEvent(event, randomUUID());
+		return event;
+	}
+
 	private insertEvent(event: AgentRunEvent, outboxId: string): void {
 		const dataJson = JSON.stringify(event.data);
 		if (typeof dataJson !== "string") throw new Error("RUN_EVENT_NOT_SERIALIZABLE");
@@ -1135,6 +1404,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 					UPDATE approvals SET status = 'rejected' WHERE status IN ('pending', 'accepted');
 				`);
 				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
+				this.ensureTaskLinkActionColumn();
 				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 			});
 			return;
@@ -1149,6 +1419,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 					) STRICT;
 				`);
 				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
+				this.ensureTaskLinkActionColumn();
 				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 			});
 			return;
@@ -1156,6 +1427,14 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		if (version === 3) {
 			this.transaction(() => {
 				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
+				this.ensureTaskLinkActionColumn();
+				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+			});
+			return;
+		}
+		if (version === 4) {
+			this.transaction(() => {
+				this.ensureTaskLinkActionColumn();
 				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 			});
 			return;
@@ -1171,5 +1450,12 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			this.database.exec(CONTROL_SCHEMA);
 			this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 		});
+	}
+
+	private ensureTaskLinkActionColumn(): void {
+		const columns = this.database.prepare("PRAGMA table_info(task_links)").all() as Array<{ name: string }>;
+		if (columns.length === 0) throw new Error("Agent 控制库缺少任务关联表，拒绝覆盖现有数据。");
+		if (!columns.some((column) => column.name === "action_id"))
+			this.database.exec("ALTER TABLE task_links ADD COLUMN action_id TEXT");
 	}
 }

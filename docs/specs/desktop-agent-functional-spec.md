@@ -1,5 +1,7 @@
 # VibePaper 桌面本地版 Agent 功能规格
 
+> 2026-10-01 生成状态修复：接受确认后保持 `waiting_task`，从本地权威 TaskStore 对账为原 Agent 事件；所有关联任务终结后才结束 Run。控制库 schema 5 保存确认动作与任务关联，成功结果经过本地文件校验，重启及旧遗留 queued 状态修复不重放任务。详见 [修复与验证记录](../plans/2026-10-01-agent-generation-status-fix.md)。
+
 ## 2026-10-01 实现进度更新
 
 本节更新下方较早的实现状态：原 TS runtime 已接完整请求预算、真实模型摘要与 Pi compaction；原 AgentPanel 已接五范围记忆及候选审核、会话片段复用、Skill 历史、停止 IPC 和逐摘要实际用量。真实 Agnes 小P回合已验证节点/连线、三组一对一编排、生成确认拒绝、停止及片段；真实摘要已验证目标保留、落盘和重启。验收数据、限制及仍未完成的逐屏和跨平台门槛见 [本轮记录](../plans/2026-10-01-agent-context-memory-validation.md)。模型提供方扩展按当前 AGENTS.md 在完整迁移后推进，本轮仍使用 Agnes。不得把此进度记为完整 1:1 验收。

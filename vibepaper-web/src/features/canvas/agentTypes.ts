@@ -70,7 +70,7 @@ export interface AgentChatMsg {
     nextActions?: string[]
     loadedSkills?: string[]
     executionSteps?: ExecutionStep[]
-    taskStatus?: { taskId?: string; status?: string; nodeId?: string; modelType?: string }
+    taskStatus?: { taskId?: string; status?: string; nodeId?: string; modelType?: string; errorCode?: string; errorMessage?: string }
     selectedNodeIds?: string[]
     selectedSkillId?: string
     nodeReferences?: AgentNodeReference[]

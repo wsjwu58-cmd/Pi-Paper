@@ -15,6 +15,7 @@ const {
   confirmDesktopGenerationAction,
   recoverDesktopAgentRuns,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/generation-confirmation.ts')
+const { reconcileDesktopAgentTasks } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/task-status-sync.ts')
 const {
   createDesktopAgentSkillContext,
   listDesktopAgentSkills,
@@ -168,6 +169,7 @@ async function getSessionUsage(projectId, sessionId) {
 
 async function getSessionSnapshot(projectId, sessionId) {
   const current = await requireProject(projectId)
+  await reconcileSessionTasks(current, sessionId)
   const messages = await getSessionMessages(projectId, sessionId)
   const events = toEventEnvelopes(await new SessionRunService(current.control).listSessionEvents(sessionId))
   return { messages, events, lastEventSeq: events.reduce((highest, event) => Math.max(highest, event.eventSeq), 0) }
@@ -177,11 +179,20 @@ async function listSessionEvents(projectId, sessionId, afterSeq) {
   const current = await requireProject(projectId)
   if (typeof sessionId !== 'string' || sessionId.length > 128
     || !Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('AGENT_SESSION_INPUT_INVALID')
+  await reconcileSessionTasks(current, sessionId)
   const events = await new SessionRunService(current.control).listSessionEvents(sessionId, afterSeq)
   return toEventEnvelopes(events)
 }
 
+async function reconcileSessionTasks(current, sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
+  return reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
+    'agent:core:get-task', { projectId: current.projectId, taskId },
+  ), { sessionId })
+}
+
 async function recoverInterruptedRun(current, runService, sessionId) {
+  await reconcileSessionTasks(current, sessionId)
   const activeRun = await runService.findActive(sessionId)
   if (!activeRun) return
   throw new Error(activeRun.status === 'waiting_confirmation' ? 'CONFIRMATION_REQUIRED' : 'SESSION_BUSY')

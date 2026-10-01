@@ -96,8 +96,12 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
     next.runStatusById?.set(event.runId, 'aborted')
   } else if (event.type === 'task_status') {
     // A generation task can finish while the Agent still has to report its
-    // result or continue the conversation. Only run terminal events end work.
-    next.runStatusById?.set(event.runId, 'running')
+    // result or continue the conversation. Keep an already-terminal run
+    // terminal when its task status arrives later.
+    const runStatus = state.runStatusById?.get(event.runId)
+    if (!runStatus || runStatus === 'running' || runStatus === 'waiting_confirmation') {
+      next.runStatusById?.set(event.runId, 'running')
+    }
   } else {
     next.runStatusById?.set(event.runId, 'running')
   }
@@ -185,11 +189,26 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
       } },
     }))
   } else if (event.type === 'task_status') {
-    updateAssistant((message) => ({ ...message, meta: { ...withRun(message), taskStatus: {
-      taskId: typeof event.data.task_id === 'string' ? event.data.task_id : undefined,
-      status: typeof event.data.status === 'string' ? event.data.status : undefined,
-      nodeId: typeof event.data.node_id === 'string' ? event.data.node_id : undefined,
-    } } }))
+    const actionId = typeof event.data.actionId === 'string' ? event.data.actionId : undefined
+    const actionStatus = event.data.actionStatus === 'accepted' || event.data.actionStatus === 'rejected'
+      ? event.data.actionStatus
+      : undefined
+    updateAssistant((message) => ({
+      ...message,
+      meta: {
+        ...withRun(message),
+        taskStatus: {
+          taskId: typeof event.data.task_id === 'string' ? event.data.task_id : typeof event.data.taskId === 'string' ? event.data.taskId : undefined,
+          status: typeof event.data.status === 'string' ? event.data.status : undefined,
+          nodeId: typeof event.data.node_id === 'string' ? event.data.node_id : typeof event.data.nodeId === 'string' ? event.data.nodeId : undefined,
+          errorCode: typeof event.data.error_code === 'string' ? event.data.error_code : typeof event.data.errorCode === 'string' ? event.data.errorCode : undefined,
+          errorMessage: typeof event.data.error_message === 'string' ? event.data.error_message : typeof event.data.errorMessage === 'string' ? event.data.errorMessage : undefined,
+        },
+        ...(actionId && actionStatus && message.meta?.confirmation?.actionId === actionId
+          ? { requiresConfirmation: false, confirmation: { ...message.meta.confirmation, status: actionStatus } }
+          : {}),
+      },
+    }))
   } else if (event.type === 'run_completed') {
     next.runStatus = 'completed'
     if (typeof event.data.text === 'string' && !next.persistedAssistantRunIds.has(event.runId)) updateAssistant((message) => ({
@@ -236,6 +255,24 @@ export function reduceAgentEvent(state: AgentEventState, event: AgentEventEnvelo
     }))
   }
   return next
+}
+
+/** Keep a successfully handled approval terminal across a durable history refresh. */
+export function setConfirmationStatus(
+  messages: AgentChatMsg[],
+  actionId: string,
+  status: AgentConfirmation['status'],
+): AgentChatMsg[] {
+  return messages.map((message) => message.meta?.confirmation?.actionId === actionId
+    ? {
+        ...message,
+        meta: {
+          ...message.meta,
+          requiresConfirmation: status === 'pending' || status === 'submitting',
+          confirmation: { ...message.meta.confirmation, status },
+        },
+      }
+    : message)
 }
 
 /**

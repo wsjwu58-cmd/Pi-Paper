@@ -35,6 +35,7 @@ const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = require('./agent-model-directory.cjs')
 const { ALLOWED_AGENT_CORE_METHODS, getAgentCanvasDomain } = require('./agent-local-tools.cjs')
 const { deleteAgentNodes } = require('./agent-node-deletion.cjs')
+const { readAgentTaskAuthority } = require('./agent-task-authority.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
 const { isDesktopRendererRoute, isTrustedRendererUrl: checkRendererUrl } = require('./renderer-trust.cjs')
 const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
@@ -375,7 +376,7 @@ function createAgentWorker() {
       case 'agent:core:save-canvas':
         return localCore.request('canvas:save', coreInput, 60_000)
       case 'agent:core:get-task':
-        return localCore.request('task:get', input, 15_000)
+        return readAgentTaskAuthority(localCore, input)
       case 'agent:core:list-assets':
         return localCore.request('asset:list', { projectId: input.projectId }, 15_000)
       case 'agent:core:list-models': {

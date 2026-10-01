@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { AgentPanelDesktopAdapter } from './AgentPanel'
 import { isChatVisibleMessage } from './agentEventHandlers'
 import {
@@ -6,8 +7,10 @@ import {
   isAgentRunActive,
   mergeSessionMessages,
   reduceAgentEvent,
+  setConfirmationStatus,
   type AgentEventState,
 } from './agentEventEnvelope'
+import { isActionableConfirmation } from './confirmationState'
 import type { AgentChatMsg, AgentConfirmation } from './agentTypes'
 import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentSession, DesktopAgentSkill } from '@/desktop/desktop-bridge'
 import type { SkillView } from '@/lib/types'
@@ -90,6 +93,7 @@ export function useDesktopAgentController({
   const [loadedSkillIds, setLoadedSkillIds] = useState<string[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const queryClient = useQueryClient()
   const activeSessionRef = useRef<string | null>(null)
   const activeRunIdRef = useRef<string | null>(null)
   const activeRunSessionIdRef = useRef<string | null>(null)
@@ -258,11 +262,19 @@ export function useDesktopAgentController({
           if (active) setSessions(listed)
         }).catch(() => undefined)
       } else if (event.type === 'task_status') {
-        if (!activeRunIdRef.current || event.runId === activeRunIdRef.current) {
+        const taskStatus = String(event.data.status ?? '')
+        if (projectId && ['succeeded', 'failed', 'cancelled', 'expired', 'settlement_error', 'interrupted'].includes(taskStatus)) {
+          // Refresh the existing node task feed so failures and outputs appear
+          // in their original canvas nodes as soon as the durable task changes.
+          void queryClient.invalidateQueries({ queryKey: ['canvas-tasks', projectId] })
+        }
+        // Task updates can arrive after run_completed. Do not let a late task
+        // event resurrect the Agent's busy state or stop button.
+        if (isAgentRunActive(next, event.runId) && (!activeRunIdRef.current || event.runId === activeRunIdRef.current)) {
           activeRunIdRef.current = event.runId
           activeRunSessionIdRef.current = activeSessionId
           sendingRef.current = true
-          setSending(sendingRef.current)
+          setSending(true)
         }
       } else {
         if (!activeRunIdRef.current || event.runId === activeRunIdRef.current) {
@@ -280,7 +292,7 @@ export function useDesktopAgentController({
       active = false
       unsubscribe()
     }
-  }, [activeSessionId, onCanvasChanged, projectId])
+  }, [activeSessionId, onCanvasChanged, projectId, queryClient])
 
   const onNewSession = useCallback(async () => {
     if (!bridge || !projectId || creating) return
@@ -323,7 +335,7 @@ export function useDesktopAgentController({
     if (!bridge || !projectId || !content || sendingRef.current) return false
     const hasPendingConfirmation = messages.some((message) => {
       const confirmation = message.meta?.confirmation
-      return confirmation?.status === 'pending' || confirmation?.status === 'submitting'
+      return isActionableConfirmation(confirmation)
     })
     if (hasPendingConfirmation) {
       setError('请先确认或取消上方的生成请求，再继续发送消息。')
@@ -424,7 +436,7 @@ export function useDesktopAgentController({
       const currentCanvas = useCanvasStore.getState().canvas
       const canvasVersion = confirmation.canvasVersion ?? currentCanvas?.canvas.version
       if (!Number.isSafeInteger(canvasVersion)) throw new Error('AGENT_CANVAS_CHANGED')
-      await bridge.confirmAgentAction({
+      const result = await bridge.confirmAgentAction({
         projectId,
         canvasId,
         sessionId,
@@ -433,6 +445,10 @@ export function useDesktopAgentController({
         accept,
         canvasVersion: canvasVersion as number,
       })
+      const previous = eventStatesRef.current.get(sessionId) ?? createEventState([])
+      const nextMessages = setConfirmationStatus(previous.messages, confirmation.actionId, result.status)
+      eventStatesRef.current.set(sessionId, { ...previous, messages: nextMessages })
+      if (sessionId === activeSessionRef.current) setMessages(nextMessages)
       await refreshSessions(sessionId)
       if (accept) onCanvasChanged()
     } catch (cause) {
