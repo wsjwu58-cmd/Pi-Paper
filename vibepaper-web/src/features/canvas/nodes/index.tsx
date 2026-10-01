@@ -16,6 +16,7 @@ import { persistNodeExec, submitComposeNodeTask, submitNodeTask, syncExecFields 
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { DirectorNodeView } from '../director'
 import { desktopAssetView, isDesktopRuntime } from '../canvasPort'
+import { downloadNodeOutput } from './nodeDownloads'
 
 function useNodeData(nodeId: string) {
   return useCanvasStore((s) => s.nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node)
@@ -620,33 +621,42 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
   }
 
   return (
-    <SplitNodeLayout
-      node={node}
-      selected={props.selected}
-      busy={busy}
-      accentColor={meta.color}
-      label="Text"
-      icon={meta.icon}
-      topMinHeight="min-h-[72px]"
-      topMinHeightCollapsed="min-h-0"
-      topContent={
-        props.selected ? (
-          <textarea
-            className="nodrag nowheel h-full max-h-[108px] w-full resize-none whitespace-pre-wrap bg-transparent px-0 py-0 text-[12px] leading-relaxed text-[#222] outline-none placeholder:text-[#b0b0b8]"
-            value={displayOutput}
-            placeholder="生成结果…"
-            onMouseDown={(e) => e.stopPropagation()}
-            onChange={(e) => persistOutput(e.target.value)}
-          />
-        ) : displayOutput ? (
-          <div className="w-full line-clamp-4 px-0 py-0 text-[12px] leading-relaxed text-[#222]">{displayOutput}</div>
-        ) : (
-          <div className="px-0 py-0 text-[12px] text-[#b0b0b8]">点击编辑文本</div>
-        )
-      }
-      bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={props.selected} />}
-      extra={props.selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
-    />
+    <div className="relative">
+      {props.selected && displayOutput && (
+        <NodeFloatingToolbar
+          node={node}
+          models={props.data.models ?? []}
+          onDownload={() => downloadNodeOutput({ node, textContent: displayOutput })}
+        />
+      )}
+      <SplitNodeLayout
+        node={node}
+        selected={props.selected}
+        busy={busy}
+        accentColor={meta.color}
+        label="Text"
+        icon={meta.icon}
+        topMinHeight="min-h-[72px]"
+        topMinHeightCollapsed="min-h-0"
+        topContent={
+          props.selected ? (
+            <textarea
+              className="nodrag nowheel h-full max-h-[108px] w-full resize-none whitespace-pre-wrap bg-transparent px-0 py-0 text-[12px] leading-relaxed text-[#222] outline-none placeholder:text-[#b0b0b8]"
+              value={displayOutput}
+              placeholder="生成结果…"
+              onMouseDown={(e) => e.stopPropagation()}
+              onChange={(e) => persistOutput(e.target.value)}
+            />
+          ) : displayOutput ? (
+            <div className="w-full line-clamp-4 px-0 py-0 text-[12px] leading-relaxed text-[#222]">{displayOutput}</div>
+          ) : (
+            <div className="px-0 py-0 text-[12px] text-[#b0b0b8]">点击编辑文本</div>
+          )
+        }
+        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={props.selected} />}
+        extra={props.selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
+      />
+    </div>
   )
 })
 
@@ -671,6 +681,7 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
           node={node}
           models={props.data.models ?? []}
           mediaUrl={authedMediaUrl ?? mediaUrl}
+          onDownload={mediaUrl ? () => downloadNodeOutput({ node, mediaUrl }) : undefined}
           onSaveToLibrary={
             latest?.status === 'succeeded'
               ? () => void saveOutputToLibrary(latest.taskId, outputs[0]?.url, remote)
@@ -731,6 +742,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
           node={node}
           models={props.data.models ?? []}
           mediaUrl={authedMediaUrl ?? mediaUrl}
+          onDownload={mediaUrl ? () => downloadNodeOutput({ node, mediaUrl }) : undefined}
           onSaveToLibrary={
             latest?.status === 'succeeded'
               ? () => void saveOutputToLibrary(latest.taskId, out?.url, remote)
@@ -786,47 +798,57 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
   const meta = NODE_COLORS.audio
 
   return (
-    <SplitNodeLayout
-      node={node}
-      selected={props.selected}
-      busy={busy}
-      accentColor={meta.color}
-      label="Audio"
-      icon={meta.icon}
-      topMinHeight="min-h-[72px]"
-      topMinHeightCollapsed="min-h-[48px]"
-      topUpload={{
-        accept: 'audio/*',
-        onUpload: (f) => uploadNodeOutput(node.id, node, f),
-        unavailableReason: isDesktopRuntime() ? '桌面本地暂不支持导入音频素材' : undefined,
-      }}
-      topContent={
-        mediaUrl || out ? (
-          <MediaContent url={out?.url ?? assetFallback} meta={out?.meta as Record<string, unknown>} outputType="audio" />
-        ) : (
-          <div className="text-[12px] text-[#b0b0b8]">点击编辑音频</div>
-        )
-      }
-      bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={props.selected} />}
-      extra={
-        props.selected ? (
-          <>
-            {latest?.status === 'succeeded' && out?.url ? (
-              <div className="mt-2 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => void saveOutputToLibrary(latest.taskId, out.url)}
-                  className="rounded-lg bg-black/5 px-2.5 py-1.5 text-[11px] font-bold text-[#333] hover:bg-black/10"
-                >
-                  存入素材库
-                </button>
-              </div>
-            ) : null}
-            <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} />
-          </>
-        ) : null
-      }
-    />
+    <div className="relative">
+      {props.selected && mediaUrl && (
+        <NodeFloatingToolbar
+          node={node}
+          models={props.data.models ?? []}
+          mediaUrl={mediaUrl}
+          onDownload={() => downloadNodeOutput({ node, mediaUrl })}
+        />
+      )}
+      <SplitNodeLayout
+        node={node}
+        selected={props.selected}
+        busy={busy}
+        accentColor={meta.color}
+        label="Audio"
+        icon={meta.icon}
+        topMinHeight="min-h-[72px]"
+        topMinHeightCollapsed="min-h-[48px]"
+        topUpload={{
+          accept: 'audio/*',
+          onUpload: (f) => uploadNodeOutput(node.id, node, f),
+          unavailableReason: isDesktopRuntime() ? '桌面本地暂不支持导入音频素材' : undefined,
+        }}
+        topContent={
+          mediaUrl || out ? (
+            <MediaContent url={out?.url ?? assetFallback} meta={out?.meta as Record<string, unknown>} outputType="audio" />
+          ) : (
+            <div className="text-[12px] text-[#b0b0b8]">点击编辑音频</div>
+          )
+        }
+        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={props.selected} />}
+        extra={
+          props.selected ? (
+            <>
+              {latest?.status === 'succeeded' && out?.url ? (
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void saveOutputToLibrary(latest.taskId, out.url)}
+                    className="rounded-lg bg-black/5 px-2.5 py-1.5 text-[11px] font-bold text-[#333] hover:bg-black/10"
+                  >
+                    存入素材库
+                  </button>
+                </div>
+              ) : null}
+              <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} />
+            </>
+          ) : null
+        }
+      />
+    </div>
   )
 })
 
@@ -976,7 +998,12 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
   return (
     <div className="relative">
       {props.selected && mediaUrl && (
-        <NodeFloatingToolbar node={node} models={props.data.models ?? []} mediaUrl={mediaUrl} />
+        <NodeFloatingToolbar
+          node={node}
+          models={props.data.models ?? []}
+          mediaUrl={mediaUrl}
+          onDownload={() => downloadNodeOutput({ node, mediaUrl })}
+        />
       )}
       <SplitNodeLayout
         node={node}

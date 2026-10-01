@@ -4,6 +4,7 @@ import { AppRouter } from '@/app/router'
 import { useEffect } from 'react'
 import { useAuth } from '@/lib/auth'
 import { ToastHost } from '@/components/ui/Toast'
+import { isDesktopRuntime } from '@/features/canvas/canvasPort'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -12,7 +13,7 @@ const queryClient = new QueryClient({
 function Bootstrap() {
   const load = useAuth((s) => s.load)
   useEffect(() => {
-    if (!window.vibepaperDesktop) void load()
+    if (!isDesktopRuntime()) void load()
   }, [load])
   return <AppRouter />
 }

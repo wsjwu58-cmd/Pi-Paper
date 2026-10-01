@@ -4238,6 +4238,39 @@ function createLocalProjectStore() {
     return enqueue(() => inspectProjectDirectory(projectDirectory, expectedIdentity))
   }
 
+  function resolveProjectCover(projectDirectory, expectedIdentity) {
+    return enqueue(async () => {
+      const checked = await inspectProjectDirectory(projectDirectory, expectedIdentity)
+      const dataDirectory = path.join(checked.directory, '.vibepaper')
+      const databasePath = path.join(dataDirectory, 'project.sqlite')
+      if (!await fs.stat(databasePath).catch(() => null)) return null
+      const ownsDatabase = active?.directory !== checked.directory
+      const database = ownsDatabase ? new DatabaseSync(databasePath, { readOnly: true, timeout: 5000 }) : active.database
+      try {
+        // Only real successful images whose node still belongs to this canvas
+        // can become its cover. Reading another card must not activate it.
+        const rows = database.prepare(`SELECT tasks.* FROM tasks JOIN nodes
+          ON nodes.canvas_id = tasks.canvas_id AND nodes.id = tasks.node_id
+          WHERE tasks.canvas_id = ? AND tasks.status = 'succeeded' AND tasks.modality = 'image'
+            AND json_extract(nodes.payload_json, '$.type') = 'image'
+          ORDER BY tasks.completed_at DESC, tasks.created_at DESC LIMIT 20`).all(checked.project.canvasId)
+        for (const row of rows) {
+          try {
+            const output = await resolveTaskOutputFile(dataDirectory, row.task_id, row.modality, row.output_path)
+            if (output.sha256 !== row.output_sha256 || output.sizeBytes !== row.output_size_bytes) continue
+            const mimeType = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }[path.extname(output.filePath).toLowerCase()]
+            if (mimeType) return { filePath: output.filePath, sizeBytes: output.sizeBytes, mimeType, sha256: output.sha256 }
+          } catch {
+            // A missing or altered image is not a valid cover; try another result.
+          }
+        }
+        return null
+      } finally {
+        if (ownsDatabase) database.close()
+      }
+    })
+  }
+
   async function createProject(parentDirectory, nameValue, importedCanvas = null) {
     const name = validateProjectName(nameValue)
     const parent = path.resolve(parentDirectory)
@@ -8133,6 +8166,7 @@ function createLocalProjectStore() {
     getTask,
     getTaskInput,
     inspectProject,
+    resolveProjectCover,
     importCanvasDocument,
     importAsset,
     saveTaskOutputToLibrary,

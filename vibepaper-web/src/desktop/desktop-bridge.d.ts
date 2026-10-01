@@ -8,6 +8,7 @@ export interface DesktopProject {
   canvasId: string
   name: string
   updatedAt?: string | null
+  thumbnailUrl?: string | null
 }
 
 export interface DesktopCanvas {
@@ -487,6 +488,22 @@ export interface DesktopAsset {
   referenceCount: number
 }
 
+export type DesktopNodeOutputSource =
+  | { kind: 'task'; taskId: string; outputIndex?: number }
+  | { kind: 'asset'; assetId: string }
+  | { kind: 'text'; content: string }
+
+export interface DesktopNodeOutputExportInput {
+  projectId: string
+  canvasId: string
+  nodeId: string
+  nodeType: 'text' | 'image' | 'video' | 'audio' | 'compose' | 'director'
+  source: DesktopNodeOutputSource
+  suggestedName: string
+}
+
+export type DesktopNodeOutputExportResult = { status: 'saved' } | { status: 'cancelled' }
+
 export interface DesktopAssetImportResult {
   assets: DesktopAsset[]
   errors: Array<{ name: string; message: string }>
@@ -718,6 +735,7 @@ export interface DesktopBridge {
   importLocalAssets(projectId: string): Promise<DesktopAssetImportResult | null>
   importImage(projectId: string): Promise<DesktopAsset | null>
   saveTaskOutputToLibrary(projectId: string, taskId: string): Promise<DesktopAsset>
+  exportNodeOutput(input: DesktopNodeOutputExportInput): Promise<DesktopNodeOutputExportResult>
   saveDirectorCapture(input: {
     projectId: string
     canvasId: string

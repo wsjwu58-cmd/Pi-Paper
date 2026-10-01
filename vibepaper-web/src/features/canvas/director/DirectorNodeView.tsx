@@ -8,6 +8,8 @@ import type { ModelInfo } from '@/lib/types'
 import { useCanvasStore, type FlowNode } from '../canvasStore'
 import { statusBadge } from '../nodes/NodeShell'
 import { syncExecFields } from '../nodes/taskActions'
+import { NodeFloatingToolbar } from '../nodes/NodeEditorPanel'
+import { downloadNodeOutput } from '../nodes/nodeDownloads'
 import { DirectorStageEditor } from './DirectorStageEditor'
 import {
   DEFAULT_CAMERA,
@@ -110,6 +112,14 @@ export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<
     <div className={`relative flex items-start gap-3 ${selected ? 'w-[460px]' : 'w-[220px]'}`}>
       {/* 预览卡片 */}
       <div className="relative w-[200px] shrink-0">
+        {selected && previewRaw && (
+          <NodeFloatingToolbar
+            node={node}
+            models={modelsList}
+            mediaUrl={previewRaw}
+            onDownload={() => downloadNodeOutput({ node, mediaUrl: previewRaw })}
+          />
+        )}
         <div
           className={`overflow-hidden rounded-[16px] bg-white shadow-[0_8px_28px_rgba(15,23,42,0.10)] ring-1 ${
             selected ? 'ring-[#111]/30' : 'ring-black/5'

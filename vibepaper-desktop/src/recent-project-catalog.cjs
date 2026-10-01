@@ -198,6 +198,9 @@ function createRecentProjectCatalog({ catalogFile, legacyFile, inspectProject })
   }
 
   return {
+    listRecentProjectEntries() {
+      return enqueue(() => listVerifiedWithinQueue())
+    },
     listRecentProjects() {
       return enqueue(async () => (await listVerifiedWithinQueue()).map((entry) => entry.project))
     },

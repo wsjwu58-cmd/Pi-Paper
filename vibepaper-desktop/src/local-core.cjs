@@ -49,6 +49,10 @@ async function dispatch(method, payload) {
         throw new Error('备份请求无效。')
       }
       return store.backupProject(payload.parentDirectory, payload.projectId)
+    case 'project:resolve-cover':
+      if (!payload || typeof payload.directory !== 'string' || typeof payload.projectId !== 'string'
+        || typeof payload.canvasId !== 'string') throw new Error('画布封面请求无效。')
+      return store.resolveProjectCover(payload.directory, { projectId: payload.projectId, canvasId: payload.canvasId })
     case 'project:restore-backup':
       if (!payload || typeof payload.sourceDirectory !== 'string' || typeof payload.parentDirectory !== 'string') {
         throw new Error('项目恢复请求无效。')

@@ -789,7 +789,10 @@ function buildAgnesVideoRequest(job) {
   if (!['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'].includes(aspect_ratio)) {
     throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes 视频比例无效。')
   }
-  const firstFrame = normalizeAgnesVideoReference(parameters.firstFrameUrl)
+  const firstFrameValue = ['firstFrameUrl', 'imageUrl', 'image_url', 'image', 'referenceUrl', 'sourceUrl']
+    .map((key) => parameters[key])
+    .find((value) => typeof value === 'string' && value.trim())
+  const firstFrame = normalizeAgnesVideoReference(firstFrameValue)
   const lastFrame = normalizeAgnesVideoReference(parameters.lastFrameUrl)
   const rawReferences = parameters.referenceImages || parameters.reference_images || parameters.referenceUrls || []
   const references = Array.isArray(rawReferences)
@@ -797,11 +800,8 @@ function buildAgnesVideoRequest(job) {
     : typeof rawReferences === 'string' ? [normalizeAgnesVideoReference(rawReferences)].filter(Boolean) : []
   if (references.length > 5) throw new WorkerFailure('CLOUD_INPUT_INVALID', 'Agnes Video 2.5 Flash 最多支持 5 张参考图。')
 
-  const mode = firstFrame ? 'keyframe' : references.length ? 'reference' : 'text'
-  const extraBody = firstFrame
-    ? { image: [firstFrame, ...(lastFrame ? [lastFrame] : [])], mode: 'keyframes' }
-    : references.length ? { image: references, mode: 'reference' } : null
-  const requestImages = extraBody?.image ?? []
+  const mode = firstFrame || lastFrame ? 'keyframe' : references.length ? 'reference' : 'text'
+  const requestImages = mode === 'keyframe' ? [firstFrame, lastFrame].filter(Boolean) : references
   const dataImageBytes = requestImages.reduce((total, image) => {
     if (!image.startsWith('data:')) return total
     return total + Buffer.from(image.slice(image.indexOf(',') + 1), 'base64').length
@@ -818,7 +818,12 @@ function buildAgnesVideoRequest(job) {
     aspect_ratio,
     n: 1,
   }
-  if (extraBody) body.extra_body = extraBody
+  if (mode === 'keyframe') {
+    if (firstFrame) body.first_frame = firstFrame
+    if (lastFrame) body.last_frame = lastFrame
+  } else if (mode === 'reference') {
+    body.images = references
+  }
   return body
 }
 

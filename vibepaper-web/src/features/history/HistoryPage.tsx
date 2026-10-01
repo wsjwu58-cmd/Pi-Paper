@@ -14,6 +14,7 @@ import type {
   DesktopTaskSearchQuery,
   DesktopTaskSearchResult,
 } from '@/desktop/desktop-bridge'
+import { isDesktopRuntime } from '@/features/canvas/canvasPort'
 
 const statusMeta: Record<string, { text: string; cls: string }> = {
   queued: { text: '排队中', cls: 'bg-amber-100 text-amber-700' },
@@ -38,7 +39,7 @@ export interface HistoryDesktopAdapter {
 
 export function HistoryPage({ desktopAdapter }: { desktopAdapter?: HistoryDesktopAdapter } = {}) {
   if (desktopAdapter) return <DesktopHistoryPage adapter={desktopAdapter} />
-  if (window.vibepaperDesktop) return <HistoryPageDesktop />
+  if (isDesktopRuntime()) return <HistoryPageDesktop />
   return <HistoryPageWeb />
 }
 
@@ -441,9 +442,14 @@ function DesktopHistoryPage({ adapter }: { adapter: HistoryDesktopAdapter }) {
         </div>
       </div>
 
-      {(adapter.error || searchError) && <p role="alert" className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-[13px] text-red-700">{adapter.error || searchError}</p>}
+      {adapter.error && <p role="alert" className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-[13px] text-red-700">{adapter.error}</p>}
+      {searchError && <p role="alert" className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-[13px] text-red-700">{searchError}</p>}
       {adapter.isLoading || (adapter.searchTasks && (searchLoading || (!currentSearchResult && !searchError))) ? (
         <div className="flex justify-center py-20"><Spinner className="h-7 w-7" /></div>
+      ) : adapter.error ? (
+        <div className="rounded-2xl border border-dashed border-red-200 bg-red-50/60 py-16 text-center text-[14px] text-red-700">无法读取当前本地项目的历史记录，请稍后刷新重试</div>
+      ) : searchError ? (
+        <div className="rounded-2xl border border-dashed border-red-200 bg-red-50/60 py-16 text-center text-[14px] text-red-700">无法搜索本地任务记录，请点击刷新重试</div>
       ) : !adapter.projectName ? (
         <div className="rounded-2xl border border-dashed border-black/15 py-16 text-center text-[14px] text-[#999]">打开本地项目后可查看其中的生成历史</div>
       ) : total === 0 ? (

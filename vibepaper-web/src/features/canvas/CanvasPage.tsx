@@ -34,6 +34,7 @@ import { CanvasWelcome } from './CanvasWelcome'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
 import { applySavedCanvasStaleNodeIds, createCanvasNodePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
+import { registerCanvasPersistence } from './canvasPersistence'
 import type { DesktopCanvas } from '@/desktop/desktop-bridge'
 
 const saveDebounce = 500
@@ -320,6 +321,11 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     await persistDesktopChanges()
     skipNextSave.current = true
   }, [persistDesktopChanges])
+
+  useEffect(
+    () => registerCanvasPersistence(desktopProjectId, canvasId, flushDesktopEdits),
+    [canvasId, desktopProjectId, flushDesktopEdits],
+  )
 
   const notifyDesktopAgentCanvasChanged = useCallback(() => {
     window.dispatchEvent(new Event('vp-agent-executed'))

@@ -111,10 +111,9 @@ test('local asset and task-output URIs resolve to their actual bounded image byt
 
   const videoRequest = buildAgnesVideoRequest(generationJob('video', parameters))
   assert.equal(videoRequest.mode, 'keyframe')
-  assert.deepEqual(videoRequest.extra_body, {
-    image: [assetDataUrl, taskDataUrl],
-    mode: 'keyframes',
-  })
+  assert.equal(videoRequest.first_frame, assetDataUrl)
+  assert.equal(videoRequest.last_frame, taskDataUrl)
+  assert.equal(Object.hasOwn(videoRequest, 'extra_body'), false)
 
   const imageRequest = buildAgnesImageRequest(generationJob('image', parameters))
   assert.deepEqual(imageRequest.extra_body, {
@@ -197,7 +196,9 @@ test('confirmed batch first-frame task URI resolves for Agnes and Ark video requ
     ...generationJob('video', resolvedParameters),
     parameters: resolvedParameters,
   })
-  assert.deepEqual(agnesRequest.extra_body, { image: [expectedImage], mode: 'keyframes' })
+  assert.equal(agnesRequest.mode, 'keyframe')
+  assert.equal(agnesRequest.first_frame, expectedImage)
+  assert.equal(Object.hasOwn(agnesRequest, 'extra_body'), false)
 
   const arkRequest = buildArkVideoRequest({
     ...generationJob('video', resolvedParameters),

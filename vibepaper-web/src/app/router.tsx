@@ -15,6 +15,7 @@ import { AnnouncementsPage } from '@/features/announcements/AnnouncementsPage'
 import { AdminPage } from '@/features/admin/AdminPage'
 import { CanvasPage } from '@/features/canvas/CanvasPage'
 import { Spinner } from '@/components/ui/Spinner'
+import { isDesktopRuntime } from '@/features/canvas/canvasPort'
 
 function Protected({ children }: { children: React.ReactNode }) {
   const ready = useAuth((s) => s.ready)
@@ -37,7 +38,7 @@ function AdminGuard({ children }: { children: React.ReactNode }) {
 }
 
 export function AppRouter() {
-  if (window.vibepaperDesktop) {
+  if (isDesktopRuntime()) {
     return (
       <Routes>
         <Route path="/" element={<Navigate to="/workspace" replace />} />

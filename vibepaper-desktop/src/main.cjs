@@ -40,6 +40,7 @@ const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
 const { isDesktopRendererRoute, isTrustedRendererUrl: checkRendererUrl } = require('./renderer-trust.cjs')
 const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
 const { createDramaBatchTaskInput } = require('./drama-render-batch.cjs')
+const { exportNodeOutput } = require('./node-export.cjs')
 
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
@@ -833,6 +834,20 @@ async function runProjectTransition(operation) {
   }
 }
 
+async function openProjectForNavigation(directory, expectedIdentity = {}) {
+  if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+  const resolvedDirectory = await fs.realpath(path.resolve(directory))
+  if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
+  const input = { directory: resolvedDirectory, ...expectedIdentity }
+  // Returning from the showcase to the active canvas is navigation, not a
+  // project switch. Keep the live Agent and generation queue running. The
+  // core still verifies the requested project/canvas identity before returning.
+  if (activeProjectDirectory === resolvedDirectory) {
+    return localCore.request('project:open', input)
+  }
+  return runProjectTransition(() => localCore.request('project:open', input))
+}
+
 async function writeRecentProjectDirectory(directory) {
   if (!recentProjectCatalog) throw new Error('桌面设置尚未初始化。')
   return recentProjectCatalog.record(directory)
@@ -1097,6 +1112,22 @@ function registerRendererProtocol() {
       return new Response('Bad path', { status: 400, headers: { 'content-type': 'text/plain' } })
     }
     const taskOutputMatch = /^\/tasks\/([a-f0-9-]{36})\/output$/iu.exec(requestedPath)
+    const coverMatch = /^[/]projects[/]([a-f0-9-]{36})[/]cover$/iu.exec(requestedPath)
+    if (coverMatch && !url.hash && (!url.search || /^[?]v=[a-f0-9]{64}$/u.test(url.search))) {
+      try {
+        const selected = await recentProjectCatalog.resolve(coverMatch[1])
+        const cover = await localCore.request('project:resolve-cover', {
+          directory: selected.directory, projectId: selected.project.projectId, canvasId: selected.project.canvasId,
+        })
+        if (!cover) throw new Error('No canvas cover')
+        return new Response(Readable.toWeb(nativeFs.createReadStream(cover.filePath)), {
+          headers: { 'content-type': cover.mimeType, 'content-length': String(cover.sizeBytes),
+            'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' },
+        })
+      } catch {
+        return new Response('Canvas cover not found', { status: 404 })
+      }
+    }
     // Chromium forwards media fragments to custom protocols. The original video
     // player uses #t=0.001 to load its first frame; this does not change the file.
     const hasValidMediaFragment = !url.hash || url.hash.length <= 80
@@ -1387,23 +1418,51 @@ function localAssetImportName(sourcePath) {
 }
 
 function registerProjectIpc() {
+  ipcMain.handle('desktop:node:export-output', async (event, input) => {
+    assertTrustedSender(event)
+    return exportNodeOutput(input, {
+      assertActive: async (projectId, canvasId) => {
+        await assertActiveAssetProject(projectId)
+        const active = await localCore.request('project:get-active')
+        if (active?.canvasId !== canvasId) throw new Error('当前画布已更改，无法下载结果。')
+      },
+      projectDirectory: () => activeProjectDirectory,
+      loadCanvas: (projectId, canvasId) => localCore.request('canvas:load', { projectId, canvasId }),
+      getTask: (projectId, taskId) => localCore.request('task:get', { projectId, taskId }),
+      listTasks: (projectId) => localCore.request('task:list', { projectId, limit: 100 }),
+      readTextTask: (projectId, taskId) => localCore.request('task:read-output', { projectId, taskId }),
+      resolveTask: (projectId, taskId, outputIndex) => localCore.request('task:resolve-output-preview', { projectId, taskId, outputIndex }),
+      resolveAsset: (assetId) => localCore.request('asset:resolve', { assetId }),
+      showSaveDialog: (options) => dialog.showSaveDialog(mainWindow, options),
+    })
+  })
   ipcMain.handle('desktop:project:get-active', (event) => {
     assertTrustedSender(event)
     return localCore.request('project:get-active')
   })
-  ipcMain.handle('desktop:project:list-recent', (event) => {
+  ipcMain.handle('desktop:project:list-recent', async (event) => {
     assertTrustedSender(event)
-    return recentProjectCatalog.listRecentProjects()
+    const entries = await recentProjectCatalog.listRecentProjectEntries()
+    return Promise.all(entries.map(async (selected) => {
+      const project = selected.project
+      try {
+        const cover = await localCore.request('project:resolve-cover', {
+          directory: selected.directory, projectId: project.projectId, canvasId: project.canvasId,
+        })
+        return cover ? { ...project, thumbnailUrl: `vibe://app/projects/${project.projectId}/cover?v=${cover.sha256}` } : project
+      } catch {
+        return project
+      }
+    }))
   })
   ipcMain.handle('desktop:project:open-recent', async (event, projectId) => {
     assertTrustedSender(event)
     if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
     const selected = await recentProjectCatalog.resolve(projectId)
-    const opened = await runProjectTransition(() => localCore.request('project:open', {
-      directory: selected.directory,
+    const opened = await openProjectForNavigation(selected.directory, {
       expectedProjectId: selected.project.projectId,
       expectedCanvasId: selected.project.canvasId,
-    }))
+    })
     if (opened.project.projectId !== selected.project.projectId
       || opened.project.canvasId !== selected.project.canvasId) {
       throw new Error('最近项目身份已变化，请从项目目录重新打开。')
@@ -1472,7 +1531,7 @@ function registerProjectIpc() {
       properties: ['openDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    const opened = await runProjectTransition(() => localCore.request('project:open', { directory: result.filePaths[0] }))
+    const opened = await openProjectForNavigation(result.filePaths[0])
     await writeRecentProjectDirectory(opened.directory)
     void scheduleTaskPump(opened.project.projectId)
     return opened.project

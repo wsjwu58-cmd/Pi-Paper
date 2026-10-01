@@ -11,11 +11,14 @@ import { ConfirmDialog, Modal } from '@/components/ui/Modal'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
 import type { DesktopCanvasExportDocument, DesktopCanvasImportResult, DesktopProject } from '@/desktop/desktop-bridge'
+import { isDesktopRuntime } from '@/features/canvas/canvasPort'
+import { resolveRendererMediaUrl } from '@/lib/media'
 
 export interface WorkspaceDesktopProject {
   projectId: string
   canvasId: string
   name: string
+  thumbnailUrl?: string | null
 }
 
 export interface WorkspaceDesktopAdapter {
@@ -34,7 +37,7 @@ export interface WorkspaceDesktopAdapter {
 
 export function WorkspacePage({ desktopAdapter }: { desktopAdapter?: WorkspaceDesktopAdapter } = {}) {
   if (desktopAdapter) return <DesktopWorkspacePage adapter={desktopAdapter} />
-  if (window.vibepaperDesktop) return <WorkspacePageDesktop />
+  if (isDesktopRuntime()) return <WorkspacePageDesktop />
   return <WorkspacePageWeb />
 }
 
@@ -418,6 +421,7 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
   const [renameName, setRenameName] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceDesktopProject | null>(null)
   const [busy, setBusy] = useState(false)
+  const [openingProjectId, setOpeningProjectId] = useState<string | null>(null)
   const [operationError, setOperationError] = useState('')
   const [operationNotice, setOperationNotice] = useState('')
   const importFileRef = useRef<HTMLInputElement>(null)
@@ -453,6 +457,22 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
       setOperationError(cause instanceof Error ? cause.message : '无法打开本地项目。')
     } finally {
       setBusy(false)
+    }
+  }
+
+  const selectProject = async (project: WorkspaceDesktopProject) => {
+    if (busy) return
+    setBusy(true)
+    setOpeningProjectId(project.projectId)
+    setOperationError('')
+    setOperationNotice('')
+    try {
+      await adapter.onSelectProject(project)
+    } catch (cause) {
+      setOperationError(cause instanceof Error ? cause.message : '无法打开本地项目。')
+    } finally {
+      setBusy(false)
+      setOpeningProjectId(null)
     }
   }
 
@@ -572,13 +592,17 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
               key={project.projectId}
               role="button"
               tabIndex={busy ? -1 : 0}
-              onClick={() => { if (!busy) void adapter.onSelectProject(project).catch((cause) => setOperationError(cause instanceof Error ? cause.message : '无法打开本地项目。')) }}
-              onKeyDown={(event) => { if (!busy && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void adapter.onSelectProject(project).catch((cause) => setOperationError(cause instanceof Error ? cause.message : '无法打开本地项目。')) } }}
+              onClick={() => { void selectProject(project) }}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void selectProject(project) } }}
               aria-disabled={busy}
               className="group relative aspect-[4/3] cursor-pointer overflow-hidden rounded-[18px] text-left shadow-[0_2px_12px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_40px_rgba(15,23,42,0.12)] aria-disabled:cursor-wait aria-disabled:opacity-60"
             >
               <div className="absolute inset-0 bg-gradient-to-b from-[#ececee] via-[#e4e4e8] to-[#c8c8ce]" />
-              <div className="absolute inset-0 flex items-center justify-center"><OrigamiIcon /></div>
+              {resolveRendererMediaUrl(project.thumbnailUrl ?? undefined) ? (
+                <img src={resolveRendererMediaUrl(project.thumbnailUrl ?? undefined)} alt="" className="absolute inset-0 h-full w-full object-cover" />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center"><OrigamiIcon /></div>
+              )}
               <div className="absolute left-3 top-3 rounded-md bg-[#111] px-2 py-0.5 text-[11px] font-bold text-white">本地项目</div>
               {(adapter.onExportProject || adapter.onRenameProject || adapter.onDeleteProject) && <span className="absolute right-2.5 top-2.5 flex gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
                 {adapter.onRenameProject && <IconBtn title="重命名项目" onClick={(event) => { event.stopPropagation(); setRenameTarget(project); setRenameName(project.name); setOperationError(''); setOperationNotice('') }}>
@@ -594,7 +618,9 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
               <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/55 to-transparent" />
               <div className="absolute bottom-0 left-0 right-0 px-4 pb-3.5">
                 <p className="truncate text-[15px] font-bold text-white drop-shadow">{project.name}</p>
-                <p className="mt-0.5 text-[11px] text-white/75">包含 1 个本地画布 · 点击进入</p>
+                <p className="mt-0.5 text-[11px] text-white/75">
+                  {openingProjectId === project.projectId ? '正在打开本地项目…' : '包含 1 个本地画布 · 点击进入'}
+                </p>
               </div>
             </div>
           ))}

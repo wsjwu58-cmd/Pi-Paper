@@ -28,6 +28,7 @@ import { useCanvasStore, type FlowNode } from '../canvasStore'
 import { isDesktopRuntime } from '../canvasPort'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
+import { downloadNodeOutput } from './nodeDownloads'
 
 const STYLE_PRESETS = ['赛博朋克', '水彩', '写实', '动漫', '电影感', '产品渲染', '三视图']
 const DESKTOP_MEDIA_TOOL_MODEL_ID = 'ffmpeg-media-1'
@@ -202,16 +203,19 @@ export function NodeFloatingToolbar({
   models,
   mediaUrl,
   onSaveToLibrary,
+  onDownload,
   onFullscreen,
 }: {
   node: NodePayload
   models: ModelInfo[]
   mediaUrl?: string
   onSaveToLibrary?: () => void
+  onDownload?: () => void | Promise<unknown>
   onFullscreen?: () => void
 }) {
   const desktopMode = isDesktopRuntime()
   const [busy, setBusy] = useState(false)
+  const [downloadBusy, setDownloadBusy] = useState(false)
   const [menu, setMenu] = useState<'crop' | 'upscale' | 'three' | null>(null)
   const imageModel =
     models.find((m) => m.modelType === 'image' && /agnes-image/i.test(m.name))?.name ??
@@ -265,7 +269,22 @@ export function NodeFloatingToolbar({
     }
   }
 
-  if (node.type !== 'image' && node.type !== 'video') return null
+  const supportsMediaTools = node.type === 'image' || node.type === 'video'
+  const supportsDownload = Boolean(onDownload || mediaUrl)
+  if (!supportsMediaTools && !supportsDownload) return null
+
+  const download = async () => {
+    if (downloadBusy || !supportsDownload) return
+    setDownloadBusy(true)
+    try {
+      if (onDownload) await onDownload()
+      else await downloadNodeOutput({ node, mediaUrl })
+    } catch (cause) {
+      toastError(cause instanceof Error ? cause.message : '下载节点结果失败。')
+    } finally {
+      setDownloadBusy(false)
+    }
+  }
 
   return (
     <div
@@ -311,17 +330,17 @@ export function NodeFloatingToolbar({
         </>
       )}
       <div className="mx-1 h-5 w-px bg-black/10" />
-      {mediaUrl && (
-        <a href={mediaUrl} target="_blank" rel="noreferrer" className="flex h-8 w-8 items-center justify-center rounded-xl text-[#444] hover:bg-black/[0.05]" title="下载">
+      {supportsDownload && (
+        <ToolIcon title={downloadBusy ? '保存中…' : '下载'} disabled={downloadBusy} onClick={() => void download()}>
           <Download size={15} />
-        </a>
+        </ToolIcon>
       )}
       {onSaveToLibrary && !desktopMode && (
         <ToolIcon title="存入素材库" onClick={onSaveToLibrary}>
           <Library size={15} />
         </ToolIcon>
       )}
-      {desktopMode && (
+      {desktopMode && (node.type === 'image' || node.type === 'video') && (
         <ToolIcon title="桌面本地未接入：保存生成结果到素材库" disabled onClick={() => undefined}>
           <Library size={15} />
         </ToolIcon>

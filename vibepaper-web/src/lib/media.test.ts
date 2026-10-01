@@ -15,6 +15,12 @@ describe('desktop media URLs', () => {
       .toBe(`vibe://app/assets/${assetId}/thumbnail`)
   })
 
+  it('allows versioned cover images from a verified local project', () => {
+    const coverUrl = `vibe://app/projects/${assetId}/cover?v=${'a'.repeat(64)}`
+    expect(resolveRendererMediaUrl(coverUrl)).toBe(coverUrl)
+    expect(resolveRendererMediaUrl(`vibe://app/projects/${assetId}/cover?v=invalid`)).toBeUndefined()
+  })
+
   it('rejects unrecognized local protocol routes', () => {
     expect(resolveRendererMediaUrl(`vibe://app/assets/${assetId}/thumbnail/other`)).toBeUndefined()
   })

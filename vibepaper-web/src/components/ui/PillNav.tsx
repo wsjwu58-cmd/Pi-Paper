@@ -2,6 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { LayoutGrid, Clock, Compass, User, Building2, ShieldCheck, LogOut } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
 import { cn } from '@/lib/cn'
+import { isDesktopRuntime } from '@/features/canvas/canvasPort'
 
 const items = [
   { to: '/workspace', label: '画布管理', icon: LayoutGrid },
@@ -16,7 +17,7 @@ export function PillNav() {
   const navigate = useNavigate()
   const isAdmin = user && (user.role === 'ops_admin' || user.role === 'super_admin')
 
-  if (window.vibepaperDesktop) {
+  if (isDesktopRuntime()) {
     const desktopItems = [
       { to: '/workspace', label: '画布展示', icon: LayoutGrid },
       { to: '/history', label: '历史记录', icon: Clock },

@@ -433,22 +433,63 @@ test('video request preserves public keyframe and reference-image inputs', () =>
     aspect: '16:9',
   }))
   assert.equal(keyframes.mode, 'keyframe')
-  assert.deepEqual(keyframes.extra_body, {
-    image: [
-      'https://media.example-cdn.net/frames/first.png',
-      'https://media.example-cdn.net/frames/last.png',
-    ],
-    mode: 'keyframes',
+  assert.equal(keyframes.first_frame, 'https://media.example-cdn.net/frames/first.png')
+  assert.equal(keyframes.last_frame, 'https://media.example-cdn.net/frames/last.png')
+  assert.equal(Object.hasOwn(keyframes, 'extra_body'), false)
+  assert.deepEqual(buildAgnesVideoRequest(jobFor('video', {
+    firstFrameUrl: 'https://media.example-cdn.net/frames/first.png',
+  })), {
+    model: AGNES_MODELS.video,
+    prompt: '雨夜街道中的纸灯笼',
+    mode: 'keyframe',
+    seconds: '5',
+    size: '720P',
+    aspect_ratio: '16:9',
+    n: 1,
+    first_frame: 'https://media.example-cdn.net/frames/first.png',
   })
 
   const references = buildAgnesVideoRequest(jobFor('video', {
     referenceImages: ['https://media.example-cdn.net/one.png'],
   }))
   assert.equal(references.mode, 'reference')
-  assert.deepEqual(references.extra_body, {
-    image: ['https://media.example-cdn.net/one.png'],
-    mode: 'reference',
+  assert.deepEqual(references.images, ['https://media.example-cdn.net/one.png'])
+  assert.equal(Object.hasOwn(references, 'extra_body'), false)
+})
+
+test('video task serializes an upstream first-frame image using the Agnes 2.5 keyframe API fields', async () => {
+  const firstFrame = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')}`
+  let posted
+  const result = await runVideoTask(jobFor('video', {
+    firstFrameUrl: firstFrame,
+    imageUrl: firstFrame,
+    referenceImages: [firstFrame],
+    duration: 4,
+    aspect: '9:16',
+  }), {
+    postJson: async (url, payload) => {
+      posted = { url, payload: JSON.parse(JSON.stringify(payload)) }
+      return { video_id: VIDEO_ID }
+    },
+    getAgnesResponse: async () => response(200, {
+      status: 'completed',
+      url: 'https://media.example-cdn.net/output/result.mp4',
+    }),
+    downloadAgnesOutput: async () => `generated/${TASK_ID}/result.mp4`,
+    sleep: async () => {},
+    now: () => 0,
+    pollIntervalMs: 0,
+    timeoutMs: 1,
   })
+
+  assert.equal(posted.url, `${AGNES_API_BASE_URL}/videos`)
+  assert.equal(posted.payload.model, AGNES_MODELS.video)
+  assert.equal(posted.payload.mode, 'keyframe')
+  assert.equal(posted.payload.first_frame, firstFrame)
+  assert.equal(posted.payload.last_frame, undefined)
+  assert.equal(Object.hasOwn(posted.payload, 'extra_body'), false)
+  assert.equal(Object.hasOwn(posted.payload, 'images'), false)
+  assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.mp4` })
 })
 
 test('video request fails visibly instead of dropping unresolved local canvas media', () => {
