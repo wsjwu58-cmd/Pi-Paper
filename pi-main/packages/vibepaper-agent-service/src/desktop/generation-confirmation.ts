@@ -38,7 +38,10 @@ export async function recoverDesktopAgentRuns(
 			activeRun.status === "waiting_confirmation"
 				? stores.control.findConsumedApprovalForRun(activeRun.runId)
 				: undefined;
-		if (accepted) continue;
+		// Generation acceptance may resume through the TaskStore's idempotency
+		// ledger. A confirmed deletion has no equivalent safe replay after the
+		// worker restarts, so abort it and require a new user request.
+		if (accepted && isGenerationTool(accepted.action.toolName)) continue;
 		if (continuation?.status === "claimed")
 			stores.control.markTaskContinuationInterrupted(activeRun.runId, stores.projectId);
 		if (activeRun.status === "waiting_confirmation") stores.control.invalidatePendingForRun(activeRun.runId);

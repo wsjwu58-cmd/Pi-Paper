@@ -366,10 +366,9 @@ function createAgentWorker() {
               || agentProjectId !== input.projectId || current?.projectId !== input.projectId) throw new Error('AGENT_PROJECT_CHANGED')
             if (input.runId && workerReference.cancelledRunIds.has(input.runId)) throw new Error('RUN_ABORTED')
           },
-          confirm: async (labels) => (await dialog.showMessageBox(mainWindow, {
-            type: 'question', title: '确认删除节点', message: `删除 ${labels.length} 个节点及关联连线？`,
-            detail: labels.join('\n'), buttons: ['取消', '删除'], defaultId: 0, cancelId: 0,
-          })).response === 1,
+          // This private Worker RPC is dispatched only after the original TS
+          // approval service consumes the canvas-bound confirmation token.
+          confirm: async () => true,
           deleteNode: (payload) => localCore.request('canvas:delete-node', payload, 30_000),
           lookupDeletedNode: (payload) => localCore.request('canvas:get-delete-command', payload, 15_000),
         })
@@ -2458,11 +2457,37 @@ function registerAgentIpc() {
     return agentWorker
   }
 
-  ipcMain.handle('desktop:agent:list-sessions', async (event, projectId) => {
+  ipcMain.handle('desktop:agent:list-sessions', async (event, projectId, filter) => {
     assertTrustedSender(event)
     const worker = await getAgentWorker(projectId)
-    return worker.request('agent:list-sessions', { projectId })
+    return worker.request('agent:list-sessions', { projectId, filter })
   })
+  const sessionCommands = {
+    'get-session': 'agent:get-session',
+    'update-session': 'agent:update-session',
+    'delete-session': 'agent:delete-session',
+    'copy-session': 'agent:copy-session',
+    'set-session-skills': 'agent:set-session-skills',
+    'attach-session-skill': 'agent:attach-session-skill',
+  }
+  for (const [channel, method] of Object.entries(sessionCommands)) {
+    ipcMain.handle(`desktop:agent:${channel}`, async (event, projectId, sessionId, input) => {
+      assertTrustedSender(event)
+      if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) throw codedError('AGENT_SESSION_INPUT_INVALID')
+      const worker = await getAgentWorker(projectId)
+      const active = await localCore.request('project:get-active')
+      if (active?.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
+      return worker.request(method, { projectId, sessionId, input, canvasId: active.canvasId })
+    })
+  }
+  for (const action of ['create', 'get', 'ready-set', 'rerun']) {
+    ipcMain.handle(`desktop:agent:plan:${action}`, async (event, projectId, id, input) => {
+      assertTrustedSender(event)
+      if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(id)) throw codedError('INVALID_INPUT')
+      const worker = await getAgentWorker(projectId)
+      return worker.request(`agent:plan:${action}`, { projectId, id, input })
+    })
+  }
   ipcMain.handle('desktop:agent:list-fragments', async (event, projectId) => {
     assertTrustedSender(event)
     const worker = await getAgentWorker(projectId)
@@ -2652,7 +2677,9 @@ function registerAgentIpc() {
   ipcMain.handle('desktop:agent:create-session', async (event, projectId, title) => {
     assertTrustedSender(event)
     const worker = await getAgentWorker(projectId)
-    return worker.request('agent:create-session', { projectId, title })
+    const active = await localCore.request('project:get-active')
+    if (active?.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
+    return worker.request('agent:create-session', { projectId, title, canvasId: active.canvasId })
   })
   ipcMain.handle('desktop:agent:get-messages', async (event, projectId, sessionId) => {
     assertTrustedSender(event)

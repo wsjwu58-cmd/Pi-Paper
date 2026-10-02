@@ -206,6 +206,58 @@ export async function api<T = unknown>(
     }
     const pathname = url.pathname.replace(/^\/api\/v1(?=\/)/u, "")
     const method = (options.method ?? "GET").toUpperCase()
+    const sessionMatch = /^\/agent\/sessions(?:\/([^/]+)(?:\/(copy|skills|plans)(?:\/([^/]+):attach)?)?)?$/u.exec(pathname)
+    const planMatch = /^\/agent\/plans\/([^/]+)(?:\/(ready-set|rerun))?$/u.exec(pathname)
+    if (sessionMatch || planMatch) {
+      const project = await bridge.getActiveProject()
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      const identifier = (raw: string): string => {
+        let value: string
+        try { value = decodeURIComponent(raw) } catch { throw new ApiError(400, 'INVALID_INPUT', '标识无效。') }
+        if (!/^[A-Za-z0-9_-]{1,128}$/u.test(value)) throw new ApiError(400, 'INVALID_INPUT', '标识无效。')
+        return value
+      }
+      if (planMatch) {
+        const planId = identifier(planMatch[1])
+        if (!planMatch[2] && method === 'GET') return await bridge.getAgentPlan(project.projectId, planId) as T
+        if (planMatch[2] === 'ready-set' && method === 'GET') {
+          return await bridge.getAgentPlanReadySet(project.projectId, planId, url.searchParams.get('profile') ?? undefined) as T
+        }
+        if (planMatch[2] === 'rerun' && method === 'POST') {
+          const body = parseLocalJsonObject(options, '计划续跑')
+          if (typeof body.stepId !== 'string') throw new ApiError(400, 'INVALID_INPUT', '请选择计划步骤。')
+          return await bridge.rerunAgentPlan(project.projectId, planId, identifier(body.stepId)) as T
+        }
+      } else if (sessionMatch) {
+        if (!sessionMatch[1]) {
+          if (method === 'GET') {
+            const status = url.searchParams.get('status') ?? 'all'
+            if (!['active', 'archived', 'all'].includes(status)) throw new ApiError(400, 'INVALID_INPUT', '会话状态无效。')
+            return await bridge.listAgentSessions(project.projectId, { status: status as 'active' | 'archived' | 'all' }) as T
+          }
+          if (method === 'POST') {
+            const body = parseLocalJsonObject(options, '会话创建')
+            if (body.canvasId !== undefined && body.canvasId !== project.canvasId) throw new ApiError(409, 'PROJECT_CHANGED', '画布不匹配。')
+            return await bridge.createAgentSession(project.projectId, typeof body.title === 'string' ? body.title : undefined) as T
+          }
+        } else {
+          const sessionId = identifier(sessionMatch[1])
+          const action = sessionMatch[2]
+          if (!action && method === 'GET') return await bridge.getAgentSession(project.projectId, sessionId) as T
+          if (!action && method === 'DELETE') return await bridge.deleteAgentSession(project.projectId, sessionId) as T
+          if (!action && method === 'PATCH') return await bridge.updateAgentSession(project.projectId, sessionId, parseLocalJsonObject(options, '会话更新')) as T
+          if (action === 'copy' && method === 'POST') return await bridge.copyAgentSession(project.projectId, sessionId, parseLocalJsonObject(options, '会话复制')) as T
+          if (action === 'plans' && method === 'POST') return await bridge.createAgentPlan(project.projectId, sessionId, parseLocalJsonObject(options, '计划创建')) as T
+          if (action === 'skills' && !sessionMatch[3] && method === 'PUT') {
+            const body = parseLocalJsonObject(options, '会话技能设置')
+            if (!Array.isArray(body.skillIds) || body.skillIds.some((id) => typeof id !== 'string')) throw new ApiError(400, 'INVALID_INPUT', '技能列表无效。')
+            return await bridge.setAgentSessionSkills(project.projectId, sessionId, body.skillIds as string[]) as T
+          }
+          if (action === 'skills' && sessionMatch[3] && method === 'POST') return await bridge.attachAgentSessionSkill(project.projectId, sessionId, identifier(sessionMatch[3])) as T
+        }
+      }
+      throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Agent 接口不支持此请求方法。')
+    }
     const fragmentListPath = pathname === '/agent/fragments'
     const fragmentSaveMatch = /^\/agent\/sessions\/([^/]+)\/fragments$/u.exec(pathname)
     const fragmentImportMatch = /^\/agent\/fragments\/([^/]+)\/import$/u.exec(pathname)

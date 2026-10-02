@@ -20,7 +20,8 @@ import {
 	type NodeReferenceSnapshot,
 	nodeReferencesFromMeta,
 } from "../application/node-reference-context.ts";
-import type { DesktopAgentControlStore } from "./control-store.ts";
+import type { DesktopAgentControlStore, DesktopAgentSessionState, DesktopAgentSessionStatus } from "./control-store.ts";
+import type { DesktopAgentSkillSnapshot } from "./skill-context.ts";
 
 const RUN_EVENT_ENTRY_TYPE = "vibepaper_run_event";
 const MESSAGE_METADATA_ENTRY_TYPE = "vibepaper_message_metadata";
@@ -49,6 +50,20 @@ export type DesktopAgentTimelineRun = {
 	runId: string;
 	sessionId: string;
 	createdAt: number;
+};
+
+export type DesktopAgentSessionView = {
+	sessionId: string;
+	title: string;
+	status: Exclude<DesktopAgentSessionStatus, "deleted">;
+	canvasId?: string;
+	createdAt: number;
+	modifiedAt: number;
+};
+
+export type DesktopAgentSessionPatch = {
+	title?: string;
+	status?: "active" | "archived";
 };
 
 export type DesktopStoredMessage = {
@@ -102,18 +117,31 @@ export class DesktopAgentSessionStore {
 	private readonly projectId: string;
 	private readonly fileSystem: RelocatableSessionExecutionEnv;
 	private readonly repo: JsonlSessionRepo;
+	private readonly controlStore?: DesktopAgentControlStore;
 	private readonly sessionMutationTails = new Map<string, Promise<void>>();
 
-	constructor(projectId: string, projectDirectory: string, sessionsRoot: string) {
+	constructor(
+		projectId: string,
+		projectDirectory: string,
+		sessionsRoot: string,
+		controlStore?: DesktopAgentControlStore,
+	) {
 		this.projectId = projectId;
+		this.controlStore = controlStore;
 		this.fileSystem = new RelocatableSessionExecutionEnv(projectDirectory, projectId);
 		this.repo = new JsonlSessionRepo({ fs: this.fileSystem, sessionsRoot });
 	}
 
-	async createSession(title?: string): Promise<JsonlSessionMetadata> {
+	async createSession(title?: string, canvasId?: string): Promise<JsonlSessionMetadata> {
+		if (canvasId !== undefined && !isBoundedString(canvasId, 1, MAX_MESSAGE_ID_LENGTH))
+			throw new Error("SESSION_INPUT_INVALID");
 		const session = await this.repo.create({
 			cwd: this.fileSystem.sessionCwd,
-			metadata: { application: "VibePaper Desktop", projectId: this.projectId },
+			metadata: {
+				application: "VibePaper Desktop",
+				projectId: this.projectId,
+				...(canvasId ? { canvasId } : {}),
+			},
 		});
 		if (title?.trim()) await session.setName(title.trim().slice(0, 120));
 		return await session.getMetadata();
@@ -124,21 +152,148 @@ export class DesktopAgentSessionStore {
 	}
 
 	async openSession(sessionId: string): Promise<Session<JsonlSessionMetadata>> {
+		const state = this.controlStore?.getSessionState(sessionId);
+		if (state?.status === "deleted") throw new Error("SESSION_NOT_FOUND");
+		return this.openStoredSession(sessionId);
+	}
+
+	private async openStoredSession(sessionId: string): Promise<Session<JsonlSessionMetadata>> {
 		const metadata = (await this.listSessions()).find((candidate) => candidate.id === sessionId);
 		if (!metadata) throw new Error("SESSION_NOT_FOUND");
 		return await this.repo.open(metadata);
 	}
 
+	async getSession(sessionId: string): Promise<DesktopAgentSessionView> {
+		const metadata = (await this.listSessions()).find((candidate) => candidate.id === sessionId);
+		if (!metadata) throw new Error("SESSION_NOT_FOUND");
+		const state = this.controlStore?.getSessionState(sessionId) ?? { status: "active" as const };
+		if (state.status === "deleted") throw new Error("SESSION_NOT_FOUND");
+		const title = await this.resolveSessionTitle(sessionId);
+		return toSessionView(metadata, title, state);
+	}
+
+	async listAgentSessions(
+		options: { status?: "active" | "archived" | "all"; search?: string } = {},
+	): Promise<DesktopAgentSessionView[]> {
+		if (typeof options !== "object" || options === null || Array.isArray(options))
+			throw new Error("SESSION_FILTER_INVALID");
+		if (
+			options.status !== undefined &&
+			options.status !== "active" &&
+			options.status !== "archived" &&
+			options.status !== "all"
+		)
+			throw new Error("SESSION_STATUS_INVALID");
+		if (options.search !== undefined && (typeof options.search !== "string" || options.search.length > 160))
+			throw new Error("SESSION_FILTER_INVALID");
+		const metadata = await this.listSessions();
+		const states = this.controlStore?.listSessionStates() ?? new Map<string, DesktopAgentSessionState>();
+		const normalizedSearch = options.search?.trim().toLocaleLowerCase() ?? "";
+		const sessions = await Promise.all(
+			metadata.map(async (session): Promise<DesktopAgentSessionView | undefined> => {
+				const state = states.get(session.id) ?? { status: "active" as const };
+				if (
+					state.status === "deleted" ||
+					(options.status && options.status !== "all" && options.status !== state.status)
+				)
+					return undefined;
+				const title = await this.resolveSessionTitle(session.id);
+				if (normalizedSearch && !title.toLocaleLowerCase().includes(normalizedSearch)) return undefined;
+				return toSessionView(session, title, state);
+			}),
+		);
+		return sessions
+			.filter((session): session is DesktopAgentSessionView => session !== undefined)
+			.sort((left, right) => right.modifiedAt - left.modifiedAt || right.sessionId.localeCompare(left.sessionId));
+	}
+
+	async hasSession(sessionId: string): Promise<boolean> {
+		const metadata = (await this.listSessions()).find((candidate) => candidate.id === sessionId);
+		if (!metadata) return false;
+		return this.controlStore?.getSessionState(sessionId).status !== "deleted";
+	}
+
+	async isSessionActive(sessionId: string): Promise<boolean> {
+		if (!(await this.hasSession(sessionId))) return false;
+		return this.controlStore?.getSessionState(sessionId).status !== "archived";
+	}
+
+	async updateSession(sessionId: string, patch: DesktopAgentSessionPatch): Promise<DesktopAgentSessionView> {
+		if (typeof patch !== "object" || patch === null || Array.isArray(patch)) throw new Error("SESSION_PATCH_INVALID");
+		if (Object.hasOwn(patch, "title") && typeof patch.title !== "string") throw new Error("SESSION_TITLE_INVALID");
+		if (Object.hasOwn(patch, "status") && typeof patch.status !== "string") throw new Error("SESSION_STATUS_INVALID");
+		const titleInput = typeof patch.title === "string" && patch.title.trim() ? patch.title.trim() : undefined;
+		const statusInput = typeof patch.status === "string" && patch.status.trim() ? patch.status.trim() : undefined;
+		if (titleInput === undefined && statusInput === undefined) throw new Error("SESSION_PATCH_INVALID");
+		if (statusInput !== undefined && statusInput !== "active" && statusInput !== "archived") {
+			throw new Error("SESSION_STATUS_INVALID");
+		}
+		const current = await this.getSession(sessionId);
+		if (titleInput !== undefined) {
+			const title = normalizeSessionTitle(titleInput);
+			await this.withSessionMutation(sessionId, async () => {
+				const session = await this.openSession(sessionId);
+				await session.setName(title);
+			});
+		}
+		if (statusInput !== undefined) {
+			if (statusInput !== current.status) this.requireControlStore().setSessionStatus(sessionId, statusInput);
+		}
+		return this.getSession(sessionId);
+	}
+
+	async deleteSession(sessionId: string): Promise<{ status: "deleted"; sessionId: string }> {
+		await this.getSession(sessionId);
+		this.requireControlStore().setSessionStatus(sessionId, "deleted");
+		return { status: "deleted", sessionId };
+	}
+
+	async copySession(
+		sessionId: string,
+		options: { title?: string; canvasId?: string } = {},
+	): Promise<DesktopAgentSessionView & { copiedFrom: string }> {
+		if (typeof options !== "object" || options === null || Array.isArray(options))
+			throw new Error("SESSION_INPUT_INVALID");
+		if (options.title !== undefined && typeof options.title !== "string") throw new Error("SESSION_TITLE_INVALID");
+		if (options.canvasId !== undefined && !isBoundedString(options.canvasId, 1, MAX_MESSAGE_ID_LENGTH))
+			throw new Error("SESSION_INPUT_INVALID");
+		const source = await this.getSession(sessionId);
+		const canvasId = options.canvasId ?? source.canvasId;
+		const title = normalizeSessionTitle(options.title?.trim() || `${source.title} 副本`);
+		const copy = await this.createSession(title, canvasId);
+		const view = await this.getSession(copy.id);
+		return { ...view, copiedFrom: source.sessionId };
+	}
+
+	async setSessionSkillSnapshots(
+		sessionId: string,
+		snapshots: readonly DesktopAgentSkillSnapshot[],
+	): Promise<DesktopAgentSkillSnapshot[]> {
+		const session = await this.getSession(sessionId);
+		if (session.status !== "active") throw new Error("SESSION_ARCHIVED");
+		return this.requireControlStore().setSessionSkillSnapshots(sessionId, snapshots);
+	}
+
+	async attachSessionSkillSnapshot(
+		sessionId: string,
+		snapshot: DesktopAgentSkillSnapshot,
+	): Promise<{ snapshot: DesktopAgentSkillSnapshot; attached: boolean }> {
+		const session = await this.getSession(sessionId);
+		if (session.status !== "active") throw new Error("SESSION_ARCHIVED");
+		return this.requireControlStore().attachSessionSkillSnapshot(sessionId, snapshot);
+	}
+
 	async resolveSessionTitle(sessionId: string): Promise<string> {
 		return this.withSessionMutation(sessionId, async () => {
 			const session = await this.openSession(sessionId);
+			const state = this.controlStore?.getSessionState(sessionId);
 			const currentTitle = (await session.getName())?.trim() ?? "";
 			if (currentTitle && !isPlaceholderSessionTitle(currentTitle)) return currentTitle;
 
 			const entries = await session.findEntries({ order: "oldestFirst" });
 			const recoveredTitle = firstUserTextTitle(entries);
 			if (recoveredTitle) {
-				if (currentTitle !== recoveredTitle) await session.setName(recoveredTitle);
+				if (currentTitle !== recoveredTitle && state?.status !== "archived") await session.setName(recoveredTitle);
 				return recoveredTitle;
 			}
 			return currentTitle || DEFAULT_SESSION_TITLE;
@@ -150,6 +305,7 @@ export class DesktopAgentSessionStore {
 		message: AgentMessage,
 		metadata?: DesktopAgentMessageMetadata,
 	): Promise<string> {
+		this.assertSessionActive(sessionId);
 		const safeMetadata = metadata === undefined ? undefined : normalizeMessageMetadata(metadata);
 		return this.withSessionMutation(sessionId, async () => {
 			const session = await this.openSession(sessionId);
@@ -169,6 +325,7 @@ export class DesktopAgentSessionStore {
 			usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
 		},
 	): Promise<void> {
+		this.assertSessionActive(sessionId);
 		const usage = Object.fromEntries(
 			["input", "output", "cacheRead", "cacheWrite"].map((key) => {
 				const count = response.usage[key as keyof typeof response.usage];
@@ -198,6 +355,7 @@ export class DesktopAgentSessionStore {
 	 * Existing message entries remain intact; the entry changes only the context projection.
 	 */
 	async appendCompaction(sessionId: string, input: DesktopAgentCompactionInput): Promise<SessionContext> {
+		this.assertSessionActive(sessionId);
 		const summary = validateCompactionSummary(input.summary);
 		if (
 			!Number.isSafeInteger(input.retainLastMessages) ||
@@ -309,7 +467,7 @@ export class DesktopAgentSessionStore {
 
 			for (const [pendingSessionId, items] of grouped) {
 				await this.withSessionMutation(pendingSessionId, async () => {
-					const session = await this.openSession(pendingSessionId);
+					const session = await this.openStoredSession(pendingSessionId);
 					const existingEntries = await session.findEntries({
 						type: "custom",
 						customType: RUN_EVENT_ENTRY_TYPE,
@@ -361,6 +519,17 @@ export class DesktopAgentSessionStore {
 			release();
 			if (this.sessionMutationTails.get(sessionId) === current) this.sessionMutationTails.delete(sessionId);
 		}
+	}
+
+	private requireControlStore(): DesktopAgentControlStore {
+		if (!this.controlStore) throw new Error("SESSION_STATE_STORE_REQUIRED");
+		return this.controlStore;
+	}
+
+	private assertSessionActive(sessionId: string): void {
+		const status = this.controlStore?.getSessionState(sessionId).status ?? "active";
+		if (status === "deleted") throw new Error("SESSION_NOT_FOUND");
+		if (status === "archived") throw new Error("SESSION_ARCHIVED");
 	}
 
 	private async refreshOptionalCompactionCheckpoint(
@@ -967,6 +1136,31 @@ function boundedString(value: unknown, maxLength: number): string | undefined {
 	if (typeof value !== "string" && typeof value !== "number") return undefined;
 	const normalized = String(value).replace(/\s+/g, " ").trim();
 	return normalized ? normalized.slice(0, maxLength) : undefined;
+}
+
+function toSessionView(
+	metadata: JsonlSessionMetadata,
+	title: string,
+	state: DesktopAgentSessionState,
+): DesktopAgentSessionView {
+	if (state.status === "deleted") throw new Error("SESSION_NOT_FOUND");
+	const canvasId = metadata.metadata?.canvasId;
+	const modifiedAt = Math.max(metadata.modifiedAt, state.updatedAt?.getTime() ?? 0);
+	return {
+		sessionId: metadata.id,
+		title,
+		status: state.status,
+		...(typeof canvasId === "string" && canvasId.length > 0 ? { canvasId } : {}),
+		createdAt: metadata.createdAt,
+		modifiedAt,
+	};
+}
+
+function normalizeSessionTitle(value: string): string {
+	if (typeof value !== "string") throw new Error("SESSION_TITLE_INVALID");
+	const title = value.trim().slice(0, 120);
+	if (!title) throw new Error("SESSION_TITLE_INVALID");
+	return title;
 }
 
 function isPlaceholderSessionTitle(title: string): boolean {

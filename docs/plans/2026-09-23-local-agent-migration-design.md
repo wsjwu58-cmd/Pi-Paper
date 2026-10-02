@@ -2,6 +2,8 @@
 
 ## 2026-10-01 实现更新
 
+会话管理、持久计划、Skill 正文版本快照及删除确认已接原 TS/原面板，控制库当前 `user_version=7`，项目备份恢复支持 v1–v7。计划建立只持久化，不自动派发；归档/删除停止运行并失效授权；恢复副本不盲重放写操作。更新的表结构、字段及验收边界见 [本批记录](2026-10-01-agent-session-plan-snapshot-delete-validation.md)。下方早期 v3 原型描述仅作历史基线。
+
 自动模型摘要、完整请求预算、会话工作状态投影、五范围记忆管理/候选审核、历史片段、Skill 历史、停止及摘要实际用量已在原 TS/原面板基础上接入。真实云端工具回合和摘要落盘/重开已有证据。详细验证与限制见 [本轮记录](2026-10-01-agent-context-memory-validation.md)。本节更新下方较早的实现状态；本地 Agent 模型、完整逐屏和多平台安装包仍未验收。
 
 > 状态：Agent 本地 JSONL/SQLite/Markdown 存储与项目备份/恢复原型已实现。Electron Main 为活动项目启动独立 Agent Worker，切换项目、备份和退出前关闭该 Worker；桌面会话面板支持会话列表、新建、选择、查看历史消息与 Agnes 文本对话。模型配置页披露发送范围和供应商费用，用户主动点击发送后直接调用，不再逐条弹系统确认；Key 只从 OS 凭据加密文件解密并经受限 IPC 传给 Worker。Pi Agent 回合使用单写者 Run/幂等账本并把完整消息写入 JSONL，重启会把未完成 Run 标为中断。原 TS Tool Gateway 已接画布、节点、任务、生成确认、Skill 和审校；项目级显式 Markdown 偏好及原生 Pi compaction 存储接口已接入。当前仍没有本地模型 Agent 回合、自动摘要生成及全请求压缩预算、会话工作状态投影或完整长期记忆管理；开发版 Electron 已能在当前 Windows 环境启动；云端回合的端到端验收仍需补齐。备份会先停掉本应用 Worker；若其他进程持有项目写锁，备份明确失败。日期：2026-09-30。配套功能契约见 [桌面版 Agent 功能规格](../specs/desktop-agent-functional-spec.md)，全服务实施顺序见 [桌面本地化方案](2026-09-23-desktop-full-service-local-migration-plan.md)。目标是单用户、项目数据与 Agent 数据均由本机文件持有，正常创作不依赖云端账户、平台点数、签到、套餐或企业服务。桌面版以根目录 `AGENTS.md` 为工程契约；旧 PRD 和 V1.0 Spec 仍描述 Web 多用户架构。

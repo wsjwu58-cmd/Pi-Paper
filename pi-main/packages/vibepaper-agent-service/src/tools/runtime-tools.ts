@@ -6,6 +6,7 @@ import type { ApprovalService } from "../application/approval-service.ts";
 import type { CanvasCommandGateway } from "../application/canvas-command-service.ts";
 import { CanvasCommandService } from "../application/canvas-command-service.ts";
 import { REFERENCE_MAPPING_ERROR } from "../application/reference-mapping-clarification.ts";
+import { buildDesktopDeletionSnapshot } from "../desktop/deletion-confirmation.ts";
 import type { PlannedAction } from "../domain/action-approval.ts";
 import type { AuditInput } from "../domain/continuity-rules.ts";
 import { ToolGatewayError } from "../infrastructure/tool-gateway.ts";
@@ -327,6 +328,10 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 	const commands = new CanvasCommandService(context.gateway);
 	const generations = context.approvals ? new GenerationTools(context.approvals) : undefined;
 	const canPrepareGeneration = Boolean(generations && (context.desktopMode || context.gateway.estimateGeneration));
+	const desktopApprovals =
+		context.desktopMode && context.approvals && context.onApprovalRequired ? context.approvals : undefined;
+	const onApprovalRequired = context.onApprovalRequired;
+	const deletionProposals = new Map<string, PlannedAction>();
 
 	const tools: AgentTool[] = [
 		tool(
@@ -500,7 +505,77 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 						},
 					),
 				]
-			: []),
+			: desktopApprovals && onApprovalRequired
+				? [
+						tool(
+							"delete_nodes",
+							"删除画布节点",
+							"先生成包含节点、关联连线及组和堆叠影响的桌面确认卡片；确认前不删除。画布版本变化、拒绝、过期或 Agent 停止后不会执行。",
+							DeleteNodesSchema,
+							async (toolCallId, params) => {
+								assertNoPendingConfirmation(context);
+								const nodeIds = parseNodeIdArray(params.nodeIds);
+								if (
+									nodeIds.length < 1 ||
+									nodeIds.length > 20 ||
+									nodeIds.some((nodeId) => !nodeId || nodeId.length > 256) ||
+									new Set(nodeIds).size !== nodeIds.length
+								)
+									throw new ToolGatewayError("INVALID_INPUT", "删除需要 1 至 20 个不同节点", {}, 400);
+								const snapshot = await buildDesktopDeletionSnapshot(
+									context.gateway,
+									context.userId,
+									context.canvasId,
+									nodeIds,
+									context.requestId,
+								);
+								if (snapshot.canvasVersion !== context.canvasVersion)
+									throw new ToolGatewayError(
+										"VERSION_CONFLICT",
+										"画布已在其他会话更新，请读取最新内容后重试",
+										{ expectedVersion: context.canvasVersion, actualVersion: snapshot.canvasVersion },
+										409,
+									);
+								const idempotencyKey = params.idempotencyKey ?? defaultIdempotencyKey(context, toolCallId);
+								const proposalKey = `${context.runId ?? context.sessionId}:delete:${idempotencyKey}`.slice(
+									0,
+									255,
+								);
+								const actionParams = { nodeIds, preview: snapshot.preview };
+								let action = deletionProposals.get(proposalKey);
+								if (action && JSON.stringify(action.params) !== JSON.stringify(actionParams))
+									throw new ToolGatewayError("IDEMPOTENCY_CONFLICT", "该删除请求标识已用于其他节点", {}, 409);
+								if (!action) {
+									action = await desktopApprovals.planActionAsync({
+										userId: context.userId,
+										runId: context.runId,
+										sessionId: context.sessionId,
+										canvasId: context.canvasId,
+										canvasVersion: snapshot.canvasVersion,
+										toolName: "delete_nodes",
+										params: actionParams,
+										estimatedCost: 0,
+										risk: "high",
+										requiresApproval: true,
+									});
+									deletionProposals.set(proposalKey, action);
+								}
+								context.confirmationPending = true;
+								await onApprovalRequired(action);
+								return {
+									content: [
+										{
+											type: "text",
+											text: "删除预览已准备，请先确认桌面卡片；确认后才会删除所选节点和关联连线。",
+										},
+									],
+									details: { kind: "canvas_delete", confirmation: action, preview: snapshot.preview },
+									terminate: true,
+								};
+							},
+						),
+					]
+				: []),
 		...(canPrepareGeneration && generations
 			? [
 					tool(
@@ -647,7 +722,13 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 
 function assertNoPendingConfirmation(context: RuntimeToolContext): void {
 	if (context.confirmationPending)
-		throw new ToolGatewayError("CONFIRMATION_REQUIRED", "上一项生成正在等待用户确认，确认前不能继续写入画布", {});
+		throw new ToolGatewayError(
+			"CONFIRMATION_REQUIRED",
+			context.desktopMode
+				? "上一项操作正在等待用户确认，确认前不能继续写入画布"
+				: "上一项生成正在等待用户确认，确认前不能继续写入画布",
+			{},
+		);
 }
 
 async function createNodesWithReferenceEdges(

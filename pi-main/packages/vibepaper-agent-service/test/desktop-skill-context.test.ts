@@ -7,7 +7,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { rehydratedSkillInstructions } from "../src/application/agent-runtime.ts";
 import { DesktopAgentControlStore } from "../src/desktop/control-store.ts";
-import { createDesktopAgentSkillContext, listDesktopAgentSkills } from "../src/desktop/skill-context.ts";
+import {
+	createDesktopAgentSkillContext,
+	listDesktopAgentSessionSkills,
+	listDesktopAgentSkills,
+	snapshotDesktopAgentSkill,
+} from "../src/desktop/skill-context.ts";
 import { SYSTEM_SKILLS } from "../src/domain/skill-manifest.ts";
 import { createLoadSkillTool } from "../src/tools/skill-tools.ts";
 
@@ -43,20 +48,22 @@ describe("desktop system Skill context", () => {
 
 	it("adds enabled project Skills to the original load_skill tool context", async () => {
 		const { store } = await createStore();
+		const skill = {
+			id: "project-lens-notes",
+			key: "project-lens-notes",
+			name: "镜头笔记",
+			description: "保持镜头方向连续",
+			instructions: "记录轴线和镜头方向。",
+			source: "project" as const,
+			category: "video",
+			version: 1,
+			enabled: true,
+		};
 		try {
-			const context = createDesktopAgentSkillContext(store, "session-1", undefined, [
-				{
-					id: "project-lens-notes",
-					key: "project-lens-notes",
-					name: "镜头笔记",
-					description: "保持镜头方向连续",
-					instructions: "记录轴线和镜头方向。",
-					source: "project",
-					category: "video",
-					version: 1,
-					enabled: true,
-				},
-			]);
+			const unconfigured = createDesktopAgentSkillContext(store, "session-1", undefined, [skill]);
+			expect(unconfigured.skills.some((resource) => resource.id === skill.id)).toBe(false);
+			store.attachSessionSkillSnapshot("session-1", snapshotDesktopAgentSkill(skill));
+			const context = createDesktopAgentSkillContext(store, "session-1", undefined, [skill]);
 			expect(context.indexLines).toContain("- [dynamic] 镜头笔记 (project-lens-notes)：保持镜头方向连续");
 			expect(context.skills).toContainEqual({
 				id: "project-lens-notes",
@@ -71,6 +78,59 @@ describe("desktop system Skill context", () => {
 			expect(store.getLoadedSkillIds("session-1")).toEqual(["project-lens-notes"]);
 		} finally {
 			store.close();
+		}
+	});
+
+	it("uses an enabled session snapshot, displays an unavailable snapshot, and keeps explicit selection live", async () => {
+		const { databasePath, store } = await createStore();
+		const versionOne = {
+			id: "project-versioned-skill",
+			key: "project-versioned-skill",
+			name: "版本化项目 Skill",
+			description: "旧版说明",
+			instructions: "版本一正文。",
+			source: "project" as const,
+			category: "general",
+			version: 1,
+			enabled: true,
+		};
+		const versionTwo = { ...versionOne, description: "新版说明", instructions: "版本二正文。", version: 2 };
+		try {
+			store.attachSessionSkillSnapshot("session-1", snapshotDesktopAgentSkill(versionOne));
+			const attached = createDesktopAgentSkillContext(store, "session-1", undefined, [versionTwo]);
+			expect(attached.skills.find((skill) => skill.id === versionOne.id)?.instructions).toBe("版本一正文。");
+			const listed = listDesktopAgentSessionSkills(store, "session-1", undefined, [versionTwo]);
+			expect(listed.items.find((skill) => skill.id === versionOne.id)).toMatchObject({
+				instructions: "版本一正文。",
+				version: 1,
+				enabled: true,
+			});
+
+			const liveSelection = createDesktopAgentSkillContext(store, "session-2", versionOne.id, [versionOne]);
+			expect(liveSelection.skills.find((skill) => skill.id === versionOne.id)?.instructions).toBe("版本一正文。");
+			const nextLiveSelection = createDesktopAgentSkillContext(store, "session-2", versionTwo.id, [versionTwo]);
+			expect(nextLiveSelection.skills.find((skill) => skill.id === versionTwo.id)?.instructions).toBe(
+				"版本二正文。",
+			);
+			store.markSkillLoaded("session-1", versionOne.id);
+		} finally {
+			store.close();
+		}
+
+		const reopened = new DesktopAgentControlStore(databasePath);
+		try {
+			const disabledSnapshot = listDesktopAgentSessionSkills(reopened, "session-1", undefined, []);
+			expect(disabledSnapshot.items.find((skill) => skill.id === versionOne.id)).toMatchObject({
+				instructions: "版本一正文。",
+				version: 1,
+				enabled: false,
+			});
+			expect(disabledSnapshot.loadedSkillIds).toContain(versionOne.id);
+			expect(
+				createDesktopAgentSkillContext(reopened, "session-1").skills.some((skill) => skill.id === versionOne.id),
+			).toBe(false);
+		} finally {
+			reopened.close();
 		}
 	});
 
@@ -139,7 +199,9 @@ describe("desktop system Skill context", () => {
 		const { databasePath, store } = await createStore();
 		store.close();
 		const database = new DatabaseSync(databasePath);
-		database.exec("DROP TABLE agent_session_skill_state; DROP TABLE desktop_memory_candidates; PRAGMA user_version = 2;");
+		database.exec(
+			"DROP TABLE agent_session_skill_state; DROP TABLE desktop_memory_candidates; PRAGMA user_version = 2;",
+		);
 		database.close();
 
 		const migrated = new DesktopAgentControlStore(databasePath);

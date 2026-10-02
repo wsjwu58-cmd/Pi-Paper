@@ -228,26 +228,56 @@ describe("original Agent desktop canvas commands", () => {
 			await rm(directory, { recursive: true, force: true });
 		}
 	});
-	it("preserves the original delete command while desktop awaits its confirmation integration", async () => {
+	it("previews desktop deletion for confirmation and preserves the original Web delete command", async () => {
 		const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
 		const gateway = new DesktopLocalToolGateway(
 			{
 				request: async (method, payload) => {
 					calls.push({ method, payload });
+					if (method === "agent:core:load-canvas")
+						return {
+							projectId: "p",
+							canvasId: "c",
+							version: 3,
+							nodes: [
+								{ id: "a", type: "text", position: { x: 0, y: 0 }, data: { label: "脚本" } },
+								{ id: "b", type: "image", position: { x: 100, y: 0 }, data: { label: "海报" } },
+							],
+							edges: [{ id: "edge-ab", source: "a", target: "b" }],
+							groups: [],
+							stacks: [],
+						};
 					return { operation: "delete_nodes", canvasVersion: 5, results: [] };
 				},
 			},
 			"p",
 		);
 		const context = { userId: "p", sessionId: "s", canvasId: "c", canvasVersion: 3, requestId: "r", gateway };
-		expect(createRuntimeTools({ ...context, desktopMode: true }).some((entry) => entry.name === "delete_nodes")).toBe(
-			false,
-		);
+		let approvalAction: { actionId: string; toolName: string; params: Record<string, unknown> } | undefined;
+		const desktopTools = createRuntimeTools({
+			...context,
+			desktopMode: true,
+			approvals: new ApprovalService(new InMemoryApprovalRepository(), "secret", 300),
+			onApprovalRequired: async (action) => {
+				approvalAction = action;
+			},
+		});
+		const desktopDelete = desktopTools.find((entry) => entry.name === "delete_nodes");
+		expect(desktopDelete).toBeDefined();
+		const desktopCallStart = calls.length;
+		const preview = await desktopDelete!.execute("desktop-call", { nodeIds: ["a"] });
+		expect(preview).toMatchObject({
+			details: { kind: "canvas_delete", preview: { connectedEdgeCount: 1 } },
+			terminate: true,
+		});
+		expect(approvalAction).toMatchObject({ toolName: "delete_nodes", params: { nodeIds: ["a"] } });
+		expect(calls.slice(desktopCallStart).map((call) => call.method)).toEqual(["agent:core:load-canvas"]);
+
 		const tools = createRuntimeTools(context);
 		const tool = tools.find((entry) => entry.name === "delete_nodes");
 		expect(tool).toBeDefined();
 		await tool!.execute("call", { nodeIds: ["a", "b"] });
-		expect(calls[0]).toMatchObject({
+		expect(calls.at(-1)).toMatchObject({
 			method: "agent:core:delete-nodes",
 			payload: {
 				projectId: "p",

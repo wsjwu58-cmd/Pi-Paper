@@ -590,6 +590,43 @@ export interface DesktopAgentSession {
   title: string
   createdAt: number
   modifiedAt: number
+  status?: 'active' | 'archived'
+  canvasId?: string | null
+  copiedFrom?: string | null
+}
+
+export type DesktopAgentProfile = 'canvas-general' | 'vertical-short-drama' | 'asset-assistant' | 'audit-readonly'
+
+export interface DesktopAgentPlanStep {
+  id: string
+  tool: string
+  dependsOn: string[]
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'stale'
+  inputHash: string
+  input?: Record<string, unknown>
+  batchSize?: number
+  effect?: 'read' | 'write_canvas' | 'create_task'
+  concurrencyKey?: string
+  idempotencyKey?: string
+  taskId?: string
+  leaseUntil?: string
+  attemptCount?: number
+  outputRef?: string
+  lastError?: string
+}
+
+export interface DesktopAgentPlan {
+  id: string
+  sessionId: string
+  version: number
+  canvasVersion: number
+  steps: DesktopAgentPlanStep[]
+}
+
+export interface DesktopCompiledAgentPlan {
+  plan: DesktopAgentPlan
+  readySet: string[]
+  executionPartitions: Array<{ effect: 'read' | 'write_canvas' | 'create_task'; concurrencyKey: string; stepIds: string[]; maxParallelism: number; requiresConfirmation: boolean }>
 }
 
 export interface DesktopAgentSkill {
@@ -852,7 +889,17 @@ export interface DesktopBridge {
   discoverLocalModels(endpoint: string): Promise<string[]>
   saveLocalTextModel(config: Pick<DesktopLocalTextModel, 'endpoint' | 'modelId'>): Promise<DesktopLocalTextModel>
   clearLocalTextModel(): Promise<null>
-  listAgentSessions(projectId: string): Promise<DesktopAgentSession[]>
+  listAgentSessions(projectId: string, filter?: { status?: 'active' | 'archived' | 'all' }): Promise<DesktopAgentSession[]>
+  getAgentSession(projectId: string, sessionId: string): Promise<DesktopAgentSession>
+  updateAgentSession(projectId: string, sessionId: string, patch: { title?: string; status?: 'active' | 'archived' }): Promise<DesktopAgentSession>
+  deleteAgentSession(projectId: string, sessionId: string): Promise<{ sessionId: string; status: 'deleted' }>
+  copyAgentSession(projectId: string, sessionId: string, input?: { title?: string; canvasId?: string }): Promise<DesktopAgentSession>
+  setAgentSessionSkills(projectId: string, sessionId: string, skillIds: string[]): Promise<unknown>
+  attachAgentSessionSkill(projectId: string, sessionId: string, skillId: string): Promise<unknown>
+  createAgentPlan(projectId: string, sessionId: string, input: Record<string, unknown>): Promise<DesktopCompiledAgentPlan>
+  getAgentPlan(projectId: string, planId: string): Promise<DesktopAgentPlan>
+  getAgentPlanReadySet(projectId: string, planId: string, profile?: string): Promise<DesktopCompiledAgentPlan>
+  rerunAgentPlan(projectId: string, planId: string, stepId: string): Promise<DesktopAgentPlan & { rerunOf: string }>
   listAgentFragments(projectId: string): Promise<{ items: DesktopAgentSessionFragment[] }>
   saveAgentSessionFragment(projectId: string, sessionId: string, title?: string): Promise<{ fragmentId: string }>
   importAgentFragment(projectId: string, fragmentId: string, canvasId?: string): Promise<{ sessionId: string }>

@@ -67,7 +67,7 @@ export function friendlyAgentErrorMessage(value: unknown): string {
     AGENT_RUN_RESULT_MISSING: 'Agent 未能恢复本轮回复，请重新发送。',
     AGENT_RUN_ALREADY_PROCESSED: '这条消息已处理，请检查会话记录后再继续。',
     SESSION_BUSY: '此会话有任务正在运行，请等待当前任务完成。',
-    CONFIRMATION_REQUIRED: '请先处理当前待确认的生成请求。',
+    CONFIRMATION_REQUIRED: '请先处理当前待确认的操作。',
   }
   const knownError = Object.prototype.hasOwnProperty.call(knownErrors, message) ? knownErrors[message] : undefined
   if (knownError) return knownError
@@ -216,12 +216,18 @@ export function reduceAgentEvent(
       ...message,
       meta: { ...withRun(message), requiresConfirmation: true, confirmation: {
         actionId, approvalToken,
+        kind: event.data.kind === 'canvas_delete' ? 'canvas_delete' : 'generation',
+        nodeLabels: Array.isArray(event.data.nodeLabels) ? event.data.nodeLabels.filter((label): label is string => typeof label === 'string').slice(0, 20).map((label) => label.slice(0, 120)) : undefined,
+        connectedEdgeCount: numberValue(event.data.connectedEdgeCount),
+        downstreamNodeCount: numberValue(event.data.downstreamNodeCount),
+        affectedGroupCount: numberValue(event.data.affectedGroupCount),
+        affectedStackCount: numberValue(event.data.affectedStackCount),
         tool: typeof event.data.tool === 'string' ? event.data.tool : undefined,
         summary: typeof event.data.summary === 'string' ? event.data.summary : '待确认操作',
         confirmReason: typeof event.data.confirmReason === 'string' ? event.data.confirmReason : undefined,
         estimatedCost: numberValue(event.data.estimatedCost),
         estimatedTotalCost: numberValue(event.data.estimatedTotalCost),
-        affectedNodeCount: numberValue(event.data.affectedNodeCount),
+        affectedNodeCount: numberValue(event.data.affectedNodeCount) ?? numberValue(event.data.nodeCount),
         generationItems: generationItemsFrom(event.data.generationItems),
         canvasVersion: numberValue(event.data.canvasVersion),
         expiresAt: normalizeConfirmationExpiry(event.data.expiresAt),

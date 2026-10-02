@@ -98,6 +98,7 @@ export interface AgentPanelDesktopSession {
   title: string
   createdAt: number
   modifiedAt: number
+  status?: 'active' | 'archived'
 }
 
 export interface AgentPanelDesktopAdapter {
@@ -119,6 +120,11 @@ export interface AgentPanelDesktopAdapter {
   onDraftChange: (value: string) => void
   onNewSession: () => Promise<void>
   onSelectSession: (sessionId: string) => Promise<void>
+  onRenameSession?: (sessionId: string, title: string) => Promise<void>
+  onArchiveSession?: (sessionId: string) => Promise<void>
+  onRestoreSession?: (sessionId: string) => Promise<void>
+  onCopySession?: (sessionId: string) => Promise<void>
+  onDeleteSession?: (sessionId: string) => Promise<void>
   onSend: () => Promise<void>
   onSendWithReferences?: (input: { selectedNodeIds: string[]; selectedSkillId?: string }) => Promise<boolean>
   onStop?: () => Promise<void> | void
@@ -196,8 +202,10 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   const panelMessages = desktop ? desktopAdapter?.messages ?? [] : messages
   const panelDraft = desktop ? desktopAdapter?.draft ?? '' : input
   const panelBusy = desktop ? desktopAdapter?.sending ?? false : busy
+  const desktopSession = desktopAdapter?.sessions.find((item) => item.sessionId === desktopAdapter.activeSessionId)
+  const desktopSessionArchived = desktopSession?.status === 'archived'
   const panelSessionTitle = desktop
-    ? desktopAdapter?.sessions.find((item) => item.sessionId === desktopAdapter.activeSessionId)?.title || '新对话'
+    ? desktopSession?.title || '新对话'
     : sessionTitle
   const panelSkills = desktop ? desktopAdapter?.skills ?? [] : skillOptions
   const panelSkillsLoading = desktop ? desktopAdapter?.skillsLoading ?? false : skillPickerLoading
@@ -895,7 +903,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   const send = async () => {
     if (desktop) {
       const content = panelDraft.trim()
-      if (!content || panelBusy || desktopAdapter?.creating) return
+      if (!content || panelBusy || desktopSessionArchived || desktopAdapter?.creating) return
       if (hasPendingConfirmation) {
         toastError('请先在确认卡片中确认或取消当前高风险操作')
         return
@@ -1348,10 +1356,10 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                   rows={3}
                   placeholder={
                     hasPendingConfirmation
-                      ? '可先编辑下一步需求；请先处理上方待确认生成'
+                      ? '可先编辑下一步需求；请先处理上方待确认操作'
                       : '描述创意或需求，@ 引用参考，/ 选择 Skill'
                   }
-                  disabled={panelBusy}
+                  disabled={panelBusy || desktopSessionArchived}
                   className="block min-h-[72px] w-full resize-none bg-transparent px-3 pb-12 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60"
                 />
                 <div className="absolute bottom-2 left-2 right-2 z-10 flex min-w-0 items-center gap-1.5">
@@ -1422,7 +1430,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                   ) : !panelBusy ? (
                     <button
                       type="submit"
-                      disabled={!panelDraft.trim() || hasPendingConfirmation || (desktop && (!desktopAdapter?.configured || desktopAdapter?.creating))}
+                      disabled={!panelDraft.trim() || hasPendingConfirmation || (desktop && (!desktopAdapter?.configured || desktopAdapter?.creating || desktopSessionArchived))}
                       aria-label="发送"
                       className={cn(
                         'inline-flex size-7 items-center justify-center rounded-lg transition-colors',
@@ -1442,8 +1450,11 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
       )}
 
       {tab === 'pref' && <PreferencesTab desktop={desktop} sessionId={panelSessionId} />}
-      {desktop && desktopAdapter?.error && tab === 'chat' && (
+      {desktop && desktopAdapter?.error && (
         <p role="alert" className="mx-3 mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{desktopAdapter.error}</p>
+      )}
+      {desktop && desktopSessionArchived && tab === 'chat' && (
+        <p role="status" className="mx-3 mb-2 rounded-lg bg-[var(--canvas-surface-muted)] px-3 py-2 text-xs text-[var(--canvas-text-muted)]">此会话已归档。可在历史中恢复后继续发送。</p>
       )}
       {tab === 'skills' && (
         <SkillsPanel
@@ -1480,6 +1491,11 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
           onImported={(id) => void loadSession(id)}
           desktop={desktop}
           desktopSessions={desktop ? desktopAdapter?.sessions : undefined}
+          onRenameSession={desktopAdapter?.onRenameSession}
+          onArchiveSession={desktopAdapter?.onArchiveSession}
+          onRestoreSession={desktopAdapter?.onRestoreSession}
+          onCopySession={desktopAdapter?.onCopySession}
+          onDeleteSession={desktopAdapter?.onDeleteSession}
         />
       )}
       </div>
@@ -1501,8 +1517,9 @@ export function AgentConfirmationCard({
   const pending = confirmation.status === 'pending'
   const submitting = confirmation.status === 'submitting'
   const total = confirmation.estimatedTotalCost ?? confirmation.estimatedCost ?? 0
-  const summary = confirmation.tool ? `确认${toolLabel(confirmation.tool)}` : confirmation.summary
-  const statusText = submitting ? '正在提交确认…' : '待确认生成'
+  const deleting = confirmation.kind === 'canvas_delete'
+  const summary = deleting ? '确认删除所列节点及关联连线' : confirmation.tool ? `确认${toolLabel(confirmation.tool)}` : confirmation.summary
+  const statusText = submitting ? '正在提交确认…' : deleting ? '待确认删除' : '待确认生成'
 
   return (
     <section className="rounded-lg border border-[var(--canvas-border-strong)] bg-[var(--canvas-surface)] px-2.5 py-2 text-[11px] text-[var(--canvas-text)] shadow-sm">
@@ -1511,11 +1528,18 @@ export function AgentConfirmationCard({
         <div className="min-w-0 flex-1">
           <p className="font-semibold">{statusText}{queuedCount > 0 ? `，还有 ${queuedCount} 项排队` : ''}</p>
           <p className="mt-0.5 truncate text-[var(--canvas-text-muted)]">{summary}</p>
-          {showEstimatedCost
+          {showEstimatedCost && !deleting
             ? <p className="mt-0.5 text-[var(--canvas-text-muted)]">预计 {total} 点{confirmation.affectedNodeCount ? ` · ${confirmation.affectedNodeCount} 个节点` : ''}</p>
             : confirmation.affectedNodeCount
               ? <p className="mt-0.5 text-[var(--canvas-text-muted)]">涉及 {confirmation.affectedNodeCount} 个节点</p>
               : null}
+          {deleting && (
+            <div className="mt-1.5 rounded-md bg-[var(--canvas-surface-muted)] px-2 py-1.5">
+              <p className="break-words">{confirmation.nodeLabels?.join('、')}</p>
+              <p className="mt-0.5">将移除 {confirmation.connectedEdgeCount ?? 0} 条连线，影响 {confirmation.downstreamNodeCount ?? 0} 个下游节点。</p>
+              <p className="mt-0.5">涉及 {confirmation.affectedGroupCount ?? 0} 个分组、{confirmation.affectedStackCount ?? 0} 个堆叠。</p>
+            </div>
+          )}
           {!showEstimatedCost && confirmation.generationItems && confirmation.generationItems.length > 0 && (
             <div className="mt-1.5 max-h-32 space-y-1 overflow-y-auto pr-1">
               {confirmation.generationItems.map((item, index) => (
@@ -1958,28 +1982,106 @@ function UsageTab({ sessionId, desktop = false }: { sessionId: string | number |
   )
 }
 
-type HistorySession = { sessionId: string | number; title: string; updatedAt?: string }
+type HistorySession = { sessionId: string | number; title: string; updatedAt?: string; status?: 'active' | 'archived' }
 
 export function AgentHistorySessionItem({
   session,
   active,
   onOpen,
+  onRename,
+  onArchive,
+  onRestore,
+  onCopy,
+  onDelete,
 }: {
   session: HistorySession
   active: boolean
   onOpen: () => void
+  onRename?: (title: string) => Promise<void>
+  onArchive?: () => Promise<void>
+  onRestore?: () => Promise<void>
+  onCopy?: () => Promise<void>
+  onDelete?: () => Promise<void>
 }) {
+  const managed = Boolean(onRename || onArchive || onRestore || onCopy || onDelete)
+  const [renaming, setRenaming] = useState(false)
+  const [titleDraft, setTitleDraft] = useState(session.title)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!renaming) setTitleDraft(session.title)
+  }, [renaming, session.title])
+
+  const runAction = async (action: (() => Promise<void>) | undefined) => {
+    if (!action || busy) return
+    setBusy(true)
+    try {
+      await action()
+      setRenaming(false)
+      setConfirmingDelete(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!managed) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        className={`w-full rounded-[16px] border px-2.5 py-2 text-left text-[12px] ${
+          active ? 'border-[#111] bg-[#f7f7f7]' : 'border-black/6 hover:bg-[#f7f7f7]'
+        }`}
+      >
+        <p className="font-bold text-[#333]">{session.title}</p>
+        <p className="text-[#999]">{active ? '当前会话' : '历史会话'}</p>
+      </button>
+    )
+  }
+
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={`w-full rounded-[16px] border px-2.5 py-2 text-left text-[12px] ${
-        active ? 'border-[#111] bg-[#f7f7f7]' : 'border-black/6 hover:bg-[#f7f7f7]'
-      }`}
-    >
-      <p className="font-bold text-[#333]">{session.title}</p>
-      <p className="text-[#999]">{active ? '当前会话' : '历史会话'}</p>
-    </button>
+    <div className={`rounded-[16px] border px-2.5 py-2 text-[12px] ${active ? 'border-[#111] bg-[#f7f7f7]' : 'border-black/6'}`}>
+      <div className="flex items-start gap-2">
+        <button type="button" disabled={busy} onClick={onOpen} className="min-w-0 flex-1 text-left disabled:opacity-50">
+          <p className="truncate font-bold text-[#333]">{session.title}</p>
+          <p className="text-[#999]">{active ? '当前会话' : session.status === 'archived' ? '已归档' : '历史会话'}</p>
+        </button>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          {onRename && !renaming && (
+            <button type="button" disabled={busy} onClick={() => setRenaming(true)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">重命名</button>
+          )}
+          {session.status === 'archived'
+            ? onRestore && <button type="button" disabled={busy} onClick={() => void runAction(onRestore)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">恢复</button>
+            : onArchive && <button type="button" disabled={busy} onClick={() => void runAction(onArchive)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">归档</button>}
+          {onCopy && <button type="button" disabled={busy} onClick={() => void runAction(onCopy)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">复制</button>}
+          {onDelete && !confirmingDelete && <button type="button" disabled={busy} onClick={() => setConfirmingDelete(true)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#8b3030] disabled:opacity-50">删除</button>}
+        </div>
+      </div>
+      {renaming && (
+        <form
+          className="mt-2 flex gap-1.5"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const title = titleDraft.trim()
+            if (title) void runAction(onRename ? () => onRename(title) : undefined)
+          }}
+        >
+          <input autoFocus maxLength={120} value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-black/10 bg-white px-2 py-1 outline-none focus:border-black/30" aria-label="会话标题" />
+          <button type="submit" disabled={busy || !titleDraft.trim()} className="rounded-lg bg-[#111] px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50">保存</button>
+          <button type="button" disabled={busy} onClick={() => setRenaming(false)} className="rounded-lg bg-white px-2 py-1 text-[10px] text-[#555]">取消</button>
+        </form>
+      )}
+      {confirmingDelete && (
+        <div role="alertdialog" aria-label="确认删除会话" className="mt-2 rounded-lg bg-white px-2 py-2">
+          <p className="text-[11px] text-[#555]">删除后会话将从历史中移除，无法恢复。</p>
+          <div className="mt-1.5 flex justify-end gap-1.5">
+            <button type="button" disabled={busy} onClick={() => setConfirmingDelete(false)} className="rounded-lg px-2 py-1 text-[10px] text-[#555]">取消</button>
+            <button type="button" disabled={busy} onClick={() => void runAction(onDelete)} className="rounded-lg bg-[#8b3030] px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50">确认删除</button>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1990,6 +2092,11 @@ function HistoryTab({
   desktop = false,
   onOpenSession,
   onImported,
+  onRenameSession,
+  onArchiveSession,
+  onRestoreSession,
+  onCopySession,
+  onDeleteSession,
 }: {
   sessionId: string | number | null
   canvasId?: string | number
@@ -1997,6 +2104,11 @@ function HistoryTab({
   desktop?: boolean
   onOpenSession: (id: string | number, title?: string) => void
   onImported: (id: string | number) => void
+  onRenameSession?: (sessionId: string, title: string) => Promise<void>
+  onArchiveSession?: (sessionId: string) => Promise<void>
+  onRestoreSession?: (sessionId: string) => Promise<void>
+  onCopySession?: (sessionId: string) => Promise<void>
+  onDeleteSession?: (sessionId: string) => Promise<void>
 }) {
   const [sessions, setSessions] = useState<HistorySession[]>([])
   const [fragments, setFragments] = useState<Array<{ id: string | number; title: string; canvasId?: string | null; createdAt?: string }>>([])
@@ -2059,9 +2171,15 @@ function HistoryTab({
               sessionId: session.sessionId,
               title: session.title,
               updatedAt: session.modifiedAt ? new Date(session.modifiedAt).toISOString() : undefined,
+              status: session.status,
             }}
             active={String(session.sessionId) === String(sessionId)}
             onOpen={() => onOpenSession(session.sessionId, session.title)}
+            onRename={onRenameSession ? (title) => onRenameSession(session.sessionId, title) : undefined}
+            onArchive={onArchiveSession ? () => onArchiveSession(session.sessionId) : undefined}
+            onRestore={onRestoreSession ? () => onRestoreSession(session.sessionId) : undefined}
+            onCopy={onCopySession ? () => onCopySession(session.sessionId) : undefined}
+            onDelete={onDeleteSession ? () => onDeleteSession(session.sessionId) : undefined}
           />
         ))}
         <p className="text-[12px] font-bold text-[#555]">可复用片段</p>

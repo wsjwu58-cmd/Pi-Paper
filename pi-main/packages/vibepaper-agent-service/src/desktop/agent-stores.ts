@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promi
 import { join, relative, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { DESKTOP_AGENT_CONTROL_SCHEMA_VERSION, DesktopAgentControlStore } from "./control-store.ts";
+import { DesktopPersistentPlanRepository } from "./persistent-plan-repository.ts";
 import { DesktopAgentSessionStore } from "./session-store.ts";
 
 type ProjectMetadata = { projectId: string; schemaVersion: number };
@@ -13,6 +14,7 @@ export type DesktopAgentStores = {
 	projectDirectory: string;
 	control: DesktopAgentControlStore;
 	sessions: DesktopAgentSessionStore;
+	plans: DesktopPersistentPlanRepository;
 	close(): Promise<void>;
 };
 
@@ -233,38 +235,67 @@ export async function openDesktopAgentStores(projectDirectoryInput: string): Pro
 	const releaseWriterLock = await acquireProjectWriterLock(join(agentDirectory, "writer.lock"));
 	let control: DesktopAgentControlStore | undefined;
 	let sessions: DesktopAgentSessionStore | undefined;
+	let plans: DesktopPersistentPlanRepository | undefined;
 	try {
 		await backupControlDatabaseBeforeUpgrade(controlPath, agentDirectory);
 		control = new DesktopAgentControlStore(controlPath);
-		sessions = new DesktopAgentSessionStore(metadata.projectId, projectDirectory, sessionsDirectory);
+		const sessionStore = new DesktopAgentSessionStore(
+			metadata.projectId,
+			projectDirectory,
+			sessionsDirectory,
+			control,
+		);
+		sessions = sessionStore;
+		const planDatabase = new DatabaseSync(controlPath, { timeout: 5000 });
+		try {
+			planDatabase.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
+			plans = new DesktopPersistentPlanRepository(
+				planDatabase,
+				metadata.projectId,
+				(sessionId) => sessionStore.hasSession(sessionId),
+				(sessionId) => sessionStore.isSessionActive(sessionId),
+			);
+		} catch (error) {
+			planDatabase.close();
+			throw error;
+		}
 		let closed = false;
 		return {
 			projectId: metadata.projectId,
 			projectDirectory,
 			control,
 			sessions,
+			plans,
 			async close() {
 				if (closed) return;
 				closed = true;
 				try {
-					control?.close();
+					plans?.close();
 				} finally {
 					try {
-						await sessions?.close();
+						control?.close();
 					} finally {
-						await releaseWriterLock();
+						try {
+							await sessions?.close();
+						} finally {
+							await releaseWriterLock();
+						}
 					}
 				}
 			},
 		};
 	} catch (error) {
 		try {
-			control?.close();
+			plans?.close();
 		} finally {
 			try {
-				await sessions?.close();
+				control?.close();
 			} finally {
-				await releaseWriterLock();
+				try {
+					await sessions?.close();
+				} finally {
+					await releaseWriterLock();
+				}
 			}
 		}
 		throw error;

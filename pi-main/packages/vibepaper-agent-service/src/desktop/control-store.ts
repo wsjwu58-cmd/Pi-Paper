@@ -11,10 +11,18 @@ import { buildTaskContinuationPrompt } from "../application/task-continuation-pr
 import type { PlannedAction } from "../domain/action-approval.ts";
 import type { AgentRun, AgentRunEvent, AgentRunEventType, AgentRunStatus } from "../domain/agent-run.ts";
 import { isActiveRunStatus } from "../domain/agent-run.ts";
+import type { DesktopAgentSkillSnapshot } from "./skill-context.ts";
 
-export const DESKTOP_AGENT_CONTROL_SCHEMA_VERSION = 6;
+export const DESKTOP_AGENT_CONTROL_SCHEMA_VERSION = 7;
 const CONTROL_SCHEMA_VERSION = DESKTOP_AGENT_CONTROL_SCHEMA_VERSION;
 const MAX_OPERATION_RESULT_BYTES = 1_000_000;
+
+export type DesktopAgentSessionStatus = "active" | "archived" | "deleted";
+
+export type DesktopAgentSessionState = {
+	status: DesktopAgentSessionStatus;
+	updatedAt?: Date;
+};
 
 export type DesktopMemoryCandidateScope = "session" | "canvas" | "project" | "global" | "daily";
 
@@ -77,6 +85,50 @@ const DESKTOP_TASK_CONTINUATIONS_SCHEMA = `
   CREATE INDEX IF NOT EXISTS desktop_task_continuations_by_project_status
     ON desktop_task_continuations(project_id, status, created_at);
 `;
+
+const DESKTOP_AGENT_SESSION_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS desktop_agent_session_state (
+    session_id TEXT PRIMARY KEY CHECK (length(session_id) BETWEEN 1 AND 128),
+    status TEXT NOT NULL CHECK (status IN ('active', 'archived', 'deleted')),
+    updated_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS desktop_agent_session_state_by_status
+    ON desktop_agent_session_state(status, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS desktop_agent_skill_snapshots (
+    session_id TEXT PRIMARY KEY CHECK (length(session_id) BETWEEN 1 AND 128),
+    snapshots_json TEXT NOT NULL CHECK (json_valid(snapshots_json)),
+    updated_at TEXT NOT NULL
+  ) STRICT;
+`;
+
+const DESKTOP_AGENT_PLANS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS agent_plans (
+    plan_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 0),
+    canvas_version INTEGER NOT NULL CHECK(canvas_version >= 0),
+    status TEXT NOT NULL CHECK(status IN ('draft', 'running', 'failed', 'completed')),
+    plan_json TEXT NOT NULL CHECK(json_valid(plan_json)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS agent_plans_by_session ON agent_plans(session_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS agent_plan_steps (
+    plan_id TEXT NOT NULL REFERENCES agent_plans(plan_id) ON DELETE CASCADE,
+    step_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed', 'stale')),
+    task_id TEXT UNIQUE,
+    idempotency_key TEXT,
+    step_json TEXT NOT NULL CHECK(json_valid(step_json)),
+    PRIMARY KEY(plan_id, step_id)
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS agent_plan_steps_by_task
+    ON agent_plan_steps(task_id) WHERE task_id IS NOT NULL;
+`;
+
+const DESKTOP_AGENT_SCHEMA_V7 = `${DESKTOP_AGENT_SESSION_SCHEMA}${DESKTOP_AGENT_PLANS_SCHEMA}`;
 
 const CONTROL_SCHEMA = `
   CREATE TABLE agent_runs (
@@ -157,6 +209,8 @@ const CONTROL_SCHEMA = `
     loaded_skill_ids TEXT NOT NULL CHECK (json_valid(loaded_skill_ids)),
     updated_at TEXT NOT NULL
   ) STRICT;
+
+  ${DESKTOP_AGENT_SCHEMA_V7}
 
   CREATE TABLE task_links (
     task_id TEXT PRIMARY KEY,
@@ -498,6 +552,59 @@ function digest(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+function validateSessionId(sessionId: string): void {
+	if (typeof sessionId !== "string" || sessionId.length < 1 || sessionId.length > 128)
+		throw new Error("SESSION_ID_INVALID");
+}
+
+function decodeSkillSnapshot(value: unknown): DesktopAgentSkillSnapshot {
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		throw new Error("AGENT_SKILL_SNAPSHOT_INVALID");
+	const snapshot = value as Record<string, unknown>;
+	if (
+		typeof snapshot.id !== "string" ||
+		snapshot.id.length < 1 ||
+		snapshot.id.length > 160 ||
+		typeof snapshot.key !== "string" ||
+		snapshot.key.length < 1 ||
+		snapshot.key.length > 160 ||
+		typeof snapshot.name !== "string" ||
+		snapshot.name.trim().length < 1 ||
+		typeof snapshot.description !== "string" ||
+		typeof snapshot.instructions !== "string" ||
+		(snapshot.source !== "project" && snapshot.source !== "system_dynamic") ||
+		typeof snapshot.category !== "string" ||
+		!Number.isSafeInteger(snapshot.version) ||
+		Number(snapshot.version) < 0 ||
+		snapshot.enabled !== true ||
+		typeof snapshot.contentHash !== "string" ||
+		!/^[a-f0-9]{64}$/u.test(snapshot.contentHash) ||
+		digest(snapshot.instructions) !== snapshot.contentHash
+	) {
+		throw new Error("AGENT_SKILL_SNAPSHOT_INVALID");
+	}
+	return {
+		id: snapshot.id,
+		key: snapshot.key,
+		name: snapshot.name,
+		description: snapshot.description,
+		instructions: snapshot.instructions,
+		source: snapshot.source,
+		category: snapshot.category,
+		version: Number(snapshot.version),
+		enabled: true,
+		contentHash: snapshot.contentHash,
+	};
+}
+
+function normalizeSkillSnapshots(value: readonly DesktopAgentSkillSnapshot[]): DesktopAgentSkillSnapshot[] {
+	if (!Array.isArray(value)) throw new Error("AGENT_SKILL_SNAPSHOT_INVALID");
+	const snapshots = value.map(decodeSkillSnapshot);
+	if (new Set(snapshots.map((snapshot) => snapshot.id)).size !== snapshots.length)
+		throw new Error("AGENT_SKILL_SNAPSHOT_INVALID");
+	return snapshots;
+}
+
 export class DesktopAgentControlStore implements RunRepository, ApprovalRepository {
 	private readonly database: DatabaseSync;
 	private closed = false;
@@ -543,12 +650,107 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		}
 	}
 
+	getSessionState(sessionId: string): DesktopAgentSessionState {
+		validateSessionId(sessionId);
+		const row = this.database
+			.prepare("SELECT status, updated_at FROM desktop_agent_session_state WHERE session_id = ?")
+			.get(sessionId) as { status: DesktopAgentSessionStatus; updated_at: string } | undefined;
+		return row ? { status: row.status, updatedAt: new Date(row.updated_at) } : { status: "active" };
+	}
+
+	listSessionStates(): Map<string, DesktopAgentSessionState> {
+		const rows = this.database
+			.prepare("SELECT session_id, status, updated_at FROM desktop_agent_session_state")
+			.all() as Array<{ session_id: string; status: DesktopAgentSessionStatus; updated_at: string }>;
+		return new Map(
+			rows.map((row) => [row.session_id, { status: row.status, updatedAt: new Date(row.updated_at) }] as const),
+		);
+	}
+
+	setSessionStatus(sessionId: string, status: DesktopAgentSessionStatus): DesktopAgentSessionState {
+		validateSessionId(sessionId);
+		if (status !== "active" && status !== "archived" && status !== "deleted")
+			throw new Error("SESSION_STATUS_INVALID");
+		return this.transaction(() => {
+			const current = this.getSessionState(sessionId);
+			if (current.status === "deleted") throw new Error("SESSION_NOT_FOUND");
+			if (current.status === status) return current;
+			const updatedAt = new Date();
+			this.database
+				.prepare(`
+					INSERT INTO desktop_agent_session_state (session_id, status, updated_at)
+					VALUES (?, ?, ?)
+					ON CONFLICT(session_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at
+				`)
+				.run(sessionId, status, updatedAt.toISOString());
+			if (status !== "active") this.invalidateSessionWorkInTransaction(sessionId, status, updatedAt);
+			return { status, updatedAt };
+		});
+	}
+
+	getSessionSkillSnapshots(sessionId: string): DesktopAgentSkillSnapshot[] {
+		validateSessionId(sessionId);
+		const row = this.database
+			.prepare("SELECT snapshots_json FROM desktop_agent_skill_snapshots WHERE session_id = ?")
+			.get(sessionId) as { snapshots_json: string } | undefined;
+		if (!row) return [];
+		let value: unknown;
+		try {
+			value = JSON.parse(row.snapshots_json) as unknown;
+		} catch {
+			throw new Error("AGENT_SKILL_SNAPSHOT_INVALID");
+		}
+		if (!Array.isArray(value)) throw new Error("AGENT_SKILL_SNAPSHOT_INVALID");
+		const snapshots = value.map(decodeSkillSnapshot);
+		if (new Set(snapshots.map((snapshot) => snapshot.id)).size !== snapshots.length)
+			throw new Error("AGENT_SKILL_SNAPSHOT_INVALID");
+		return snapshots;
+	}
+
+	setSessionSkillSnapshots(
+		sessionId: string,
+		snapshots: readonly DesktopAgentSkillSnapshot[],
+	): DesktopAgentSkillSnapshot[] {
+		validateSessionId(sessionId);
+		const normalized = normalizeSkillSnapshots(snapshots);
+		return this.transaction(() => {
+			this.assertSessionActive(sessionId);
+			this.writeSessionSkillSnapshots(sessionId, normalized);
+			this.database
+				.prepare(`
+					INSERT INTO agent_session_skill_state (session_id, loaded_skill_ids, updated_at)
+					VALUES (?, '[]', ?)
+					ON CONFLICT(session_id) DO UPDATE SET loaded_skill_ids = '[]', updated_at = excluded.updated_at
+				`)
+				.run(sessionId, new Date().toISOString());
+			return normalized;
+		});
+	}
+
+	attachSessionSkillSnapshot(
+		sessionId: string,
+		snapshot: DesktopAgentSkillSnapshot,
+	): { snapshot: DesktopAgentSkillSnapshot; attached: boolean } {
+		validateSessionId(sessionId);
+		const normalized = decodeSkillSnapshot(snapshot);
+		return this.transaction(() => {
+			this.assertSessionActive(sessionId);
+			const existing = this.getSessionSkillSnapshots(sessionId);
+			const current = existing.find((item) => item.id === normalized.id);
+			if (current) return { snapshot: current, attached: false };
+			const next = [...existing, normalized];
+			this.writeSessionSkillSnapshots(sessionId, next);
+			return { snapshot: normalized, attached: true };
+		});
+	}
+
 	markSkillLoaded(sessionId: string, skillId: string): string[] {
 		if (typeof sessionId !== "string" || sessionId.length < 1 || sessionId.length > 128)
 			throw new Error("SESSION_ID_INVALID");
 		if (typeof skillId !== "string" || skillId.length < 1 || skillId.length > 160)
 			throw new Error("SKILL_ID_INVALID");
 		return this.transaction(() => {
+			this.assertSessionActive(sessionId);
 			const loadedSkillIds = this.getLoadedSkillIds(sessionId);
 			if (loadedSkillIds.includes(skillId)) return loadedSkillIds;
 			const next = [...loadedSkillIds, skillId];
@@ -563,6 +765,18 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				.run(sessionId, JSON.stringify(next), new Date().toISOString());
 			return next;
 		});
+	}
+
+	private writeSessionSkillSnapshots(sessionId: string, snapshots: readonly DesktopAgentSkillSnapshot[]): void {
+		this.database
+			.prepare(`
+				INSERT INTO desktop_agent_skill_snapshots (session_id, snapshots_json, updated_at)
+				VALUES (?, ?, ?)
+				ON CONFLICT(session_id) DO UPDATE SET
+					snapshots_json = excluded.snapshots_json,
+					updated_at = excluded.updated_at
+			`)
+			.run(sessionId, JSON.stringify(snapshots), new Date().toISOString());
 	}
 
 	findActive(sessionId: string): AgentRun | undefined {
@@ -591,6 +805,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			throw new Error("RUN_INPUT_INVALID");
 		}
 		return this.transaction(() => {
+			this.assertSessionActive(input.sessionId);
 			const existing = this.findByIdempotency(input.sessionId, input.idempotencyKey);
 			if (existing) return existing;
 			if (this.findActive(input.sessionId)) throw new RunConflictError();
@@ -971,6 +1186,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		)
 			throw new Error("TASK_LINK_INVALID");
 		this.transaction(() => {
+			this.assertSessionActive(input.sessionId);
 			const run = this.database.prepare("SELECT session_id FROM agent_runs WHERE id = ?").get(input.runId) as
 				| { session_id: string }
 				| undefined;
@@ -1065,6 +1281,13 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		if (!request) return { status: "not_found" };
 		if (request.projectId !== input.projectId || request.status === "invalidated")
 			return { status: "invalidated", request };
+		if (this.getSessionState(request.sessionId).status !== "active") {
+			this.invalidateTaskContinuation(request.originRunId, request.projectId);
+			return {
+				status: "invalidated",
+				request: this.findTaskContinuationForOrigin(request.originRunId) ?? request,
+			};
+		}
 		if (request.status === "interrupted") return { status: "interrupted", request };
 		if (request.status === "completed") return { status: "completed", request };
 
@@ -1134,6 +1357,15 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			WHERE continuation_run_id = ? AND project_id = ? AND status = 'claimed'
 		`)
 			.run(new Date().toISOString(), runId, projectId);
+	}
+
+	private invalidateTaskContinuation(originRunId: string, projectId: string): void {
+		this.database
+			.prepare(`
+				UPDATE desktop_task_continuations SET status = 'invalidated', updated_at = ?
+				WHERE origin_run_id = ? AND project_id = ? AND status IN ('pending', 'claimed', 'interrupted')
+			`)
+			.run(new Date().toISOString(), originRunId, projectId);
 	}
 
 	markTaskContinuationCompleted(runId: string, projectId: string): void {
@@ -1354,6 +1586,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			throw new Error("OPERATION_INPUT_INVALID");
 		}
 		return this.transaction(() => {
+			this.assertSessionActive(input.sessionId);
 			const existingRow = this.database
 				.prepare(`
 				SELECT * FROM operations WHERE tool_call_id = ? OR (session_id = ? AND idempotency_key = ?)
@@ -1693,7 +1926,12 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		const run = this.database.prepare("SELECT session_id, status FROM agent_runs WHERE id = ?").get(originRunId) as
 			| { session_id: string; status: AgentRunStatus }
 			| undefined;
-		if (!run || (run.status !== "completed" && run.status !== "failed")) return false;
+		if (
+			!run ||
+			this.getSessionState(run.session_id).status !== "active" ||
+			(run.status !== "completed" && run.status !== "failed")
+		)
+			return false;
 		const rows = this.database
 			.prepare(`
 			SELECT task_links.task_id, task_links.status,
@@ -1774,6 +2012,47 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		}
 	}
 
+	private assertSessionActive(sessionId: string): void {
+		const state = this.getSessionState(sessionId);
+		if (state.status === "deleted") throw new Error("SESSION_NOT_FOUND");
+		if (state.status === "archived") throw new Error("SESSION_ARCHIVED");
+	}
+
+	private invalidateSessionWorkInTransaction(
+		sessionId: string,
+		status: Exclude<DesktopAgentSessionStatus, "active">,
+		now: Date,
+	): void {
+		const timestamp = now.toISOString();
+		this.database
+			.prepare(
+				"UPDATE approvals SET status = 'invalidated', updated_at = ? WHERE session_id = ? AND status = 'pending'",
+			)
+			.run(timestamp, sessionId);
+		this.database
+			.prepare(`
+				UPDATE desktop_task_continuations SET status = 'invalidated', updated_at = ?
+				WHERE session_id = ? AND status IN ('pending', 'claimed', 'interrupted')
+			`)
+			.run(timestamp, sessionId);
+
+		const runs = this.database
+			.prepare(`SELECT id FROM agent_runs WHERE session_id = ? AND status IN ${ACTIVE_STATUS_SQL}`)
+			.all(sessionId) as Array<{ id: string }>;
+		const text = status === "deleted" ? "会话已删除，运行已停止。" : "会话已归档，运行已停止。";
+		for (const run of runs) {
+			this.database
+				.prepare("UPDATE agent_runs SET status = 'aborted', updated_at = ? WHERE id = ?")
+				.run(timestamp, run.id);
+			const hasTerminalEvent = this.database
+				.prepare("SELECT 1 AS present FROM run_events WHERE run_id = ? AND type = 'run_aborted' LIMIT 1")
+				.get(run.id);
+			if (!hasTerminalEvent) {
+				this.appendEventInTransaction(run.id, sessionId, "run_aborted", { text, message: text }, now);
+			}
+		}
+	}
+
 	private initializeSchema(): void {
 		const version = Number(
 			(this.database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
@@ -1796,7 +2075,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
 				this.ensureTaskLinkActionColumn();
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
-				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+				this.ensureSchemaV7();
 			});
 			return;
 		}
@@ -1812,7 +2091,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
 				this.ensureTaskLinkActionColumn();
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
-				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+				this.ensureSchemaV7();
 			});
 			return;
 		}
@@ -1821,7 +2100,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.database.exec(DESKTOP_MEMORY_CANDIDATES_SCHEMA);
 				this.ensureTaskLinkActionColumn();
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
-				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+				this.ensureSchemaV7();
 			});
 			return;
 		}
@@ -1829,15 +2108,19 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			this.transaction(() => {
 				this.ensureTaskLinkActionColumn();
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
-				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+				this.ensureSchemaV7();
 			});
 			return;
 		}
 		if (version === 5) {
 			this.transaction(() => {
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
-				this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+				this.ensureSchemaV7();
 			});
+			return;
+		}
+		if (version === 6) {
+			this.transaction(() => this.ensureSchemaV7());
 			return;
 		}
 		if (version !== 0) throw new Error(`Agent 控制库版本 ${version} 当前不受支持。`);
@@ -1851,6 +2134,11 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			this.database.exec(CONTROL_SCHEMA);
 			this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 		});
+	}
+
+	private ensureSchemaV7(): void {
+		this.database.exec(DESKTOP_AGENT_SCHEMA_V7);
+		this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 	}
 
 	private ensureTaskLinkActionColumn(): void {

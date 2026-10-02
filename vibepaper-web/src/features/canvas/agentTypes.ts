@@ -24,6 +24,12 @@ export interface AgentSuggestion {
 
 /** 高风险 Agent 动作必须通过此卡片确认；令牌绑定用户、画布版本和动作摘要。 */
 export interface AgentConfirmation {
+  kind?: 'generation' | 'canvas_delete'
+  nodeLabels?: string[]
+  connectedEdgeCount?: number
+  downstreamNodeCount?: number
+  affectedGroupCount?: number
+  affectedStackCount?: number
   actionId: string
   approvalToken: string
   tool?: string

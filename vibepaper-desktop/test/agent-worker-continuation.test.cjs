@@ -30,9 +30,11 @@ function createStores(projectId) {
       async flushOutbox() {},
       async listSessions() { return [] },
       async openSession() { return {} },
+      async isSessionActive() { return true },
       async listTranscriptMessages() { return [] },
       async resolveSessionTitle() { return '新对话' },
     },
+    plans: { async listPendingTaskIds() { return [] } },
     async close() {},
   }
 }
@@ -94,6 +96,8 @@ function createWorkerHarness(options = {}) {
     },
     'project-memory.ts': { DesktopProjectMemory: TestProjectMemory },
     'session-fragments.ts': { DesktopSessionFragments: NoopStore },
+    'persistent-plan-repository.ts': {},
+    'deletion-confirmation.ts': {},
     'scoped-memory.ts': {
       DesktopScopedMemoryStore: TestScopedMemory,
       desktopCandidateScope() { return 'canvas' },
@@ -409,6 +413,7 @@ function createObservableTurnStores(projectId, run, runtime) {
   }
   const sessions = {
     async openSession() { return {} },
+    async isSessionActive() { return true },
     async listSessions() { return [{ id: run.sessionId }] },
     async buildContext() { return { messages: runtime.sessionMessages.map((entry) => entry.message), entries: [] } },
     async listTranscriptMessages() {
@@ -424,7 +429,7 @@ function createObservableTurnStores(projectId, run, runtime) {
     async appendCompaction() {},
     async appendSummaryUsage() {},
   }
-  return { projectId, projectDirectory: projectId, control, sessions, async close() {} }
+  return { projectId, projectDirectory: projectId, control, sessions, plans: { async listPendingTaskIds() { return [] } }, async close() {} }
 }
 
 function createFakeAgentTurn(runtime, scenario) {

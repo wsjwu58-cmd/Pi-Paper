@@ -1,6 +1,8 @@
 const { openDesktopAgentStores } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/agent-stores.ts')
 const { DesktopProjectMemory } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/project-memory.ts')
 const { DesktopSessionFragments } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-fragments.ts')
+const { parseDesktopPlanCreateRequest, parseDesktopPlanRerunRequest, parseDesktopPlanId, parseDesktopAgentProfile, desktopPlanResponse } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/persistent-plan-repository.ts')
+const { confirmDesktopDeleteAction } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/deletion-confirmation.ts')
 const { DesktopScopedMemoryStore, desktopCandidateScope } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/scoped-memory.ts')
 const { desktopCompactionSummary } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-store.ts')
 const {
@@ -21,6 +23,9 @@ const {
 const {
   createDesktopAgentSkillContext,
   listDesktopAgentSkills,
+  setDesktopSessionSkills,
+  attachDesktopSessionSkill,
+  listDesktopAgentSessionSkills,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/skill-context.ts')
 const {
   createProjectAgentSkill,
@@ -72,13 +77,53 @@ async function requireProject(projectId) {
   return stores
 }
 
-async function listSessions(projectId) {
+async function manageSession(method, payload) {
+  const current = await requireProject(payload?.projectId)
+  const sessionId = payload?.sessionId
+  await current.sessions.openSession(sessionId)
+  if (method === 'agent:get-session') return current.sessions.getSession(sessionId)
+  if (method === 'agent:update-session' || method === 'agent:delete-session') {
+    if (method === 'agent:delete-session' || payload.input?.status === 'archived') {
+      const running = [...activeRuns.values()].filter((run) => run.sessionId === sessionId)
+      for (const run of running) {
+        run.cancelled = true
+        run.controller.abort()
+        run.agent?.abort()
+      }
+      await Promise.all(running.map((run) => run.completion))
+    }
+    return method === 'agent:delete-session'
+      ? current.sessions.deleteSession(sessionId)
+      : current.sessions.updateSession(sessionId, payload.input)
+  }
+  if (method === 'agent:copy-session') {
+    if (payload.input?.canvasId !== undefined && payload.input.canvasId !== payload.canvasId) throw new Error('AGENT_CANVAS_CHANGED')
+    return current.sessions.copySession(sessionId, payload.input)
+  }
+  const skills = listDesktopAgentSkills(undefined, await listProjectAgentSkills(current.projectDirectory))
+  return method === 'agent:set-session-skills'
+    ? setDesktopSessionSkills(current.sessions, sessionId, payload.input, skills)
+    : attachDesktopSessionSkill(current.sessions, sessionId, payload.input, skills)
+}
+
+async function managePlan(method, payload) {
+  const current = await requireProject(payload?.projectId)
+  const ownerId = current.projectId
+  if (method === 'agent:plan:create') {
+    const input = parseDesktopPlanCreateRequest(payload.input, payload.id)
+    return desktopPlanResponse(await current.plans.create({
+      ownerId, sessionId: payload.id, ...input,
+    }))
+  }
+  const planId = parseDesktopPlanId(payload.id)
+  if (method === 'agent:plan:get') return desktopPlanResponse(await current.plans.get(planId, ownerId))
+  if (method === 'agent:plan:ready-set') return desktopPlanResponse(await current.plans.readySet(planId, ownerId, parseDesktopAgentProfile(payload.input)))
+  return desktopPlanResponse(await current.plans.rerun({ planId, ownerId, ...parseDesktopPlanRerunRequest({ stepId: payload.input }) }))
+}
+
+async function listSessions(projectId, filter) {
   const current = await requireProject(projectId)
-  const sessions = await current.sessions.listSessions()
-  return Promise.all(sessions.map(async ({ id, createdAt, modifiedAt }) => {
-    const title = await current.sessions.resolveSessionTitle(id)
-    return { sessionId: id, title: title || '新对话', createdAt, modifiedAt }
-  }))
+  return current.sessions.listAgentSessions(filter)
 }
 
 async function listAgentSkills(payload) {
@@ -92,16 +137,11 @@ async function listAgentSkills(payload) {
   }
   const projectSkills = await listProjectAgentSkills(current.projectDirectory)
   const items = listDesktopAgentSkills(keyword, projectSkills)
-  const availableItems = listDesktopAgentSkills(undefined, projectSkills)
-  let loadedSkillIds = []
   if (sessionId) {
     await current.sessions.openSession(sessionId)
-    const availableSkillIds = new Set(availableItems
-      .filter((skill) => skill.source !== 'project' || skill.enabled)
-      .map((skill) => skill.id))
-    loadedSkillIds = current.control.getLoadedSkillIds(sessionId).filter((skillId) => availableSkillIds.has(skillId))
+    return listDesktopAgentSessionSkills(current.control, sessionId, keyword, projectSkills)
   }
-  return { items, loadedSkillIds }
+  return { items, loadedSkillIds: [] }
 }
 
 function reservedSkillNames() {
@@ -208,6 +248,7 @@ async function listSessionEvents(projectId, sessionId, afterSeq) {
   const current = await requireProject(projectId)
   if (typeof sessionId !== 'string' || sessionId.length > 128
     || !Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('AGENT_SESSION_INPUT_INVALID')
+  await current.sessions.openSession(sessionId)
   await reconcileSessionTasks(current, sessionId)
   const events = await new SessionRunService(current.control).listSessionEvents(sessionId, afterSeq)
   return toEventEnvelopes(events)
@@ -215,6 +256,7 @@ async function listSessionEvents(projectId, sessionId, afterSeq) {
 
 async function reconcileSessionTasks(current, sessionId) {
   if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
+  await current.sessions.openSession(sessionId)
   const reconciled = await reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
     'agent:core:get-task', { projectId: current.projectId, taskId },
   ), { sessionId, ...(continuationApiKey ? { apiKey: continuationApiKey } : {}) })
@@ -236,6 +278,15 @@ async function reconcileProjectTasks(payload) {
   const nextApiKey = apiKey || null
   if (continuationApiKey && continuationApiKey !== nextApiKey) stopTaskContinuationRuns()
   continuationApiKey = nextApiKey
+  for (const taskId of await current.plans.listPendingTaskIds()) {
+    const task = await agentLocalCoreClient.request('agent:core:get-task', { projectId: current.projectId, taskId })
+    if (!task || !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(task.status)) continue
+    await current.plans.applyTaskTerminal({
+      taskId, status: task.status === 'succeeded' && task.outputVerified !== true ? 'failed' : task.status,
+      ...(task.errorCode ? { errorCode: task.errorCode } : {}),
+      ...(task.status === 'succeeded' && task.outputVerified === true ? { outputRef: `vibe://app/tasks/${taskId}/output` } : {}),
+    })
+  }
 
   const reconciled = await reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
     'agent:core:get-task', { projectId: current.projectId, taskId },
@@ -578,6 +629,7 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
   }
 
   await current.sessions.openSession(sessionId)
+  if (!(await current.sessions.isSessionActive(sessionId))) throw new Error('SESSION_ARCHIVED')
   const runService = new SessionRunService(current.control)
   const existing = current.control.findByIdempotency(sessionId, idempotencyKey)
   if (continuationMode) {
@@ -615,6 +667,7 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
   let resolveCompletion
   const completion = new Promise((resolve) => { resolveCompletion = resolve })
   const runControl = {
+    sessionId,
     controller: new AbortController(), agent: null, cancelled: false, completion, resolveCompletion,
     taskContinuation: Boolean(continuationMode),
   }
@@ -663,8 +716,18 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
       continueAfterTask: continuationMode ? true : undefined,
       onAuditRequested: async (input) => gateway.requestRenderAudit(current.projectId, canvasId, toolContext.canvasVersion, input),
       onApprovalRequired: async (action) => {
+        if (action.toolName === 'delete_nodes') {
+          await runService.appendEvent(run.runId, 'confirmation_required', {
+            kind: 'canvas_delete', actionId: action.actionId, approvalToken: action.approvalToken,
+            tool: action.toolName, summary: '确认删除节点及关联连线',
+            canvasId: action.canvasId, canvasVersion: action.canvasVersion,
+            expiresAt: action.binding.expiresAt, ...action.params.preview,
+          })
+          return
+        }
         const generationItems = await desktopGenerationConfirmationItems(action, gateway)
         await runService.appendEvent(run.runId, 'confirmation_required', {
+          kind: 'generation',
           actionId: action.actionId,
           approvalToken: action.approvalToken,
           tool: action.toolName,
@@ -894,7 +957,10 @@ async function confirmAgentAction(payload) {
       gateway.attachRun({ control: current.control, sessionId: run.sessionId, runId: run.runId })
     }
   }
-  return confirmDesktopGenerationAction(payload ?? {}, current, gateway)
+  await current.sessions.openSession(payload?.sessionId)
+  return record?.action?.toolName === 'delete_nodes'
+    ? confirmDesktopDeleteAction(payload ?? {}, current, gateway)
+    : confirmDesktopGenerationAction(payload ?? {}, current, gateway)
 }
 
 async function cancelAgentRun(payload) {
@@ -999,7 +1065,19 @@ async function dispatch(method, payload) {
       }
     }
     case 'agent:list-sessions':
-      return listSessions(payload?.projectId)
+      return listSessions(payload?.projectId, payload?.filter)
+    case 'agent:get-session':
+    case 'agent:update-session':
+    case 'agent:delete-session':
+    case 'agent:copy-session':
+    case 'agent:set-session-skills':
+    case 'agent:attach-session-skill':
+      return manageSession(method, payload)
+    case 'agent:plan:create':
+    case 'agent:plan:get':
+    case 'agent:plan:ready-set':
+    case 'agent:plan:rerun':
+      return managePlan(method, payload)
     case 'agent:list-skills':
       return listAgentSkills(payload)
     case 'agent:create-skill': {
@@ -1050,7 +1128,7 @@ async function dispatch(method, payload) {
     case 'agent:create-session': {
       const current = await requireProject(payload?.projectId)
       const title = typeof payload.title === 'string' ? payload.title.trim().slice(0, 120) : ''
-      const session = await current.sessions.createSession(title || undefined)
+      const session = await current.sessions.createSession(title || undefined, payload.canvasId)
       return { sessionId: session.id, createdAt: session.createdAt }
     }
     case 'agent:send-message':
@@ -1099,8 +1177,8 @@ parentPort.on('message', async (event) => {
       parentPort.postMessage({
         id: request.id,
         ok: false,
-        error: error instanceof Error && /^[A-Z0-9_]{1,120}$/u.test(error.message)
-          ? error.message
+        error: error instanceof Error && /^[A-Z0-9_]{1,120}$/u.test(error.code ?? error.message)
+          ? error.code ?? error.message
           : 'AGENT_SESSION_OPERATION_FAILED',
       })
     }

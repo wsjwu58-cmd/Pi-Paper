@@ -169,9 +169,8 @@ export function useDesktopAgentController({
       const listed = await bridge.listAgentSessions(projectId)
       if (epoch !== requestEpochRef.current) return
       setSessions(listed)
-      const nextId = preferredSessionId && listed.some((item) => item.sessionId === preferredSessionId)
-        ? preferredSessionId
-        : listed[0]?.sessionId ?? null
+      const preferred = preferredSessionId ? listed.find((item) => item.sessionId === preferredSessionId) : undefined
+      const nextId = preferred?.sessionId ?? listed.find((item) => item.status !== 'archived')?.sessionId ?? listed[0]?.sessionId ?? null
       activeSessionRef.current = nextId
       setActiveSessionId(nextId)
       if (!nextId) {
@@ -328,15 +327,56 @@ export function useDesktopAgentController({
     }
   }, [loadSession, loadSkills, projectId, sessions])
 
+  const updateSession = useCallback(async (sessionId: string, patch: { title?: string; status?: 'active' | 'archived' }) => {
+    if (!bridge || !projectId) return
+    setError('')
+    try {
+      const updated = await bridge.updateAgentSession(projectId, sessionId, patch)
+      const isCurrent = activeSessionRef.current === sessionId
+      const preferredId = isCurrent
+        ? (patch.status === 'archived' ? undefined : updated.sessionId)
+        : activeSessionRef.current ?? undefined
+      await refreshSessions(preferredId)
+    } catch (cause) {
+      setError(normalizeError(cause))
+    }
+  }, [projectId, refreshSessions])
+
+  const copySession = useCallback(async (sessionId: string) => {
+    if (!bridge || !projectId) return
+    setError('')
+    try {
+      const copied = await bridge.copyAgentSession(projectId, sessionId, { canvasId })
+      await refreshSessions(copied.sessionId)
+    } catch (cause) {
+      setError(normalizeError(cause))
+    }
+  }, [canvasId, projectId, refreshSessions])
+
+  const deleteSession = useCallback(async (sessionId: string) => {
+    if (!bridge || !projectId) return
+    setError('')
+    try {
+      await bridge.deleteAgentSession(projectId, sessionId)
+      await refreshSessions(activeSessionRef.current === sessionId ? undefined : activeSessionRef.current ?? undefined)
+    } catch (cause) {
+      setError(normalizeError(cause))
+    }
+  }, [projectId, refreshSessions])
+
   const sendWithReferences = useCallback(async (input: { selectedNodeIds: string[]; selectedSkillId?: string }): Promise<boolean> => {
     const content = draft.trim()
     if (!bridge || !projectId || !content || sendingRef.current) return false
+    if (sessions.find((session) => session.sessionId === activeSessionRef.current)?.status === 'archived') {
+      setError('此会话已归档，请先恢复后继续发送。')
+      return false
+    }
     const hasPendingConfirmation = messages.some((message) => {
       const confirmation = message.meta?.confirmation
       return isActionableConfirmation(confirmation)
     })
     if (hasPendingConfirmation) {
-      setError('请先确认或取消上方的生成请求，再继续发送消息。')
+      setError('请先处理上方待确认的操作，再继续发送消息。')
       return false
     }
     setError('')
@@ -416,7 +456,7 @@ export function useDesktopAgentController({
       }
       return false
     }
-  }, [agnesCatalog?.apiKeyConfigured, canvasId, draft, flushCanvas, loadSession, loadSkills, messages, projectId, refreshSessions])
+  }, [agnesCatalog?.apiKeyConfigured, canvasId, draft, flushCanvas, loadSession, loadSkills, messages, projectId, refreshSessions, sessions])
 
   const onSend = useCallback(async () => {
     await sendWithReferences({ selectedNodeIds: [] })
@@ -507,6 +547,11 @@ export function useDesktopAgentController({
     onDraftChange: setDraft,
     onNewSession,
     onSelectSession,
+    onRenameSession: (sessionId: string, title: string) => updateSession(sessionId, { title }),
+    onArchiveSession: (sessionId: string) => updateSession(sessionId, { status: 'archived' }),
+    onRestoreSession: (sessionId: string) => updateSession(sessionId, { status: 'active' }),
+    onCopySession: copySession,
+    onDeleteSession: deleteSession,
     onSend,
     onSendWithReferences: sendWithReferences,
     onStop,
