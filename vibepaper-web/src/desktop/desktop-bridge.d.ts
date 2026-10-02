@@ -629,6 +629,32 @@ export interface DesktopCompiledAgentPlan {
   executionPartitions: Array<{ effect: 'read' | 'write_canvas' | 'create_task'; concurrencyKey: string; stepIds: string[]; maxParallelism: number; requiresConfirmation: boolean }>
 }
 
+export interface DesktopAgentPlanExecution {
+  planId: string
+  state: 'running' | 'waiting_confirmation' | 'waiting_task' | 'completed' | 'failed' | 'cancelled' | 'reconciliation_required'
+  executions: DesktopAgentPlanStepExecution[]
+  runId?: string
+  stepId?: string
+  actionId?: string
+  taskIds?: string[]
+  lastEventSeq?: number
+  errorCode?: string
+  plan: DesktopAgentPlan
+  stopRequested: boolean
+}
+
+export interface DesktopAgentPlanStepExecution {
+  planId: string
+  stepId: string
+  canvasId: string
+  profile: DesktopAgentProfile
+  runId: string
+  state: DesktopAgentPlanExecution['state']
+  actionId?: string
+  errorCode?: string
+  updatedAt: string
+}
+
 export interface DesktopAgentSkill {
   id: string
   key: string
@@ -900,6 +926,9 @@ export interface DesktopBridge {
   getAgentPlan(projectId: string, planId: string): Promise<DesktopAgentPlan>
   getAgentPlanReadySet(projectId: string, planId: string, profile?: string): Promise<DesktopCompiledAgentPlan>
   rerunAgentPlan(projectId: string, planId: string, stepId: string): Promise<DesktopAgentPlan & { rerunOf: string }>
+  executeAgentPlan(projectId: string, planId: string, input: { profile: DesktopAgentProfile }): Promise<DesktopAgentPlanExecution | null>
+  getAgentPlanExecution(projectId: string, planId: string): Promise<DesktopAgentPlanExecution | null>
+  cancelAgentPlan(projectId: string, planId: string): Promise<DesktopAgentPlanExecution | null>
   listAgentFragments(projectId: string): Promise<{ items: DesktopAgentSessionFragment[] }>
   saveAgentSessionFragment(projectId: string, sessionId: string, title?: string): Promise<{ fragmentId: string }>
   importAgentFragment(projectId: string, fragmentId: string, canvasId?: string): Promise<{ sessionId: string }>

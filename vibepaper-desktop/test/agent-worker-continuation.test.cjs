@@ -90,6 +90,14 @@ function createWorkerHarness(options = {}) {
     async proposeCandidate() { runtime.scopedMemoryWrites += 1 }
     async create() { runtime.scopedMemoryWrites += 1 }
   }
+  class NoopDesktopPlanExecution {
+    async recoverAll() {}
+    async reconcileAll() {}
+    async stop() {}
+    async onSessionStop() {}
+    async cancelRun() { return { cancelled: false } }
+    handlesAction() { return false }
+  }
   const stubs = {
     'agent-stores.ts': {
       openDesktopAgentStores: async (projectDirectory) => createStores(projectDirectory),
@@ -97,6 +105,7 @@ function createWorkerHarness(options = {}) {
     'project-memory.ts': { DesktopProjectMemory: TestProjectMemory },
     'session-fragments.ts': { DesktopSessionFragments: NoopStore },
     'persistent-plan-repository.ts': {},
+    'plan-execution-service.ts': { DesktopPlanExecutionService: NoopDesktopPlanExecution },
     'deletion-confirmation.ts': {},
     'scoped-memory.ts': {
       DesktopScopedMemoryStore: TestScopedMemory,

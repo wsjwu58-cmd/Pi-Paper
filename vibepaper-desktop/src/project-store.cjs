@@ -3071,7 +3071,7 @@ async function listAgentBackupFiles(dataDirectory) {
   }
 
   const files = []
-  const migrationSnapshotName = /^control-v[1-6]-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.pre-migration\.sqlite$/iu
+  const migrationSnapshotName = /^control-v[1-7]-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.pre-migration\.sqlite$/iu
   let totalBytes = 0
   const visit = async (directory, relativeDirectory, depth) => {
     if (depth > 24) throw new Error('Agent 数据目录层级超过安全上限。')
@@ -3435,7 +3435,7 @@ async function rebaseAgentProjectIdentity(dataDirectory, previousProjectId, next
   const control = new DatabaseSync(controlPath, { timeout: 5000 })
   try {
     const version = Number(control.prepare('PRAGMA user_version').get().user_version)
-    if (![1, 2, 3, 4, 5, 6, 7].includes(version)) throw new Error('Agent 控制数据库版本当前不支持恢复。')
+    if (![1, 2, 3, 4, 5, 6, 7, 8].includes(version)) throw new Error('Agent 控制数据库版本当前不支持恢复。')
     const integrity = control.prepare('PRAGMA integrity_check').all()
     if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
       || control.prepare('PRAGMA foreign_key_check').all().length > 0) {
@@ -3459,6 +3459,12 @@ async function rebaseAgentProjectIdentity(dataDirectory, previousProjectId, next
         control.prepare(`UPDATE desktop_task_continuations SET project_id = ?,
           status = CASE WHEN status IN ('pending', 'claimed', 'interrupted') THEN 'invalidated' ELSE status END,
           updated_at = ?`).run(nextProjectId, now)
+      }
+      if (version >= 8) {
+        control.prepare('UPDATE desktop_plan_execution_context SET stop_requested = 1, updated_at = ?').run(now)
+        control.prepare(`UPDATE desktop_plan_executions SET state = 'cancelled',
+          error_code = 'PROJECT_RESTORED', updated_at = ?
+          WHERE state IN ('running', 'waiting_confirmation', 'waiting_task', 'reconciliation_required')`).run(now)
       }
       const activeRuns = control.prepare(`SELECT id, session_id FROM agent_runs
         WHERE status IN ('queued', 'running', 'waiting_confirmation', 'waiting_task')`).all()
@@ -3514,7 +3520,7 @@ async function validateAgentControlDatabase(filePath, checkpointOnClose = false)
   try {
     const version = Number(database.prepare('PRAGMA user_version').get().user_version)
     const integrity = database.prepare('PRAGMA integrity_check').all()
-    if (![1, 2, 3, 4, 5, 6, 7].includes(version) || integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
+    if (![1, 2, 3, 4, 5, 6, 7, 8].includes(version) || integrity.length !== 1 || integrity[0].integrity_check !== 'ok'
       || database.prepare('PRAGMA foreign_key_check').all().length > 0) {
       throw new Error('Agent 控制数据库版本或完整性校验失败。')
     }

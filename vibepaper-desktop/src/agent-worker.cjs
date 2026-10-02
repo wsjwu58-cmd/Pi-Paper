@@ -1,7 +1,8 @@
 const { openDesktopAgentStores } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/agent-stores.ts')
 const { DesktopProjectMemory } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/project-memory.ts')
 const { DesktopSessionFragments } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-fragments.ts')
-const { parseDesktopPlanCreateRequest, parseDesktopPlanRerunRequest, parseDesktopPlanId, parseDesktopAgentProfile, desktopPlanResponse } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/persistent-plan-repository.ts')
+const { parseDesktopPlanCreateRequest, parseDesktopPlanExecuteRequest, parseDesktopPlanRerunRequest, parseDesktopPlanId, parseDesktopAgentProfile, desktopPlanResponse } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/persistent-plan-repository.ts')
+const { DesktopPlanExecutionService } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/plan-execution-service.ts')
 const { confirmDesktopDeleteAction } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/deletion-confirmation.ts')
 const { DesktopScopedMemoryStore, desktopCandidateScope } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/scoped-memory.ts')
 const { desktopCompactionSummary } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-store.ts')
@@ -63,6 +64,7 @@ let stores = null
 let projectMemory = null
 let scopedMemory = null
 let sessionFragments = null
+let planExecution = null
 let requestQueue = Promise.resolve()
 const activeRuns = new Map()
 const scheduledTaskContinuations = new Set()
@@ -91,6 +93,7 @@ async function manageSession(method, payload) {
         run.agent?.abort()
       }
       await Promise.all(running.map((run) => run.completion))
+      await planExecution?.onSessionStop(sessionId)
     }
     return method === 'agent:delete-session'
       ? current.sessions.deleteSession(sessionId)
@@ -112,10 +115,15 @@ async function managePlan(method, payload) {
   if (method === 'agent:plan:create') {
     const input = parseDesktopPlanCreateRequest(payload.input, payload.id)
     return desktopPlanResponse(await current.plans.create({
-      ownerId, sessionId: payload.id, ...input,
+      ...input, ownerId, sessionId: payload.id, canvasId: payload.canvasId,
     }))
   }
   const planId = parseDesktopPlanId(payload.id)
+  if (method === 'agent:plan:execute') return planExecution.execute({
+    ...parseDesktopPlanExecuteRequest(payload.input), planId, canvasId: payload.canvasId,
+  })
+  if (method === 'agent:plan:execution') return planExecution.getExecution({ planId })
+  if (method === 'agent:plan:cancel') return planExecution.cancel({ planId })
   if (method === 'agent:plan:get') return desktopPlanResponse(await current.plans.get(planId, ownerId))
   if (method === 'agent:plan:ready-set') return desktopPlanResponse(await current.plans.readySet(planId, ownerId, parseDesktopAgentProfile(payload.input)))
   return desktopPlanResponse(await current.plans.rerun({ planId, ownerId, ...parseDesktopPlanRerunRequest({ stepId: payload.input }) }))
@@ -260,6 +268,7 @@ async function reconcileSessionTasks(current, sessionId) {
   const reconciled = await reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
     'agent:core:get-task', { projectId: current.projectId, taskId },
   ), { sessionId, ...(continuationApiKey ? { apiKey: continuationApiKey } : {}) })
+  await planExecution?.reconcileAll()
   const continuations = continuationApiKey
     ? await scheduleTaskContinuationClaims(current, reconciled.continuationClaims, continuationApiKey)
     : { scheduled: 0, failed: 0 }
@@ -278,19 +287,10 @@ async function reconcileProjectTasks(payload) {
   const nextApiKey = apiKey || null
   if (continuationApiKey && continuationApiKey !== nextApiKey) stopTaskContinuationRuns()
   continuationApiKey = nextApiKey
-  for (const taskId of await current.plans.listPendingTaskIds()) {
-    const task = await agentLocalCoreClient.request('agent:core:get-task', { projectId: current.projectId, taskId })
-    if (!task || !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(task.status)) continue
-    await current.plans.applyTaskTerminal({
-      taskId, status: task.status === 'succeeded' && task.outputVerified !== true ? 'failed' : task.status,
-      ...(task.errorCode ? { errorCode: task.errorCode } : {}),
-      ...(task.status === 'succeeded' && task.outputVerified === true ? { outputRef: `vibe://app/tasks/${taskId}/output` } : {}),
-    })
-  }
-
   const reconciled = await reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
     'agent:core:get-task', { projectId: current.projectId, taskId },
   ), { ...(continuationApiKey ? { apiKey: continuationApiKey } : {}) })
+  await planExecution?.reconcileAll()
   const continuations = continuationApiKey
     ? await scheduleTaskContinuationClaims(current, reconciled.continuationClaims, continuationApiKey)
     : { scheduled: 0, failed: 0 }
@@ -948,6 +948,7 @@ async function startMessage(payload, continuationMode) {
 
 async function confirmAgentAction(payload) {
   const current = await requireProject(payload?.projectId)
+  if (planExecution?.handlesAction(payload?.actionId)) return planExecution.confirm(payload)
   const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
   const record = current.control.find(payload?.actionId)
   const runId = record?.action?.runId
@@ -976,6 +977,8 @@ async function cancelAgentRun(payload) {
     || !['queued', 'running', 'waiting_confirmation', 'waiting_task'].includes(run.status)) {
     return { cancelled: false }
   }
+  const planCancellation = await planExecution?.cancelRun(run.runId)
+  if (planCancellation?.cancelled) return planCancellation
   const active = activeRuns.get(run.runId)
   if (active) {
     active.cancelled = true
@@ -994,6 +997,7 @@ async function cancelAgentRun(payload) {
 }
 
 async function abortAndWaitForRuns() {
+  await planExecution?.stop()
   const active = [...activeRuns.values()]
   for (const runControl of active) {
     runControl.cancelled = true
@@ -1030,6 +1034,7 @@ async function dispatch(method, payload) {
       await abortAndWaitForRuns()
       if (stores) await stores.close()
       stores = null
+      planExecution = null
       projectMemory = null
       scopedMemory = null
       sessionFragments = null
@@ -1054,7 +1059,25 @@ async function dispatch(method, payload) {
         )
         await openedFragments.initialize()
         await recoverDesktopAgentRuns(openedStores)
+        const openedPlanExecution = new DesktopPlanExecutionService(openedStores, {
+          gatewayFactory: ({ sessionId, runId }) => {
+            const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, openedStores.projectId)
+            gateway.attachRun({ control: openedStores.control, sessionId, runId })
+            return gateway
+          },
+          readTask: (taskId) => agentLocalCoreClient.request('agent:core:get-task', {
+            projectId: openedStores.projectId, taskId,
+          }),
+          skillContextFactory: async (sessionId) => createDesktopAgentSkillContext(
+            openedStores.control, sessionId, undefined, await listProjectAgentSkills(openedStores.projectDirectory),
+          ),
+          onAuditRequested: (input, context) => context.gateway.requestRenderAudit(
+            openedStores.projectId, context.canvasId, context.canvasVersion, input,
+          ),
+        })
+        await openedPlanExecution.recoverAll()
         stores = openedStores
+        planExecution = openedPlanExecution
         projectMemory = openedMemory
         scopedMemory = openedScopedMemory
         sessionFragments = openedFragments
@@ -1077,6 +1100,9 @@ async function dispatch(method, payload) {
     case 'agent:plan:get':
     case 'agent:plan:ready-set':
     case 'agent:plan:rerun':
+    case 'agent:plan:execute':
+    case 'agent:plan:execution':
+    case 'agent:plan:cancel':
       return managePlan(method, payload)
     case 'agent:list-skills':
       return listAgentSkills(payload)
@@ -1157,6 +1183,7 @@ async function dispatch(method, payload) {
       agentLocalCoreClient.close()
       if (stores) await stores.close()
       stores = null
+      planExecution = null
       projectMemory = null
       scopedMemory = null
       sessionFragments = null
@@ -1183,7 +1210,7 @@ parentPort.on('message', async (event) => {
       })
     }
   }
-  if (request.method === 'agent:cancel-run') {
+  if (request.method === 'agent:cancel-run' || request.method === 'agent:plan:cancel') {
     void executeRequest()
     return
   }

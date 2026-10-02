@@ -2480,12 +2480,14 @@ function registerAgentIpc() {
       return worker.request(method, { projectId, sessionId, input, canvasId: active.canvasId })
     })
   }
-  for (const action of ['create', 'get', 'ready-set', 'rerun']) {
+  for (const action of ['create', 'get', 'ready-set', 'rerun', 'execute', 'execution', 'cancel']) {
     ipcMain.handle(`desktop:agent:plan:${action}`, async (event, projectId, id, input) => {
       assertTrustedSender(event)
       if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(id)) throw codedError('INVALID_INPUT')
       const worker = await getAgentWorker(projectId)
-      return worker.request(`agent:plan:${action}`, { projectId, id, input })
+      const active = await localCore.request('project:get-active')
+      if (active?.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
+      return worker.request(`agent:plan:${action}`, { projectId, id, input, canvasId: active.canvasId }, action === 'execute' ? 60_000 : 30_000)
     })
   }
   ipcMain.handle('desktop:agent:list-fragments', async (event, projectId) => {

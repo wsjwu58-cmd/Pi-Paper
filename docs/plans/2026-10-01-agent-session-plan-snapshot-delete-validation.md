@@ -1,5 +1,7 @@
 # 2026-10-01 Agent 会话、计划、Skill 快照与删除确认
 
+后续计划执行接通及控制库 v8 的变更和验证见 [2026-10-02 计划执行记录](2026-10-02-agent-plan-execution-validation.md)。下文保留 v7 批次完成时的范围，不能用其中“执行未接通”的记录代表后续批次状态。
+
 ## 实现范围
 
 在原 Agent TypeScript、原 `AgentPanel` 和原历史页上接本地适配。Worker 负责调用和进程生命周期，计划校验、步骤状态、Skill 正文快照、删除授权与画布命令仍由 TypeScript 服务负责。保留 Web 原路径；本批不使用平行 Agent 界面。

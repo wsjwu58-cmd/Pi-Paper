@@ -13,7 +13,7 @@ import type { AgentRun, AgentRunEvent, AgentRunEventType, AgentRunStatus } from 
 import { isActiveRunStatus } from "../domain/agent-run.ts";
 import type { DesktopAgentSkillSnapshot } from "./skill-context.ts";
 
-export const DESKTOP_AGENT_CONTROL_SCHEMA_VERSION = 7;
+export const DESKTOP_AGENT_CONTROL_SCHEMA_VERSION = 8;
 const CONTROL_SCHEMA_VERSION = DESKTOP_AGENT_CONTROL_SCHEMA_VERSION;
 const MAX_OPERATION_RESULT_BYTES = 1_000_000;
 
@@ -130,6 +130,48 @@ const DESKTOP_AGENT_PLANS_SCHEMA = `
 
 const DESKTOP_AGENT_SCHEMA_V7 = `${DESKTOP_AGENT_SESSION_SCHEMA}${DESKTOP_AGENT_PLANS_SCHEMA}`;
 
+const DESKTOP_AGENT_PLAN_EXECUTION_SCHEMA_V8 = `
+  CREATE TABLE IF NOT EXISTS desktop_plan_execution_context (
+    plan_id TEXT PRIMARY KEY REFERENCES agent_plans(plan_id) ON DELETE CASCADE,
+    canvas_id TEXT,
+    profile TEXT CHECK (profile IS NULL OR profile IN ('canvas-general', 'vertical-short-drama', 'asset-assistant', 'audit-readonly')),
+    stop_requested INTEGER NOT NULL DEFAULT 0 CHECK (stop_requested IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE TABLE IF NOT EXISTS desktop_plan_executions (
+    plan_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    canvas_id TEXT NOT NULL,
+    profile TEXT NOT NULL CHECK (profile IN ('canvas-general', 'vertical-short-drama', 'asset-assistant', 'audit-readonly')),
+    run_id TEXT NOT NULL REFERENCES agent_runs(id),
+    state TEXT NOT NULL CHECK (state IN ('running', 'waiting_confirmation', 'waiting_task', 'completed', 'failed', 'cancelled', 'reconciliation_required')),
+    action_id TEXT UNIQUE,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (plan_id, step_id),
+    FOREIGN KEY (plan_id, step_id) REFERENCES agent_plan_steps(plan_id, step_id) ON DELETE CASCADE
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS desktop_plan_executions_by_run ON desktop_plan_executions(run_id);
+  CREATE INDEX IF NOT EXISTS desktop_plan_executions_by_state ON desktop_plan_executions(state, updated_at);
+
+  CREATE TABLE IF NOT EXISTS desktop_plan_execution_tasks (
+    plan_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    task_id TEXT NOT NULL UNIQUE,
+    action_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+    error_code TEXT,
+    output_ref TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (plan_id, step_id, task_id),
+    FOREIGN KEY (plan_id, step_id) REFERENCES desktop_plan_executions(plan_id, step_id) ON DELETE CASCADE
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS desktop_plan_execution_tasks_by_step ON desktop_plan_execution_tasks(plan_id, step_id);
+`;
+
 const CONTROL_SCHEMA = `
   CREATE TABLE agent_runs (
     id TEXT PRIMARY KEY,
@@ -211,6 +253,8 @@ const CONTROL_SCHEMA = `
   ) STRICT;
 
   ${DESKTOP_AGENT_SCHEMA_V7}
+
+  ${DESKTOP_AGENT_PLAN_EXECUTION_SCHEMA_V8}
 
   CREATE TABLE task_links (
     task_id TEXT PRIMARY KEY,
@@ -1174,6 +1218,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		actionId?: string;
 		nodeId: string;
 		status: string;
+		allowAcceptedInactiveSession?: boolean;
 	}): void {
 		if (
 			!input.taskId ||
@@ -1185,8 +1230,18 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			(input.actionId !== undefined && (!input.actionId || input.actionId.length > 128))
 		)
 			throw new Error("TASK_LINK_INVALID");
+		if (input.allowAcceptedInactiveSession) {
+			const accepted = input.actionId ? this.find(input.actionId) : undefined;
+			if (
+				accepted?.status !== "consumed" ||
+				accepted.action.runId !== input.runId ||
+				accepted.action.sessionId !== input.sessionId ||
+				(accepted.action.toolName !== "submit_generation" && accepted.action.toolName !== "submit_generation_batch")
+			)
+				throw new Error("TASK_LINK_INVALID");
+		}
 		this.transaction(() => {
-			this.assertSessionActive(input.sessionId);
+			if (!input.allowAcceptedInactiveSession) this.assertSessionActive(input.sessionId);
 			const run = this.database.prepare("SELECT session_id FROM agent_runs WHERE id = ?").get(input.runId) as
 				| { session_id: string }
 				| undefined;
@@ -1932,6 +1987,20 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			(run.status !== "completed" && run.status !== "failed")
 		)
 			return false;
+		// Plan execution owns its task continuation. The persisted run-to-step
+		// mapping suppresses the ordinary Pi follow-up path even after restart.
+		const planOwned = this.database
+			.prepare("SELECT 1 AS present FROM desktop_plan_executions WHERE run_id = ? LIMIT 1")
+			.get(originRunId);
+		if (planOwned) return false;
+		// Also covers the small transaction gap between persisting an accepted
+		// approval and attaching all of its task IDs to the plan execution row.
+		const continuationDisabled = this.database
+			.prepare(
+				"SELECT 1 AS present FROM approvals WHERE run_id = ? AND json_extract(action_json, '$.params.continueAfterTask') = 0 LIMIT 1",
+			)
+			.get(originRunId);
+		if (continuationDisabled) return false;
 		const rows = this.database
 			.prepare(`
 			SELECT task_links.task_id, task_links.status,
@@ -2076,6 +2145,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.ensureTaskLinkActionColumn();
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
+				this.ensureSchemaV8();
 			});
 			return;
 		}
@@ -2092,6 +2162,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.ensureTaskLinkActionColumn();
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
+				this.ensureSchemaV8();
 			});
 			return;
 		}
@@ -2101,6 +2172,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.ensureTaskLinkActionColumn();
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
+				this.ensureSchemaV8();
 			});
 			return;
 		}
@@ -2109,6 +2181,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.ensureTaskLinkActionColumn();
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
+				this.ensureSchemaV8();
 			});
 			return;
 		}
@@ -2116,11 +2189,19 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			this.transaction(() => {
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
+				this.ensureSchemaV8();
 			});
 			return;
 		}
 		if (version === 6) {
-			this.transaction(() => this.ensureSchemaV7());
+			this.transaction(() => {
+				this.ensureSchemaV7();
+				this.ensureSchemaV8();
+			});
+			return;
+		}
+		if (version === 7) {
+			this.transaction(() => this.ensureSchemaV8());
 			return;
 		}
 		if (version !== 0) throw new Error(`Agent 控制库版本 ${version} 当前不受支持。`);
@@ -2138,6 +2219,11 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 
 	private ensureSchemaV7(): void {
 		this.database.exec(DESKTOP_AGENT_SCHEMA_V7);
+		this.database.exec("PRAGMA user_version = 7");
+	}
+
+	private ensureSchemaV8(): void {
+		this.database.exec(DESKTOP_AGENT_PLAN_EXECUTION_SCHEMA_V8);
 		this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
 	}
 

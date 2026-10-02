@@ -3,7 +3,7 @@ import type { DesktopBridge } from '@/desktop/desktop-bridge'
 
 let api: typeof import('./api').api
 const project = { projectId: 'project-1', canvasId: 'canvas-1', name: '本地项目' }
-const methods = ['listAgentSessions', 'getAgentSession', 'updateAgentSession', 'deleteAgentSession', 'copyAgentSession', 'setAgentSessionSkills', 'attachAgentSessionSkill', 'createAgentPlan', 'getAgentPlan', 'getAgentPlanReadySet', 'rerunAgentPlan'] as const
+const methods = ['listAgentSessions', 'getAgentSession', 'updateAgentSession', 'deleteAgentSession', 'copyAgentSession', 'setAgentSessionSkills', 'attachAgentSessionSkill', 'createAgentPlan', 'getAgentPlan', 'getAgentPlanReadySet', 'rerunAgentPlan', 'executeAgentPlan', 'getAgentPlanExecution', 'cancelAgentPlan'] as const
 let bridge: Record<string, ReturnType<typeof vi.fn>>
 
 beforeAll(async () => {
@@ -52,6 +52,16 @@ describe('original Agent management API over the desktop bridge', () => {
     await expect(api('/agent/plans/p', { method: 'DELETE' })).rejects.toMatchObject({ code: 'METHOD_NOT_ALLOWED' })
     bridge.getActiveProject.mockResolvedValue(null)
     await expect(api('/agent/sessions')).rejects.toMatchObject({ code: 'PROJECT_REQUIRED' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it('routes explicit execution, state and cancellation without network or a default profile', async () => {
+    await api('/agent/plans/123/execute', { method: 'POST', body: '{"profile":"canvas-general"}' })
+    expect(bridge.executeAgentPlan).toHaveBeenCalledWith('project-1', '123', { profile: 'canvas-general' })
+    await api('/agent/plans/123/execution')
+    expect(bridge.getAgentPlanExecution).toHaveBeenCalledWith('project-1', '123')
+    await api('/agent/plans/123/cancel', { method: 'POST' })
+    expect(bridge.cancelAgentPlan).toHaveBeenCalledWith('project-1', '123')
+    await expect(api('/agent/plans/123/execute', { method: 'POST', body: '{}' })).rejects.toMatchObject({ code: 'INVALID_INPUT' })
     expect(fetch).not.toHaveBeenCalled()
   })
 })

@@ -207,7 +207,7 @@ export async function api<T = unknown>(
     const pathname = url.pathname.replace(/^\/api\/v1(?=\/)/u, "")
     const method = (options.method ?? "GET").toUpperCase()
     const sessionMatch = /^\/agent\/sessions(?:\/([^/]+)(?:\/(copy|skills|plans)(?:\/([^/]+):attach)?)?)?$/u.exec(pathname)
-    const planMatch = /^\/agent\/plans\/([^/]+)(?:\/(ready-set|rerun))?$/u.exec(pathname)
+    const planMatch = /^\/agent\/plans\/([^/]+)(?:\/(ready-set|rerun|execute|execution|cancel))?$/u.exec(pathname)
     if (sessionMatch || planMatch) {
       const project = await bridge.getActiveProject()
       if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
@@ -220,6 +220,14 @@ export async function api<T = unknown>(
       if (planMatch) {
         const planId = identifier(planMatch[1])
         if (!planMatch[2] && method === 'GET') return await bridge.getAgentPlan(project.projectId, planId) as T
+        if (planMatch[2] === 'execution' && method === 'GET') return await bridge.getAgentPlanExecution(project.projectId, planId) as T
+        if (planMatch[2] === 'cancel' && method === 'POST') return await bridge.cancelAgentPlan(project.projectId, planId) as T
+        if (planMatch[2] === 'execute' && method === 'POST') {
+          const body = parseLocalJsonObject(options, '计划执行')
+          const profile = body.profile
+          if (profile !== 'canvas-general' && profile !== 'vertical-short-drama' && profile !== 'asset-assistant' && profile !== 'audit-readonly') throw new ApiError(400, 'INVALID_INPUT', '请选择有效的计划执行范围。')
+          return await bridge.executeAgentPlan(project.projectId, planId, { profile }) as T
+        }
         if (planMatch[2] === 'ready-set' && method === 'GET') {
           return await bridge.getAgentPlanReadySet(project.projectId, planId, url.searchParams.get('profile') ?? undefined) as T
         }

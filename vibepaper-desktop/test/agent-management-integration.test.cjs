@@ -54,7 +54,7 @@ test('original TS services run through Worker session, skill and persistent plan
   const copy = await dispatch('agent:copy-session', { projectId, canvasId, sessionId: session.sessionId, input: {} })
   assert.equal(copy.title, '第一集分镜 副本')
   assert.equal((await dispatch('agent:get-messages', { projectId, sessionId: copy.sessionId })).length, 0)
-  const compiled = await dispatch('agent:plan:create', { projectId, id: session.sessionId, input: {
+  const compiled = await dispatch('agent:plan:create', { projectId, id: session.sessionId, canvasId, input: {
     profile: 'canvas-general', plan: { id: '1234567891', version: 1, canvasVersion: 0, steps: [
       { id: 'read', tool: 'get_canvas_summary', inputHash: 'hash-read', dependsOn: [] },
       { id: 'models', tool: 'list_models', inputHash: 'hash-models', dependsOn: ['read'] },
@@ -89,7 +89,7 @@ test('original TS services run through Worker session, skill and persistent plan
   await assert.rejects(dispatch('agent:get-messages', { projectId, sessionId: session.sessionId }), /NOT_FOUND|DELETED/)
 })
 
-test('schema 7 session state, skill snapshots and plans survive real backup identity rebinding', async (t) => {
+test('schema 8 session state, skill snapshots and plans survive real backup identity rebinding', async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-agent-plan-backup-'))
   const dirs = ['projects', 'backups', 'restored'].map((name) => path.join(directory, name))
   await Promise.all(dirs.map((name) => fs.mkdir(name)))
@@ -103,7 +103,7 @@ test('schema 7 session state, skill snapshots and plans survive real backup iden
     id: 'project-test-skill', key: 'project-test-skill', name: '旧版方法', description: '备份验证', instructions: '保留角色和镜头规则',
     source: 'project', category: 'general', version: 1, enabled: true,
   })])
-  await stores.plans.create({ ownerId: stores.projectId, sessionId: session.id, expectedVersion: 1, profile: 'canvas-general', plan: {
+  await stores.plans.create({ ownerId: stores.projectId, sessionId: session.id, canvasId: source.project.canvasId, expectedVersion: 1, profile: 'canvas-general', plan: {
     id: '1234567892', sessionId: session.id, version: 1, canvasVersion: 0,
     steps: [{ id: 'read', tool: 'get_canvas_summary', dependsOn: [], status: 'pending', inputHash: 'hash', estimatedCost: 0 }],
   } })
