@@ -326,7 +326,10 @@ export function restoreDesktopAgentEventState(
   cached?: AgentEventState,
 ): AgentEventState {
   const eventRunIds = new Set(events.map((event) => event.runId))
-  const durableMessages = coalesceDesktopAssistantMessages(messages, eventRunIds)
+  const durableMessages = coalesceDesktopAssistantMessages(messages, eventRunIds).reduce<AgentChatMsg[]>(
+    (result, message) => message.role === 'user' ? upsertDesktopUserMessage(result, message) : [...result, message],
+    [],
+  )
   const activeRunIds = new Set(
     [...(cached?.runStatusById ?? [])]
       .filter(([, status]) => status === 'running')
@@ -378,6 +381,15 @@ function coalesceDesktopAssistantMessages(messages: AgentChatMsg[], replayableRu
     message.role !== 'assistant' || !message.meta?.runId || !replayableRunIds.has(message.meta.runId)
       || lastAssistantIndexByRun.get(message.meta.runId) === index,
   )
+}
+
+/** A started Run may already have reached the history cache before optimistic insertion. */
+export function upsertDesktopUserMessage(messages: AgentChatMsg[], incoming: AgentChatMsg): AgentChatMsg[] {
+  const index = messages.findIndex((message) => message.id === incoming.id || sameRunMessage(message, incoming))
+  if (index < 0) return [...messages, incoming]
+  return messages.map((message, position) => position === index
+    ? { ...incoming, ...message, meta: { ...incoming.meta, ...message.meta } }
+    : message)
 }
 
 function mergeDesktopSessionMessages(

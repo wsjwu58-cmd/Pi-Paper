@@ -202,6 +202,30 @@ describe("Pi runtime event mapping", () => {
 		expect(webEvents[0]).toMatchObject({ type: "error", errorCode: "MODEL_UNAVAILABLE" });
 	});
 
+	it("reports provider request timeout without blaming desktop configuration", () => {
+		const event = {
+			type: "message_end",
+			message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Request timed out." },
+		} as unknown as AgentEvent;
+		const events: AgentTurnEvent[] = [];
+		captureEvent(
+			event,
+			events,
+			() => undefined,
+			() => undefined,
+			true,
+		);
+		expect(events[0]).toMatchObject({ type: "error", errorCode: "MODEL_TIMEOUT" });
+		const webEvents: AgentTurnEvent[] = [];
+		captureEvent(
+			event,
+			webEvents,
+			() => undefined,
+			() => undefined,
+		);
+		expect(webEvents[0]).toMatchObject({ errorCode: "MODEL_UNAVAILABLE" });
+	});
+
 	it("aborts an unresponsive model call and reports MODEL_TIMEOUT", async () => {
 		let aborted = false;
 		const never = new Promise<void>(() => undefined);

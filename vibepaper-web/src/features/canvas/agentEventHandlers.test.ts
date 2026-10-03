@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { AgentTaskBadge, AgentTurnTimeline } from './AgentExecutionRecord'
-import { friendlyAgentErrorMessage, isAgentRunActive, mergeSessionMessages, reduceAgentEvent, restoreDesktopAgentEventState, setConfirmationStatus, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
+import { friendlyAgentErrorMessage, isAgentRunActive, mergeSessionMessages, reduceAgentEvent, restoreDesktopAgentEventState, setConfirmationStatus, upsertDesktopUserMessage, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
 import { isChatVisibleMessage, shouldRefreshCanvasEvent } from './agentEventHandlers'
 import type { AgentChatMsg } from './agentTypes'
 
@@ -424,6 +424,15 @@ describe('agent event envelope reducer', () => {
     expect(assistant?.content).toBe('短答。')
     expect(assistant?.meta?.executionSteps?.filter((step) => step.kind === 'speech')).toHaveLength(1)
     expect(assistant?.meta?.executionSteps?.find((step) => step.kind === 'speech')?.summary).toBe('短答。')
+  })
+
+  it('handles history arriving before optimistic insertion and repairs duplicate persisted users by Run', () => {
+    const durable: AgentChatMsg = { id: 'durable', role: 'user', type: 'text', content: '继续', meta: { runId: 'run-1' } }
+    const optimistic: AgentChatMsg = { ...durable, id: 'optimistic' }
+    expect(upsertDesktopUserMessage([durable], optimistic)).toEqual([durable])
+    const nextTurn: AgentChatMsg = { ...durable, id: 'next', meta: { runId: 'run-2' } }
+    expect(restoreDesktopAgentEventState([durable, optimistic, nextTurn], []).messages).toEqual([durable, nextTurn])
+    expect(upsertDesktopUserMessage([durable], nextTurn)).toEqual([durable, nextTurn])
   })
 
   it('keeps the same user text as separate turns when Run IDs differ', () => {

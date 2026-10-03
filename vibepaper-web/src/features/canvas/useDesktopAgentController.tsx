@@ -8,6 +8,7 @@ import {
   reduceAgentEvent,
   restoreDesktopAgentEventState,
   setConfirmationStatus,
+  upsertDesktopUserMessage,
   type AgentEventState,
 } from './agentEventEnvelope'
 import { isActionableConfirmation } from './confirmationState'
@@ -437,7 +438,7 @@ export function useDesktopAgentController({
             ...(input?.selectedSkillId ? { selectedSkillId: input.selectedSkillId } : {}),
           },
         }
-        const optimisticState = { ...previous, messages: [...previous.messages, optimisticMessage] }
+        const optimisticState = { ...previous, messages: upsertDesktopUserMessage(previous.messages, optimisticMessage) }
         eventStatesRef.current.set(sessionId, optimisticState)
         setMessages(optimisticState.messages)
         await loadSession(sessionId, requestEpochRef.current)

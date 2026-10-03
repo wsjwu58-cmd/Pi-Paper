@@ -532,9 +532,11 @@ export function captureEvent(
 				errorCode:
 					assistant.stopReason === "aborted"
 						? "RUN_ABORTED"
-						: desktopMode && isModelConnectionError(errorMessage)
-							? "AGENT_MODEL_CONNECTION_FAILED"
-							: "MODEL_UNAVAILABLE",
+						: desktopMode && /\btimed?\s*out\b|\btimeout\b|\bETIMEDOUT\b/i.test(errorMessage ?? "")
+							? "MODEL_TIMEOUT"
+							: desktopMode && isModelConnectionError(errorMessage)
+								? "AGENT_MODEL_CONNECTION_FAILED"
+								: "MODEL_UNAVAILABLE",
 			});
 		} else {
 			setAssistantText(text);
