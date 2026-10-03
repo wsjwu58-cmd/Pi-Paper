@@ -453,6 +453,13 @@ function createFakeAgentTurn(runtime, scenario) {
     })
     await hooks.onEvent({ type: 'assistant_message', content: '正在检查已完成任务的结果。' })
 
+    if (scenario === 'output-limit' || scenario === 'connection-failure') {
+      const errorCode = scenario === 'output-limit' ? 'AGENT_MODEL_OUTPUT_LIMIT' : 'AGENT_MODEL_CONNECTION_FAILED'
+      const message = { role: 'assistant', content: [], stopReason: scenario === 'output-limit' ? 'length' : 'error', timestamp: Date.now() }
+      for (const listener of listeners) await listener({ type: 'message_end', message })
+      return { events: [{ type: 'error', errorCode }], assistantText: '', totalTokens: 0 }
+    }
+
     if (scenario === 'confirmation') {
       const generationTool = hooks.runtimeTools.find((tool) => tool.name === 'submit_generation')
       assert.ok(generationTool, 'the original generation tool is available to the continuation turn')
@@ -636,6 +643,7 @@ test('a continuation generation request creates the original confirmation and wa
   assert.ok(approval)
   assert.equal(approval.action.params.continueAfterTask, true)
   assert.equal(runtime.generationToolResult.terminate, true)
+  assert.equal(await turn.hooks.shouldStopAfterTurn(), true)
   assert.equal(stores.control.findById(claim.run.runId).status, 'waiting_confirmation')
   assert.equal(runtime.continuationStatus, 'claimed')
   assert.equal(runtime.generationTaskCalls, 0)
@@ -643,3 +651,19 @@ test('a continuation generation request creates the original confirmation and wa
   assert.equal(runtime.operationPreparations ?? 0, 0)
   assert.ok(stores.control.listEvents(claim.run.runId).some((event) => event.type === 'confirmation_required'))
 })
+
+for (const [scenario, errorCode] of [['output-limit', 'AGENT_MODEL_OUTPUT_LIMIT'], ['connection-failure', 'AGENT_MODEL_CONNECTION_FAILED']]) {
+  test(`a ${scenario} continuation terminates with its durable cause instead of staying active`, async () => {
+    const { hooks, stores, runtime, claim } = await runFakeOriginalContinuation(scenario)
+    await hooks.dispatch('agent:reconcile-tasks', { projectId: 'project-1', apiKey: 'test-cloud-key' })
+    await waitFor(() => stores.control.findById(claim.run.runId)?.status === 'failed')
+    assert.equal(stores.control.findActive(claim.request.sessionId), undefined)
+    assert.equal(runtime.continuationStatus, 'interrupted')
+    const snapshot = await hooks.dispatch('agent:get-snapshot', { projectId: 'project-1', sessionId: claim.request.sessionId })
+    const failures = snapshot.events.filter(event => event.type === 'run_failed')
+    assert.equal(failures.length, 1)
+    assert.equal(failures[0].data.errorCode, errorCode)
+    assert.equal(runtime.turnCalls.length, 1)
+    assert.equal(runtime.generationTaskCalls, 0)
+  })
+}

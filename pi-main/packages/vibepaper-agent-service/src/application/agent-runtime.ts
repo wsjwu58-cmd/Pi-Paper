@@ -3,15 +3,15 @@ import type { AssistantMessage, Model, SimpleStreamOptions } from "@earendil-wor
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 
 import type { ServiceConfig } from "../config.ts";
-import { extractProtectedFacts } from "../domain/protected-facts.ts";
 import type { DramaStateStore } from "../domain/drama-state.ts";
+import { extractProtectedFacts } from "../domain/protected-facts.ts";
 import { formatSessionContext, type SessionContext } from "../domain/session-context.ts";
 import type { AgentProfile } from "../domain/tool-manifest.ts";
+import { getToolsForProfile } from "../domain/tool-manifest.ts";
 import { createDramaAgent } from "../pi/drama-agent.ts";
 import { profileSystemPrompt } from "../pi/profile-agents.ts";
 import { VERTICAL_SHORT_DRAMA_SYSTEM_PROMPT } from "../pi/system-prompt.ts";
 import { createLoadSkillTool, type LoadedSkillResource } from "../tools/skill-tools.ts";
-import { getToolsForProfile } from "../domain/tool-manifest.ts";
 import { dedupeRepeatedSegments, removeRepeatedOpening } from "./assistant-text.ts";
 import { compactContext } from "./context-compaction-service.ts";
 import { resolveInstructionPrecedence } from "./instruction-precedence.ts";
@@ -23,6 +23,9 @@ import { referenceMappingClarification } from "./reference-mapping-clarification
 // real short-drama plans mid-workflow; retain a bounded timeout while allowing
 // the complete planning phase to finish.
 const MODEL_TURN_TIMEOUT_MS = 240_000;
+const DESKTOP_OUTPUT_CONTINUATION_LIMIT = 2;
+const DESKTOP_OUTPUT_CONTINUATION_PROMPT =
+	"请从上一条尚未完成的回复继续，避免重复已经写出的内容；如果需要调用工具，请根据当前对话状态继续，不要重复已完成的操作。";
 
 export interface StoredAgentMessage {
 	role: "user" | "assistant" | "system" | "toolResult";
@@ -62,6 +65,8 @@ export interface AgentRuntimeHooks {
 	desktopTurnContext?: DesktopAgentTurnContext;
 	/** Force the first model request to make one verified low-risk tool call. */
 	requiredToolName?: string;
+	/** Injectable stream for deterministic runtime tests and controlled adapters. */
+	streamFn?: AgentOptions["streamFn"];
 }
 
 export interface AgentSkillContext {
@@ -138,19 +143,22 @@ export async function runDramaTurn(
 		throw new AgentRuntimeError("MODEL_UNAVAILABLE", "未配置 VIBEPAPER_LLM_API_KEY 或 VIBEPAPER_AGNES_API_KEY");
 	}
 	const desktopTurnContext = hooks.desktopMode
-		? (hooks.desktopTurnContext ?? prepareDesktopAgentTurnContext(history, content, skillContext, nodeReferences, hooks))
+		? (hooks.desktopTurnContext ??
+			prepareDesktopAgentTurnContext(history, content, skillContext, nodeReferences, hooks))
 		: undefined;
-	const compacted = desktopTurnContext ? undefined : compactContext(
-		history.map((message, sourceIndex) => ({
-			role: message.role,
-			content: message.content,
-			meta: message.meta,
-			sourceIndex,
-			toolCallIds: message.toolCallIds,
-			toolResultCallId: message.toolResultCallId,
-		})),
-		{ maxTokens: 24_000, sessionContext: hooks.sessionContext },
-	);
+	const compacted = desktopTurnContext
+		? undefined
+		: compactContext(
+				history.map((message, sourceIndex) => ({
+					role: message.role,
+					content: message.content,
+					meta: message.meta,
+					sourceIndex,
+					toolCallIds: message.toolCallIds,
+					toolResultCallId: message.toolResultCallId,
+				})),
+				{ maxTokens: 24_000, sessionContext: hooks.sessionContext },
+			);
 	const recentIndexes = new Set(compacted?.recentMessages.map((message) => message.sourceIndex) ?? []);
 	const recentByIndex = new Map(compacted?.recentMessages.map((message) => [message.sourceIndex, message]) ?? []);
 	const initialMessages: AgentMessage[] = desktopTurnContext?.initialMessages ?? [];
@@ -204,9 +212,10 @@ export async function runDramaTurn(
 			}
 		}
 	}
-	const protectedFacts = !desktopTurnContext && (compacted?.protectedFacts.length ?? 0) > 0
-		? `受保护业务事实（不可被模型删除）：\n${compacted!.protectedFacts.join("\n")}`
-		: undefined;
+	const protectedFacts =
+		!desktopTurnContext && (compacted?.protectedFacts.length ?? 0) > 0
+			? `受保护业务事实（不可被模型删除）：\n${compacted!.protectedFacts.join("\n")}`
+			: undefined;
 	const orderedInstructions = resolveInstructionPrecedence([
 		{ source: "confirmed-fact", text: protectedFacts ?? "" },
 		{ source: "skill", text: rehydratedSkillInstructions(skillContext.loadedSkills) ?? "" },
@@ -218,17 +227,38 @@ export async function runDramaTurn(
 					: "",
 		},
 	]);
+	const recoveryState: {
+		lastTurnContext?: Parameters<NonNullable<AgentOptions["shouldStopAfterTurn"]>>[0];
+		callerRequestedStop: boolean;
+	} = { callerRequestedStop: false };
+	const getLastTurnContext = () => recoveryState.lastTurnContext;
+	const shouldStopAfterTurn = hooks.desktopMode
+		? async (context: Parameters<NonNullable<AgentOptions["shouldStopAfterTurn"]>>[0], signal?: AbortSignal) => {
+				recoveryState.lastTurnContext = context;
+				if (await hooks.shouldStopAfterTurn?.(context, signal)) {
+					recoveryState.callerRequestedStop = true;
+					return true;
+				}
+				// Pi refuses Agent.continue() when the transcript ends in an assistant
+				// message. End this turn at the first length response so the desktop
+				// runtime can resume it with a bounded, transient follow-up prompt.
+				return context.message.stopReason === "length";
+			}
+		: hooks.shouldStopAfterTurn;
 	const agent = createDramaAgent(store, {
 		initialState: {
 			model: agnesModel(config, hooks.modelId, hooks.desktopMode === true),
 			messages: initialMessages,
 			thinkingLevel: hooks.desktopMode ? "low" : "off",
 		},
-		streamFn: hooks.requiredToolName ? forceInitialToolCall(hooks.requiredToolName) : streamSimple,
+		streamFn: hooks.requiredToolName
+			? forceInitialToolCall(hooks.requiredToolName, hooks.streamFn ?? streamSimple)
+			: (hooks.streamFn ?? streamSimple),
 		sessionId,
 		getApiKey: async (provider) => (provider === "agnes" ? config.llmApiKey : undefined),
-		systemPromptSuffix: desktopTurnContext?.systemPromptSuffix ?? (
-			[
+		systemPromptSuffix:
+			desktopTurnContext?.systemPromptSuffix ??
+			([
 				(hooks.desktopMode && hooks.desktopCompactionSummary ? hooks.desktopCompactionSummary : compacted?.summary)
 					? `会话压缩摘要：${hooks.desktopMode && hooks.desktopCompactionSummary ? hooks.desktopCompactionSummary : compacted?.summary}`
 					: undefined,
@@ -237,14 +267,17 @@ export async function runDramaTurn(
 				hooks.memoryContext,
 			]
 				.filter(Boolean)
-				.join("\n\n") || undefined),
-		extraTools: desktopTurnContext?.extraTools ?? createLoadSkillTool(skillContext.skills, skillContext.loadedSkillIds, skillContext.onLoad),
+				.join("\n\n") ||
+				undefined),
+		extraTools:
+			desktopTurnContext?.extraTools ??
+			createLoadSkillTool(skillContext.skills, skillContext.loadedSkillIds, skillContext.onLoad),
 		runtimeTools: desktopTurnContext?.runtimeTools ?? hooks.runtimeTools,
 		desktopMemoryTools: desktopTurnContext?.desktopMemoryTools ?? hooks.desktopMemoryTools,
 		profile: hooks.profile,
 		desktopMode: hooks.desktopMode,
 		transformContext: hooks.transformContext,
-		shouldStopAfterTurn: hooks.shouldStopAfterTurn,
+		shouldStopAfterTurn,
 	});
 	hooks.onAgent?.(agent);
 	const events: AgentTurnEvent[] = [];
@@ -261,16 +294,71 @@ export async function runDramaTurn(
 			(tokens) => {
 				totalTokens += tokens;
 			},
+			hooks.desktopMode === true,
 		);
 		if (hooks.onEvent) {
 			for (const captured of events.slice(before)) await hooks.onEvent(captured);
 		}
 	});
-	await awaitAgentTurn(
-		agent.prompt(desktopTurnContext?.currentUserInput ?? composeUserContent(content, nodeReferences)),
-		() => agent.abort(),
-		MODEL_TURN_TIMEOUT_MS,
-	);
+	const deadline = Date.now() + MODEL_TURN_TIMEOUT_MS;
+	const continuationText: string[] = [];
+	let continuationCount = 0;
+	let outputLimitReached = false;
+	let nextPrompt: string | undefined =
+		desktopTurnContext?.currentUserInput ?? composeUserContent(content, nodeReferences);
+	while (true) {
+		const remainingMs = deadline - Date.now();
+		if (remainingMs <= 0) throw new AgentRuntimeError("MODEL_TIMEOUT", "文本模型响应超时");
+		recoveryState.lastTurnContext = undefined;
+		const turn = nextPrompt === undefined ? agent.continue() : agent.prompt(nextPrompt);
+		nextPrompt = undefined;
+		await awaitAgentTurn(turn, () => agent.abort(), remainingMs);
+
+		const completedTurn = getLastTurnContext();
+		if (
+			!hooks.desktopMode ||
+			!completedTurn ||
+			completedTurn.message.stopReason !== "length" ||
+			recoveryState.callerRequestedStop
+		)
+			break;
+
+		// The Worker callback reads its AbortController and pending confirmation
+		// state. Recheck between model requests because Agent.abort() has no active
+		// run to interrupt in this gap.
+		if (await hooks.shouldStopAfterTurn?.(completedTurn, undefined)) {
+			recoveryState.callerRequestedStop = true;
+			break;
+		}
+		if (continuationCount >= DESKTOP_OUTPUT_CONTINUATION_LIMIT) {
+			outputLimitReached = true;
+			break;
+		}
+		const hasTruncatedToolCalls = completedTurn.message.content.some((block) => block.type === "toolCall");
+		if (!hasTruncatedToolCalls) {
+			const partialText = contentText(completedTurn.message);
+			if (partialText) continuationText.push(partialText);
+		}
+		continuationCount += 1;
+		nextPrompt =
+			completedTurn.context.messages.at(-1)?.role === "toolResult" ? undefined : DESKTOP_OUTPUT_CONTINUATION_PROMPT;
+		assistantText = "";
+	}
+	if (continuationText.length) {
+		const finalMessage = getLastTurnContext()?.message;
+		assistantText = sanitizeAgentReply(
+			[...continuationText, finalMessage ? contentText(finalMessage) : assistantText].join(""),
+		);
+	}
+	if (outputLimitReached) {
+		const event: AgentTurnEvent = {
+			type: "error",
+			content: "模型回复多次达到输出长度限制，请缩短请求后重试。",
+			errorCode: "AGENT_MODEL_OUTPUT_LIMIT",
+		};
+		events.push(event);
+		await hooks.onEvent?.(event);
+	}
 	const clarification = referenceMappingClarification(events, assistantText);
 	if (clarification) {
 		assistantText = clarification;
@@ -302,10 +390,13 @@ export function prepareDesktopAgentTurnContext(
 		(tool) => !allowedToolNames || allowedToolNames.has(tool.name),
 	);
 	const memoryToolNames = new Set([
-		"read_project_memory", "remember_project_preference", "edit_project_memory", "delete_project_memory",
+		"read_project_memory",
+		"remember_project_preference",
+		"edit_project_memory",
+		"delete_project_memory",
 	]);
-	const desktopMemoryTools = (hooks.desktopMemoryTools ?? []).filter((tool) =>
-		memoryToolNames.has(tool.name) && (profile !== "audit-readonly" || tool.name === "read_project_memory"),
+	const desktopMemoryTools = (hooks.desktopMemoryTools ?? []).filter(
+		(tool) => memoryToolNames.has(tool.name) && (profile !== "audit-readonly" || tool.name === "read_project_memory"),
 	);
 	const messageFacts = history.map((message) => ({ content: message.content, meta: message.meta }));
 	const protectedFacts = extractProtectedFacts(messageFacts);
@@ -331,7 +422,9 @@ export function prepareDesktopAgentTurnContext(
 		...orderedInstructions,
 		hooks.intentContext,
 		hooks.memoryContext,
-	].filter(Boolean).join("\n\n");
+	]
+		.filter(Boolean)
+		.join("\n\n");
 	const baseSystemPrompt = profile
 		? profileSystemPrompt(profile, { desktopMode: true })
 		: VERTICAL_SHORT_DRAMA_SYSTEM_PROMPT;
@@ -344,29 +437,36 @@ export function prepareDesktopAgentTurnContext(
 	return {
 		initialMessages: history.flatMap((message): AgentMessage[] => {
 			if (message.piMessage) return [message.piMessage];
-			if (message.role === "user") return [{
-				role: "user",
-				content: [{ type: "text", text: composeUserContent(message.content, nodeReferencesFromMeta(message.meta)) }],
-				timestamp: message.createdAt.getTime(),
-			}];
+			if (message.role === "user")
+				return [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: composeUserContent(message.content, nodeReferencesFromMeta(message.meta)) },
+						],
+						timestamp: message.createdAt.getTime(),
+					},
+				];
 			if (message.role !== "assistant") return [];
-			return [{
-				role: "assistant",
-				content: [{ type: "text", text: message.content }],
-				api: "openai-completions",
-				provider: "agnes",
-				model: hooks.modelId ?? "agnes-2.5-flash",
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "stop",
-				timestamp: message.createdAt.getTime(),
-			} as AssistantMessage];
+			return [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: message.content }],
+					api: "openai-completions",
+					provider: "agnes",
+					model: hooks.modelId ?? "agnes-2.5-flash",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: message.createdAt.getTime(),
+				} as AssistantMessage,
+			];
 		}),
 		currentUserInput: composeUserContent(content, nodeReferences),
 		systemPrompt: [baseSystemPrompt, suffix].filter(Boolean).join("\n\n"),
@@ -385,8 +485,8 @@ export function prepareDesktopAgentTurnContext(
  */
 export function forceInitialToolCall(
 	toolName: string,
-	stream: typeof streamSimple = streamSimple,
-): typeof streamSimple {
+	stream: AgentOptions["streamFn"] = streamSimple,
+): AgentOptions["streamFn"] {
 	let firstRequest = true;
 	return (model, context, options) => {
 		const toolChoice: SimpleStreamOptions["toolChoice"] = firstRequest
@@ -412,6 +512,7 @@ export function captureEvent(
 	events: AgentTurnEvent[],
 	setAssistantText: (text: string) => void,
 	setTotalTokens: (tokens: number) => void,
+	desktopMode = false,
 ): void {
 	if (event.type === "message_update" && event.message.role === "assistant") {
 		const thinking = thinkingText(event.message);
@@ -424,10 +525,16 @@ export function captureEvent(
 		const text = sanitizeAgentReply(contentText(event.message));
 		const assistant = event.message as AssistantMessage;
 		if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
+			const errorMessage = assistant.errorMessage;
 			events.push({
 				type: "error",
-				content: assistant.errorMessage ?? (assistant.stopReason === "aborted" ? "运行已停止" : "模型调用失败"),
-				errorCode: assistant.stopReason === "aborted" ? "RUN_ABORTED" : "MODEL_UNAVAILABLE",
+				content: errorMessage ?? (assistant.stopReason === "aborted" ? "运行已停止" : "模型调用失败"),
+				errorCode:
+					assistant.stopReason === "aborted"
+						? "RUN_ABORTED"
+						: desktopMode && isModelConnectionError(errorMessage)
+							? "AGENT_MODEL_CONNECTION_FAILED"
+							: "MODEL_UNAVAILABLE",
 			});
 		} else {
 			setAssistantText(text);
@@ -458,6 +565,10 @@ export function captureEvent(
 			...(event.isError ? { errorCode: toolErrorCode(event.result) } : {}),
 		});
 	}
+}
+
+function isModelConnectionError(value: string | undefined): boolean {
+	return /\bconnection error\b|\bECONN(?:REFUSED|RESET|ABORTED)\b|\bENOTFOUND\b/i.test(value ?? "");
 }
 
 export function sanitizeAgentReply(content: string): string {
@@ -513,7 +624,10 @@ export function sanitizeAssistantMessage<T extends { role: string; content?: unk
 	}
 	if (!Array.isArray(message.content)) return message;
 
-	const text = message.content.filter(isTextContent).map((item) => item.text).join("");
+	const text = message.content
+		.filter(isTextContent)
+		.map((item) => item.text)
+		.join("");
 	if (!text) return message;
 
 	let replaced = false;

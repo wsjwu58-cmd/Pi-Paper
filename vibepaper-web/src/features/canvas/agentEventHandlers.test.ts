@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { AgentTaskBadge, AgentTurnTimeline } from './AgentExecutionRecord'
 import { friendlyAgentErrorMessage, isAgentRunActive, mergeSessionMessages, reduceAgentEvent, restoreDesktopAgentEventState, setConfirmationStatus, type AgentEventEnvelope, type AgentEventState } from './agentEventEnvelope'
-import { shouldRefreshCanvasEvent } from './agentEventHandlers'
+import { isChatVisibleMessage, shouldRefreshCanvasEvent } from './agentEventHandlers'
 import type { AgentChatMsg } from './agentTypes'
 
 const base: AgentEventState = {
@@ -124,11 +124,28 @@ describe('agent event envelope reducer', () => {
   })
 
   it('turns desktop run failure codes into readable messages', () => {
-    expect(friendlyAgentErrorMessage('AGENT_MODEL_REQUEST_FAILED')).toBe('模型请求失败，请检查 Agnes 配置后重试。')
+    expect(friendlyAgentErrorMessage('AGENT_MODEL_OUTPUT_LIMIT')).toContain('达到输出上限')
+    expect(friendlyAgentErrorMessage('AGENT_MODEL_CONNECTION_FAILED')).toContain('模型连接中断')
+    expect(friendlyAgentErrorMessage('AGENT_CONTEXT_SUMMARY_FAILED')).toContain('会话压缩失败')
+    expect(friendlyAgentErrorMessage('AGENT_MODEL_REQUEST_FAILED')).toBe('模型请求未完成，本轮已停止。已完成的画布操作已保留，可发送“继续”接着执行。')
     expect(friendlyAgentErrorMessage('AGENT_SESSION_WRITE_FAILED')).toBe('Agent 会话未能保存到本地项目，请检查磁盘空间后重试。')
     expect(friendlyAgentErrorMessage('MODEL_UNAVAILABLE')).toBe('模型服务暂时不可用，请检查服务配置后重试。')
     expect(friendlyAgentErrorMessage('SESSION_BUSY')).toBe('此会话有任务正在运行，请等待当前任务完成。')
     expect(friendlyAgentErrorMessage('SOME_INTERNAL_CODE')).toBe('Agent 执行失败，请稍后重试。')
+  })
+
+  it('restores an output-limit failure after a partial reply without reviving the run', () => {
+    const trace = [event('thinking', { text: '整理下一步。' }, 'reasoning'), event('run_failed', { errorCode: 'AGENT_MODEL_OUTPUT_LIMIT' }, 'length-failed')]
+    const state = restoreDesktopAgentEventState([], trace)
+    expect(isAgentRunActive(state)).toBe(false)
+    expect(state.messages.at(-1)?.meta).toMatchObject({ runStatus: 'failed', errorCode: 'AGENT_MODEL_OUTPUT_LIMIT' })
+    expect(state.messages.at(-1)?.meta?.executionSteps?.[0]?.summary).toBe('整理下一步。')
+  })
+
+  it('keeps an empty failed reply visible so its failure reason survives reload', () => {
+    const state = restoreDesktopAgentEventState([], [event('run_failed', { errorCode: 'AGENT_MODEL_OUTPUT_LIMIT' }, 'empty-failed')])
+    expect(state.messages.filter(isChatVisibleMessage)).toHaveLength(1)
+    expect(isChatVisibleMessage({ id: 'empty', role: 'assistant', type: 'text', content: '' })).toBe(false)
   })
 
   it('replaces a restarted streamed reply instead of appending a duplicate paragraph', () => {

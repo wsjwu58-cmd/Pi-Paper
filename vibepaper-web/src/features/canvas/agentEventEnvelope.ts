@@ -59,9 +59,13 @@ export function friendlyAgentErrorMessage(value: unknown): string {
   const message = typeof value === 'string' ? value.trim() : ''
   const knownErrors: Record<string, string> = {
     AGENT_MODEL_TIMEOUT: '模型响应超时，请稍后重试。',
+    AGENT_MODEL_OUTPUT_LIMIT: '模型回复达到输出上限，自动续跑仍未完成。已完成的画布操作已保留，请发送“继续”从当前进度接着执行。',
+    AGENT_MODEL_CONNECTION_FAILED: '模型连接中断，本轮已停止。已完成的画布操作已保留，请检查网络后发送“继续”。',
+    AGENT_CONTEXT_SUMMARY_FAILED: '会话压缩失败，本轮已停止。已完成的画布操作已保留，请稍后重试。',
+    AGENT_CONTEXT_WINDOW_EXCEEDED: '当前请求超出模型上下文容量，请减少本轮引用或拆分创作要求。',
     MODEL_TIMEOUT: '模型响应超时，请稍后重试。',
     MODEL_UNAVAILABLE: '模型服务暂时不可用，请检查服务配置后重试。',
-    AGENT_MODEL_REQUEST_FAILED: '模型请求失败，请检查 Agnes 配置后重试。',
+    AGENT_MODEL_REQUEST_FAILED: '模型请求未完成，本轮已停止。已完成的画布操作已保留，可发送“继续”接着执行。',
     CLOUD_CREDENTIAL_MISSING: '请先配置 Agnes API Key。',
     AGENT_SESSION_WRITE_FAILED: 'Agent 会话未能保存到本地项目，请检查磁盘空间后重试。',
     AGENT_RUN_RESULT_MISSING: 'Agent 未能恢复本轮回复，请重新发送。',

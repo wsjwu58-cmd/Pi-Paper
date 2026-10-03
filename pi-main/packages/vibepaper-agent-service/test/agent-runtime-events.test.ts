@@ -1,12 +1,17 @@
-import type { AgentEvent } from "@earendil-works/pi-agent-core";
+import type { AgentEvent, AgentOptions, AgentTool } from "@earendil-works/pi-agent-core";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
+import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
+	type AgentRuntimeHooks,
+	type AgentSkillContext,
 	type AgentTurnEvent,
 	agnesModel,
 	awaitAgentTurn,
 	captureEvent,
 	forceInitialToolCall,
+	runDramaTurn,
 	sanitizeAgentReply,
 	sanitizeAssistantMessage,
 } from "../src/application/agent-runtime.ts";
@@ -89,7 +94,10 @@ describe("Pi runtime event mapping", () => {
 			{ type: "text", text: "" },
 		]);
 		expect(sanitized).toMatchObject({ role: "assistant", timestamp: 123 });
-		expect(message.content[1]).toEqual({ type: "text", text: "已整理节点 ID: node_12345678，并调用 get_canvas_summary。" });
+		expect(message.content[1]).toEqual({
+			type: "text",
+			text: "已整理节点 ID: node_12345678，并调用 get_canvas_summary。",
+		});
 	});
 
 	it("keeps the legacy string-content shape and leaves non-assistant messages untouched", () => {
@@ -173,6 +181,27 @@ describe("Pi runtime event mapping", () => {
 		expect(events).toEqual([{ type: "error", content: "用户停止", errorCode: "RUN_ABORTED" }]);
 	});
 
+	it("classifies desktop connection failures while preserving the legacy Web error code", () => {
+		const event = {
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [],
+				stopReason: "error",
+				errorMessage: "Connection error.",
+			},
+		} as unknown as AgentEvent;
+		const desktopEvents: AgentTurnEvent[] = [];
+		const webEvents: AgentTurnEvent[] = [];
+		const ignore = () => undefined;
+
+		captureEvent(event, desktopEvents, ignore, ignore, true);
+		captureEvent(event, webEvents, ignore, ignore);
+
+		expect(desktopEvents[0]).toMatchObject({ type: "error", errorCode: "AGENT_MODEL_CONNECTION_FAILED" });
+		expect(webEvents[0]).toMatchObject({ type: "error", errorCode: "MODEL_UNAVAILABLE" });
+	});
+
 	it("aborts an unresponsive model call and reports MODEL_TIMEOUT", async () => {
 		let aborted = false;
 		const never = new Promise<void>(() => undefined);
@@ -249,16 +278,263 @@ describe("Pi runtime event mapping", () => {
 
 	it("forces the requested canvas tool only on the initial model request", () => {
 		const choices: unknown[] = [];
-		const forced = forceInitialToolCall(
-			"create_nodes",
-			((...args: Parameters<typeof streamSimple>) => {
-				const [, , options] = args;
-				choices.push(options?.toolChoice);
-				return {} as ReturnType<typeof streamSimple>;
-			}) as typeof streamSimple,
-		);
+		const forced = forceInitialToolCall("create_nodes", ((...args: Parameters<typeof streamSimple>) => {
+			const [, , options] = args;
+			choices.push(options?.toolChoice);
+			return {} as ReturnType<typeof streamSimple>;
+		}) as typeof streamSimple);
 		forced({} as never, {} as never, {});
 		forced({} as never, {} as never, {});
 		expect(choices).toEqual([{ type: "function", function: { name: "create_nodes" } }, undefined]);
 	});
+
+	it("continues a desktop response that was truncated after thinking only", async () => {
+		const faux = createFauxRuntime([
+			assistantResponse([{ type: "thinking", thinking: "规划中" }], "length"),
+			assistantResponse([{ type: "text", text: "故事概览已整理。" }]),
+		]);
+		const result = await runDesktopTurn(faux.streamFn);
+
+		expect(faux.requests).toHaveLength(2);
+		expect(result.assistantText).toBe("故事概览已整理。");
+		expect(faux.requests[1]?.filter((message) => message.role === "user")).toHaveLength(2);
+		expect(faux.requests[1]?.at(-1)?.text).toContain("上一条尚未完成的回复继续");
+		expect(result.events.some((event) => event.type === "error")).toBe(false);
+	});
+
+	it("joins partial text with a bounded desktop continuation", async () => {
+		const faux = createFauxRuntime([
+			assistantResponse([{ type: "text", text: "故事标题" }], "length"),
+			assistantResponse([{ type: "text", text: "和主要人物已整理。" }]),
+		]);
+		const result = await runDesktopTurn(faux.streamFn);
+
+		expect(result.assistantText).toBe("故事标题和主要人物已整理。");
+		expect(faux.requests).toHaveLength(2);
+	});
+
+	it("preserves word boundaries across truncated reply fragments", async () => {
+		const faux = createFauxRuntime([
+			assistantResponse([{ type: "text", text: "Hello" }], "length"),
+			assistantResponse([{ type: "text", text: " world." }]),
+		]);
+		const result = await runDesktopTurn(faux.streamFn);
+		expect(result.assistantText).toBe("Hello world.");
+	});
+
+	it("does not execute a tool call truncated by the provider", async () => {
+		const schema = Type.Object({}, { additionalProperties: false });
+		let executions = 0;
+		const createNodes: AgentTool<typeof schema> = {
+			name: "create_nodes",
+			label: "创建节点",
+			description: "创建节点",
+			parameters: schema,
+			async execute() {
+				executions += 1;
+				return { content: [{ type: "text", text: "written" }], details: {} };
+			},
+		};
+		const faux = createFauxRuntime([
+			assistantResponse(
+				[
+					{
+						type: "toolCall",
+						id: "call-truncated",
+						name: "create_nodes",
+						arguments: {},
+					},
+				],
+				"length",
+			),
+			assistantResponse([{ type: "text", text: "已完成。" }]),
+		]);
+		const result = await runDesktopTurn(faux.streamFn, { runtimeTools: [createNodes] });
+
+		expect(executions).toBe(0);
+		expect(faux.requests).toHaveLength(2);
+		expect(faux.requests[1]?.at(-1)?.role).toBe("toolResult");
+		expect(result.assistantText).toBe("已完成。");
+	});
+
+	it("does not replay a completed tool when resuming after a later length response", async () => {
+		const schema = Type.Object({}, { additionalProperties: false });
+		let executions = 0;
+		const createNodes: AgentTool<typeof schema> = {
+			name: "create_nodes",
+			label: "创建节点",
+			description: "创建节点",
+			parameters: schema,
+			async execute() {
+				executions += 1;
+				return { content: [{ type: "text", text: "written" }], details: {} };
+			},
+		};
+		const faux = createFauxRuntime([
+			assistantResponse(
+				[
+					{
+						type: "toolCall",
+						id: "call-complete",
+						name: "create_nodes",
+						arguments: {},
+					},
+				],
+				"toolUse",
+			),
+			assistantResponse([{ type: "text", text: "回复开头" }], "length"),
+			assistantResponse([{ type: "text", text: "已完成。" }]),
+		]);
+		const result = await runDesktopTurn(faux.streamFn, { runtimeTools: [createNodes] });
+
+		expect(executions).toBe(1);
+		expect(faux.requests).toHaveLength(3);
+		expect(result.assistantText).toBe("回复开头已完成。");
+	});
+
+	it("honors the caller stop hook before recovering a truncated response", async () => {
+		const faux = createFauxRuntime([
+			assistantResponse([{ type: "text", text: "等待确认" }], "length"),
+			assistantResponse([{ type: "text", text: "不应请求" }]),
+		]);
+		const shouldStopAfterTurn: NonNullable<AgentRuntimeHooks["shouldStopAfterTurn"]> = () => true;
+		const result = await runDesktopTurn(faux.streamFn, { shouldStopAfterTurn });
+
+		expect(faux.requests).toHaveLength(1);
+		expect(result.assistantText).toBe("等待确认");
+		expect(result.events.some((event) => event.errorCode === "AGENT_MODEL_OUTPUT_LIMIT")).toBe(false);
+	});
+
+	it("emits a terminal output-limit error after two continuations", async () => {
+		const faux = createFauxRuntime([
+			assistantResponse([{ type: "text", text: "一" }], "length"),
+			assistantResponse([{ type: "text", text: "二" }], "length"),
+			assistantResponse([{ type: "text", text: "三" }], "length"),
+		]);
+		const result = await runDesktopTurn(faux.streamFn);
+
+		expect(faux.requests).toHaveLength(3);
+		expect(result.assistantText).toBe("一二三");
+		expect(result.events.at(-1)).toMatchObject({ type: "error", errorCode: "AGENT_MODEL_OUTPUT_LIMIT" });
+	});
+
+	it("does not retry a connection failure after an output-limit continuation", async () => {
+		const faux = createFauxRuntime([
+			assistantResponse([{ type: "thinking", thinking: "规划中" }], "length"),
+			assistantResponse([], "error", "Connection error."),
+			assistantResponse([{ type: "text", text: "不应重试" }]),
+		]);
+		const result = await runDesktopTurn(faux.streamFn);
+
+		expect(faux.requests).toHaveLength(2);
+		expect(result.events.filter((event) => event.type === "error").at(-1)).toMatchObject({
+			type: "error",
+			errorCode: "AGENT_MODEL_CONNECTION_FAILED",
+		});
+	});
 });
+
+type ObservedRequestMessage = { role: string; text: string };
+
+function createFauxRuntime(responses: AssistantMessage[]) {
+	const requests: ObservedRequestMessage[][] = [];
+	let responseIndex = 0;
+	const streamFn: AgentOptions["streamFn"] = (_model, context) => {
+		requests.push(context.messages.map((message) => ({ role: message.role, text: textContent(message.content) })));
+		const response = responses[responseIndex];
+		if (!response) throw new Error("FAUX_RESPONSE_MISSING");
+		responseIndex += 1;
+		const stream = createAssistantMessageEventStream();
+		if (response.stopReason === "error" || response.stopReason === "aborted") {
+			stream.push({ type: "error", reason: response.stopReason, error: response });
+		} else {
+			stream.push({
+				type: "done",
+				reason: response.stopReason as "length" | "stop" | "toolUse",
+				message: response,
+			});
+		}
+		return stream;
+	};
+	return { requests, streamFn };
+}
+
+async function runDesktopTurn(
+	streamFn: AgentOptions["streamFn"],
+	options: Partial<AgentRuntimeHooks> = {},
+): Promise<Awaited<ReturnType<typeof runDramaTurn>>> {
+	const skillContext: AgentSkillContext = {
+		indexLines: [],
+		skills: [],
+		loadedSkillIds: [],
+		loadedSkills: [],
+		onLoad: async () => undefined,
+	};
+	const desktopTurnContext = {
+		initialMessages: [],
+		currentUserInput: "帮我完成这轮创作。",
+		systemPrompt: "测试系统提示词",
+		toolSchemas: [],
+		extraTools: [],
+	};
+	return runDramaTurn(
+		{
+			llmApiKey: "test-key",
+			llmBaseUrl: "https://api.example.test/v1",
+			llmModel: "agnes-2.5-flash",
+		} as ServiceConfig,
+		undefined,
+		"session-test",
+		[],
+		"帮我完成这轮创作。",
+		skillContext,
+		[],
+		{
+			desktopMode: true,
+			profile: "canvas-general",
+			desktopTurnContext,
+			streamFn,
+			...options,
+		},
+	);
+}
+
+function assistantResponse(
+	content: AssistantMessage["content"],
+	stopReason: "stop" | "length" | "toolUse" | "error" = "stop",
+	errorMessage?: string,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: "openai-completions",
+		provider: "agnes",
+		model: "agnes-2.5-flash",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason,
+		...(errorMessage ? { errorMessage } : {}),
+		timestamp: Date.now(),
+	};
+}
+
+function textContent(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter(
+			(block): block is { type: "text"; text: string } =>
+				typeof block === "object" &&
+				block !== null &&
+				(block as { type?: unknown }).type === "text" &&
+				typeof (block as { text?: unknown }).text === "string",
+		)
+		.map((block) => block.text)
+		.join("");
+}

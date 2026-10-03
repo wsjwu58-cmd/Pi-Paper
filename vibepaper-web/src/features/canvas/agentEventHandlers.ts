@@ -71,6 +71,7 @@ export function isChatVisibleMessage(m: AgentChatMsg): boolean {
   if (m.role === 'user') return true
   if (m.type && m.type !== 'text') return false
   if (m.content?.trim()) return true
+  if (m.meta?.runStatus === 'failed') return true
   if ((m.meta?.executionSteps?.length ?? 0) > 0) return true
   if (m.meta?.confirmation) return true
   return false

@@ -823,6 +823,7 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
         desktopTurnContext: prepared.turnContext,
         intentContext,
         memoryContext,
+        shouldStopAfterTurn: () => runControl.cancelled || runControl.controller.signal.aborted || Boolean(toolContext.confirmationPending),
         onAgent(agent) {
           runControl.agent = agent
           if (runControl.cancelled) agent.abort()

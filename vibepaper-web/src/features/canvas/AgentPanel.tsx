@@ -1255,6 +1255,11 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                         errorCode={m.meta?.taskStatus?.errorCode}
                         errorMessage={m.meta?.taskStatus?.errorMessage}
                       />
+                      {m.meta?.runStatus === 'failed' && (
+                        <p role="alert" className="mt-2 rounded-md bg-red-50 px-2 py-1.5 text-[12px] leading-5 text-red-700">
+                          运行中断：{friendlyAgentErrorMessage(m.meta.errorCode)}
+                        </p>
+                      )}
                       {m.meta?.nextActions && m.meta.nextActions.length > 0 && (
                         <AgentNextActions
                           actions={m.meta.nextActions}
