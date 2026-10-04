@@ -21,7 +21,10 @@ import {
 import { useRef, useState } from 'react'
 import { api, uploadAsset } from '@/lib/api'
 import { sid } from '@/lib/ids'
-import { useCanvasStore } from './canvasStore'
+import { createCanvasGroup, nodeMediaUrl, removeCanvasGroupFromStore, useCanvasStore } from './canvasStore'
+import { arrangeCanvasGroupNodes } from './canvasGroupUtils'
+import { downloadNodeOutput } from './nodes/nodeDownloads'
+import { textNodeContent } from './nodes/textContent'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { cn } from '@/lib/cn'
 import { isDesktopRuntime } from './canvasPort'
@@ -101,27 +104,8 @@ export function CanvasToolbar({
   const groupSelected = async () => {
     if (!canvas || selected.length < 2) return
     try {
-      if (isDesktop) {
-        const bridge = window.vibepaperDesktop
-        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法编组。')
-        const group = await bridge.addGroup({
-          projectId,
-          canvasId: sid(canvas.canvas.id),
-          nodeIds: selected.map((n) => sid(n.id)),
-          color: '#8b5cf6',
-        })
-        setGroups([...groups, { ...group, id: sid(group.id), nodeIds: group.nodeIds.map(sid) }])
-        toastSuccess('已编组')
-        return
-      }
-      const g = await api<{ id: string | number; nodeIds: Array<string | number> }>(
-        `/canvases/${sid(canvas.canvas.id)}/groups`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ nodeIds: selected.map((n) => sid(n.id)) }),
-        },
-      )
-      setGroups([...groups, { id: sid(g.id), name: '编组', color: '#8b5cf6', layout: 'free', nodeIds: g.nodeIds.map(sid) }])
+      const group = await createCanvasGroup(selected.map((node) => sid(node.id)), { color: '#8b5cf6' })
+      if (!group) return
       toastSuccess('已编组')
     } catch (e) {
       toastError((e as Error).message)
@@ -131,37 +115,55 @@ export function CanvasToolbar({
   const updateGroup = async (patch: { color?: string; layout?: string; name?: string }) => {
     if (!canvas || !activeGroup) return
     try {
-      const g = isDesktop
-        ? await (async () => {
-            const bridge = window.vibepaperDesktop
-            if (!bridge || !projectId) throw new Error('本地项目未就绪，无法更新编组。')
-            return bridge.updateGroup({ projectId, canvasId: sid(canvas.canvas.id), groupId: sid(activeGroup.id), ...patch })
-          })()
-        : await api<{ id: string | number; name: string; color: string; layout: string; nodeIds: Array<string | number> }>(
-            `/canvases/${sid(canvas.canvas.id)}/groups/${sid(activeGroup.id)}`,
-            { method: 'PUT', body: JSON.stringify(patch) },
-          )
+      const isLocalSingleGroup = activeGroup.nodeIds.length < 2
+      const g = isLocalSingleGroup
+        ? { ...activeGroup, ...patch }
+        : isDesktop
+          ? await (async () => {
+              const bridge = window.vibepaperDesktop
+              if (!bridge || !projectId) throw new Error('本地项目未就绪，无法更新编组。')
+              return bridge.updateGroup({ projectId, canvasId: sid(canvas.canvas.id), groupId: sid(activeGroup.id), ...patch })
+            })()
+          : await api<{ id: string | number; name: string; color: string; layout: string; nodeIds: Array<string | number> }>(
+              `/canvases/${sid(canvas.canvas.id)}/groups/${sid(activeGroup.id)}`,
+              { method: 'PUT', body: JSON.stringify(patch) },
+            )
+      if (sid(useCanvasStore.getState().canvas?.canvas.id) !== sid(canvas.canvas.id)) return
+      if (isDesktop && !isLocalSingleGroup) {
+        const currentProject = await window.vibepaperDesktop?.getActiveProject()
+        if (!currentProject || currentProject.projectId !== projectId || sid(currentProject.canvasId) !== sid(canvas.canvas.id)) return
+        if (sid(useCanvasStore.getState().canvas?.canvas.id) !== sid(canvas.canvas.id)) return
+      }
+      const currentState = useCanvasStore.getState()
       setGroups(
-        groups.map((item) =>
+        currentState.groups.map((item) =>
           sid(item.id) === sid(activeGroup.id)
             ? { ...item, name: g.name, color: g.color, layout: g.layout, nodeIds: g.nodeIds.map(sid) }
             : item,
         ),
       )
       if (patch.layout === 'grid' || patch.layout === 'horizontal') {
-        const members = nodes.filter((n) => activeGroup.nodeIds.map(sid).includes(sid(n.id)))
-        const originX = Math.min(...members.map((m) => m.position.x))
-        const originY = Math.min(...members.map((m) => m.position.y))
-        const next = nodes.map((n) => {
-          const idx = activeGroup.nodeIds.map(sid).indexOf(sid(n.id))
-          if (idx < 0) return n
-          if (patch.layout === 'grid') {
-            return { ...n, position: { x: originX + (idx % 3) * 330, y: originY + Math.floor(idx / 3) * 280 } }
-          }
-          return { ...n, position: { x: originX + idx * 330, y: originY } }
-        })
+        const currentNodes = useCanvasStore.getState().nodes
+        const next = patch.layout === 'horizontal'
+          ? arrangeCanvasGroupNodes(currentNodes, activeGroup.nodeIds, 'horizontal')
+          : (() => {
+              const members = currentNodes.filter((n) => activeGroup.nodeIds.map(sid).includes(sid(n.id)))
+              const originX = Math.min(...members.map((m) => m.position.x))
+              const originY = Math.min(...members.map((m) => m.position.y))
+              return currentNodes.map((n) => {
+                const idx = activeGroup.nodeIds.map(sid).indexOf(sid(n.id))
+                return idx < 0 ? n : {
+                  ...n,
+                  position: { x: originX + (idx % 3) * 330, y: originY + Math.floor(idx / 3) * 280 },
+                }
+              })
+            })()
         setNodes(next)
         setDirty(true)
+      }
+      if (isLocalSingleGroup) {
+        setDirty(true)
+        window.dispatchEvent(new Event('vp-canvas-group-snapshot'))
       }
       toastSuccess('编组已更新')
     } catch (e) {
@@ -172,14 +174,25 @@ export function CanvasToolbar({
   const ungroup = async () => {
     if (!canvas || !activeGroup) return
     try {
-      if (isDesktop) {
+      if (activeGroup.nodeIds.length < 2) {
+        removeCanvasGroupFromStore(activeGroup, true)
+      } else if (isDesktop) {
         const bridge = window.vibepaperDesktop
         if (!bridge || !projectId) throw new Error('本地项目未就绪，无法取消编组。')
-        await bridge.deleteGroup({ projectId, canvasId: sid(canvas.canvas.id), groupId: sid(activeGroup.id) })
+        const canvasId = sid(canvas.canvas.id)
+        await bridge.deleteGroup({ projectId, canvasId, groupId: sid(activeGroup.id) })
+        if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
+        const currentProject = await bridge.getActiveProject()
+        if (!currentProject || currentProject.projectId !== projectId || sid(currentProject.canvasId) !== canvasId) return
+        if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
+        removeCanvasGroupFromStore(activeGroup)
       } else {
-        await api(`/canvases/${sid(canvas.canvas.id)}/groups/${sid(activeGroup.id)}`, { method: 'DELETE' })
+        const canvasId = sid(canvas.canvas.id)
+        await api(`/canvases/${canvasId}/groups/${sid(activeGroup.id)}`, { method: 'DELETE' })
+        if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
+        removeCanvasGroupFromStore(activeGroup)
       }
-      setGroups(groups.filter((g) => sid(g.id) !== sid(activeGroup.id)))
+      if (sid(useCanvasStore.getState().canvas?.canvas.id) !== sid(canvas.canvas.id)) return
       toastSuccess('已取消编组')
     } catch (e) {
       toastError((e as Error).message)
@@ -271,41 +284,19 @@ export function CanvasToolbar({
   }
 
   const downloadSelected = async () => {
-    const bridge = isDesktop ? window.vibepaperDesktop : undefined
-    const downloads = await Promise.all(selected.map(async (flowNode) => {
+    if (selected.length === 0) return
+    let saved = 0
+    for (const flowNode of selected) {
       const node = flowNode.data.node
-      const params = node.params ?? {}
-      const currentOutputId = node.currentOutputId
-
-      if (bridge && projectId && currentOutputId != null) {
-        const task = await bridge.getTask(projectId, sid(currentOutputId)).catch(() => null)
-        if (
-          task?.status === 'succeeded'
-          && task.nodeId === sid(node.id)
-          && task.modality !== 'text'
-        ) {
-          return `vibe://app/tasks/${task.taskId}/output`
-        }
+      const textContent = node.type === 'text' ? textNodeContent(node.output?.text, node.params) : undefined
+      const mediaUrl = node.type === 'text' ? undefined : nodeMediaUrl(node)
+      if (textContent || mediaUrl) {
+        if (await downloadNodeOutput({ node, ...(textContent ? { textContent } : {}), ...(mediaUrl ? { mediaUrl } : {}) }) === 'saved') saved += 1
       }
-
-      const url = [params.lastOutputUrl, params.url, params.output_url]
-        .find((value): value is string => typeof value === 'string' && Boolean(value.trim()))
-      return url
-    }))
-    const urls = downloads.filter((url): url is string => Boolean(url))
-    if (urls.length === 0) {
-      toastError('选中节点暂无可下载的输出内容')
-      return
     }
-    urls.forEach((url, i) => {
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `selected-${i + 1}`
-      a.target = '_blank'
-      a.click()
-    })
-    const missing = selected.length - urls.length
-    toastSuccess(`已触发下载 ${urls.length} 个内容${missing > 0 ? `，${missing} 个节点暂无输出` : ''}`)
+    if (saved === 0) {
+      toastError('选中节点暂无可下载的输出内容')
+    }
   }
 
   return (

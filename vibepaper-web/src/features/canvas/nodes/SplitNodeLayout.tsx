@@ -5,6 +5,10 @@ import { ArrowUpFromLine } from 'lucide-react'
 import type { NodePayload } from '@/lib/types'
 import { sid } from '@/lib/ids'
 import { statusBadge } from './NodeShell'
+import { GenerationProgress } from './GenerationProgress'
+import type { GenerationProgressInput } from './generation-progress'
+import { resolveGenerationProgressStatus } from './generation-progress'
+import './generation-progress.css'
 
 export function SplitNodeLayout({
   node,
@@ -20,6 +24,10 @@ export function SplitNodeLayout({
   topMinHeight = 'min-h-[72px]',
   topMinHeightCollapsed = 'min-h-0',
   mediaFrame,
+  collapsedWidth = 280,
+  generationProgress,
+  generationTaskStatus,
+  cropEditing = false,
 }: {
   node: NodePayload
   selected: boolean
@@ -40,16 +48,37 @@ export function SplitNodeLayout({
   topMinHeightCollapsed?: string
   /** Media outputs size the node from the media's own aspect ratio. */
   mediaFrame?: 'natural'
+  /** Optional compact card width; selected cards retain their editor width. */
+  collapsedWidth?: number
+  /** A real queued/running task from the node task feed. */
+  generationProgress?: GenerationProgressInput | null
+  /** Latest real task state, including terminal states, for stale node status suppression. */
+  generationTaskStatus?: string | null
+  /** Inline crop controls extend the selected image frame and need to remain visible. */
+  cropEditing?: boolean
 }) {
   const nodeId = sid(node.id)
   const badge = statusBadge(node.status)
   const ringCls = selected ? 'ring-[#111]/35' : 'ring-black/5'
   const expanded = selected
-  const shellWidth = expanded ? 'w-[440px]' : 'w-[280px]'
-  const topWidth = expanded ? 'w-[240px]' : 'w-full'
+  const shellWidth = expanded ? 'w-[440px]' : ''
+  const topWidth = cropEditing ? 'w-full' : expanded ? 'w-[240px]' : 'w-full'
+  const nodeExecutionStatus = String(node.execStatus || node.status || '').toLowerCase()
+  const progressStatus = !cropEditing && generationProgress
+    ? resolveGenerationProgressStatus(
+        generationProgress.status,
+        nodeExecutionStatus,
+        generationProgress.taskId,
+        node.currentOutputId,
+      )
+    : null
+  const showLegacyBusy = !cropEditing && busy && generationTaskStatus === undefined && !progressStatus
 
   return (
-    <div className={`relative flex flex-col items-center ${shellWidth}`}>
+    <div
+      className={`relative flex flex-col items-center ${shellWidth}`}
+      style={expanded ? undefined : { width: collapsedWidth }}
+    >
       {expanded && (
         <div className="mb-1.5 flex items-center justify-center gap-1.5 text-[11px] font-semibold text-[#8e8e93]">
           <Icon size={12} />
@@ -60,7 +89,7 @@ export function SplitNodeLayout({
 
       <div className={`relative ${topWidth}`}>
         <div
-          className={`relative w-full overflow-hidden rounded-[16px] bg-white shadow-[0_8px_28px_rgba(15,23,42,0.10)] ring-1 ${ringCls}`}
+          className={`relative w-full ${cropEditing ? 'overflow-visible' : 'overflow-hidden'} rounded-[16px] bg-white shadow-[0_8px_28px_rgba(15,23,42,0.10)] ring-1 ${ringCls}`}
           style={{ outline: node.status === 'running' ? `2px solid ${accentColor}` : undefined }}
         >
           <Handle
@@ -114,16 +143,20 @@ export function SplitNodeLayout({
             <div
               className={
                 mediaFrame
-                  ? 'relative flex w-full items-start justify-center overflow-hidden'
-                  : `relative flex ${expanded ? topMinHeight : topMinHeightCollapsed} max-h-[120px] items-start justify-center overflow-hidden`
+                  ? `relative flex w-full items-start justify-center ${cropEditing ? 'overflow-visible' : 'overflow-hidden'}`
+                  : progressStatus
+                    ? 'relative flex aspect-video w-full min-h-[120px] max-h-none items-start justify-center overflow-hidden'
+                    : `relative flex ${expanded ? topMinHeight : topMinHeightCollapsed} max-h-[120px] items-start justify-center overflow-hidden`
               }
             >
               {topContent}
-              {busy && (
+              {!cropEditing && generationProgress && progressStatus ? (
+                <GenerationProgress {...generationProgress} status={progressStatus} />
+              ) : showLegacyBusy ? (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/60 text-[12px] font-bold text-[#555]">
                   生成中…
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
           <Handle

@@ -5,6 +5,17 @@ const { randomUUID } = require('node:crypto')
 const NODE_TYPES = new Set(['text', 'image', 'video', 'audio', 'compose', 'director'])
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu
 
+function canvasNodePayload(node) {
+  const data = node.data ?? {}
+  const nested = data.node ?? {}
+  return {
+    ...node,
+    params: node.params ?? data.params ?? nested.params ?? {},
+    output: node.output ?? data.output ?? nested.output ?? {},
+    currentOutputId: node.currentOutputId ?? data.currentOutputId ?? nested.currentOutputId,
+  }
+}
+
 function nodeUrls(node) {
   const params = node.params ?? {}
   const output = node.output ?? {}
@@ -25,7 +36,8 @@ async function resolveNodeExport(input, dependencies) {
   }
   await dependencies.assertActive(input.projectId, input.canvasId)
   const canvas = await dependencies.loadCanvas(input.projectId, input.canvasId)
-  const node = canvas.nodes?.find((item) => item.id === input.nodeId)
+  const storedNode = canvas.nodes?.find((item) => item.id === input.nodeId)
+  const node = storedNode && canvasNodePayload(storedNode)
   if (!node || node.type !== input.nodeType) throw new Error('当前节点已更改，无法下载结果。')
   const source = input.source
   if (source.kind === 'text') {
@@ -101,4 +113,4 @@ async function exportNodeOutput(input, dependencies) {
   }
 }
 
-module.exports = { resolveNodeExport, exportNodeOutput }
+module.exports = { resolveNodeExport, exportNodeOutput, canvasNodePayload }

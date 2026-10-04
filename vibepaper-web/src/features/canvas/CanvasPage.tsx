@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -14,17 +15,23 @@ import {
   type EdgeChange,
   type NodeChange,
   type OnNodeDrag,
+  SelectionMode,
   useReactFlow,
 } from '@xyflow/react'
 import { Copy, Files, Trash2, Upload } from 'lucide-react'
 import '@xyflow/react/dist/style.css'
 import { api, ApiError, uploadAsset } from '@/lib/api'
 import { isValidEntityId, sid } from '@/lib/ids'
-import type { AssetView, CanvasDetail, EdgePayload, ModelInfo, NodePayload } from '@/lib/types'
-import { buildFlow, mergeHydrateFlow, toPayloads, toEdgePayloads, useCanvasStore, type FlowNode } from './canvasStore'
-import { nodeTypes } from './nodes'
+import type { AssetView, CanvasDetail, EdgePayload, GroupPayload, ModelInfo, NodePayload } from '@/lib/types'
+import { buildFlow, createCanvasGroup, mergeHydrateFlow, nodeMediaUrl, removeCanvasGroupFromStore, toPayloads, toEdgePayloads, useCanvasStore, type FlowNode } from './canvasStore'
+import { nodeTypes, useNodeTasks } from './nodes'
+import { isGenerationInFlight } from './nodes/generation-progress'
+import { textNodeContent } from './nodes/textContent'
 import { CanvasTopBar } from './CanvasTopBar'
 import { CanvasToolbar } from './CanvasToolbar'
+import { CanvasGroupView } from './CanvasGroupView'
+import { arrangeCanvasGroupNodes, canvasGroupMemberIds, getCanvasGroupDownloadCandidates, moveCanvasGroupNodes } from './canvasGroupUtils'
+import { downloadNodeOutput } from './nodes/nodeDownloads'
 import { AssetLibrary } from './AssetLibrary'
 import { AgentLauncher, AgentPanel } from './AgentPanel'
 import { useDesktopAgentController } from './useDesktopAgentController'
@@ -34,7 +41,7 @@ import { CanvasWelcome } from './CanvasWelcome'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
 import { applySavedCanvasStaleNodeIds, createCanvasNodePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
-import { registerCanvasPersistence } from './canvasPersistence'
+import { flushCanvasPersistence, registerCanvasPersistence } from './canvasPersistence'
 import type { DesktopCanvas } from '@/desktop/desktop-bridge'
 
 const saveDebounce = 500
@@ -59,6 +66,9 @@ export function CanvasPage() {
 function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const nodes = useCanvasStore((s) => s.nodes)
   const edges = useCanvasStore((s) => s.edges)
+  const { tasks: generationTasks } = useNodeTasks()
+  const canvasNodesById = useMemo(() => new Map(nodes.map((node) => [sid(node.id), node.data.node])), [nodes])
+  const generationTasksById = useMemo(() => new Map(generationTasks.map((task) => [sid(task.taskId), task])), [generationTasks])
   const groups = useCanvasStore((s) => s.groups)
   const stacks = useCanvasStore((s) => s.stacks)
   const canvas = useCanvasStore((s) => s.canvas)
@@ -71,6 +81,8 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const setDirty = useCanvasStore((s) => s.setDirty)
   const setSaving = useCanvasStore((s) => s.setSaving)
   const selectNode = useCanvasStore((s) => s.selectNode)
+  const selectedGroupId = useCanvasStore((s) => s.selectedGroupId)
+  const selectGroup = useCanvasStore((s) => s.selectGroup)
   const setEditingNodeId = useCanvasStore((s) => s.setEditingNodeId)
   const agentOpen = useCanvasStore((s) => s.agentOpen)
   const setAgentOpen = useCanvasStore((s) => s.setAgentOpen)
@@ -150,6 +162,16 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   }, [refetch])
 
   useEffect(() => {
+    const onGroupSnapshot = () => {
+      // A one-member crop group is persisted through the existing full-canvas
+      // snapshot because the legacy addGroup command requires two members.
+      skipNextSave.current = false
+    }
+    window.addEventListener('vp-canvas-group-snapshot', onGroupSnapshot)
+    return () => window.removeEventListener('vp-canvas-group-snapshot', onGroupSnapshot)
+  }, [])
+
+  useEffect(() => {
     if (!detail) return
     hydratingRef.current = true
     skipNextSave.current = true
@@ -159,6 +181,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     setNodes(merged.map((n) => ({ ...n, data: { ...n.data, models: models ?? [] } })))
     setEdges(flow.edges)
     setGroups(detail.groups)
+    selectGroup(null)
     setStacks(detail.stacks)
     setSavedVersion(detail.canvas.version)
     // Hydrating the authoritative server snapshot is not a local edit. Clear
@@ -169,7 +192,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       hydratingRef.current = false
     }, 0)
     // 仅在画布 detail 变化时整表 hydrate；models 单独注入，避免覆盖已编辑的 prompt
-  }, [detail, setCanvas, setNodes, setEdges, setGroups, setStacks, setDirty, selectNode])
+  }, [detail, setCanvas, setNodes, setEdges, setGroups, setStacks, setDirty, selectNode, selectGroup])
 
   useEffect(() => {
     if (!models) return
@@ -397,13 +420,15 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     (changes: NodeChange<FlowNode>[]) => {
       setNodes(applyNodeChanges(changes, nodes) as FlowNode[])
       const sel = changes.filter((c) => c.type === 'select').pop() as { selected?: boolean; id?: string } | undefined
-      if (sel?.id) selectNode(sel.selected ? sid(sel.id) : null)
+      if (sel?.id && nodes.some((node) => sid(node.id) === sid(sel.id))) {
+        selectNode(sel.selected ? sid(sel.id) : null)
+      }
       // React Flow emits internal replace/measurement/selection changes while
       // hydrating/rendering the graph. Dirty state is set by explicit edit
       // handlers (and drag-stop below), never by this reconciliation callback;
       // otherwise an Agent confirmation can become stale from view updates.
     },
-    [nodes, setNodes, selectNode, setDirty],
+    [nodes, setNodes, selectNode],
   )
 
   const persistNodePosition = useCallback(
@@ -454,6 +479,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
   const onNodeDragStop: OnNodeDrag<FlowNode> = useCallback(
     (_event, node) => {
+      if (!useCanvasStore.getState().nodes.some((item) => sid(item.id) === sid(node.id))) return
       // When another graph edit is already pending, its existing full save
       // includes this position. Otherwise persist just this node, so a remote
       // Agent mutation cannot overwrite a drag with an older whole-canvas view.
@@ -465,6 +491,136 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     },
     [persistNodePosition, setDirty],
   )
+
+  const onSelectionEnd = useCallback((_event: ReactMouseEvent) => {
+    if (mode !== 'select') return
+    const selectionCanvasId = canvasId
+    requestAnimationFrame(() => {
+      if (mode !== 'select' || sid(useCanvasStore.getState().canvas?.canvas.id) !== selectionCanvasId) return
+      const currentNodes = useCanvasStore.getState().nodes
+      const selectedNodes = currentNodes.filter((node) => node.selected)
+      const memberIds = canvasGroupMemberIds(selectedNodes, currentNodes)
+      if (memberIds.length < 2) return
+      void createCanvasGroup(memberIds).catch((error) => toastError((error as Error).message || '编组失败'))
+    })
+  }, [canvasId, mode])
+
+  const moveGroup = useCallback((groupId: string, deltaX: number, deltaY: number) => {
+    const state = useCanvasStore.getState()
+    const group = state.groups.find((item) => sid(item.id) === sid(groupId))
+    if (!group) return
+    setNodes(moveCanvasGroupNodes(state.nodes, group.nodeIds, deltaX, deltaY))
+    setDirty(true)
+    skipNextSave.current = false
+    selectGroup(sid(group.id))
+  }, [selectGroup, setDirty, setNodes])
+
+  const arrangeGroup = useCallback(async (group: GroupPayload, orientation: 'horizontal' | 'vertical') => {
+    const state = useCanvasStore.getState()
+    const current = state.groups.find((item) => sid(item.id) === sid(group.id)) ?? group
+    const layout = orientation === 'horizontal' ? 'horizontal' : 'free'
+    try {
+      let updated: GroupPayload = { ...current, layout }
+      if (current.nodeIds.length > 1) {
+        if (desktopMode) {
+          const bridge = window.vibepaperDesktop
+          if (!bridge || !desktopProjectId) throw new Error('本地项目未就绪，无法排列编组。')
+          const result = await bridge.updateGroup({
+            projectId: desktopProjectId,
+            canvasId,
+            groupId: sid(current.id),
+            layout,
+          })
+          if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
+          const active = await bridge.getActiveProject()
+          if (!active || active.projectId !== desktopProjectId || sid(active.canvasId) !== canvasId) return
+          updated = { ...result, id: sid(result.id), nodeIds: result.nodeIds.map(sid) }
+        } else {
+          const result = await api<GroupPayload>(`/canvases/${canvasId}/groups/${sid(current.id)}`, {
+            method: 'PUT',
+            body: JSON.stringify({ layout }),
+          })
+          if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
+          updated = { ...result, id: sid(result.id), nodeIds: result.nodeIds.map(sid) }
+        }
+      }
+      const latestState = useCanvasStore.getState()
+      if (sid(latestState.canvas?.canvas.id) !== canvasId) return
+      setGroups(latestState.groups.map((item) => sid(item.id) === sid(updated.id) ? updated : item))
+      setNodes(arrangeCanvasGroupNodes(latestState.nodes, updated.nodeIds, orientation))
+      setDirty(true)
+      skipNextSave.current = false
+      selectGroup(sid(updated.id))
+    } catch (error) {
+      toastError((error as Error).message || '编组排列失败')
+    }
+  }, [canvasId, desktopMode, desktopProjectId, selectGroup, setDirty, setGroups, setNodes])
+
+  const ungroup = useCallback(async (group: GroupPayload) => {
+    try {
+      if (group.nodeIds.length < 2) {
+        skipNextSave.current = false
+        removeCanvasGroupFromStore(group, true)
+      } else {
+        if (desktopMode) {
+          const bridge = window.vibepaperDesktop
+          if (!bridge || !desktopProjectId) throw new Error('本地项目未就绪，无法取消编组。')
+          await bridge.deleteGroup({ projectId: desktopProjectId, canvasId, groupId: sid(group.id) })
+          if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
+          const active = await bridge.getActiveProject()
+          if (!active || active.projectId !== desktopProjectId || sid(active.canvasId) !== canvasId) return
+        } else {
+          await api(`/canvases/${canvasId}/groups/${sid(group.id)}`, { method: 'DELETE' })
+          if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
+        }
+        removeCanvasGroupFromStore(group)
+      }
+      toastSuccess('已取消编组')
+    } catch (error) {
+      toastError((error as Error).message || '取消编组失败')
+    }
+  }, [canvasId, desktopMode, desktopProjectId])
+
+  const downloadGroup = useCallback(async (group: GroupPayload) => {
+    try {
+      if (desktopMode) {
+        if (!desktopProjectId) throw new Error('本地项目未就绪，无法下载编组结果。')
+        const bridge = window.vibepaperDesktop as (NonNullable<typeof window.vibepaperDesktop> & {
+          exportGroupOutputs?: (input: { projectId: string; canvasId: string; groupId: string }) => Promise<{
+            status: 'saved' | 'cancelled'
+            count?: number
+          }>
+        }) | undefined
+        if (!bridge?.exportGroupOutputs) throw new Error('桌面编组下载接口尚未就绪。')
+        const projectBeforeFlush = await bridge.getActiveProject()
+        if (!projectBeforeFlush || projectBeforeFlush.projectId !== desktopProjectId || sid(projectBeforeFlush.canvasId) !== canvasId) {
+          throw new Error('当前项目或画布已更改，无法下载编组结果。')
+        }
+        await flushCanvasPersistence(desktopProjectId, canvasId)
+        if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) throw new Error('画布已切换，无法下载编组结果。')
+        const currentProject = await bridge.getActiveProject()
+        if (!currentProject || currentProject.projectId !== desktopProjectId || sid(currentProject.canvasId) !== canvasId) {
+          throw new Error('当前项目或画布已更改，无法下载编组结果。')
+        }
+        const result = await bridge.exportGroupOutputs({ projectId: desktopProjectId, canvasId, groupId: sid(group.id) })
+        if (result.status === 'cancelled') return
+        toastSuccess(`已保存 ${result.count ?? group.nodeIds.length} 个组内结果`)
+        return
+      }
+
+      const currentNodes = useCanvasStore.getState().nodes
+      const candidates = getCanvasGroupDownloadCandidates(group, currentNodes)
+      let saved = 0
+      for (const candidate of candidates) {
+        const status = await downloadNodeOutput(candidate)
+        if (status === 'saved') saved += 1
+      }
+      if (saved === 0) toastError('组内没有可下载的输出内容')
+      else toastSuccess(`已触发下载 ${saved} 个组内结果`)
+    } catch (error) {
+      toastError((error as Error).message || '编组下载失败')
+    }
+  }, [canvasId, desktopMode, desktopProjectId])
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
@@ -1002,35 +1158,6 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [copyNodes, duplicateNodes, nodes, pasteNodes, requestDeleteNodes])
 
-  const groupNodes: any[] = useMemo(
-    () =>
-      groups
-        .map((g) => {
-          const members = g.nodeIds.map((nid) => nodes.find((n) => n.id === sid(nid))).filter(Boolean) as FlowNode[]
-          if (members.length === 0) return null
-          const minX = Math.min(...members.map((m) => m.position.x)) - 14
-          const minY = Math.min(...members.map((m) => m.position.y)) - 14
-          const maxX = Math.max(...members.map((m) => m.position.x + (m.width ?? 300))) + 14
-          const maxY = Math.max(...members.map((m) => m.position.y + (m.height ?? 240))) + 14
-          return {
-            id: `group-${sid(g.id)}`,
-            type: 'group',
-            position: { x: minX, y: minY },
-            style: {
-              width: maxX - minX,
-              height: maxY - minY,
-              border: `2px dashed ${g.color}`,
-              borderRadius: 16,
-              background: `${g.color}0d`,
-            },
-            data: { label: g.name },
-            zIndex: -1,
-          }
-        })
-        .filter((g): g is NonNullable<typeof g> => g !== null),
-    [groups, nodes],
-  )
-
   /** 堆叠折叠态：在首节点上叠加拼图预览徽章 */
   const stackBadges: any[] = useMemo(
     () =>
@@ -1052,6 +1179,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             },
             data: { label: `堆叠拼图 · ${s.nodeIds.length} 张（双击展开）` },
             zIndex: 5,
+            draggable: false,
+            selectable: false,
+            connectable: false,
           }
         })
         .filter((x): x is NonNullable<typeof x> => x !== null),
@@ -1144,9 +1274,33 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       <div className="relative h-full w-full">
       {nodes.length === 0 && detail && <CanvasWelcome onCreate={(type) => void addNode(type)} />}
       <ReactFlow
-        nodes={[...groupNodes, ...stackBadges, ...nodes] as FlowNode[]}
+        nodes={[...stackBadges, ...nodes] as FlowNode[]}
         edges={edges.map((e) => ({
           ...e,
+          className: (() => {
+            const edgeData = e.data as { valid?: boolean; edge?: { valid?: boolean } } | undefined
+            if (edgeData?.valid === false || edgeData?.edge?.valid === false) return undefined
+            const source = canvasNodesById.get(sid(e.source))
+            const target = canvasNodesById.get(sid(e.target))
+            if (!source || !target || target.currentOutputId == null) return undefined
+            const params = target.params ?? {}
+            const excludedIds = [
+              ...(Array.isArray(params.excludedRefIds) ? params.excludedRefIds : []),
+              ...(Array.isArray(params.excludedInputIds) ? params.excludedInputIds : []),
+            ].map(sid)
+            const sourceId = sid(source.id)
+            if (
+              excludedIds.includes(sid(e.id))
+              || excludedIds.includes(`up-${sid(e.id)}`)
+              || excludedIds.includes(sourceId)
+            ) return undefined
+            const task = generationTasksById.get(sid(target.currentOutputId))
+            if (!task || sid(task.nodeId) !== sid(target.id) || !isGenerationInFlight(task.status)) return undefined
+            const usableSource = source.type === 'text'
+              ? Boolean(textNodeContent(source.output?.text, source.params))
+              : Boolean(nodeMediaUrl(source))
+            return usableSource ? 'vp-generation-reference-edge' : undefined
+          })(),
           style: {
             stroke: e.selected ? '#111111' : ((e.style?.stroke as string | undefined) ?? '#93c5fd'),
             strokeWidth: e.selected ? 2.5 : 1.5,
@@ -1155,6 +1309,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeDragStop={onNodeDragStop}
+        onSelectionEnd={onSelectionEnd}
         onConnect={onConnect}
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
@@ -1176,6 +1331,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           setAddMenu(null)
           setNodeMenu(null)
           selectNode(null)
+          selectGroup(null)
           // 指南：点空白收起已展开的堆叠
           const expanded = stacks.filter((s) => !s.collapsed)
           if (expanded.length && canvas) {
@@ -1206,10 +1362,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           }
         }}
         onNodeClick={(_e, n) => {
+          if (!nodes.some((node) => sid(node.id) === sid(n.id))) return
           setNodeMenu(null)
           selectNode(sid(n.id))
         }}
         onNodeDoubleClick={(_e, n) => {
+          if (!nodes.some((node) => sid(node.id) === sid(n.id))) return
           const id = sid(n.id)
           selectNode(id)
           setEditingNodeId(id)
@@ -1267,6 +1425,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         maxZoom={2.5}
         panOnDrag={mode === 'pan'}
         selectionOnDrag={mode === 'select'}
+        selectionMode={SelectionMode.Full}
         panOnScroll
         deleteKeyCode={null}
         proOptions={{ hideAttribution: true }}
@@ -1277,6 +1436,16 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         <Background gap={20} size={1} color="#c8c8c8" />
         <MiniMap pannable zoomable className="!bg-white" nodeStrokeColor="#111" />
         <Controls showInteractive={false} />
+        <CanvasGroupView
+          groups={groups}
+          nodes={nodes}
+          selectedGroupId={selectedGroupId}
+          onSelectGroup={selectGroup}
+          onMoveGroup={moveGroup}
+          onArrangeGroup={(group, orientation) => void arrangeGroup(group, orientation)}
+          onUngroup={(group) => void ungroup(group)}
+          onDownloadGroup={(group) => void downloadGroup(group)}
+        />
       </ReactFlow>
       </div>
 

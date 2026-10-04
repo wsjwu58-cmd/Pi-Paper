@@ -886,6 +886,8 @@ export interface DesktopBridge {
   importImage(projectId: string): Promise<DesktopAsset | null>
   saveTaskOutputToLibrary(projectId: string, taskId: string): Promise<DesktopAsset>
   exportNodeOutput(input: DesktopNodeOutputExportInput): Promise<DesktopNodeOutputExportResult>
+  exportGroupOutputs(input: { projectId: string; canvasId: string; groupId: string }): Promise<{ status: 'saved' | 'cancelled'; count?: number }>
+  saveCanvasImage(input: { projectId: string; canvasId: string; nodeId: string; pngBytes: Uint8Array; name: string }): Promise<{ assetId: string; url: string }>
   saveDirectorCapture(input: {
     projectId: string
     canvasId: string

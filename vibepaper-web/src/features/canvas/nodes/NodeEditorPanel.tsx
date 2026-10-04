@@ -31,6 +31,7 @@ import { isDesktopRuntime } from '../canvasPort'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoDurationOptions, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
 import { downloadNodeOutput } from './nodeDownloads'
+import type { CropMode } from './cropGeometry'
 
 const STYLE_PRESETS = ['赛博朋克', '水彩', '写实', '动漫', '电影感', '产品渲染', '三视图']
 const DESKTOP_MEDIA_TOOL_MODEL_ID = 'ffmpeg-media-1'
@@ -207,6 +208,7 @@ export function NodeFloatingToolbar({
   onSaveToLibrary,
   onDownload,
   onFullscreen,
+  onCropModeSelect,
 }: {
   node: NodePayload
   models: ModelInfo[]
@@ -214,6 +216,7 @@ export function NodeFloatingToolbar({
   onSaveToLibrary?: () => void
   onDownload?: () => void | Promise<unknown>
   onFullscreen?: () => void
+  onCropModeSelect?: (mode: CropMode) => void
 }) {
   const desktopMode = isDesktopRuntime()
   const [busy, setBusy] = useState(false)
@@ -382,14 +385,21 @@ export function NodeFloatingToolbar({
         <PopMenu>
           {[
             ['single', '单图裁剪'],
-            ['四宫格', '四宫格裁剪'],
-            ['九宫格', '九宫格裁剪'],
+            ['four', '四宫格裁剪'],
+            ['nine', '九宫格裁剪'],
           ].map(([id, label]) => (
             <button
               key={id}
               type="button"
               className="w-full rounded-lg px-2 py-1.5 text-left text-[12px] font-semibold text-[#444] hover:bg-black/[0.04]"
-              onClick={() => void runOp('裁剪', { cropMode: id })}
+              onClick={() => {
+                if (desktopMode && onCropModeSelect) {
+                  onCropModeSelect(id as CropMode)
+                  setMenu(null)
+                  return
+                }
+                void runOp('裁剪', { cropMode: id === 'four' ? '四宫格' : id === 'nine' ? '九宫格' : id })
+              }}
             >
               {label}
             </button>

@@ -1,7 +1,17 @@
 import { create } from 'zustand'
 import type { Edge, Node } from '@xyflow/react'
+import { api } from '@/lib/api'
 import { sid } from '@/lib/ids'
 import type { CanvasDetail, EdgePayload, GroupPayload, Id, NodePayload, StackPayload } from '@/lib/types'
+import { applyCanvasGroupMembership, clearCanvasGroupMembership } from './canvasGroupUtils'
+
+export interface CreateCanvasGroupOptions {
+  name?: string
+  color?: string
+  layout?: 'free' | 'grid' | 'horizontal'
+  /** The normal group command requires two members; local crop groups may contain one. */
+  allowSingle?: boolean
+}
 
 export interface FlowNode extends Node {
   data: {
@@ -21,6 +31,7 @@ interface CanvasState {
   dirty: boolean
   saving: boolean
   selectedNodeId: string | null
+  selectedGroupId: string | null
   /** 双击进入节点编辑（文本等） */
   editingNodeId: string | null
   agentOpen: boolean
@@ -34,6 +45,7 @@ interface CanvasState {
   setDirty: (d: boolean) => void
   setSaving: (s: boolean) => void
   selectNode: (id: string | null) => void
+  selectGroup: (id: string | null) => void
   setEditingNodeId: (id: string | null) => void
   setAgentOpen: (v: boolean) => void
   setAgentPanelWidth: (w: number) => void
@@ -53,6 +65,7 @@ export const useCanvasStore = create<CanvasState>((set) => ({
   dirty: false,
   saving: false,
   selectedNodeId: null,
+  selectedGroupId: null,
   editingNodeId: null,
   agentOpen: true,
   agentPanelWidth: 380,
@@ -80,6 +93,16 @@ export const useCanvasStore = create<CanvasState>((set) => ({
       selectedNodeId: next,
       // 切换选中时退出其他节点的编辑态
       editingNodeId: next && s.editingNodeId === next ? s.editingNodeId : null,
+    }))
+  },
+  selectGroup(id) {
+    set((state) => ({
+      selectedGroupId: id == null ? null : sid(id),
+      ...(id == null ? {} : {
+        selectedNodeId: null,
+        editingNodeId: null,
+        nodes: state.nodes.map((node) => ({ ...node, selected: false, data: { ...node.data, selected: false } })),
+      }),
     }))
   },
   setEditingNodeId(id) {
@@ -112,6 +135,139 @@ export const useCanvasStore = create<CanvasState>((set) => ({
     set({ stacks: s })
   },
 }))
+
+/** Create a persisted group from current business nodes and keep Renderer state in sync. */
+export async function createCanvasGroup(
+  requestedNodeIds: Array<string | number>,
+  options: CreateCanvasGroupOptions = {},
+): Promise<GroupPayload | null> {
+  const snapshot = useCanvasStore.getState()
+  const existingIds = new Set(snapshot.nodes.map((node) => sid(node.id)))
+  const nodeIds = [...new Set(requestedNodeIds.map(sid).filter((id) => existingIds.has(id)))]
+  const minimum = options.allowSingle ? 1 : 2
+  if (nodeIds.length < minimum) return null
+  if (!snapshot.canvas) throw new Error('画布尚未加载完成，无法编组。')
+  const canvasId = sid(snapshot.canvas.canvas.id)
+  const assertCanvasCurrent = () => {
+    if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) {
+      throw new Error('画布已切换，编组未写入当前画布。')
+    }
+  }
+
+  const sameMembers = (group: GroupPayload) => {
+    const currentIds = [...new Set(group.nodeIds.map(sid))].sort()
+    return currentIds.length === nodeIds.length && currentIds.every((id, index) => id === [...nodeIds].sort()[index])
+  }
+  const existing = snapshot.groups.find(sameMembers)
+  if (existing) {
+    useCanvasStore.getState().selectGroup(sid(existing.id))
+    return existing
+  }
+
+  const group: GroupPayload = {
+    id: nodeIds.length === 1 ? crypto.randomUUID() : '',
+    name: options.name ?? '编组',
+    color: options.color ?? '#8b5cf6',
+    layout: options.layout ?? 'free',
+    nodeIds,
+  }
+
+  if (nodeIds.length === 1) {
+    if (!options.allowSingle) return null
+    useCanvasStore.setState((current) => ({
+      groups: [...current.groups, group],
+      nodes: applyCanvasGroupMembership(current.nodes, group).map((node) => ({ ...node, selected: false, data: { ...node.data, selected: false } })),
+      selectedNodeId: null,
+      editingNodeId: null,
+      selectedGroupId: sid(group.id),
+      dirty: true,
+    }))
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('vp-canvas-group-snapshot'))
+    return group
+  }
+
+  let created: GroupPayload
+  const bridge = typeof window === 'undefined' ? undefined : window.vibepaperDesktop
+  if (bridge) {
+    const project = await bridge.getActiveProject()
+    assertCanvasCurrent()
+    if (!project || sid(project.canvasId) !== canvasId) {
+      throw new Error('当前本地项目与画布不匹配，无法编组。')
+    }
+    const assertProjectCurrent = async () => {
+      assertCanvasCurrent()
+      const currentProject = await bridge.getActiveProject()
+      assertCanvasCurrent()
+      if (!currentProject || currentProject.projectId !== project.projectId || sid(currentProject.canvasId) !== canvasId) {
+        throw new Error('当前本地项目已更改，编组未写入当前画布。')
+      }
+    }
+    created = await bridge.addGroup({
+      projectId: project.projectId,
+      canvasId,
+      nodeIds,
+      color: group.color,
+    })
+    await assertProjectCurrent()
+    if (group.name !== created.name || group.layout !== created.layout) {
+      created = await bridge.updateGroup({
+        projectId: project.projectId,
+        canvasId,
+        groupId: sid(created.id),
+        name: group.name,
+        layout: group.layout,
+      })
+      await assertProjectCurrent()
+    }
+  } else {
+    const response = await api<{ id: string | number; nodeIds: Array<string | number>; name?: string; color?: string; layout?: string }>(
+      `/canvases/${canvasId}/groups`,
+      { method: 'POST', body: JSON.stringify({ nodeIds, color: group.color }) },
+    )
+    assertCanvasCurrent()
+    created = {
+      id: sid(response.id),
+      name: response.name ?? '编组',
+      color: response.color ?? group.color,
+      layout: response.layout ?? 'free',
+      nodeIds: response.nodeIds.map(sid),
+    }
+    if (group.name !== created.name || group.layout !== created.layout) {
+      created = await api<GroupPayload>(`/canvases/${canvasId}/groups/${sid(created.id)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: group.name, layout: group.layout }),
+      })
+      assertCanvasCurrent()
+    }
+  }
+
+  assertCanvasCurrent()
+  const normalized: GroupPayload = {
+    ...created,
+    id: sid(created.id),
+    nodeIds: created.nodeIds.map(sid),
+  }
+  useCanvasStore.setState((current) => ({
+    groups: [...current.groups.filter((item) => sid(item.id) !== sid(normalized.id)), normalized],
+    nodes: applyCanvasGroupMembership(current.nodes, normalized).map((node) => ({ ...node, selected: false, data: { ...node.data, selected: false } })),
+    selectedNodeId: null,
+    editingNodeId: null,
+    selectedGroupId: sid(normalized.id),
+  }))
+  return normalized
+}
+
+export function removeCanvasGroupFromStore(group: GroupPayload, persistSnapshot = false): void {
+  useCanvasStore.setState((current) => ({
+    groups: current.groups.filter((item) => sid(item.id) !== sid(group.id)),
+    nodes: clearCanvasGroupMembership(current.nodes, group),
+    selectedGroupId: current.selectedGroupId === sid(group.id) ? null : current.selectedGroupId,
+    ...(persistSnapshot ? { dirty: true } : {}),
+  }))
+  if (persistSnapshot && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('vp-canvas-group-snapshot'))
+  }
+}
 
 /** 从后端负载构建 React Flow 图 */
 export function buildFlow(

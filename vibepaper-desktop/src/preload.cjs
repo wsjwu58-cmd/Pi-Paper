@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   importLocalAssets: (projectId) => ipcRenderer.invoke('desktop:asset:import-local-assets', projectId),
   saveTaskOutputToLibrary: (projectId, taskId) => ipcRenderer.invoke('desktop:asset:save-task-output', projectId, taskId),
   exportNodeOutput: (input) => ipcRenderer.invoke('desktop:node:export-output', input),
+  exportGroupOutputs: (input) => ipcRenderer.invoke('desktop:group:export-outputs', input),
+  saveCanvasImage: (input) => ipcRenderer.invoke('desktop:asset:save-canvas-image', input),
   saveDirectorCapture: (input) => ipcRenderer.invoke('desktop:asset:save-director-capture', input),
   listAssets: (projectId) => ipcRenderer.invoke('desktop:asset:list', projectId),
   renameAsset: (projectId, assetId, name) => ipcRenderer.invoke('desktop:asset:rename', projectId, assetId, name),

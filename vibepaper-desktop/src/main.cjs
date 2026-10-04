@@ -43,6 +43,7 @@ const { isDesktopRendererRoute, isTrustedRendererUrl: checkRendererUrl } = requi
 const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
 const { createDramaBatchTaskInput } = require('./drama-render-batch.cjs')
 const { exportNodeOutput } = require('./node-export.cjs')
+const { registerCanvasMediaIpc } = require('./canvas-media.cjs')
 const { createProviderSettings } = require('./provider-settings.cjs')
 const { isOfficialDocumentationUrl } = require('./official-documentation.cjs')
 
@@ -1587,6 +1588,23 @@ function localAssetImportName(sourcePath) {
 }
 
 function registerProjectIpc() {
+  registerCanvasMediaIpc(ipcMain, {
+    assertTrustedSender,
+    assertActive: async (projectId, canvasId) => {
+      await assertActiveAssetProject(projectId)
+      const active = await localCore.request('project:get-active')
+      if (active?.canvasId !== canvasId) throw new Error('当前画布已更改，无法处理媒体。')
+    },
+    projectDirectory: () => activeProjectDirectory,
+    tempDirectory: () => app.getPath('temp'),
+    loadCanvas: (projectId, canvasId) => localCore.request('canvas:load', { projectId, canvasId }),
+    getTask: (projectId, taskId) => localCore.request('task:get', { projectId, taskId }),
+    resolveTask: (projectId, taskId, outputIndex) => localCore.request('task:resolve-output-preview', { projectId, taskId, outputIndex }),
+    resolveAsset: (assetId) => localCore.request('asset:resolve', { assetId }),
+    importImage: (sourcePath, projectId) => localCore.request('asset:import', { sourcePath, projectId, assetKind: 'image' }, 5 * 60 * 1000),
+    renameAsset: (projectId, assetId, name) => localCore.request('asset:rename', { projectId, assetId, name }),
+    showDirectoryDialog: () => dialog.showOpenDialog(mainWindow, { title: '选择编组下载位置', properties: ['openDirectory', 'createDirectory'] }),
+  })
   for (const [channel, method] of Object.entries({
     get: 'snapshot', save: 'save', clear: 'clear', test: 'test',
   })) {

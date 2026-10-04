@@ -9,7 +9,7 @@ import type { GenerationTask, Id, ModelInfo, NodePayload, PageResult } from '@/l
 import type { DesktopTask } from '@/desktop/desktop-bridge'
 import { useCanvasStore, nodeMediaUrl, type FlowNode } from '../canvasStore'
 import { NODE_COLORS, statusBadge } from './NodeShell'
-import { NodeEditorDialog, NodeFloatingToolbar } from './NodeEditorPanel'
+import { NodeEditorDialog, NodeFloatingToolbar, useUpstreamRefs, type UpstreamRef } from './NodeEditorPanel'
 import { SplitNodeLayout } from './SplitNodeLayout'
 import { textNodeContent } from './textContent'
 import { persistNodeExec, submitComposeNodeTask, submitNodeTask, syncExecFields } from './taskActions'
@@ -17,12 +17,16 @@ import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { DirectorNodeView } from '../director'
 import { desktopAssetView, isDesktopRuntime } from '../canvasPort'
 import { downloadNodeOutput } from './nodeDownloads'
+import { ImageCropOverlay } from './ImageCropOverlay'
+import { saveCropArtifactsAsNodes, type CropSourceSnapshot } from './cropActions'
+import type { CropMode } from './cropGeometry'
+import { isGenerationInFlight, type GenerationModality, type GenerationProgressInput, type GenerationReferencePreview } from './generation-progress'
 
 function useNodeData(nodeId: string) {
   return useCanvasStore((s) => s.nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node)
 }
 
-function useNodeTasks(nodeId: string) {
+export function useNodeTasks(nodeId = '') {
   const qc = useQueryClient()
   const canvasId = useCanvasStore((s) => s.canvas?.canvas.id)
   const canvasKey = canvasId == null ? '' : sid(canvasId)
@@ -34,7 +38,10 @@ function useNodeTasks(nodeId: string) {
     staleTime: 1_000,
   })
   const projectId = activeProject?.projectId
-  const queryKey = ['canvas-tasks', isDesktop ? projectId ?? 'desktop-no-project' : canvasKey] as const
+  const queryKey = useMemo(
+    () => ['canvas-tasks', isDesktop ? projectId ?? 'desktop-no-project' : canvasKey] as const,
+    [canvasKey, isDesktop, projectId],
+  )
   const { data = [] } = useQuery<GenerationTask[]>({
     // All cards on a canvas share one task feed. Previously every visible node
     // opened its own two-second poll, which multiplied traffic as a workflow
@@ -51,7 +58,7 @@ function useNodeTasks(nodeId: string) {
         `/tasks?canvas_id=${encodeURIComponent(canvasKey)}&canvasId=${encodeURIComponent(canvasKey)}&page=1&pageSize=100`,
       ).then((r) => r.items ?? [])
     },
-    enabled: Boolean(nodeId && canvasKey && (!isDesktop || projectId)),
+    enabled: Boolean(canvasKey && (!isDesktop || projectId)),
     refetchInterval: (query) => {
       const items = query.state.data
       if (items?.some((t) => ['queued', 'running'].includes(t.status))) return 2000
@@ -65,6 +72,7 @@ function useNodeTasks(nodeId: string) {
   })
 
   useEffect(() => {
+    if (!nodeId) return
     const items = data.filter((t) => sid(t.nodeId) === sid(nodeId))
     const latest = pickLatestTask(items)
     if (!latest) return
@@ -101,8 +109,15 @@ function useNodeTasks(nodeId: string) {
 
   useEffect(() => {
     const handler = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ nodeId?: string }>).detail
-      if (!detail?.nodeId || sid(detail.nodeId) !== sid(nodeId)) return
+      const detail = (ev as CustomEvent<{ nodeId?: string; taskId?: string; status?: string }>).detail
+      if (nodeId && (!detail?.nodeId || sid(detail.nodeId) !== sid(nodeId))) return
+      if (detail?.taskId && detail.status) {
+        qc.setQueryData<GenerationTask[]>(queryKey, (current) => current?.map((task) => (
+          sid(task.taskId) === sid(detail.taskId)
+            ? { ...task, status: detail.status! }
+            : task
+        )))
+      }
       void qc.invalidateQueries({ queryKey })
     }
     window.addEventListener('vp-task-updated', handler)
@@ -113,6 +128,7 @@ function useNodeTasks(nodeId: string) {
     (s) => s.nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node.currentOutputId,
   )
   const latest = useMemo(() => {
+    if (!nodeId) return null
     const items = data.filter((t) => sid(t.nodeId) === sid(nodeId))
     return pickLatestTask(items, currentId)
   }, [currentId, data, nodeId])
@@ -371,7 +387,7 @@ function TaskHistoryBar({
       useCanvasStore.getState().updateNodePayload(nodeId, syncExecFields('cancelled'))
       void persistNodeExec(nodeId, syncExecFields('cancelled'))
       toastSuccess('任务已取消')
-      window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId) } }))
+      window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId), status: 'cancelled' } }))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -392,7 +408,7 @@ function TaskHistoryBar({
           currentOutputId: latest.taskId,
         })
         toastSuccess('已重新提交')
-        window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId) } }))
+        window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId), status: retried.status } }))
       } catch (e) {
         toastError((e as Error).message)
       }
@@ -406,7 +422,7 @@ function TaskHistoryBar({
       })
       void persistNodeExec(nodeId, { ...syncExecFields('queued'), currentOutputId: latest.taskId })
       toastSuccess('已重新提交')
-      window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId) } }))
+      window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId), status: 'queued' } }))
     } catch {
       try {
         await submitNodeTask(
@@ -415,6 +431,12 @@ function TaskHistoryBar({
           (latest.modelParams as Record<string, unknown>) ?? {},
           latest.estimatedCost || 8,
         )
+        const currentOutputId = useCanvasStore.getState().nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node.currentOutputId
+        if (currentOutputId != null) {
+          window.dispatchEvent(new CustomEvent('vp-task-updated', {
+            detail: { nodeId: sid(nodeId), taskId: sid(currentOutputId), status: 'queued' },
+          }))
+        }
         toastSuccess('已重新提交')
       } catch (e) {
         toastError((e as Error).message)
@@ -572,6 +594,70 @@ function nodeBusy(node: NodePayload, latest: GenerationTask | null) {
   return !nodeHasPreview(node, latest)
 }
 
+function isCanvasEdgeUsable(edge: { data?: unknown }): boolean {
+  const data = edge.data && typeof edge.data === 'object' && !Array.isArray(edge.data)
+    ? edge.data as { valid?: unknown; edge?: { valid?: unknown } }
+    : undefined
+  return data?.valid !== false && data?.edge?.valid !== false
+}
+
+function useNodeGenerationReferences(nodeId: string, node?: NodePayload): GenerationReferencePreview[] {
+  const upstream = useUpstreamRefs(nodeId)
+  const excluded = new Set(
+    [node?.params.excludedRefIds, node?.params.excludedInputIds]
+      .flatMap((value) => Array.isArray(value) ? value.map(String) : []),
+  )
+  return useGenerationReferencePreviews(upstream.filter((reference) => (
+    !excluded.has(reference.id) && !excluded.has(reference.sourceNodeId)
+  )))
+}
+
+function useGenerationReferencePreviews(
+  references: readonly Pick<UpstreamRef, 'kind' | 'url'>[],
+): GenerationReferencePreview[] {
+  const previews = references
+    .filter((reference) => (reference.kind === 'image' || reference.kind === 'video') && Boolean(reference.url))
+    .slice(0, 4)
+  const first = useAuthedMediaUrl(previews[0]?.url)
+  const second = useAuthedMediaUrl(previews[1]?.url)
+  const third = useAuthedMediaUrl(previews[2]?.url)
+  const fourth = useAuthedMediaUrl(previews[3]?.url)
+  const sources = [first, second, third, fourth]
+  return previews.flatMap((reference, index) => {
+    const src = sources[index]
+    return src ? [{ src, type: reference.kind as 'image' | 'video' }] : []
+  })
+}
+
+function generationProgressForNode(
+  node: NodePayload,
+  latest: GenerationTask | null,
+  references: GenerationReferencePreview[],
+): GenerationProgressInput | null {
+  const taskId = node.currentOutputId
+  if (taskId == null) return null
+  const currentTask = latest && sid(latest.taskId) === sid(taskId) ? latest : null
+  if (currentTask) {
+    if (!isGenerationInFlight(currentTask.status)) return null
+    return {
+      taskId: currentTask.taskId,
+      status: currentTask.status,
+      modality: node.type as GenerationModality,
+      startedAt: currentTask.createdAt,
+      references,
+    }
+  }
+
+  const nodeStatus = String(node.execStatus || node.status || '').toLowerCase()
+  if (!isGenerationInFlight(nodeStatus)) return null
+  return {
+    taskId,
+    status: nodeStatus,
+    modality: node.type as GenerationModality,
+    references,
+  }
+}
+
 function SplitNodeEditor({
   node,
   models,
@@ -597,6 +683,7 @@ function SplitNodeEditor({
 const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
   const node = useNodeData(nodeId)
+  const generationReferences = useNodeGenerationReferences(nodeId, node)
   const { tasks, latest } = useNodeTasks(nodeId)
   const [outputDraft, setOutputDraft] = useState('')
 
@@ -610,6 +697,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
 
   const displayOutput = props.selected ? outputDraft || outputText : outputText
   const busy = nodeBusy(node, latest)
+  const generationProgress = generationProgressForNode(node, latest, generationReferences)
   const meta = NODE_COLORS.text
 
   const persistOutput = (value: string) => {
@@ -633,6 +721,8 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
         node={node}
         selected={props.selected}
         busy={busy}
+        generationProgress={generationProgress}
+        generationTaskStatus={latest?.status ?? null}
         accentColor={meta.color}
         label="Text"
         icon={meta.icon}
@@ -663,6 +753,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
 const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
   const node = useNodeData(nodeId)
+  const generationReferences = useNodeGenerationReferences(nodeId, node)
   const { tasks, latest } = useNodeTasks(nodeId)
   const assetFallback = nodeMediaUrl(node) || undefined
   const outputs = latest?.outputs ?? []
@@ -670,8 +761,10 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
     resolveMediaUrl(outputs[0]?.url, outputs[0]?.meta as Record<string, unknown>) ?? assetFallback
   const remote = typeof outputs[0]?.meta?.remoteUrl === 'string' ? String(outputs[0].meta.remoteUrl) : undefined
   const authedMediaUrl = useAuthedMediaUrl(mediaUrl)
+  const [cropRequest, setCropRequest] = useState<{ mode: CropMode; source: CropSourceSnapshot } | null>(null)
   if (!node) return null
   const busy = nodeBusy(node, latest)
+  const generationProgress = generationProgressForNode(node, latest, generationReferences)
   const meta = NODE_COLORS.image
 
   return (
@@ -687,12 +780,34 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
               ? () => void saveOutputToLibrary(latest.taskId, outputs[0]?.url, remote)
               : undefined
           }
+          onCropModeSelect={(mode) => {
+            const lockedUrl = authedMediaUrl ?? mediaUrl
+            if (!lockedUrl?.startsWith('vibe://')) {
+              toastError('桌面本地裁剪需要已保存在当前项目中的图片。')
+              return
+            }
+            setCropRequest({
+              mode,
+              source: {
+                nodeId,
+                mediaUrl: lockedUrl,
+                sourceNodeMediaUrl: nodeMediaUrl(node),
+                outputId: node.currentOutputId,
+                assetId: node.params.assetId as string | number | undefined,
+                sourceName: String(node.params.name ?? node.params.title ?? '图片'),
+              },
+            })
+          }}
         />
       )}
       <SplitNodeLayout
         node={node}
         selected={props.selected}
         busy={busy}
+        generationProgress={generationProgress}
+        generationTaskStatus={latest?.status ?? null}
+        cropEditing={Boolean(cropRequest)}
+        collapsedWidth={Number(node.params.cropPreviewWidth) || 280}
         accentColor={meta.color}
         label="Image"
         icon={meta.icon}
@@ -705,15 +820,37 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
         topMinHeight="min-h-[72px]"
         topMinHeightCollapsed="min-h-[72px]"
         topContent={
-          <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-[#f4f4f9]">
-            {outputs.length > 0 ? (
-              <OutputGrid outputs={outputs} />
-            ) : mediaUrl ? (
-              <MediaContent url={mediaUrl} outputType="image" naturalSize />
-            ) : (
-              <ImageIconPlaceholder compact={!props.selected} />
-            )}
-          </div>
+          cropRequest ? (
+            <ImageCropOverlay
+              key={`${nodeId}:${cropRequest.source.mediaUrl}`}
+              mediaUrl={cropRequest.source.mediaUrl}
+              currentMediaUrl={authedMediaUrl ?? mediaUrl ?? ''}
+              mode={cropRequest.mode}
+              onModeChange={(mode) => setCropRequest((current) => current ? { ...current, mode } : current)}
+              onClose={() => setCropRequest(null)}
+              onConfirm={async (artifacts) => {
+                const created = await saveCropArtifactsAsNodes(cropRequest.source, cropRequest.mode, artifacts)
+                toastSuccess(`已保存 ${created} 张裁剪图片并自动编组`)
+              }}
+            />
+          ) : (
+            <div className="w-full">
+              {Number(node.params.cropIndex) > 0 && (
+                <div className="flex h-7 items-center justify-center bg-white text-[11px] font-bold text-[#555]">
+                  Crop {Number(node.params.cropIndex)}
+                </div>
+              )}
+              <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-[#f4f4f9]">
+                {outputs.length > 0 ? (
+                  <OutputGrid outputs={outputs} />
+                ) : mediaUrl ? (
+                  <MediaContent url={mediaUrl} outputType="image" naturalSize />
+                ) : (
+                  <ImageIconPlaceholder compact={!props.selected} />
+                )}
+              </div>
+            </div>
+          )
         }
         bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={props.selected} />}
         extra={props.selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
@@ -725,6 +862,7 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
 const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
   const node = useNodeData(nodeId)
+  const generationReferences = useNodeGenerationReferences(nodeId, node)
   const { tasks, latest } = useNodeTasks(nodeId)
   const assetFallback = nodeMediaUrl(node) || undefined
   const out = latest?.outputs?.[0]
@@ -733,6 +871,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
   const authedMediaUrl = useAuthedMediaUrl(mediaUrl)
   if (!node) return null
   const busy = nodeBusy(node, latest)
+  const generationProgress = generationProgressForNode(node, latest, generationReferences)
   const meta = NODE_COLORS.video
 
   return (
@@ -754,6 +893,8 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
         node={node}
         selected={props.selected}
         busy={busy}
+        generationProgress={generationProgress}
+        generationTaskStatus={latest?.status ?? null}
         accentColor={meta.color}
         label="Video"
         icon={meta.icon}
@@ -789,12 +930,14 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
 const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
   const node = useNodeData(nodeId)
+  const generationReferences = useNodeGenerationReferences(nodeId, node)
   const { tasks, latest } = useNodeTasks(nodeId)
   const out = latest?.outputs?.[0]
   const assetFallback = nodeMediaUrl(node) || (node?.params.referenceUrl as string) || undefined
   const mediaUrl = resolveMediaUrl(out?.url, out?.meta as Record<string, unknown>) ?? assetFallback
   if (!node) return null
   const busy = nodeBusy(node, latest)
+  const generationProgress = generationProgressForNode(node, latest, generationReferences)
   const meta = NODE_COLORS.audio
 
   return (
@@ -811,6 +954,8 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
         node={node}
         selected={props.selected}
         busy={busy}
+        generationProgress={generationProgress}
+        generationTaskStatus={latest?.status ?? null}
         accentColor={meta.color}
         label="Audio"
         icon={meta.icon}
@@ -871,7 +1016,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
     if (!node) return [] as Array<{ id: string; payload: NodePayload; url?: string; status: string }>
     const desktopMode = isDesktopRuntime()
     const incoming = edges
-      .filter((e) => sid(e.target) === sid(node.id) && (!desktopMode || e.data?.valid !== false))
+      .filter((e) => sid(e.target) === sid(node.id) && (!desktopMode || isCanvasEdgeUsable(e)))
       .map((e) => allNodes.find((n) => sid(n.id) === sid(e.source)))
       .filter((n): n is FlowNode => !!n && n.data.node.type === 'video')
 
@@ -898,6 +1043,9 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
         return { id, payload, url, status: desktopMode ? localVideoTask?.status ?? payload.status : payload.status }
       })
   }, [allNodes, edges, excluded, node, tasks])
+  const generationReferences = useGenerationReferencePreviews(
+    videoInputs.filter((clip) => Boolean(clip.url)).map((clip) => ({ kind: 'video' as const, url: clip.url })),
+  )
 
   useEffect(() => {
     if (!node) return
@@ -942,6 +1090,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
     (node.params.url as string | undefined) ||
     (node.params.lastOutputUrl as string | undefined)
   const busy = nodeBusy(node, latest) || busySubmit
+  const generationProgress = generationProgressForNode(node, latest, generationReferences)
   const meta = NODE_COLORS.compose
   const readyClips = videoInputs.filter((c) => Boolean(c.url))
   const desktopMode = isDesktopRuntime()
@@ -1009,6 +1158,8 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
         node={node}
         selected={props.selected}
         busy={busy}
+        generationProgress={generationProgress}
+        generationTaskStatus={latest?.status ?? null}
         accentColor={meta.color}
         label="Compose"
         icon={Clapperboard}

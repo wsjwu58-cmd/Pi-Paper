@@ -1,0 +1,205 @@
+.vp-generation-progress {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  isolation: isolate;
+  min-height: 48px;
+  color: #fff;
+  background:
+    radial-gradient(ellipse at 50% 52%, rgba(87, 73, 157, 0.48), transparent 58%),
+    linear-gradient(135deg, #10121d, #20233b 48%, #131722);
+}
+
+.vp-generation-progress::before,
+.vp-generation-progress::after {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+  content: '';
+}
+
+.vp-generation-progress::before {
+  opacity: 0.42;
+  background-image: radial-gradient(rgba(211, 205, 255, 0.7) 0.8px, transparent 1px);
+  background-position: 0 0;
+  background-size: 13px 13px;
+  animation: vp-generation-dots 3.8s linear infinite;
+}
+
+.vp-generation-progress::after {
+  inset: -50% -15%;
+  opacity: 0.27;
+  background: repeating-linear-gradient(
+    118deg,
+    transparent 0 20px,
+    rgba(184, 174, 255, 0.14) 21px,
+    transparent 22px 42px
+  );
+  animation: vp-generation-drift 8s linear infinite;
+}
+
+.vp-generation-progress__media,
+.vp-generation-progress__scrim,
+.vp-generation-progress__scan {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.vp-generation-progress__media {
+  z-index: -2;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  filter: blur(1px) saturate(0.8);
+}
+
+.vp-generation-progress--references-1 .vp-generation-progress__media {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.vp-generation-progress--references-2 .vp-generation-progress__media {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.vp-generation-progress__reference {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  object-fit: cover;
+  opacity: 0.48;
+}
+
+.vp-generation-progress__scrim {
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(12, 13, 23, 0.46), rgba(13, 14, 25, 0.72));
+}
+
+.vp-generation-progress__scan {
+  z-index: 2;
+  height: 35%;
+  inset: -36% 0 auto;
+  border-bottom: 1px solid rgba(205, 196, 255, 0.62);
+  background: linear-gradient(180deg, transparent, rgba(172, 157, 255, 0.18));
+  box-shadow: 0 4px 16px rgba(172, 157, 255, 0.14);
+  animation: vp-generation-scan 3.2s ease-in-out infinite;
+}
+
+.vp-generation-progress__center {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+}
+
+.vp-generation-progress__icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  margin-bottom: 1px;
+  place-items: center;
+  border: 1px solid rgba(229, 225, 255, 0.46);
+  border-radius: 13px;
+  background: rgba(39, 34, 72, 0.72);
+  box-shadow: 0 0 20px rgba(164, 148, 255, 0.28), inset 0 0 12px rgba(208, 201, 255, 0.08);
+  animation: vp-generation-pulse 2.2s ease-in-out infinite;
+}
+
+.vp-generation-progress__state,
+.vp-generation-progress__elapsed {
+  position: absolute;
+  z-index: 3;
+  bottom: 7px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+}
+
+.vp-generation-progress__state {
+  left: 8px;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.vp-generation-progress__elapsed {
+  right: 8px;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.vp-generation-progress__modality {
+  color: rgba(241, 239, 255, 0.76);
+  font-size: 10px;
+}
+
+.vp-generation-progress__elapsed {
+  color: rgba(241, 239, 255, 0.76);
+  font-size: 10px;
+}
+
+.vp-generation-progress--queued .vp-generation-progress__icon {
+  border-color: rgba(255, 216, 134, 0.65);
+  box-shadow: 0 0 18px rgba(255, 199, 91, 0.18);
+}
+
+.vp-generation-progress:not(.vp-generation-progress--visible)::before,
+.vp-generation-progress:not(.vp-generation-progress--visible)::after,
+.vp-generation-progress:not(.vp-generation-progress--visible) .vp-generation-progress__scan,
+.vp-generation-progress:not(.vp-generation-progress--visible) .vp-generation-progress__icon {
+  animation-play-state: paused;
+}
+
+.react-flow__edge.vp-generation-reference-edge .react-flow__edge-path {
+  stroke: #a99aff !important;
+  stroke-dasharray: 7 5 !important;
+  stroke-width: 2.25px !important;
+  filter: drop-shadow(0 0 3px rgba(144, 124, 255, 0.76));
+  animation: vp-generation-edge-flow 0.85s linear infinite;
+}
+
+@keyframes vp-generation-dots {
+  to { background-position: 13px 13px; }
+}
+
+@keyframes vp-generation-drift {
+  to { transform: translate3d(28px, 0, 0); }
+}
+
+@keyframes vp-generation-scan {
+  0% { transform: translateY(0); }
+  80%, 100% { transform: translateY(390%); }
+}
+
+@keyframes vp-generation-pulse {
+  50% { transform: scale(1.05); box-shadow: 0 0 25px rgba(164, 148, 255, 0.42); }
+}
+
+@keyframes vp-generation-edge-flow {
+  from { stroke-dashoffset: 12; }
+  to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vp-generation-progress::before,
+  .vp-generation-progress::after,
+  .vp-generation-progress__scan,
+  .vp-generation-progress__icon,
+  .react-flow__edge.vp-generation-reference-edge .react-flow__edge-path {
+    animation: none !important;
+  }
+}
