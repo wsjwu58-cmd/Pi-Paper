@@ -30,7 +30,8 @@ import { textNodeContent } from './nodes/textContent'
 import { CanvasTopBar } from './CanvasTopBar'
 import { CanvasToolbar } from './CanvasToolbar'
 import { CanvasGroupView } from './CanvasGroupView'
-import { arrangeCanvasGroupNodes, canvasGroupMemberIds, getCanvasGroupDownloadCandidates, moveCanvasGroupNodes } from './canvasGroupUtils'
+import { arrangeCanvasGroupNodes, canvasGroupMemberIds, getCanvasGroupBounds, getCanvasGroupDownloadCandidates, moveCanvasGroupNodes, detachOutsideGroup, type CanvasGroupBounds } from './canvasGroupUtils'
+import { GenerationReferenceEdge } from './GenerationReferenceEdge'
 import { downloadNodeOutput } from './nodes/nodeDownloads'
 import { AssetLibrary } from './AssetLibrary'
 import { AgentLauncher, AgentPanel } from './AgentPanel'
@@ -45,6 +46,7 @@ import { flushCanvasPersistence, registerCanvasPersistence } from './canvasPersi
 import type { DesktopCanvas } from '@/desktop/desktop-bridge'
 
 const saveDebounce = 500
+const edgeTypes = { default: GenerationReferenceEdge }
 let nodeClipboard: NodePayload[] = []
 
 export function CanvasPage() {
@@ -65,6 +67,8 @@ export function CanvasPage() {
 
 function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const nodes = useCanvasStore((s) => s.nodes)
+  const [dragGroupBounds, setDragGroupBounds] = useState<Record<string, CanvasGroupBounds>>({})
+  const dragBoundsRef = useRef<Record<string, CanvasGroupBounds>>({})
   const edges = useCanvasStore((s) => s.edges)
   const { tasks: generationTasks } = useNodeTasks()
   const canvasNodesById = useMemo(() => new Map(nodes.map((node) => [sid(node.id), node.data.node])), [nodes])
@@ -418,11 +422,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
   const onNodesChange = useCallback(
     (changes: NodeChange<FlowNode>[]) => {
-      setNodes(applyNodeChanges(changes, nodes) as FlowNode[])
-      const sel = changes.filter((c) => c.type === 'select').pop() as { selected?: boolean; id?: string } | undefined
-      if (sel?.id && nodes.some((node) => sid(node.id) === sid(sel.id))) {
-        selectNode(sel.selected ? sid(sel.id) : null)
-      }
+      setNodes(applyNodeChanges(changes, useCanvasStore.getState().nodes) as FlowNode[])
       // React Flow emits internal replace/measurement/selection changes while
       // hydrating/rendering the graph. Dirty state is set by explicit edit
       // handlers (and drag-stop below), never by this reconciliation callback;
@@ -479,6 +479,16 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
   const onNodeDragStop: OnNodeDrag<FlowNode> = useCallback(
     (_event, node) => {
+      const state = useCanvasStore.getState()
+      const detached = detachOutsideGroup(state.groups, state.nodes, node, dragBoundsRef.current)
+      dragBoundsRef.current = {}
+      setDragGroupBounds({})
+      if (detached.changed) {
+        setGroups(detached.groups)
+        setNodes(detached.nodes)
+        setDirty(true)
+        return
+      }
       if (!useCanvasStore.getState().nodes.some((item) => sid(item.id) === sid(node.id))) return
       // When another graph edit is already pending, its existing full save
       // includes this position. Otherwise persist just this node, so a remote
@@ -489,7 +499,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       }
       persistNodePosition(node)
     },
-    [persistNodePosition, setDirty],
+    [persistNodePosition, setDirty, setGroups, setNodes],
   )
 
   const onSelectionEnd = useCallback((_event: ReactMouseEvent) => {
@@ -1305,10 +1315,23 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             stroke: e.selected ? '#111111' : ((e.style?.stroke as string | undefined) ?? '#93c5fd'),
             strokeWidth: e.selected ? 2.5 : 1.5,
           },
-        }))}
+        })).map((edge) => ({ ...edge, data: { ...edge.data, generationReference: edge.className === 'vp-generation-reference-edge' } }))}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeDragStop={onNodeDragStop}
+        edgeTypes={edgeTypes}
+        onNodeDragStart={() => {
+          selectNode(null)
+          const state = useCanvasStore.getState()
+          const bounds: Record<string, CanvasGroupBounds> = {}
+          for (const group of state.groups) {
+            const rect = getCanvasGroupBounds(group, state.nodes)
+            if (rect) bounds[sid(group.id)] = rect
+          }
+          dragBoundsRef.current = bounds
+          setDragGroupBounds(bounds)
+        }}
+        onSelectionStart={() => selectNode(null)}
         onSelectionEnd={onSelectionEnd}
         onConnect={onConnect}
         onNodesDelete={onNodesDelete}
@@ -1332,6 +1355,8 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           setNodeMenu(null)
           selectNode(null)
           selectGroup(null)
+          const current = useCanvasStore.getState()
+          setNodes(current.nodes.map((node) => ({ ...node, selected: false, data: { ...node.data, selected: false } })))
           // 指南：点空白收起已展开的堆叠
           const expanded = stacks.filter((s) => !s.collapsed)
           if (expanded.length && canvas) {
@@ -1438,6 +1463,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         <Controls showInteractive={false} />
         <CanvasGroupView
           groups={groups}
+          frozenBounds={dragGroupBounds}
           nodes={nodes}
           selectedGroupId={selectedGroupId}
           onSelectGroup={selectGroup}

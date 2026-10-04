@@ -6,6 +6,7 @@ import {
   arrangeCanvasGroupNodes,
   canvasGroupMemberIds,
   clearCanvasGroupMembership,
+  detachOutsideGroup,
   getCanvasGroupBounds,
   getCanvasGroupDownloadCandidates,
   moveCanvasGroupNodes,
@@ -93,6 +94,28 @@ describe('canvas group view helpers', () => {
     expect(added.map((node) => node.data.node.groupId)).toEqual(['group-1', 'group-1', 'other-group'])
     expect(cleared.map((node) => node.data.node.groupId)).toEqual([undefined, undefined, 'other-group'])
     expect(removeCanvasGroup([group, { ...group, id: 'other' }], group.id).map((item) => item.id)).toEqual(['other'])
+  })
+
+  it('keeps members inside the original frame and releases an independently dragged member outside', () => {
+    const nodes = applyCanvasGroupMembership([flowNode('node-a', 0, 0, 120, 120), flowNode('node-b', 150, 0, 120, 120)], group)
+    const bounds = { 'group-1': getCanvasGroupBounds(group, nodes)! }
+    const inside = { ...nodes[0], position: { x: 30, y: 20 } }
+    expect(detachOutsideGroup([group], [inside, nodes[1]], inside, bounds).changed).toBe(false)
+    const outside = { ...nodes[0], position: { x: 500, y: 0 } }
+    const result = detachOutsideGroup([group], [outside, nodes[1]], outside, bounds)
+    expect(result.changed).toBe(true)
+    expect(result.groups[0].nodeIds).toEqual(['node-b'])
+    expect(result.nodes[0].data.node.groupId).toBeUndefined()
+    expect(result.nodes[1]).toBe(nodes[1])
+    expect(result.nodes[0].measured?.width).toBe(120)
+    expect(bounds['group-1'].width).toBe(302)
+  })
+
+  it('removes an empty single-member group on an outside drop', () => {
+    const single = { ...group, nodeIds: ['node-a'] }
+    const nodes = applyCanvasGroupMembership([flowNode('node-a', 0, 0, 120, 120)], single)
+    const moved = { ...nodes[0], position: { x: 400, y: 300 } }
+    expect(detachOutsideGroup([single], [moved], moved, { 'group-1': getCanvasGroupBounds(single, nodes)! }).groups).toEqual([])
   })
 
   it('downloads only actual group members with an available text or media result', () => {

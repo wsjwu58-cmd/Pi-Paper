@@ -682,6 +682,7 @@ function SplitNodeEditor({
 
 const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
+  const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
   const generationReferences = useNodeGenerationReferences(nodeId, node)
   const { tasks, latest } = useNodeTasks(nodeId)
@@ -695,7 +696,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
 
   if (!node) return null
 
-  const displayOutput = props.selected ? outputDraft || outputText : outputText
+  const displayOutput = selected ? outputDraft || outputText : outputText
   const busy = nodeBusy(node, latest)
   const generationProgress = generationProgressForNode(node, latest, generationReferences)
   const meta = NODE_COLORS.text
@@ -710,7 +711,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
 
   return (
     <div className="relative">
-      {props.selected && displayOutput && (
+      {selected && displayOutput && (
         <NodeFloatingToolbar
           node={node}
           models={props.data.models ?? []}
@@ -719,7 +720,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
       )}
       <SplitNodeLayout
         node={node}
-        selected={props.selected}
+        selected={selected}
         busy={busy}
         generationProgress={generationProgress}
         generationTaskStatus={latest?.status ?? null}
@@ -729,7 +730,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
         topMinHeight="min-h-[72px]"
         topMinHeightCollapsed="min-h-0"
         topContent={
-          props.selected ? (
+          selected ? (
             <textarea
               className="nodrag nowheel h-full max-h-[108px] w-full resize-none whitespace-pre-wrap bg-transparent px-0 py-0 text-[12px] leading-relaxed text-[#222] outline-none placeholder:text-[#b0b0b8]"
               value={displayOutput}
@@ -743,8 +744,8 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
             <div className="px-0 py-0 text-[12px] text-[#b0b0b8]">点击编辑文本</div>
           )
         }
-        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={props.selected} />}
-        extra={props.selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
+        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={selected} />}
+        extra={selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
       />
     </div>
   )
@@ -752,6 +753,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
 
 const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
+  const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
   const generationReferences = useNodeGenerationReferences(nodeId, node)
   const { tasks, latest } = useNodeTasks(nodeId)
@@ -769,7 +771,7 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
 
   return (
     <div className="relative">
-      {props.selected && (
+      {selected && (
         <NodeFloatingToolbar
           node={node}
           models={props.data.models ?? []}
@@ -802,7 +804,7 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
       )}
       <SplitNodeLayout
         node={node}
-        selected={props.selected}
+        selected={selected}
         busy={busy}
         generationProgress={generationProgress}
         generationTaskStatus={latest?.status ?? null}
@@ -846,14 +848,14 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
                 ) : mediaUrl ? (
                   <MediaContent url={mediaUrl} outputType="image" naturalSize />
                 ) : (
-                  <ImageIconPlaceholder compact={!props.selected} />
+                  <ImageIconPlaceholder compact={!selected} />
                 )}
               </div>
             </div>
           )
         }
-        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={props.selected} />}
-        extra={props.selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
+        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={selected} />}
+        extra={selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
       />
     </div>
   )
@@ -861,6 +863,7 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
 
 const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
+  const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
   const generationReferences = useNodeGenerationReferences(nodeId, node)
   const { tasks, latest } = useNodeTasks(nodeId)
@@ -876,7 +879,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
 
   return (
     <div className="relative">
-      {props.selected && (
+      {selected && (
         <NodeFloatingToolbar
           node={node}
           models={props.data.models ?? []}
@@ -891,7 +894,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
       )}
       <SplitNodeLayout
         node={node}
-        selected={props.selected}
+        selected={selected}
         busy={busy}
         generationProgress={generationProgress}
         generationTaskStatus={latest?.status ?? null}
@@ -916,12 +919,12 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
                 naturalSize
               />
             ) : (
-              <ImageIconPlaceholder compact={!props.selected} />
+              <ImageIconPlaceholder compact={!selected} />
             )}
           </div>
         }
-        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={props.selected} />}
-        extra={props.selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
+        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={selected} />}
+        extra={selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
       />
     </div>
   )
@@ -929,6 +932,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
 
 const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
+  const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
   const generationReferences = useNodeGenerationReferences(nodeId, node)
   const { tasks, latest } = useNodeTasks(nodeId)
@@ -942,7 +946,7 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
 
   return (
     <div className="relative">
-      {props.selected && mediaUrl && (
+      {selected && mediaUrl && (
         <NodeFloatingToolbar
           node={node}
           models={props.data.models ?? []}
@@ -952,7 +956,7 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
       )}
       <SplitNodeLayout
         node={node}
-        selected={props.selected}
+        selected={selected}
         busy={busy}
         generationProgress={generationProgress}
         generationTaskStatus={latest?.status ?? null}
@@ -973,9 +977,9 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
             <div className="text-[12px] text-[#b0b0b8]">点击编辑音频</div>
           )
         }
-        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={props.selected} />}
+        bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={selected} />}
         extra={
-          props.selected ? (
+          selected ? (
             <>
               {latest?.status === 'succeeded' && out?.url ? (
                 <div className="mt-2 flex justify-end">
@@ -999,6 +1003,7 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
 
 const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
+  const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
   const edges = useCanvasStore((s) => s.edges)
   const allNodes = useCanvasStore((s) => s.nodes)
@@ -1146,7 +1151,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
 
   return (
     <div className="relative">
-      {props.selected && mediaUrl && (
+      {selected && mediaUrl && (
         <NodeFloatingToolbar
           node={node}
           models={props.data.models ?? []}
@@ -1156,7 +1161,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
       )}
       <SplitNodeLayout
         node={node}
-        selected={props.selected}
+        selected={selected}
         busy={busy}
         generationProgress={generationProgress}
         generationTaskStatus={latest?.status ?? null}
@@ -1235,7 +1240,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
             </div>
           </div>
         }
-        extra={props.selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
+        extra={selected ? <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} /> : null}
       />
     </div>
   )

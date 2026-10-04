@@ -164,12 +164,13 @@
   animation-play-state: paused;
 }
 
-.react-flow__edge.vp-generation-reference-edge .react-flow__edge-path {
-  stroke: #a99aff !important;
-  stroke-dasharray: 7 5 !important;
-  stroke-width: 2.25px !important;
-  filter: drop-shadow(0 0 3px rgba(144, 124, 255, 0.76));
-  animation: vp-generation-edge-flow 0.85s linear infinite;
+.vp-generation-reference-glow {
+  stroke: #ffffff;
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+  stroke-dasharray: 12 150;
+  filter: drop-shadow(0 0 3px #ffffff);
+  animation: vp-generation-edge-flow 1.4s linear infinite;
 }
 
 @keyframes vp-generation-dots {
@@ -190,7 +191,7 @@
 }
 
 @keyframes vp-generation-edge-flow {
-  from { stroke-dashoffset: 12; }
+  from { stroke-dashoffset: 162; }
   to { stroke-dashoffset: 0; }
 }
 
@@ -199,7 +200,7 @@
   .vp-generation-progress::after,
   .vp-generation-progress__scan,
   .vp-generation-progress__icon,
-  .react-flow__edge.vp-generation-reference-edge .react-flow__edge-path {
+  .vp-generation-reference-glow {
     animation: none !important;
   }
 }

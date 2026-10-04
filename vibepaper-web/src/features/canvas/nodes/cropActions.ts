@@ -184,7 +184,7 @@ export async function saveCropArtifactsAsNodes(
       const group = await createCanvasGroup(createdNodeIds, {
         allowSingle: true,
         name: groupName,
-        color: '#8b5cf6',
+        color: '#111111',
         layout: 'free',
       })
       if (!group) throw new Error('自动编组没有完成。')

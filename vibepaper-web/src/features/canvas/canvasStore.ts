@@ -167,7 +167,7 @@ export async function createCanvasGroup(
   const group: GroupPayload = {
     id: nodeIds.length === 1 ? crypto.randomUUID() : '',
     name: options.name ?? '编组',
-    color: options.color ?? '#8b5cf6',
+    color: options.color ?? '#111111',
     layout: options.layout ?? 'free',
     nodeIds,
   }

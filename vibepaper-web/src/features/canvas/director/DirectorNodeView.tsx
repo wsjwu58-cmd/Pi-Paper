@@ -66,6 +66,7 @@ function localCaptureAssetId(url: string | null): string | undefined {
 
 export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<FlowNode>) {
   const nodeId = sid(props.id)
+  const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useCanvasStore((s) => s.nodes.find((n) => sid(n.id) === nodeId)?.data.node)
   const canvasId = useCanvasStore((s) => s.canvas?.canvas.id)
   const [editorOpen, setEditorOpen] = useState(false)
@@ -83,7 +84,6 @@ export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<
   if (!node) return null
 
   const badge = statusBadge(node.status)
-  const selected = props.selected
   const modelsList = (props.data.models ?? []) as ModelInfo[]
   void modelsList
 

@@ -12,6 +12,24 @@ export interface CanvasGroupBounds {
 
 export type CanvasGroupOrientation = 'horizontal' | 'vertical'
 
+/** Membership is released on drop outside the pre-drag frame, not while it moves. */
+export function detachOutsideGroup(groups: GroupPayload[], nodes: FlowNode[], moved: FlowNode, bounds: Record<string, CanvasGroupBounds>) {
+  const id = sid(moved.id)
+  const size = nodeSize(moved)
+  const center = { x: moved.position.x + size.width / 2, y: moved.position.y + size.height / 2 }
+  const detached = new Set(groups.filter((group) => {
+    const rect = bounds[sid(group.id)]
+    return rect && group.nodeIds.map(sid).includes(id) &&
+      (center.x < rect.x || center.x > rect.x + rect.width || center.y < rect.y || center.y > rect.y + rect.height)
+  }).map((group) => sid(group.id)))
+  return {
+    changed: detached.size > 0,
+    groups: groups.map((group) => detached.has(sid(group.id)) ? { ...group, nodeIds: group.nodeIds.filter((member) => sid(member) !== id) } : group).filter((group) => group.nodeIds.length > 0),
+    nodes: nodes.map((node) => sid(node.id) === id && detached.has(sid(node.data.node.groupId))
+      ? { ...node, data: { ...node.data, groupId: undefined, node: { ...node.data.node, groupId: undefined } } } : node),
+  }
+}
+
 function nodeSize(node: FlowNode): { width: number; height: number } {
   return {
     width: node.measured?.width ?? node.width ?? 300,
@@ -125,14 +143,14 @@ export function arrangeCanvasGroupNodes(
 export function applyCanvasGroupMembership(nodes: FlowNode[], group: GroupPayload): FlowNode[] {
   const memberIds = new Set(group.nodeIds.map(sid))
   return nodes.map((node) => memberIds.has(sid(node.id))
-    ? { ...node, data: { ...node.data, node: { ...node.data.node, groupId: group.id } } }
+    ? { ...node, data: { ...node.data, groupId: group.id, node: { ...node.data.node, groupId: group.id } } }
     : node)
 }
 
 export function clearCanvasGroupMembership(nodes: FlowNode[], group: GroupPayload): FlowNode[] {
   const memberIds = new Set(group.nodeIds.map(sid))
   return nodes.map((node) => memberIds.has(sid(node.id)) && sid(node.data.node.groupId) === sid(group.id)
-    ? { ...node, data: { ...node.data, node: { ...node.data.node, groupId: undefined } } }
+    ? { ...node, data: { ...node.data, groupId: undefined, node: { ...node.data.node, groupId: undefined } } }
     : node)
 }
 

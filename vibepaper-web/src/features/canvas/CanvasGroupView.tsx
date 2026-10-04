@@ -9,6 +9,7 @@ import type { FlowNode } from './canvasStore'
 
 export interface CanvasGroupViewProps {
   groups: GroupPayload[]
+  frozenBounds?: Record<string, { x: number; y: number; width: number; height: number }>
   nodes: FlowNode[]
   selectedGroupId: string | null
   onSelectGroup: (groupId: string) => void
@@ -20,6 +21,7 @@ export interface CanvasGroupViewProps {
 
 export function CanvasGroupView({
   groups,
+  frozenBounds,
   nodes,
   selectedGroupId,
   onSelectGroup,
@@ -30,9 +32,9 @@ export function CanvasGroupView({
 }: CanvasGroupViewProps) {
   const { zoom } = useViewport()
   const frames = useMemo(
-    () => groups.map((group) => ({ group, bounds: getCanvasGroupBounds(group, nodes) }))
+    () => groups.map((group) => ({ group, bounds: frozenBounds?.[sid(group.id)] ?? getCanvasGroupBounds(group, nodes) }))
       .filter((frame): frame is { group: GroupPayload; bounds: NonNullable<typeof frame.bounds> } => Boolean(frame.bounds)),
-    [groups, nodes],
+    [groups, nodes, frozenBounds],
   )
 
   return (
@@ -119,9 +121,9 @@ function GroupFrame({
           height: bounds.height,
           zIndex: -1,
           pointerEvents: 'none',
-          borderColor: group.color,
-          backgroundColor: `${group.color}08`,
-          boxShadow: selected ? `0 0 0 2px ${group.color}22` : undefined,
+          borderColor: '#111111',
+          backgroundColor: '#11111108',
+          boxShadow: selected ? '0 0 0 2px #11111122' : undefined,
         }}
       />
       <div
