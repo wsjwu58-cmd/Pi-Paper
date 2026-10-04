@@ -23,6 +23,26 @@ const { createDramaBatchTaskInput } = require('../src/drama-render-batch.cjs')
 
 const ASSET_ID = '22222222-2222-4222-8222-222222222222'
 const OUTPUT_ID = '33333333-3333-4333-8333-333333333333'
+
+test('voice conversion can upload bounded local WAV only through the explicit audio capability', async (t) => {
+  const { store, directory, project } = await openProject(t)
+  const bytes = Buffer.alloc(46)
+  bytes.write('RIFF', 0); bytes.writeUInt32LE(38, 4); bytes.write('WAVE', 8)
+  bytes.write('fmt ', 12); bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22)
+  bytes.writeUInt32LE(16000, 24); bytes.writeUInt32LE(32000, 28); bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34)
+  bytes.write('data', 36); bytes.writeUInt32LE(2, 40); bytes.writeInt16LE(100, 44)
+  const source = path.join(directory, 'voice.wav')
+  await fs.writeFile(source, bytes)
+  const asset = await store.importAsset(source, project.projectId, 'local')
+  const parameters = { referenceAudios: [`vibe://app/assets/${asset.assetId}`] }
+  const options = { projectId: project.projectId, projectDirectory: directory, localCore: { request: (_method, payload) => store.resolveAsset(payload.assetId) } }
+  await assert.rejects(resolveGenerationMediaReferences(parameters, options), (error) => error.code === 'CLOUD_REFERENCE_UPLOAD_UNAVAILABLE')
+  const resolved = await resolveGenerationMediaReferences(parameters, { ...options, allowInlineAudio: true })
+  assert.deepEqual(resolved.referenceAudios, [`data:audio/wav;base64,${bytes.toString('base64')}`])
+  const stored = await store.resolveAsset(asset.assetId)
+  await fs.writeFile(stored.absolutePath || stored.filePath || stored.path, Buffer.alloc(bytes.length))
+  await assert.rejects(resolveGenerationMediaReferences(parameters, { ...options, allowInlineAudio: true }), (error) => error.code === 'CLOUD_INPUT_INVALID')
+})
 const PNG_BYTES = Buffer.concat([
   Buffer.from('89504e470d0a1a0a', 'hex'),
   Buffer.from('actual local image reference bytes'),

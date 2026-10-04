@@ -17,6 +17,14 @@ export interface VideoReferenceInput {
   text?: string
 }
 
+export function getVideoDurationOptions(constraints: Record<string, unknown> | undefined, resolution: string): number[] {
+  const byResolution = constraints?.durationByResolution
+  const matching = byResolution && typeof byResolution === 'object' && !Array.isArray(byResolution)
+    ? Object.entries(byResolution).find(([key]) => key.toLowerCase() === resolution.toLowerCase())?.[1] : undefined
+  const values = matching ?? constraints?.acceptedDurations
+  return Array.isArray(values) ? values.filter((value): value is number => typeof value === 'number' && Number.isInteger(value) && value > 0) : []
+}
+
 export function normalizeRemoteMediaReferenceUrl(value: string) {
   const source = typeof value === 'string' ? value.trim() : ''
   if (!source || source.length > 4096) throw new Error('参考地址不能为空，且不能超过 4096 个字符。')
@@ -60,7 +68,14 @@ export function buildMediaReferenceParameters(refs: readonly VideoReferenceInput
 }
 
 export function getNodeResolutionMap(nodeType: string, model?: ModelInfo, desktopMode = false): Readonly<Record<string, string>> {
-  const isAgnesVideo = nodeType === 'video' && (desktopMode ||
+  if (desktopMode) {
+    const constraints = (model as ModelInfo & { constraints?: Record<string, unknown> } | undefined)?.constraints
+    const allowed = nodeType === 'video' ? constraints?.acceptedResolutions : constraints?.acceptedSizes
+    if (Array.isArray(allowed) && allowed.length && allowed.every((value) => typeof value === 'string')) {
+      return Object.fromEntries(allowed.filter((value) => value !== 'auto').map((value: string) => [value.toUpperCase(), value]))
+    }
+  }
+  const isAgnesVideo = nodeType === 'video' && (
     model?.provider?.toLowerCase() === 'agnes' || /agnes-video/i.test(model?.name ?? '')
   )
   const isArkVideo = nodeType === 'video' && model?.provider?.toLowerCase() === 'volcengine-ark'
@@ -73,6 +88,6 @@ export function resolveNodeResolution(nodeType: string, model: ModelInfo | undef
   return {
     resKey,
     resolution: resolutionMap[resKey] ?? '1024x1024',
-    ...(nodeType === 'video' ? { size: resKey } : {}),
+    ...(nodeType === 'video' || desktopMode && nodeType === 'image' ? { size: desktopMode ? resolutionMap[resKey] ?? resKey : resKey } : {}),
   }
 }

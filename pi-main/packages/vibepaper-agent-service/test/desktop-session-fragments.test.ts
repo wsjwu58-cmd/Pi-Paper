@@ -12,7 +12,10 @@ import { DesktopAgentSessionStore } from "../src/desktop/session-store.ts";
 
 const require = createRequire(import.meta.url);
 const { buildAgentUsage } = require("../../../../vibepaper-desktop/src/agent-usage.cjs") as {
-	buildAgentUsage: (entries: unknown[], sessionId: string) => {
+	buildAgentUsage: (
+		entries: unknown[],
+		sessionId: string,
+	) => {
 		tokenTotal: number;
 		modelCallCount: number;
 		modelUsage: Record<string, number>;
@@ -48,12 +51,15 @@ async function closeStore(store: DesktopAgentSessionStore): Promise<void> {
 function assistantMessage(content: string): AgentMessage {
 	return {
 		role: "assistant",
-		content: [{ type: "text", text: content }, {
-			type: "toolCall",
-			id: "private-tool-call-id",
-			name: "create_node",
-			arguments: { prompt: "must not be copied" },
-		}],
+		content: [
+			{ type: "text", text: content },
+			{
+				type: "toolCall",
+				id: "private-tool-call-id",
+				name: "create_node",
+				arguments: { prompt: "must not be copied" },
+			},
+		],
 		api: "openai-completions",
 		provider: "openai",
 		model: "test-model",
@@ -72,13 +78,16 @@ function assistantMessage(content: string): AgentMessage {
 
 afterEach(async () => {
 	await Promise.all(openStores.splice(0).map((store) => store.close()));
-	await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+	await Promise.all(
+		temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+	);
 });
 
 describe("desktop session fragments", () => {
 	it("persists user-visible conversation text, imports a new session, and survives reopening", async () => {
 		const { projectDirectory, sessionsDirectory, projectId, canvasId, store, fragments } = await createProject();
 		const session = await store.createSession("原始会话");
+		await store.setAgentModelBinding(session.id, "target-deepseek-v4-1-flash");
 		await store.appendMessage(session.id, {
 			role: "user",
 			content: [{ type: "text", text: "保留这段对话" }],
@@ -101,6 +110,7 @@ describe("desktop session fragments", () => {
 			id: saved.fragmentId,
 			title: "复用方案",
 			canvasId,
+			agentModelId: "target-deepseek-v4-1-flash",
 		});
 		const fragmentDirectory = join(projectDirectory, ".vibepaper", "agent", "fragments");
 		const fragmentPath = join(fragmentDirectory, `${saved.fragmentId}.json`);
@@ -112,14 +122,21 @@ describe("desktop session fragments", () => {
 
 		const imported = await fragments.import(saved.fragmentId, canvasId);
 		expect(imported.sessionId).not.toBe(session.id);
+		expect(await store.getAgentModelBinding(imported.sessionId)).toBe("target-deepseek-v4-1-flash");
 		const copiedMessages = await store.listTranscriptMessages(imported.sessionId);
 		expect(copiedMessages.map(({ message }) => message.role)).toEqual(["user", "assistant"]);
-		expect(copiedMessages.map(({ message }) => message.role === "user"
-			? message.content
-			: message.role === "assistant"
-				? message.content.filter((item) => item.type === "text").map((item) => item.text).join("")
-				: ""))
-			.toEqual(["保留这段对话", "我会继续这个方案。"]);
+		expect(
+			copiedMessages.map(({ message }) =>
+				message.role === "user"
+					? message.content
+					: message.role === "assistant"
+						? message.content
+								.filter((item) => item.type === "text")
+								.map((item) => item.text)
+								.join("")
+						: "",
+			),
+		).toEqual(["保留这段对话", "我会继续这个方案。"]);
 		const copiedAssistant = copiedMessages[1]?.message;
 		expect(copiedAssistant).toMatchObject({
 			role: "assistant",
@@ -131,8 +148,9 @@ describe("desktop session fragments", () => {
 			expect(copiedAssistant.content).toEqual([{ type: "text", text: "我会继续这个方案。" }]);
 		}
 		const importedEntries = await (await store.openSession(imported.sessionId)).findEntries();
-		const importMarkers = importedEntries.filter((entry) => entry.type === "custom"
-			&& entry.customType === "vibepaper_fragment_import");
+		const importMarkers = importedEntries.filter(
+			(entry) => entry.type === "custom" && entry.customType === "vibepaper_fragment_import",
+		);
 		expect(importMarkers).toHaveLength(1);
 		expect(importMarkers[0]).toMatchObject({
 			customType: "vibepaper_fragment_import",
@@ -152,8 +170,9 @@ describe("desktop session fragments", () => {
 		await reopenedFragments.initialize();
 		expect(await reopenedFragments.list()).toEqual(listing);
 		const importedAfterRestart = await reopenedFragments.import(saved.fragmentId, canvasId);
-		expect((await reopened.listTranscriptMessages(importedAfterRestart.sessionId)).map(({ message }) => message.role))
-			.toEqual(["user", "assistant"]);
+		expect(
+			(await reopened.listTranscriptMessages(importedAfterRestart.sessionId)).map(({ message }) => message.role),
+		).toEqual(["user", "assistant"]);
 	});
 
 	it("keeps project fragments isolated and reads copied fragments after restore identity changes", async () => {
@@ -175,21 +194,33 @@ describe("desktop session fragments", () => {
 		const restoredAgentDirectory = join(restoredDataDirectory, "agent");
 		const restoredSessionsDirectory = join(restoredAgentDirectory, "sessions");
 		await mkdir(restoredSessionsDirectory, { recursive: true });
-		await cp(join(source.projectDirectory, ".vibepaper", "agent", "fragments"), join(restoredAgentDirectory, "fragments"), { recursive: true });
+		await cp(
+			join(source.projectDirectory, ".vibepaper", "agent", "fragments"),
+			join(restoredAgentDirectory, "fragments"),
+			{ recursive: true },
+		);
 		const restoredProjectId = randomUUID();
-		await writeFile(join(restoredDataDirectory, "project.json"), JSON.stringify({
-			schemaVersion: 1,
-			projectId: restoredProjectId,
-			canvasId: source.canvasId,
-		}));
-		const restoredStore = new DesktopAgentSessionStore(restoredProjectId, restoredProjectDirectory, restoredSessionsDirectory);
+		await writeFile(
+			join(restoredDataDirectory, "project.json"),
+			JSON.stringify({
+				schemaVersion: 1,
+				projectId: restoredProjectId,
+				canvasId: source.canvasId,
+			}),
+		);
+		const restoredStore = new DesktopAgentSessionStore(
+			restoredProjectId,
+			restoredProjectDirectory,
+			restoredSessionsDirectory,
+		);
 		openStores.push(restoredStore);
 		const restoredFragments = new DesktopSessionFragments(restoredProjectDirectory, restoredProjectId, restoredStore);
 		await restoredFragments.initialize();
 		expect(await restoredFragments.list()).toEqual(await source.fragments.list());
 		const imported = await restoredFragments.import(saved.fragmentId, source.canvasId);
-		expect((await restoredStore.listTranscriptMessages(imported.sessionId)).map(({ message }) => message.role))
-			.toEqual(["user"]);
+		expect(
+			(await restoredStore.listTranscriptMessages(imported.sessionId)).map(({ message }) => message.role),
+		).toEqual(["user"]);
 		const fragmentFiles = await readdir(join(restoredAgentDirectory, "fragments"));
 		expect(fragmentFiles).toContain(`${saved.fragmentId}.json`);
 	});
@@ -202,6 +233,6 @@ describe("desktop session fragments", () => {
 		await writeFile(join(fragmentDirectory, `${id}.json`), JSON.stringify({ schemaVersion: 99 }));
 		await expect(fragments.list()).rejects.toThrow("AGENT_SESSION_FRAGMENT_FILE_INVALID");
 		const session = await store.createSession("不会伪造片段");
-		expect((await store.listTranscriptMessages(session.id))).toHaveLength(0);
+		expect(await store.listTranscriptMessages(session.id)).toHaveLength(0);
 	});
 });

@@ -11,7 +11,7 @@ async function createHarness() {
   const mainRequire = createRequire(mainPath)
   const handlers = new Map()
   const electron = {
-    app: { setName() {}, requestSingleInstanceLock: () => false, quit() {} },
+    app: { setName() {}, setPath() {}, getPath: () => 'user-data', requestSingleInstanceLock: () => false, quit() {} },
     protocol: { registerSchemesAsPrivileged() {} },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
   }
@@ -27,7 +27,7 @@ async function createHarness() {
   vm.runInContext(await fs.readFile(mainPath, 'utf8'), context)
   const sender = { mainFrame: { url: 'vibe://app/' } }
   context.testSender = sender
-  vm.runInContext('mainWindow = { webContents: testSender }; getAgnesApiKey = async () => null; registerProjectIpc()', context)
+  vm.runInContext('mainWindow = { webContents: testSender }; providerSettings = { credentials: async () => ({}) }; registerProjectIpc()', context)
   return { context, handlers, warnings, event: { sender, senderFrame: sender.mainFrame } }
 }
 
@@ -55,6 +55,7 @@ async function drain(harness, { outcome = 'success', wrongProject = false, failN
     async request(method, payload) {
       calls.push({ method, payload })
       if (failNotification) throw new Error('secret should not be logged')
+      if (method === 'agent:list-continuation-models') return []
       return { scheduled: 1 }
     },
   }
@@ -79,10 +80,88 @@ async function drain(harness, { outcome = 'success', wrongProject = false, failN
 test('successful generation notifies Agent after the authoritative result is saved', async () => {
   const harness = await createHarness()
   const calls = await drain(harness, {})
-  const notificationIndex = calls.findIndex((call) => typeof call === 'object')
+  const objectCalls = calls.filter((call) => typeof call === 'object')
+  const notificationIndex = calls.indexOf(objectCalls[0])
   assert.ok(notificationIndex > calls.indexOf('task:succeeded'))
-  assert.deepEqual(JSON.parse(JSON.stringify(calls[notificationIndex])), {
-    method: 'agent:reconcile-tasks', payload: { projectId: 'project-1', apiKey: '' },
+  assert.deepEqual(JSON.parse(JSON.stringify(objectCalls[0])), {
+    method: 'agent:list-continuation-models', payload: { projectId: 'project-1' },
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(objectCalls[1])), {
+    method: 'agent:reconcile-tasks', payload: { projectId: 'project-1', connectionsBySession: {}, unavailableSessionIds: [] },
+  })
+})
+
+test('automatic continuation resolves the configured binding and key independently for each session', async () => {
+  const harness = await createHarness()
+  const notifications = []
+  harness.context.testSettings = {
+    async snapshot() {
+      return { models: [
+        { id: 'target-deepseek-v4-1-flash', providerId: 'deepseek', modelType: 'text', implemented: true, toolCalling: true, enabled: true },
+        { id: 'target-claude-sonnet-4-6', providerId: 'anthropic', modelType: 'text', implemented: true, toolCalling: true, enabled: true },
+      ] }
+    },
+    async resolve(providerId, modelId) {
+      return {
+        providerId,
+        apiModelId: providerId === 'deepseek' ? 'deepseek-flash' : 'claude-sonnet-4-6',
+        apiKey: providerId === 'deepseek' ? 'deepseek-only-key' : 'anthropic-only-key',
+        credentials: { apiKey: providerId === 'deepseek' ? 'deepseek-only-key' : 'anthropic-only-key' },
+        endpoint: providerId === 'deepseek' ? 'https://api.deepseek.com' : 'https://api.anthropic.com',
+        modelId,
+      }
+    },
+    async credentials() { return { apiKey: 'agnes-legacy-key' } },
+  }
+  harness.context.testAgent = {
+    async request(method, payload) {
+      notifications.push({ method, payload })
+      if (method === 'agent:list-continuation-models') return [
+        { sessionId: 'session-deepseek', bindingId: 'target-deepseek-v4-1-flash' },
+        { sessionId: 'session-anthropic', bindingId: 'target-claude-sonnet-4-6' },
+      ]
+      return { scheduled: 2 }
+    },
+  }
+  vm.runInContext("providerSettings = testSettings; agentWorker = testAgent; agentProjectId = 'project-1'", harness.context)
+
+  await vm.runInContext("notifyAgentTaskState('project-1')", harness.context)
+
+  const reconcile = notifications.find((call) => call.method === 'agent:reconcile-tasks')
+  assert.ok(reconcile)
+  assert.deepEqual(Object.keys(reconcile.payload.connectionsBySession), ['session-deepseek', 'session-anthropic'])
+  assert.equal(reconcile.payload.connectionsBySession['session-deepseek'].apiKey, 'deepseek-only-key')
+  assert.equal(reconcile.payload.connectionsBySession['session-deepseek'].modelDefinition.provider, 'deepseek')
+  assert.equal(reconcile.payload.connectionsBySession['session-deepseek'].modelDefinition.id, 'deepseek-flash')
+  assert.equal(reconcile.payload.connectionsBySession['session-anthropic'].apiKey, 'anthropic-only-key')
+  assert.equal(reconcile.payload.connectionsBySession['session-anthropic'].modelDefinition.provider, 'anthropic')
+  assert.equal(reconcile.payload.connectionsBySession['session-anthropic'].modelDefinition.id, 'claude-sonnet-4-6')
+  assert.equal(JSON.stringify(reconcile.payload).includes('agnes-legacy-key'), false)
+})
+
+test('unavailable session binding does not fall back to a configured Agnes key', async () => {
+  const harness = await createHarness()
+  const notifications = []
+  harness.context.testSettings = {
+    async snapshot() { return { models: [] } },
+    async credentials() { return { apiKey: 'agnes-legacy-key' } },
+  }
+  harness.context.testAgent = {
+    async request(method, payload) {
+      notifications.push({ method, payload })
+      if (method === 'agent:list-continuation-models') return [
+        { sessionId: 'session-custom', bindingId: 'target-custom-text-binding' },
+      ]
+      return {}
+    },
+  }
+  vm.runInContext("providerSettings = testSettings; agentWorker = testAgent; agentProjectId = 'project-1'", harness.context)
+
+  await vm.runInContext("notifyAgentTaskState('project-1')", harness.context)
+
+  const reconcile = notifications.find((call) => call.method === 'agent:reconcile-tasks')
+  assert.deepEqual(JSON.parse(JSON.stringify(reconcile.payload)), {
+    projectId: 'project-1', connectionsBySession: {}, unavailableSessionIds: ['session-custom'],
   })
 })
 
@@ -90,7 +169,7 @@ test('failed generation also opens the Agent recovery path after failure persist
   const harness = await createHarness()
   const calls = await drain(harness, { outcome: 'failure' })
   assert.ok(calls.findIndex((call) => typeof call === 'object') > calls.indexOf('task:failed'))
-  assert.equal(calls.filter((call) => typeof call === 'object').length, 1)
+  assert.equal(calls.filter((call) => typeof call === 'object').length, 2)
 })
 
 test('notification failure never changes a successful task or exposes the worker error', async () => {
@@ -113,23 +192,35 @@ test('project switching during credential lookup cannot pass credentials to the 
   let finishLookup
   const notifications = []
   harness.context.testLookup = () => new Promise((resolve) => { finishLookup = resolve })
-  harness.context.testAgent = { async request(...args) { notifications.push(args) } }
-  vm.runInContext("agentWorker = testAgent; agentProjectId = 'project-1'; getAgnesApiKey = testLookup", harness.context)
+  harness.context.testAgent = { async request(method, ...args) {
+    notifications.push([method, ...args])
+    if (method === 'agent:list-continuation-models') return [{ sessionId: 'session-1', bindingId: 'agnes-2.5-flash' }]
+    return {}
+  } }
+  vm.runInContext("agentWorker = testAgent; agentProjectId = 'project-1'; providerSettings = { credentials: async () => ({ apiKey: await testLookup() }) }", harness.context)
   const lookup = vm.runInContext("notifyAgentTaskState('project-1')", harness.context)
+  for (let attempt = 0; attempt < 20 && typeof finishLookup !== 'function'; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  assert.equal(typeof finishLookup, 'function')
   vm.runInContext("agentProjectId = 'project-2'", harness.context)
   finishLookup('test-only-credential')
   await lookup
-  assert.deepEqual(notifications, [])
+  assert.deepEqual(notifications.map(([method]) => method), ['agent:list-continuation-models'])
 })
 
 test('cancelling a queued task notifies the Agent without needing a generation worker', async () => {
   const harness = await createHarness()
   const calls = []
   harness.context.testCore = { async request(method) { calls.push(method); return { status: 'cancelled' } } }
-  harness.context.testAgent = { async request(method) { calls.push(method); return {} } }
+  harness.context.testAgent = { async request(method, payload) { calls.push({ method, payload }); return method === 'agent:list-continuation-models' ? [] : {} } }
   vm.runInContext("localCore = testCore; agentWorker = testAgent; agentProjectId = 'project-1'", harness.context)
   const task = await harness.handlers.get('desktop:task:cancel')(harness.event, 'project-1', 'task-1')
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(task.status, 'cancelled')
-  assert.deepEqual(calls, ['task:cancel', 'agent:reconcile-tasks'])
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    'task:cancel',
+    { method: 'agent:list-continuation-models', payload: { projectId: 'project-1' } },
+    { method: 'agent:reconcile-tasks', payload: { projectId: 'project-1', connectionsBySession: {}, unavailableSessionIds: [] } },
+  ])
 })

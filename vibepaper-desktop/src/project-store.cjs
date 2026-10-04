@@ -1092,6 +1092,12 @@ function recoverInterruptedTasks(database) {
   try {
     const now = new Date().toISOString()
     for (const task of tasks) {
+      const checkpoint = latestProviderCheckpoint(database, task.task_id)
+      if (checkpoint?.phase === 'submitted' && checkpoint.remoteTaskId) {
+        database.prepare("UPDATE tasks SET status = 'queued', updated_at = ? WHERE task_id = ? AND status = 'running'").run(now, task.task_id)
+        appendTaskEvent(database, task.task_id, 'created', { resumeProviderTask: true }, now)
+        continue
+      }
       const update = database.prepare(`
         UPDATE tasks SET status = 'interrupted', error_code = 'PROCESS_INTERRUPTED', updated_at = ?
         WHERE task_id = ? AND status = 'running'
@@ -1104,6 +1110,13 @@ function recoverInterruptedTasks(database) {
     database.exec('ROLLBACK')
     throw error
   }
+}
+
+function latestProviderCheckpoint(database, taskId) {
+  const row = database.prepare(`SELECT data_json FROM task_events
+    WHERE task_id = ? AND type = 'running' AND json_extract(data_json, '$.providerCheckpoint.phase') IS NOT NULL
+    ORDER BY event_seq DESC LIMIT 1`).get(taskId)
+  return row ? JSON.parse(row.data_json).providerCheckpoint : null
 }
 
 function nodeErrorCode(error) {
@@ -5269,11 +5282,34 @@ function createLocalProjectStore() {
         const row = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
         appendTaskEvent(active.database, taskId, 'running', { attemptCount: row.attempt_count }, now)
         active.database.exec('COMMIT')
-        return { task: taskFromRow(row), parameters: JSON.parse(row.input_json), outputDirectory }
+        return { task: taskFromRow(row), parameters: JSON.parse(row.input_json), outputDirectory,
+          providerCheckpoint: latestProviderCheckpoint(active.database, taskId) }
       } catch (error) {
         active.database.exec('ROLLBACK')
         throw error
       }
+    })
+  }
+
+  function recordProviderCheckpoint(projectId, taskId, checkpoint) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改。')
+      const task = active.database.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId)
+      if (!task || task.status !== 'running' || task.provider_type !== 'cloud') throw new Error('TASK_STATE_CONFLICT')
+      if (!isRecord(checkpoint) || !['submitting', 'submitted'].includes(checkpoint.phase)
+        || checkpoint.phase === 'submitted' && (typeof checkpoint.remoteTaskId !== 'string'
+          || !checkpoint.remoteTaskId || checkpoint.remoteTaskId.length > 2048 || /[\u0000-\u001f]/u.test(checkpoint.remoteTaskId))) {
+        throw new Error('PROVIDER_CHECKPOINT_INVALID')
+      }
+      const previous = latestProviderCheckpoint(active.database, taskId)
+      if (previous?.remoteTaskId && previous.remoteTaskId !== checkpoint.remoteTaskId) throw new Error('PROVIDER_CHECKPOINT_CONFLICT')
+      const safe = checkpoint.phase === 'submitted'
+        ? { phase: 'submitted', remoteTaskId: checkpoint.remoteTaskId }
+        : { phase: 'submitting' }
+      await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+      const now = new Date().toISOString()
+      appendTaskEvent(active.database, taskId, 'running', { providerCheckpoint: safe }, now)
+      return safe
     })
   }
 
@@ -5503,10 +5539,14 @@ function createLocalProjectStore() {
       if (current.status === 'queued' || current.status === 'running') {
         return taskFromRow(active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId))
       }
-      if (current.status === 'interrupted' && current.provider_type === 'cloud') {
+      const providerCheckpoint = latestProviderCheckpoint(active.database, taskId)
+      if (providerCheckpoint?.phase === 'submitting') {
+        throw new Error('官方生成任务的提交结果待确认，不能安全重新提交；请先在供应商处核实。')
+      }
+      if (current.status === 'interrupted' && current.provider_type === 'cloud' && !providerCheckpoint?.remoteTaskId) {
         throw new Error('云端任务中断后结果未知，当前无法安全自动重试。')
       }
-      if (current.status !== 'failed' && !(current.status === 'interrupted' && current.provider_type === 'local')) {
+      if (current.status !== 'failed' && !(current.status === 'interrupted' && (current.provider_type === 'local' || providerCheckpoint?.remoteTaskId))) {
         throw new Error('任务不可重试。')
       }
       const now = new Date().toISOString()
@@ -8157,6 +8197,7 @@ function createLocalProjectStore() {
     cancelTask,
     cleanupCancelledTaskOutput,
     claimNextTask,
+    recordProviderCheckpoint,
     close,
     connectEdge,
     createNode,

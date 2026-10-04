@@ -111,7 +111,10 @@ function createWorkerHarness(options = {}) {
       DesktopScopedMemoryStore: TestScopedMemory,
       desktopCandidateScope() { return 'canvas' },
     },
-    'session-store.ts': { desktopCompactionSummary: () => '' },
+    'session-store.ts': {
+      desktopCompactionSummary: () => '',
+      LEGACY_AGENT_MODEL_BINDING_ID: 'agnes-2.5-flash',
+    },
     'context-assembler.ts': {
       assembleDesktopMemoryContext: () => 'test memory context',
       projectDesktopSessionContext: () => ({ initialGoal: null }),
@@ -131,6 +134,14 @@ function createWorkerHarness(options = {}) {
           expiredConfirmations: 0,
           continuationClaims: runtime.claims,
         }
+      },
+      async requestDesktopTaskContinuations(stores, input) {
+        runtime.continuationRequestCalls = [...(runtime.continuationRequestCalls ?? []), {
+          projectId: stores.projectId,
+          sessionId: input.sessionId,
+          apiKey: input.apiKey,
+        }]
+        return runtime.claims.filter((claim) => !input.sessionId || claim.request.sessionId === input.sessionId)
       },
     },
     'skill-context.ts': {
@@ -225,7 +236,7 @@ function createWorkerHarness(options = {}) {
       sessionFragments = value.sessionFragments
     },
     setStartMessage(value) { startMessage = value },
-    getContinuationApiKey() { return continuationApiKey },
+    getContinuationApiKey() { return legacyContinuationApiKey },
   }\n})`, context)
   wrapper(module.exports, fakeRequire, module, context.process)
   return { hooks: module.exports.__testHooks, runtime, parentPort }
@@ -294,6 +305,91 @@ test('continuation scheduler requires a key and deduplicates concurrent notifica
   startGate.resolve({ runId: 'continuation-run-1' })
   const firstResult = await first
   assert.equal(firstResult.scheduled, 1)
+})
+
+test('task continuations use the exact model binding and key for each originating session', async () => {
+  const { hooks, runtime } = createWorkerHarness()
+  hooks.setStores(createStores('project-1'))
+  const first = makeClaim('project-1', 'continuation-run-first')
+  first.request.sessionId = 'session-first'
+  first.request.originRunId = 'origin-first'
+  first.request.idempotencyKey = 'task-continuation:origin-first'
+  first.run.sessionId = 'session-first'
+  first.run.idempotencyKey = first.request.idempotencyKey
+  const second = makeClaim('project-1', 'continuation-run-second')
+  second.request.sessionId = 'session-second'
+  second.request.originRunId = 'origin-second'
+  second.request.idempotencyKey = 'task-continuation:origin-second'
+  second.run.sessionId = 'session-second'
+  second.run.idempotencyKey = second.request.idempotencyKey
+  runtime.claims = [first, second]
+  hooks.setStartMessage(async (payload, mode) => {
+    runtime.starts.push({ payload, mode })
+    mode.onSettled()
+    return { runId: mode.run.runId }
+  })
+
+  const result = await hooks.dispatch('agent:reconcile-tasks', {
+    projectId: 'project-1',
+    connectionsBySession: {
+      'session-first': {
+        bindingId: 'target-deepseek-v4-1-flash', apiKey: 'provider-key-first',
+        modelDefinition: { id: 'deepseek-flash', provider: 'deepseek' },
+      },
+      'session-second': { bindingId: 'agnes-2.5-flash', apiKey: 'provider-key-second' },
+    },
+  })
+
+  assert.equal(result.scheduled, 2)
+  assert.deepEqual(runtime.starts.map(({ payload }) => ({
+    sessionId: payload.sessionId,
+    modelId: payload.modelId,
+    apiKey: payload.apiKey,
+    modelIdFromDefinition: payload.modelDefinition?.id,
+  })), [
+    { sessionId: 'session-first', modelId: 'target-deepseek-v4-1-flash', apiKey: 'provider-key-first', modelIdFromDefinition: 'deepseek-flash' },
+    { sessionId: 'session-second', modelId: 'agnes-2.5-flash', apiKey: 'provider-key-second', modelIdFromDefinition: undefined },
+  ])
+  assert.deepEqual(runtime.continuationRequestCalls, [
+    { projectId: 'project-1', sessionId: 'session-first', apiKey: 'provider-key-first' },
+    { projectId: 'project-1', sessionId: 'session-second', apiKey: 'provider-key-second' },
+  ])
+  assert.equal(JSON.stringify(result).includes('provider-key'), false)
+})
+
+test('an unreadable session binding is marked unavailable instead of inheriting the Agnes binding', async () => {
+  const { hooks } = createWorkerHarness()
+  const stores = createStores('project-1')
+  stores.control.listPendingTaskContinuations = () => [{ sessionId: 'session-unreadable' }]
+  stores.control.listTaskLinks = () => []
+  stores.sessions.getAgentModelBinding = async () => { throw new Error('SESSION_READ_FAILED') }
+  hooks.setStores(stores)
+
+  const sessions = await hooks.dispatch('agent:list-continuation-models', { projectId: 'project-1' })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(sessions)), [
+    { sessionId: 'session-unreadable', bindingId: null },
+  ])
+})
+
+test('legacy renderer Agnes credentials cannot continue a session bound to another provider', async () => {
+  const { hooks, runtime } = createWorkerHarness()
+  const stores = createStores('project-1')
+  stores.sessions.getAgentModelBinding = async () => 'target-custom-text-binding'
+  hooks.setStores(stores)
+  runtime.claims = [makeClaim('project-1', 'continuation-run-custom-binding')]
+  hooks.setStartMessage(async (payload) => {
+    runtime.starts.push(payload)
+    return { runId: 'unexpected-run' }
+  })
+
+  const result = await hooks.dispatch('agent:reconcile-tasks', {
+    projectId: 'project-1', apiKey: 'agnes-legacy-key',
+  })
+
+  assert.equal(result.scheduled, 0)
+  assert.deepEqual(runtime.starts, [])
+  assert.equal(JSON.stringify(result).includes('agnes-legacy-key'), false)
 })
 
 test('in-flight continuation dispatch is discarded after key rotation or project switch', async () => {

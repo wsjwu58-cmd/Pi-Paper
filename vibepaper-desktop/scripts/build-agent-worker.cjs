@@ -20,6 +20,13 @@ async function main() {
     legalComments: 'none',
     sourcemap: false,
   })
+  await build({
+    entryPoints: [path.join(piRoot, 'packages', 'ai', 'src', 'media', 'index.ts')],
+    outfile: path.join(desktopRoot, 'dist', 'pi-official-media.cjs'),
+    bundle: true, platform: 'node', format: 'cjs', target: 'node22.19',
+    external: ['node:*'], nodePaths: [path.join(piRoot, 'node_modules')],
+    legalComments: 'none', sourcemap: false,
+  })
 }
 
 main().catch((error) => {

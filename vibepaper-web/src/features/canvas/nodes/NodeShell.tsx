@@ -157,7 +157,7 @@ export function NodeShell({
         </div>
         {!useNewEditor && (
           <div className="flex items-center gap-2 border-t border-black/6 bg-[#1a1a1a] px-2.5 py-2">
-            {selectedModel ? <ModelBrandIcon model={selectedModel} size={16} /> : null}
+            {selectedModel ? <ModelBrandIcon model={selectedModel} size={16} desktop={Boolean(window.vibepaperDesktop)} /> : null}
             <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white/90">{modelLabel}</span>
             <span className="shrink-0 text-[10px] font-bold text-white/40">
               {(node.params.aspect as string) || (node.params.resolution as string) || '1:1'}

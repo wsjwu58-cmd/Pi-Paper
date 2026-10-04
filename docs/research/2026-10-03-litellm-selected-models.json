@@ -1,0 +1,532 @@
+{
+  "asOf": "2026-10-03",
+  "sourceCommit": "8b11b682f46fab627972d7f129bb0dceed6a88a2",
+  "status": "integration-candidates-not-live-configuration",
+  "models": [
+    {
+      "modality": "text",
+      "brand": "Anthropic",
+      "channel": "Anthropic",
+      "credential": "ANTHROPIC_API_KEY",
+      "name": "Claude Fable 5.1",
+      "litellmModel": "anthropic/claude-fable-5-1",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "Anthropic",
+      "channel": "Anthropic",
+      "credential": "ANTHROPIC_API_KEY",
+      "name": "Claude Haiku 4.5",
+      "litellmModel": "anthropic/claude-haiku-4-5",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "Anthropic",
+      "channel": "Anthropic",
+      "credential": "ANTHROPIC_API_KEY",
+      "name": "Claude Opus 5",
+      "litellmModel": "anthropic/claude-opus-5",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "Anthropic",
+      "channel": "Anthropic",
+      "credential": "ANTHROPIC_API_KEY",
+      "name": "Claude Opus 5.5",
+      "litellmModel": "anthropic/claude-opus-5-5",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "Anthropic",
+      "channel": "Anthropic",
+      "credential": "ANTHROPIC_API_KEY",
+      "name": "Claude Sonnet 4.6",
+      "litellmModel": "anthropic/claude-sonnet-4-6",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "OpenAI",
+      "channel": "OpenAI",
+      "credential": "OPENAI_API_KEY",
+      "name": "GPT-5.6 Sol",
+      "litellmModel": "openai/gpt-5.6-sol",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "OpenAI",
+      "channel": "OpenAI",
+      "credential": "OPENAI_API_KEY",
+      "name": "GPT-5.6 Terra",
+      "litellmModel": "openai/gpt-5.6-terra",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "OpenAI",
+      "channel": "OpenAI",
+      "credential": "OPENAI_API_KEY",
+      "name": "GPT-5.6 Luna",
+      "litellmModel": "openai/gpt-5.6-luna",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "OpenAI",
+      "channel": "OpenAI",
+      "credential": "OPENAI_API_KEY",
+      "name": "GPT-6 Astra",
+      "litellmModel": "openai/gpt-6-astra",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "OpenAI",
+      "channel": "OpenAI",
+      "credential": "OPENAI_API_KEY",
+      "name": "GPT-6 Sol",
+      "litellmModel": "openai/gpt-6-sol",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "OpenAI",
+      "channel": "OpenAI",
+      "credential": "OPENAI_API_KEY",
+      "name": "GPT-6 Luna",
+      "litellmModel": "openai/gpt-6-luna",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "Google",
+      "channel": "Google AI Studio",
+      "credential": "GEMINI_API_KEY",
+      "name": "Gemini 3.1 Pro Preview",
+      "litellmModel": "gemini/gemini-3.1-pro-preview",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "Google",
+      "channel": "Google AI Studio",
+      "credential": "GEMINI_API_KEY",
+      "name": "Gemini 3.6 Flash",
+      "litellmModel": "gemini/gemini-3.6-flash",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "Google",
+      "channel": "Google AI Studio",
+      "credential": "GEMINI_API_KEY",
+      "name": "Gemini 3.8 Flash",
+      "litellmModel": "gemini/gemini-3.8-flash",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "DeepSeek",
+      "channel": "DeepSeek",
+      "credential": "DEEPSEEK_API_KEY",
+      "name": "DeepSeek V4.1 Flash",
+      "litellmModel": "deepseek/deepseek-flash",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "xAI",
+      "channel": "xAI",
+      "credential": "XAI_API_KEY",
+      "name": "Grok 4.3",
+      "litellmModel": "xai/grok-4.3",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "xAI",
+      "channel": "xAI",
+      "credential": "XAI_API_KEY",
+      "name": "Grok 4.7",
+      "litellmModel": "xai/grok-4.7",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "Moonshot",
+      "channel": "Moonshot",
+      "credential": "MOONSHOT_API_KEY",
+      "name": "Kimi K2.5",
+      "litellmModel": "moonshot/kimi-k2.5",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "ByteDance",
+      "channel": "Volcengine",
+      "credential": "VOLCENGINE_API_KEY",
+      "name": "Seed 2.0 Mini",
+      "litellmModel": "volcengine/doubao-seed-2-0-mini-260215",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "text",
+      "brand": "ByteDance",
+      "channel": "Volcengine",
+      "credential": "VOLCENGINE_API_KEY",
+      "name": "Seed 2.1 Pro",
+      "litellmModel": "volcengine/doubao-seed-2-1-pro-260628",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "image",
+      "brand": "Google",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "Nano Banana",
+      "litellmModel": "fal_ai/fal-ai/nano-banana",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "image",
+      "brand": "Google",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "Nano Banana 2",
+      "litellmModel": "fal_ai/fal-ai/nano-banana-2",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "image",
+      "brand": "Google",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "Nano Banana Pro",
+      "litellmModel": "fal_ai/fal-ai/nano-banana-pro",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "image",
+      "brand": "OpenAI",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "GPT-Image-2",
+      "litellmModel": "fal_ai/openai/gpt-image-2",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "image",
+      "brand": "OpenAI",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "GPT-Image-2.5 Flare",
+      "litellmModel": "fal_ai/openai/gpt-image-2.5/flare/text-to-image",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "image",
+      "brand": "OpenAI",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "GPT-Image-2.5 Sunburst",
+      "litellmModel": "fal_ai/openai/gpt-image-2.5/sunburst/text-to-image",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "image",
+      "brand": "Black Forest Labs",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "FLUX Pro 1.1",
+      "litellmModel": "fal_ai/fal-ai/flux-pro/v1.1",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "image",
+      "brand": "Black Forest Labs",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "FLUX Pro 1.1 Ultra",
+      "litellmModel": "fal_ai/fal-ai/flux-pro/v1.1-ultra",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "image",
+      "brand": "Recraft",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "Recraft V3",
+      "litellmModel": "fal_ai/fal-ai/recraft/v3/text-to-image",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "image",
+      "brand": "ByteDance",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "Seedream 3",
+      "litellmModel": "fal_ai/fal-ai/bytedance/seedream/v3/text-to-image",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "generate"
+      ]
+    },
+    {
+      "modality": "video",
+      "brand": "ByteDance",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "Seedance 2.0",
+      "litellmModel": "fal_ai/bytedance/seedance-2.0/text-to-video",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "operationModels": {
+        "textToVideo": "fal_ai/bytedance/seedance-2.0/text-to-video",
+        "imageToVideo": "fal_ai/bytedance/seedance-2.0/image-to-video",
+        "referenceToVideo": "fal_ai/bytedance/seedance-2.0/reference-to-video"
+      }
+    },
+    {
+      "modality": "video",
+      "brand": "ByteDance",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "Seedance 2.5",
+      "litellmModel": "fal_ai/bytedance/seedance-2.5/text-to-video",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "operationModels": {
+        "textToVideo": "fal_ai/bytedance/seedance-2.5/text-to-video",
+        "imageToVideo": "fal_ai/bytedance/seedance-2.5/image-to-video",
+        "referenceToVideo": "fal_ai/bytedance/seedance-2.5/reference-to-video"
+      }
+    },
+    {
+      "modality": "video",
+      "brand": "MiniMax",
+      "channel": "fal.ai",
+      "credential": "FAL_AI_API_KEY",
+      "name": "MiniMax H3",
+      "litellmModel": "fal_ai/minimax/h3/text-to-video",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "operationModels": {
+        "textToVideo": "fal_ai/minimax/h3/text-to-video",
+        "referenceToVideo": "fal_ai/minimax/h3/reference-to-video"
+      }
+    },
+    {
+      "modality": "video",
+      "brand": "Google",
+      "channel": "Google AI Studio",
+      "credential": "GEMINI_API_KEY",
+      "name": "Veo 3.1",
+      "litellmModel": "gemini/veo-3.1-generate-001",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "video",
+      "brand": "Google",
+      "channel": "Google AI Studio",
+      "credential": "GEMINI_API_KEY",
+      "name": "Veo 3.1 Fast",
+      "litellmModel": "gemini/veo-3.1-fast-generate-001",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "video",
+      "brand": "Google",
+      "channel": "Google AI Studio",
+      "credential": "GEMINI_API_KEY",
+      "name": "Veo 3.1 Lite Preview",
+      "litellmModel": "gemini/veo-3.1-lite-generate-preview",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "video",
+      "brand": "OpenAI",
+      "channel": "OpenAI",
+      "credential": "OPENAI_API_KEY",
+      "name": "Sora 2",
+      "litellmModel": "openai/sora-2",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "video",
+      "brand": "OpenAI",
+      "channel": "OpenAI",
+      "credential": "OPENAI_API_KEY",
+      "name": "Sora 2 Pro",
+      "litellmModel": "openai/sora-2-pro",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "video",
+      "brand": "Runway",
+      "channel": "Runway",
+      "credential": "RUNWAYML_API_KEY",
+      "name": "Runway Gen-4.5",
+      "litellmModel": "runwayml/gen4.5",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification"
+    },
+    {
+      "modality": "audio",
+      "brand": "ElevenLabs",
+      "channel": "ElevenLabs",
+      "credential": "ELEVENLABS_API_KEY",
+      "name": "Eleven Multilingual v2",
+      "litellmModel": "elevenlabs/eleven_multilingual_v2",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "tts"
+      ]
+    },
+    {
+      "modality": "audio",
+      "brand": "ElevenLabs",
+      "channel": "ElevenLabs",
+      "credential": "ELEVENLABS_API_KEY",
+      "name": "Eleven v3",
+      "litellmModel": "elevenlabs/eleven_v3",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "tts"
+      ]
+    },
+    {
+      "modality": "audio",
+      "brand": "MiniMax",
+      "channel": "MiniMax",
+      "credential": "MINIMAX_API_KEY",
+      "name": "MiniMax Speech 2.6 HD",
+      "litellmModel": "minimax/speech-2.6-hd",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "tts"
+      ]
+    },
+    {
+      "modality": "audio",
+      "brand": "MiniMax",
+      "channel": "MiniMax",
+      "credential": "MINIMAX_API_KEY",
+      "name": "MiniMax Speech 2.6 Turbo",
+      "litellmModel": "minimax/speech-2.6-turbo",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "tts"
+      ]
+    },
+    {
+      "modality": "audio",
+      "brand": "Google",
+      "channel": "Google AI Studio",
+      "credential": "GEMINI_API_KEY",
+      "name": "Gemini 3.8 Flash TTS",
+      "litellmModel": "gemini/gemini-3.8-flash-tts",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "tts"
+      ]
+    },
+    {
+      "modality": "audio",
+      "brand": "Google",
+      "channel": "Google AI Studio",
+      "credential": "GEMINI_API_KEY",
+      "name": "Gemini 3.8 Flash-Lite TTS",
+      "litellmModel": "gemini/gemini-3.8-flash-lite-tts",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "tts"
+      ]
+    },
+    {
+      "modality": "audio",
+      "brand": "OpenAI",
+      "channel": "OpenAI",
+      "credential": "OPENAI_API_KEY",
+      "name": "GPT-4o Mini TTS",
+      "litellmModel": "openai/gpt-4o-mini-tts",
+      "evidence": "catalog-and-provider-adapter",
+      "validation": "requires-account-and-end-to-end-verification",
+      "initialOperations": [
+        "tts"
+      ]
+    }
+  ]
+}

@@ -31,7 +31,7 @@ export async function submitNodeTask(
   modelType: string,
   modelParams: Record<string, unknown>,
   estimatedCost = 8,
-  desktopOptions?: { providerType?: 'local' | 'cloud'; providerId?: 'agnes' | 'volcengine-ark'; modelId?: string },
+  desktopOptions?: { providerType?: 'local' | 'cloud'; providerId?: string; modelId?: string },
 ) {
   if (isDesktopRuntime()) {
     const bridge = window.vibepaperDesktop
@@ -46,15 +46,16 @@ export async function submitNodeTask(
       throw new Error('此节点类型尚未接入桌面本地生成。')
     }
     if (modality === 'audio') {
-      if (desktopOptions?.providerType !== 'local' || modelType !== 'local-sapi-tts') {
-        throw new Error('桌面音频生成仅支持 Windows SAPI 本地语音模型。')
-      }
-      if (typeof bridge.getLocalAudioModel !== 'function') {
-        throw new Error('桌面本地语音服务尚未接入。')
-      }
-      const audioModel = await bridge.getLocalAudioModel()
-      if (!audioModel?.available || audioModel.modelId !== 'local-sapi-tts') {
-        throw new Error('Windows SAPI 本地语音模型在当前平台不可用。')
+      if (desktopOptions?.providerType === 'local' && modelType === 'local-sapi-tts') {
+        if (typeof bridge.getLocalAudioModel !== 'function') {
+          throw new Error('桌面本地语音服务尚未接入。')
+        }
+        const audioModel = await bridge.getLocalAudioModel()
+        if (!audioModel?.available || audioModel.modelId !== 'local-sapi-tts') {
+          throw new Error('Windows SAPI 本地语音模型在当前平台不可用。')
+        }
+      } else if (desktopOptions?.providerType !== 'cloud' || !desktopOptions.providerId || !desktopOptions.modelId) {
+        throw new Error('请选择已配置并启用的官方音频模型。')
       }
     }
     const rawPrompt = typeof modelParams.prompt === 'string' ? modelParams.prompt.trim() : ''

@@ -20,7 +20,7 @@ const MIME_EXTENSIONS = new Map([
   ['audio/x-m4a', { kind: 'audio', extensions: ['m4a'] }],
 ])
 const SINGLE_REFERENCE_FIELDS = [
-  'image', 'imageUrl', 'image_url', 'referenceUrl', 'sourceUrl', 'firstFrameUrl', 'lastFrameUrl',
+  'image', 'imageUrl', 'image_url', 'referenceUrl', 'sourceUrl', 'firstFrameUrl', 'lastFrameUrl', 'maskUrl',
 ]
 const LIST_REFERENCE_FIELDS = ['referenceImages', 'reference_images', 'referenceUrls']
 const LOCAL_REFERENCE_UPLOAD_MESSAGE = '该本地媒体的项目归属、素材索引类型和文件大小已核验，但火山方舟视频任务需要模型可访问的 HTTPS 媒体地址；当前桌面端没有供应商上传链，因此未发送本地路径或文件内容。'
@@ -138,9 +138,9 @@ async function assertManagedImagePath(projectDirectory, filePath, type, id, expe
   return assertManagedMediaPath(projectDirectory, filePath, type, id, 'image', expectedMimeType, expectedSizeBytes)
 }
 
-async function readBoundedImage(filePath, expectedMimeType, expectedSizeBytes) {
-  if (kindForMime(expectedMimeType) !== 'image') {
-    throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', 'Agnes 参考图仅支持 PNG、JPEG 或 WebP。')
+async function readBoundedReference(filePath, expectedMimeType, expectedSizeBytes, expectedKind = 'image') {
+  if (kindForMime(expectedMimeType) !== expectedKind) {
+    throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', '参考媒体格式不匹配。')
   }
 
   let handle
@@ -150,7 +150,7 @@ async function readBoundedImage(filePath, expectedMimeType, expectedSizeBytes) {
     if (!before.isFile() || !Number.isSafeInteger(before.size) || before.size <= 0
       || before.size > MAX_REFERENCE_IMAGE_BYTES
       || expectedSizeBytes !== undefined && expectedSizeBytes !== before.size) {
-      throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', 'Agnes 图片参考为空或超过 20 MiB 上限。')
+      throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', '参考媒体为空或超过 20 MiB 上限。')
     }
 
     const chunks = []
@@ -162,7 +162,7 @@ async function readBoundedImage(filePath, expectedMimeType, expectedSizeBytes) {
       if (bytesRead === 0) break
       totalBytes += bytesRead
       if (totalBytes > MAX_REFERENCE_IMAGE_BYTES) {
-        throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', 'Agnes 图片参考超过 20 MiB 上限。')
+        throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', '参考媒体超过 20 MiB 上限。')
       }
       chunks.push(Buffer.from(buffer.subarray(0, bytesRead)))
       position += bytesRead
@@ -170,23 +170,27 @@ async function readBoundedImage(filePath, expectedMimeType, expectedSizeBytes) {
     const after = await handle.stat()
     if (totalBytes !== before.size || after.size !== before.size
       || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
-      throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', '读取本地图片参考时文件发生变化。')
+      throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', '读取本地参考媒体时文件发生变化。')
     }
 
     const bytes = Buffer.concat(chunks, totalBytes)
-    if (imageMimeFromBytes(bytes) !== expectedMimeType) {
-      throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', '本地图片参考内容与素材格式不匹配。')
+    const audioMatches = expectedMimeType === 'audio/mpeg' && (bytes.subarray(0, 3).toString('ascii') === 'ID3' || bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)
+      || ['audio/wav', 'audio/x-wav'].includes(expectedMimeType) && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WAVE'
+      || expectedMimeType === 'audio/ogg' && bytes.subarray(0, 4).toString('ascii') === 'OggS'
+      || ['audio/mp4', 'audio/x-m4a'].includes(expectedMimeType) && bytes.subarray(4, 8).toString('ascii') === 'ftyp'
+    if (expectedKind === 'audio' ? !audioMatches : imageMimeFromBytes(bytes) !== expectedMimeType) {
+      throw new ReferenceMediaFailure('CLOUD_INPUT_INVALID', '本地参考媒体内容与素材格式不匹配。')
     }
     return `data:${expectedMimeType};base64,${bytes.toString('base64')}`
   } catch (error) {
     if (error instanceof ReferenceMediaFailure) throw error
-    throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '无法读取本地图片参考。')
+    throw new ReferenceMediaFailure('CLOUD_REFERENCE_UNAVAILABLE', '无法读取本地参考媒体。')
   } finally {
     await handle?.close().catch(() => undefined)
   }
 }
 
-async function resolveLocalReference(value, { localCore, projectId, projectDirectory }, expectedKind) {
+async function resolveLocalReference(value, { localCore, projectId, projectDirectory, allowInlineAudio = false }, expectedKind) {
   const local = parseLocalReference(value)
   if (!local) return value
   if (!localCore || typeof projectId !== 'string' || !projectId) {
@@ -210,9 +214,10 @@ async function resolveLocalReference(value, { localCore, projectId, projectDirec
     expectedKind ?? actualKind, resolved?.mimeType, resolved?.sizeBytes,
   )
   if (actualKind !== 'image') {
+    if (actualKind === 'audio' && allowInlineAudio) return readBoundedReference(filePath, resolved?.mimeType, resolved?.sizeBytes, 'audio')
     throw new ReferenceMediaFailure('CLOUD_REFERENCE_UPLOAD_UNAVAILABLE', LOCAL_REFERENCE_UPLOAD_MESSAGE)
   }
-  return readBoundedImage(filePath, resolved?.mimeType, resolved?.sizeBytes)
+  return readBoundedReference(filePath, resolved?.mimeType, resolved?.sizeBytes)
 }
 
 function expectedReferenceKind(field) {
@@ -237,7 +242,7 @@ async function resolveGenerationMediaReferences(parameters, options) {
       cache.set(key, dataUrl)
     }
     const dataUrl = cache.get(key)
-    if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
+    if (typeof dataUrl === 'string' && /^data:(?:image|audio)\//u.test(dataUrl)) {
       const encoded = dataUrl.slice(dataUrl.indexOf(',') + 1)
       expandedBytes += Buffer.from(encoded, 'base64').length
       if (expandedBytes > MAX_REFERENCE_PAYLOAD_BYTES) {

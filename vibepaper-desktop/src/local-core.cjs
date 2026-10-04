@@ -224,6 +224,8 @@ async function dispatch(method, payload) {
       return store.listTaskEvents(payload?.projectId, payload?.taskId, payload?.afterSeq)
     case 'task:claim-next':
       return store.claimNextTask(payload?.projectId)
+    case 'task:provider-checkpoint':
+      return store.recordProviderCheckpoint(payload?.projectId, payload?.taskId, payload?.checkpoint)
     case 'task:succeeded':
       return store.recordTaskSucceeded(payload?.projectId, payload?.taskId, payload?.outputPath, payload?.outputMeta, payload?.outputPaths)
     case 'task:failed':

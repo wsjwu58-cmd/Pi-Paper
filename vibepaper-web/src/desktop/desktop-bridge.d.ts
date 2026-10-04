@@ -11,6 +11,84 @@ export interface DesktopProject {
   thumbnailUrl?: string | null
 }
 
+export interface DesktopProviderCredentialField {
+  name: string
+  label: string
+  required: boolean
+  secret: boolean
+}
+
+export interface DesktopProvider {
+  id: string
+  name: string
+  providerType?: 'local' | 'cloud'
+  baseUrl: string
+  modalities?: string[]
+  configurable?: boolean
+  unavailableReason?: string | null
+  credentialFields: DesktopProviderCredentialField[]
+  configured: boolean
+  enabledModelIds: string[]
+  defaultModelIds: Record<string, string>
+  modelDefaults?: Record<string, Record<string, unknown>>
+  timeoutSeconds: number
+  /** Public probe capability; contains no credentials. */
+  connectionTest?: { kind: string }
+}
+
+/** Public model metadata only; credential values are never returned here. */
+export interface DesktopProviderModel {
+  /** Stable registry binding ID, independent of display name and API model ID. */
+  id: string
+  name: string
+  displayName: string
+  providerId: string
+  providerType?: 'local' | 'cloud'
+  modelType: 'text' | 'image' | 'video' | 'audio' | string
+  apiModelId: string
+  /** Brand identity is presentation metadata, separate from the routing provider ID. */
+  brandId?: string
+  brandName?: string
+  operation?: string
+  implemented: boolean
+  enabled: boolean
+  inputModes: string[]
+  toolCalling?: boolean
+  streaming?: boolean
+  cancellation?: boolean
+  constraints?: Record<string, unknown>
+  defaults?: Record<string, unknown>
+  unavailableReason?: string | null
+}
+
+export interface DesktopProviderConfiguration {
+  providers: DesktopProvider[]
+  models: DesktopProviderModel[]
+}
+
+export interface DesktopAgentModelCatalog {
+  /** Only configured, enabled, implemented text models with tool calling. */
+  models: DesktopProviderModel[]
+  providerNames: Record<string, string>
+  defaultModelId: string | null
+}
+
+export interface DesktopProviderConfigurationInput {
+  providerId: string
+  baseUrl: string
+  credentials?: Record<string, string>
+  enabledModelIds: string[]
+  defaultModelIds?: Record<string, string>
+  modelDefaults?: Record<string, Record<string, unknown>>
+  timeoutSeconds: number
+}
+
+export interface DesktopProviderTestResult {
+  status: string
+  success: boolean
+  message: string
+}
+
 export interface DesktopCanvas {
   projectId: string
   canvasId: string
@@ -326,6 +404,7 @@ export interface DesktopAgentSessionFragment {
   id: string
   title: string
   canvasId: string | null
+  agentModelId?: string
   createdAt: string
 }
 
@@ -587,6 +666,8 @@ export interface DesktopTaskInputSnapshot {
 
 export interface DesktopAgentSession {
   sessionId: string
+  /** Stable session model binding; never contains provider credentials. */
+  agentModelId?: string
   title: string
   createdAt: number
   modifiedAt: number
@@ -718,7 +799,7 @@ export interface DesktopCreateGenerationTaskInput {
   prompt: string
   idempotencyKey: string
   providerType: 'local' | 'cloud'
-  providerId?: 'agnes' | 'volcengine-ark'
+  providerId?: string
   modelId?: string
   modality: 'text' | 'image' | 'audio' | 'video'
   parameters?: Record<string, unknown>
@@ -785,6 +866,12 @@ export interface DesktopArkModelCatalog {
 }
 
 export interface DesktopBridge {
+  getAgentModelCatalog(): Promise<DesktopAgentModelCatalog>
+  setAgentSessionModel(projectId: string, sessionId: string, modelId: string): Promise<{ bindingId: string }>
+  getProviderConfiguration(): Promise<DesktopProviderConfiguration>
+  saveProviderConfiguration(input: DesktopProviderConfigurationInput): Promise<DesktopProviderConfiguration>
+  clearProviderConfiguration(providerId: string): Promise<DesktopProviderConfiguration>
+  testProviderConfiguration(input: DesktopProviderConfigurationInput): Promise<DesktopProviderTestResult>
   getActiveProject(): Promise<DesktopProject | null>
   listRecentProjects(): Promise<DesktopProject[]>
   openRecentProject(projectId: string): Promise<DesktopProject>
@@ -953,7 +1040,7 @@ export interface DesktopBridge {
   createAgentSession(projectId: string, title?: string): Promise<Pick<DesktopAgentSession, 'sessionId' | 'createdAt'>>
   getAgentMessages(projectId: string, sessionId: string): Promise<DesktopAgentMessage[]>
   getAgentUsage(projectId: string, sessionId: string): Promise<DesktopAgentUsage>
-  sendAgentMessage(projectId: string, sessionId: string, content: string, selectedSkillId?: string): Promise<{ assistantText: string }>
+  sendAgentMessage(projectId: string, sessionId: string, content: string, selectedSkillId?: string, modelId?: string): Promise<{ assistantText: string }>
   getAgentSessionSnapshot?(projectId: string, sessionId: string): Promise<DesktopAgentSessionSnapshot>
   startAgentRun?(input: DesktopStartAgentRunInput): Promise<{ runId: string }>
   subscribeAgentEvents?(

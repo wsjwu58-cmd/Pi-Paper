@@ -1,3 +1,5 @@
+const { initializeWorkerProxy } = require('./worker-network.cjs')
+initializeWorkerProxy()
 const { openDesktopAgentStores } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/agent-stores.ts')
 const { DesktopProjectMemory } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/project-memory.ts')
 const { DesktopSessionFragments } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-fragments.ts')
@@ -5,7 +7,10 @@ const { parseDesktopPlanCreateRequest, parseDesktopPlanExecuteRequest, parseDesk
 const { DesktopPlanExecutionService } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/plan-execution-service.ts')
 const { confirmDesktopDeleteAction } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/deletion-confirmation.ts')
 const { DesktopScopedMemoryStore, desktopCandidateScope } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/scoped-memory.ts')
-const { desktopCompactionSummary } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-store.ts')
+const {
+  desktopCompactionSummary,
+  LEGACY_AGENT_MODEL_BINDING_ID,
+} = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/session-store.ts')
 const {
   assembleDesktopMemoryContext,
   generateDesktopContextSummary,
@@ -20,6 +25,7 @@ const {
 } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/generation-confirmation.ts')
 const {
   reconcileDesktopAgentTasks,
+  requestDesktopTaskContinuations,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/task-status-sync.ts')
 const {
   createDesktopAgentSkillContext,
@@ -68,7 +74,8 @@ let planExecution = null
 let requestQueue = Promise.resolve()
 const activeRuns = new Map()
 const scheduledTaskContinuations = new Set()
-let continuationApiKey = null
+const continuationConnectionsBySession = new Map()
+let legacyContinuationApiKey = null
 const agentLocalCoreClient = createAgentLocalToolClient(parentPort)
 
 async function requireProject(projectId) {
@@ -107,6 +114,25 @@ async function manageSession(method, payload) {
   return method === 'agent:set-session-skills'
     ? setDesktopSessionSkills(current.sessions, sessionId, payload.input, skills)
     : attachDesktopSessionSkill(current.sessions, sessionId, payload.input, skills)
+}
+
+async function manageSessionModel(method, payload) {
+  const current = await requireProject(payload?.projectId)
+  const sessionId = payload?.sessionId
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) {
+    throw new Error('AGENT_SESSION_INPUT_INVALID')
+  }
+  await current.sessions.openSession(sessionId)
+  if (method === 'agent:get-session-model') {
+    return { bindingId: await current.sessions.getAgentModelBinding(sessionId) }
+  }
+  const bindingId = payload?.bindingId
+  if (typeof bindingId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(bindingId)) {
+    throw new Error('AGENT_MODEL_INVALID')
+  }
+  if ([...activeRuns.values()].some((run) => run.sessionId === sessionId)) throw new Error('SESSION_BUSY')
+  const updated = await current.sessions.setAgentModelBinding(sessionId, bindingId)
+  return { bindingId: updated.agentModelId }
 }
 
 async function managePlan(method, payload) {
@@ -265,50 +291,178 @@ async function listSessionEvents(projectId, sessionId, afterSeq) {
 async function reconcileSessionTasks(current, sessionId) {
   if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
   await current.sessions.openSession(sessionId)
+  const connection = continuationConnectionsBySession.get(sessionId)
   const reconciled = await reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
     'agent:core:get-task', { projectId: current.projectId, taskId },
-  ), { sessionId, ...(continuationApiKey ? { apiKey: continuationApiKey } : {}) })
+  ), { sessionId, ...(connection ? { apiKey: connection.apiKey } : {}) })
   await planExecution?.reconcileAll()
-  const continuations = continuationApiKey
-    ? await scheduleTaskContinuationClaims(current, reconciled.continuationClaims, continuationApiKey)
+  const continuations = connection
+    ? await scheduleTaskContinuationClaims(current, reconciled.continuationClaims, connection)
     : { scheduled: 0, failed: 0 }
   const { continuationClaims, ...counts } = reconciled
   return { ...counts, ...continuations }
+}
+
+async function listPendingContinuationModels(projectId) {
+  const current = await requireProject(projectId)
+  const sessionIds = new Set((current.control.listPendingTaskContinuations?.(projectId) ?? [])
+    .map((request) => request.sessionId))
+  for (const taskLink of current.control.listTaskLinks?.() ?? []) {
+    if (!['succeeded', 'failed', 'cancelled', 'interrupted'].includes(taskLink.status)) {
+      sessionIds.add(taskLink.sessionId)
+    }
+  }
+  for (const runControl of activeRuns.values()) {
+    if (runControl.taskContinuation && typeof runControl.sessionId === 'string') sessionIds.add(runControl.sessionId)
+  }
+  const sessions = []
+  for (const sessionId of sessionIds) {
+    try {
+      const bindingId = await current.sessions.getAgentModelBinding(sessionId)
+      sessions.push({ sessionId, bindingId })
+    } catch {
+      // A missing/unreadable session must never inherit Agnes. Older valid sessions
+      // already resolve to the explicit legacy binding inside the session store.
+      sessions.push({ sessionId, bindingId: null })
+    }
+  }
+  return sessions
 }
 
 async function reconcileProjectTasks(payload) {
   const current = await requireProject(payload?.projectId)
+  if (Object.hasOwn(payload ?? {}, 'connectionsBySession')) {
+    const connectionsBySession = parseContinuationConnections(payload.connectionsBySession)
+    const unavailableSessionIds = parseUnavailableContinuationSessions(payload.unavailableSessionIds)
+    replaceContinuationConnections(connectionsBySession)
+    legacyContinuationApiKey = null
+    const reconciled = await reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
+      'agent:core:get-task', { projectId: current.projectId, taskId },
+    ))
+    await planExecution?.reconcileAll()
+    let scheduled = 0
+    let failed = 0
+    for (const [sessionId, connection] of connectionsBySession) {
+      const claims = await requestDesktopTaskContinuations(current, {
+        projectId: current.projectId,
+        sessionId,
+        apiKey: connection.apiKey,
+      })
+      const result = await scheduleTaskContinuationClaims(current, claims, connection)
+      scheduled += result.scheduled
+      failed += result.failed
+    }
+    await reportUnavailableContinuationSessions(current, unavailableSessionIds)
+    const { continuationClaims, ...counts } = reconciled
+    return { ...counts, scheduled, failed }
+  }
+
+  // Compatibility for older desktop renderers that supplied the Agnes key directly.
+  // The current Controller always sends a binding-scoped connection map.
   const apiKey = payload?.apiKey
   if (typeof apiKey !== 'string' || apiKey.length > 4096) {
-    continuationApiKey = null
+    legacyContinuationApiKey = null
     stopTaskContinuationRuns()
     throw new Error('AGENT_RECONCILIATION_INPUT_INVALID')
   }
   const nextApiKey = apiKey || null
-  if (continuationApiKey && continuationApiKey !== nextApiKey) stopTaskContinuationRuns()
-  continuationApiKey = nextApiKey
+  if (legacyContinuationApiKey && legacyContinuationApiKey !== nextApiKey) stopTaskContinuationRuns()
+  legacyContinuationApiKey = nextApiKey
   const reconciled = await reconcileDesktopAgentTasks(current, (taskId) => agentLocalCoreClient.request(
     'agent:core:get-task', { projectId: current.projectId, taskId },
-  ), { ...(continuationApiKey ? { apiKey: continuationApiKey } : {}) })
+  ), { ...(legacyContinuationApiKey ? { apiKey: legacyContinuationApiKey } : {}) })
   await planExecution?.reconcileAll()
-  const continuations = continuationApiKey
-    ? await scheduleTaskContinuationClaims(current, reconciled.continuationClaims, continuationApiKey)
+  const claims = reconciled.continuationClaims ?? []
+  const legacyClaims = []
+  if (legacyContinuationApiKey) {
+    for (const claim of claims) {
+      const sessionId = claim?.request?.sessionId
+      if (typeof sessionId !== 'string') continue
+      let bindingId = LEGACY_AGENT_MODEL_BINDING_ID
+      if (typeof current.sessions.getAgentModelBinding === 'function') {
+        try { bindingId = await current.sessions.getAgentModelBinding(sessionId) } catch { continue }
+      }
+      if (bindingId !== LEGACY_AGENT_MODEL_BINDING_ID) continue
+      const connection = { bindingId: LEGACY_AGENT_MODEL_BINDING_ID, apiKey: legacyContinuationApiKey }
+      continuationConnectionsBySession.set(sessionId, connection)
+      legacyClaims.push(claim)
+    }
+  }
+  const continuations = legacyContinuationApiKey
+    ? await scheduleTaskContinuationClaims(current, legacyClaims, {
+      bindingId: LEGACY_AGENT_MODEL_BINDING_ID,
+      apiKey: legacyContinuationApiKey,
+    })
     : { scheduled: 0, failed: 0 }
   const { continuationClaims, ...counts } = reconciled
   return { ...counts, ...continuations }
 }
 
-function stopTaskContinuationRuns() {
+function parseContinuationConnections(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('AGENT_RECONCILIATION_INPUT_INVALID')
+  const connections = new Map()
+  for (const [sessionId, connection] of Object.entries(value)) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)
+      || !connection || typeof connection !== 'object' || Array.isArray(connection)
+      || typeof connection.bindingId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(connection.bindingId)
+      || typeof connection.apiKey !== 'string' || !connection.apiKey || connection.apiKey.length > 4096
+      || (connection.modelDefinition !== undefined && (!connection.modelDefinition
+        || typeof connection.modelDefinition !== 'object' || Array.isArray(connection.modelDefinition)))) {
+      throw new Error('AGENT_RECONCILIATION_INPUT_INVALID')
+    }
+    connections.set(sessionId, {
+      bindingId: connection.bindingId,
+      apiKey: connection.apiKey,
+      ...(connection.modelDefinition ? { modelDefinition: connection.modelDefinition } : {}),
+    })
+  }
+  return connections
+}
+
+function parseUnavailableContinuationSessions(value) {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 10_000
+    || value.some((sessionId) => typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId))) {
+    throw new Error('AGENT_RECONCILIATION_INPUT_INVALID')
+  }
+  return [...new Set(value)]
+}
+
+function sameContinuationConnection(left, right) {
+  if (!left || !right) return left === right
+  return left.bindingId === right.bindingId && left.apiKey === right.apiKey
+    && JSON.stringify(left.modelDefinition ?? null) === JSON.stringify(right.modelDefinition ?? null)
+}
+
+function isCurrentContinuationConnection(sessionId, bindingId, apiKey, modelDefinition) {
+  const connection = continuationConnectionsBySession.get(sessionId)
+  return Boolean(connection && connection.bindingId === bindingId && connection.apiKey === apiKey
+    && (modelDefinition === undefined
+      || JSON.stringify(connection.modelDefinition ?? null) === JSON.stringify(modelDefinition ?? null)))
+}
+
+function replaceContinuationConnections(nextConnections) {
+  const sessionIds = new Set([...continuationConnectionsBySession.keys(), ...nextConnections.keys()])
+  for (const sessionId of sessionIds) {
+    const previous = continuationConnectionsBySession.get(sessionId)
+    const next = nextConnections.get(sessionId)
+    if (!sameContinuationConnection(previous, next)) stopTaskContinuationRuns(sessionId)
+    if (next) continuationConnectionsBySession.set(sessionId, next)
+    else continuationConnectionsBySession.delete(sessionId)
+  }
+}
+
+function stopTaskContinuationRuns(sessionId) {
   for (const runControl of activeRuns.values()) {
-    if (!runControl.taskContinuation) continue
+    if (!runControl.taskContinuation || (sessionId !== undefined && runControl.sessionId !== sessionId)) continue
     runControl.cancelled = true
     runControl.controller.abort()
     runControl.agent?.abort()
   }
 }
 
-async function scheduleTaskContinuationClaims(current, claims, apiKey) {
-  if (!apiKey || continuationApiKey !== apiKey || !Array.isArray(claims)) return { scheduled: 0, failed: 0 }
+async function scheduleTaskContinuationClaims(current, claims, connection) {
+  if (!connection?.apiKey || !Array.isArray(claims)) return { scheduled: 0, failed: 0 }
   let scheduled = 0
   let failed = 0
   for (const claim of claims) {
@@ -317,8 +471,12 @@ async function scheduleTaskContinuationClaims(current, claims, apiKey) {
     if (typeof runId !== 'string' || scheduledTaskContinuations.has(runId)) continue
     scheduledTaskContinuations.add(runId)
     try {
-      const payload = await taskContinuationPayload(current, claim.request, apiKey)
-      if (continuationApiKey !== apiKey) {
+      if (!sameContinuationConnection(continuationConnectionsBySession.get(claim.request.sessionId), connection)) {
+        scheduledTaskContinuations.delete(runId)
+        continue
+      }
+      const payload = await taskContinuationPayload(current, claim.request, connection)
+      if (!sameContinuationConnection(continuationConnectionsBySession.get(claim.request.sessionId), connection)) {
         scheduledTaskContinuations.delete(runId)
         continue
       }
@@ -340,6 +498,27 @@ async function scheduleTaskContinuationClaims(current, claims, apiKey) {
     }
   }
   return { scheduled, failed }
+}
+
+async function reportUnavailableContinuationSessions(current, sessionIds) {
+  if (!sessionIds.length || typeof current.control.listPendingTaskContinuations !== 'function') return
+  const unavailable = new Set(sessionIds)
+  const requests = current.control.listPendingTaskContinuations(current.projectId)
+    .filter((request) => unavailable.has(request.sessionId))
+  const runService = new SessionRunService(current.control)
+  for (const request of requests) {
+    if (typeof current.sessions.hasSession === 'function'
+      && !(await current.sessions.hasSession(request.sessionId).catch(() => false))) continue
+    const events = await runService.listEvents(request.originRunId)
+    if (events.some((event) => event.type === 'assistant_delta'
+      && event.data?.errorCode === 'AGENT_CONTINUATION_PROVIDER_UNAVAILABLE')) continue
+    await runService.appendEvent(request.originRunId, 'assistant_delta', {
+      text: '所选模型凭据不可用，自动续接已暂停。恢复此会话的模型连接后，应用会继续检查任务结果。',
+      errorCode: 'AGENT_CONTINUATION_PROVIDER_UNAVAILABLE',
+      replace: false,
+    })
+    await current.sessions.flushOutbox(current.control, request.sessionId)
+  }
 }
 
 async function recordTaskContinuationScheduleFailure(current, claim) {
@@ -374,9 +553,11 @@ function markTaskContinuationCompleted(current, runId) {
   }
 }
 
-async function taskContinuationPayload(current, request, apiKey) {
+async function taskContinuationPayload(current, request, connection) {
   if (request.projectId !== current.projectId || typeof request.sessionId !== 'string'
-    || typeof request.idempotencyKey !== 'string' || typeof request.prompt !== 'string') {
+    || typeof request.idempotencyKey !== 'string' || typeof request.prompt !== 'string'
+    || !connection || typeof connection.apiKey !== 'string' || !connection.apiKey
+    || typeof connection.bindingId !== 'string') {
     throw new Error('AGENT_CONTINUATION_INVALID')
   }
   const canvas = await agentLocalCoreClient.request('agent:core:load-canvas', { projectId: current.projectId })
@@ -390,7 +571,9 @@ async function taskContinuationPayload(current, request, apiKey) {
     projectId: current.projectId,
     sessionId: request.sessionId,
     content: request.prompt,
-    apiKey,
+    modelId: connection.bindingId,
+    apiKey: connection.apiKey,
+    ...(connection.modelDefinition ? { modelDefinition: connection.modelDefinition } : {}),
     idempotencyKey: request.idempotencyKey,
     canvasContext: buildAgentCanvasContext(canvas),
     canvasId: canvas.canvasId,
@@ -409,6 +592,7 @@ async function recoverInterruptedRun(current, runService, sessionId) {
 }
 
 async function prepareBudgetedDesktopHistory(input) {
+  const budgetModel = input.modelDefinition || agnesModel({ llmModel: AGNES_MODELS.text, llmBaseUrl: 'https://apihub.agnes-ai.com/v1' })
   let context = await input.current.sessions.buildContext(input.sessionId)
   let history = context.messages.map(storedHistoryMessage).filter(Boolean)
   if (history.some((message) => Array.isArray(message.piMessage?.content)
@@ -417,7 +601,11 @@ async function prepareBudgetedDesktopHistory(input) {
   }
   let summary = desktopCompactionSummary(context)
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    if (input.taskContinuation && continuationApiKey !== input.apiKey) throw new Error('CLOUD_CREDENTIAL_MISSING')
+    if (input.taskContinuation && !isCurrentContinuationConnection(
+      input.sessionId, input.modelId, input.apiKey, input.modelDefinition,
+    )) {
+      throw new Error('CLOUD_CREDENTIAL_MISSING')
+    }
     const hooks = {
       profile: input.profile,
       desktopMode: true,
@@ -440,27 +628,22 @@ async function prepareBudgetedDesktopHistory(input) {
       currentUserInput: turnContext.currentUserInput,
       systemPrompt: turnContext.systemPrompt,
       toolSchemas: turnContext.toolSchemas,
-      contextWindowTokens: agnesModel({
-        llmModel: AGNES_MODELS.text,
-        llmBaseUrl: 'https://apihub.agnes-ai.com/v1',
-      }).contextWindow,
-      outputReserveTokens: agnesModel({
-        llmModel: AGNES_MODELS.text,
-        llmBaseUrl: 'https://apihub.agnes-ai.com/v1',
-      }).maxTokens,
+      contextWindowTokens: budgetModel.contextWindow,
+      outputReserveTokens: budgetModel.maxTokens,
     })
     if (!plan.requestFitsWithoutHistory) throw new Error('AGENT_CONTEXT_WINDOW_EXCEEDED')
     if (!plan.compactionRequired) return { context, history, summary, turnContext, plan }
 
-    if (input.taskContinuation && continuationApiKey !== input.apiKey) throw new Error('CLOUD_CREDENTIAL_MISSING')
+    if (input.taskContinuation && !isCurrentContinuationConnection(
+      input.sessionId, input.modelId, input.apiKey, input.modelDefinition,
+    )) {
+      throw new Error('CLOUD_CREDENTIAL_MISSING')
+    }
     const nextSummary = await generateDesktopContextSummary({
       messages: plan.summarizedHistory,
       previousSummary: summary,
       authoritativeState: input.sessionContext,
-      model: agnesModel({
-        llmModel: AGNES_MODELS.text,
-        llmBaseUrl: 'https://apihub.agnes-ai.com/v1',
-      }),
+      model: budgetModel,
       apiKey: input.apiKey,
       sessionId: input.sessionId,
       signal: input.signal,
@@ -592,6 +775,7 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
   const current = await requireProject(payload?.projectId)
   const {
     sessionId,
+    modelId: requestedModelId,
     content,
     apiKey,
     idempotencyKey,
@@ -602,6 +786,7 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
     selectedNodeIds,
     selectedSkillId,
     canvasDomain,
+    modelDefinition,
   } = payload ?? {}
   if (typeof sessionId !== 'string' || sessionId.length > 128) throw new Error('SESSION_ID_INVALID')
   if (typeof content !== 'string' || !content.trim() || content.length > 20_000) throw new Error('AGENT_MESSAGE_INVALID')
@@ -630,13 +815,27 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
 
   await current.sessions.openSession(sessionId)
   if (!(await current.sessions.isSessionActive(sessionId))) throw new Error('SESSION_ARCHIVED')
+  const persistedModelId = typeof current.sessions.getAgentModelBinding === 'function'
+    ? await current.sessions.getAgentModelBinding(sessionId)
+    : LEGACY_AGENT_MODEL_BINDING_ID
+  const modelId = requestedModelId ?? persistedModelId
+  if (typeof modelId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(modelId)) {
+    throw new Error('AGENT_MODEL_INVALID')
+  }
+  if (modelId !== persistedModelId) throw new Error('AGENT_SESSION_MODEL_MISMATCH')
+  if (modelId !== LEGACY_AGENT_MODEL_BINDING_ID && !modelDefinition) throw new Error('MODEL_UNAVAILABLE')
+  if (modelDefinition && (typeof modelDefinition !== 'object' || Array.isArray(modelDefinition))) {
+    throw new Error('AGENT_MODEL_INVALID')
+  }
   const runService = new SessionRunService(current.control)
   const existing = current.control.findByIdempotency(sessionId, idempotencyKey)
   if (continuationMode) {
-    if (continuationMode.kind !== 'task-continuation' || continuationApiKey !== apiKey
+    if (continuationMode.kind !== 'task-continuation'
+      || !isCurrentContinuationConnection(sessionId, modelId, apiKey, modelDefinition)
       || !existing || existing.runId !== continuationMode.run?.runId || existing.status !== 'queued'
       || continuationMode.run.sessionId !== sessionId || continuationMode.run.idempotencyKey !== idempotencyKey) {
-      throw new Error(continuationApiKey === apiKey ? 'AGENT_CONTINUATION_RUN_INVALID' : 'CLOUD_CREDENTIAL_MISSING')
+      throw new Error(isCurrentContinuationConnection(sessionId, modelId, apiKey, modelDefinition)
+        ? 'AGENT_CONTINUATION_RUN_INVALID' : 'CLOUD_CREDENTIAL_MISSING')
     }
   } else if (existing) {
     onRunCreated?.({ runId: existing.runId })
@@ -651,6 +850,13 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
       return { runId: existing.runId, waitingConfirmation: existing.status === 'waiting_confirmation' }
     }
     throw new Error('AGENT_RUN_ALREADY_PROCESSED')
+  }
+
+  if (!continuationMode) {
+    const nextConnection = { bindingId: modelId, apiKey, ...(modelDefinition ? { modelDefinition } : {}) }
+    const previousConnection = continuationConnectionsBySession.get(sessionId)
+    if (!sameContinuationConnection(previousConnection, nextConnection)) stopTaskContinuationRuns(sessionId)
+    continuationConnectionsBySession.set(sessionId, nextConnection)
   }
 
   if (!continuationMode) await recoverInterruptedRun(current, runService, sessionId)
@@ -668,6 +874,7 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
   const completion = new Promise((resolve) => { resolveCompletion = resolve })
   const runControl = {
     sessionId,
+    agentModelId: modelId,
     controller: new AbortController(), agent: null, cancelled: false, completion, resolveCompletion,
     taskContinuation: Boolean(continuationMode),
   }
@@ -747,6 +954,8 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
     const runtimeToolsForTurn = createRuntimeTools(toolContext)
     const desktopMemoryTools = projectMemory.createTools(content.trim())
     const prepared = await prepareBudgetedDesktopHistory({
+      modelDefinition,
+      modelId,
       current,
       sessionId,
       content: content.trim(),
@@ -800,12 +1009,14 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
       }
     }
 
-    if (continuationMode && continuationApiKey !== apiKey) throw new Error('CLOUD_CREDENTIAL_MISSING')
+    if (continuationMode && !isCurrentContinuationConnection(sessionId, modelId, apiKey, modelDefinition)) {
+      throw new Error('CLOUD_CREDENTIAL_MISSING')
+    }
     turn = await runDramaTurn(
       {
         llmApiKey: apiKey,
         llmBaseUrl: 'https://apihub.agnes-ai.com/v1',
-        llmModel: AGNES_MODELS.text,
+        llmModel: modelId,
       },
       undefined,
       sessionId,
@@ -816,6 +1027,7 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
       {
         profile,
         desktopMode: true,
+        modelDefinition,
         runtimeTools: runtimeToolsForTurn,
         desktopMemoryTools,
         desktopCompactionSummary: prepared.summary,
@@ -1030,7 +1242,8 @@ async function dispatch(method, payload) {
   switch (method) {
     case 'agent:open': {
       if (!payload || typeof payload.projectDirectory !== 'string') throw new Error('AGENT_PROJECT_PATH_INVALID')
-      continuationApiKey = null
+      continuationConnectionsBySession.clear()
+      legacyContinuationApiKey = null
       scheduledTaskContinuations.clear()
       await abortAndWaitForRuns()
       if (stores) await stores.close()
@@ -1097,6 +1310,9 @@ async function dispatch(method, payload) {
     case 'agent:set-session-skills':
     case 'agent:attach-session-skill':
       return manageSession(method, payload)
+    case 'agent:get-session-model':
+    case 'agent:set-session-model':
+      return manageSessionModel(method, payload)
     case 'agent:plan:create':
     case 'agent:plan:get':
     case 'agent:plan:ready-set':
@@ -1164,6 +1380,8 @@ async function dispatch(method, payload) {
       return startMessage(payload)
     case 'agent:reconcile-tasks':
       return reconcileProjectTasks(payload)
+    case 'agent:list-continuation-models':
+      return listPendingContinuationModels(payload?.projectId)
     case 'agent:confirm-action':
       return confirmAgentAction(payload)
     case 'agent:cancel-run':
@@ -1178,7 +1396,8 @@ async function dispatch(method, payload) {
     case 'agent:memory-candidates:reject':
       return agentMemoryDispatch(method, payload)
     case 'agent:close':
-      continuationApiKey = null
+      continuationConnectionsBySession.clear()
+      legacyContinuationApiKey = null
       scheduledTaskContinuations.clear()
       await abortAndWaitForRuns()
       agentLocalCoreClient.close()

@@ -6,11 +6,20 @@
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"sideEffects": [
+		"./src/compat.ts",
+		"./src/images.ts",
+		"./src/providers/images/register-builtins.ts",
+		"./src/media/official-images.ts",
+		"./dist/media/official-images.js",
 		"./dist/compat.js",
 		"./dist/images.js",
 		"./dist/providers/images/register-builtins.js"
 	],
 	"exports": {
+		"./media": {
+			"types": "./dist/media/index.d.ts",
+			"import": "./dist/media/index.js"
+		},
 		".": {
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"

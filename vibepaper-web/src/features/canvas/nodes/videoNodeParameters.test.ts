@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { ModelInfo } from '@/lib/types'
-import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
+import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoDurationOptions, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
 
 const agnesVideo = { name: 'agnes-video-v2.0', provider: 'agnes', modelType: 'video' } as ModelInfo
 
 describe('video node request parameters', () => {
+  it('limits discrete video duration choices by the selected official resolution', () => {
+    const constraints = { acceptedDurations: [4, 6, 8], durationByResolution: { '1080p': [8], '4k': [8] } }
+    expect(getVideoDurationOptions(constraints, '720P')).toEqual([4, 6, 8])
+    expect(getVideoDurationOptions(constraints, '1080P')).toEqual([8])
+    expect(getVideoDurationOptions(constraints, '4K')).toEqual([8])
+    expect(getVideoDurationOptions(undefined, '720p')).toEqual([])
+  })
   it('preserves Web keyframe behavior for the first two image or video references', () => {
     const refs = [
       { id: 'text', kind: 'text' as const, sourceNodeId: 'text-node', text: '夜晚下雨' },
@@ -71,11 +78,20 @@ describe('video node request parameters', () => {
       resolution: '1280x720',
       size: '720P',
     })
-    expect(resolveNodeResolution('video', undefined, '2K', true)).toEqual({
+    expect(resolveNodeResolution('video', { provider: 'volcengine-ark' } as ModelInfo, '2K', true)).toEqual({
       resKey: '720P',
       resolution: '1280x720',
-      size: '720P',
+      size: '1280x720',
     })
+  })
+
+  it('uses desktop model constraints instead of fixing all video providers to 720P', () => {
+    const seedance = { ...agnesVideo, provider: 'volcengine-ark', constraints: { acceptedResolutions: ['480p', '720p', '1080p'] } } as ModelInfo
+    expect(resolveNodeResolution('video', seedance, '480P', true)).toEqual({ resKey: '480P', resolution: '480p', size: '480p' })
+    const minimax = { ...agnesVideo, provider: 'minimax', constraints: { acceptedResolutions: ['768P', '2K'] } } as ModelInfo
+    expect(Object.keys(getNodeResolutionMap('video', minimax, true))).toEqual(['768P', '2K'])
+    const image = { ...agnesVideo, provider: 'openai', constraints: { acceptedSizes: ['1K'] } } as ModelInfo
+    expect(resolveNodeResolution('image', image, '2K', true)).toEqual({ resKey: '1K', resolution: '1K', size: '1K' })
   })
 
   it('keeps image resolution choices independent from Agnes video capabilities', () => {

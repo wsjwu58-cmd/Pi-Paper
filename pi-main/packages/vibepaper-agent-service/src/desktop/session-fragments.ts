@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, realpath, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { sanitizeAgentReply } from "../application/agent-runtime.ts";
@@ -29,6 +29,7 @@ export type DesktopAgentSessionFragment = {
 	id: string;
 	title: string;
 	canvasId: string | null;
+	agentModelId?: string;
 	createdAt: string;
 };
 
@@ -69,7 +70,15 @@ export class DesktopSessionFragments {
 			items.push(await this.readFragment(fragmentsDirectory, id));
 		}
 		items.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
-		return { items: items.map(({ id, title, canvasId, createdAt }) => ({ id, title, canvasId, createdAt })) };
+		return {
+			items: items.map(({ id, title, canvasId, agentModelId, createdAt }) => ({
+				id,
+				title,
+				canvasId,
+				...(agentModelId ? { agentModelId } : {}),
+				createdAt,
+			})),
+		};
 	}
 
 	async save(sessionId: string, title?: string): Promise<{ fragmentId: string }> {
@@ -79,6 +88,7 @@ export class DesktopSessionFragments {
 		const sessionName = await session.getName();
 		const safeTitle = normalizeTitle(title, sessionName || "新对话");
 		const transcript = await this.sessions.listTranscriptMessages(sessionId);
+		const agentModelId = await this.sessions.getAgentModelBinding(sessionId);
 		if (transcript.length > MAX_FRAGMENT_MESSAGES) throw new Error("AGENT_SESSION_FRAGMENT_TOO_LARGE");
 		const messages: DesktopAgentSessionFragmentMessage[] = [];
 		for (const { message } of transcript) {
@@ -101,6 +111,7 @@ export class DesktopSessionFragments {
 			id: fragmentId,
 			title: safeTitle,
 			canvasId: paths.metadata.canvasId,
+			agentModelId,
 			createdAt,
 			messages,
 		};
@@ -115,12 +126,15 @@ export class DesktopSessionFragments {
 	async import(fragmentId: string, canvasId?: string): Promise<{ sessionId: string }> {
 		if (!isFragmentId(fragmentId)) throw new Error("AGENT_SESSION_FRAGMENT_INPUT_INVALID");
 		const paths = await this.requirePaths();
-		if (canvasId !== undefined && (!isBoundedText(canvasId, 1, MAX_CANVAS_ID_LENGTH)
-			|| canvasId !== paths.metadata.canvasId)) {
+		if (
+			canvasId !== undefined &&
+			(!isBoundedText(canvasId, 1, MAX_CANVAS_ID_LENGTH) || canvasId !== paths.metadata.canvasId)
+		) {
 			throw new Error("AGENT_PROJECT_CHANGED");
 		}
 		const fragment = await this.readFragment(paths.fragmentsDirectory, fragmentId);
 		const session = await this.sessions.createSession(fragment.title || "新对话");
+		if (fragment.agentModelId) await this.sessions.setAgentModelBinding(session.id, fragment.agentModelId);
 		for (const entry of fragment.messages) {
 			const timestamp = Date.now();
 			if (entry.role === "user") {
@@ -236,11 +250,20 @@ function normalizeTitle(value: string | undefined, fallback: string): string {
 
 function decodeStoredFragment(value: unknown, expectedId: string): StoredDesktopAgentSessionFragment {
 	const fragment = objectValue(value);
-	if (fragment.schemaVersion !== FRAGMENT_SCHEMA_VERSION || fragment.id !== expectedId
-		|| !isFragmentId(fragment.id) || !isBoundedText(fragment.title, 1, MAX_FRAGMENT_TITLE_CHARACTERS)
-		|| !(fragment.canvasId === null || isBoundedText(fragment.canvasId, 1, MAX_CANVAS_ID_LENGTH))
-		|| typeof fragment.createdAt !== "string" || !Number.isFinite(Date.parse(fragment.createdAt))
-		|| !Array.isArray(fragment.messages) || fragment.messages.length > MAX_FRAGMENT_MESSAGES) {
+	if (
+		fragment.schemaVersion !== FRAGMENT_SCHEMA_VERSION ||
+		fragment.id !== expectedId ||
+		!isFragmentId(fragment.id) ||
+		!isBoundedText(fragment.title, 1, MAX_FRAGMENT_TITLE_CHARACTERS) ||
+		!(fragment.canvasId === null || isBoundedText(fragment.canvasId, 1, MAX_CANVAS_ID_LENGTH)) ||
+		(fragment.agentModelId !== undefined &&
+			(typeof fragment.agentModelId !== "string" ||
+				!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(fragment.agentModelId))) ||
+		typeof fragment.createdAt !== "string" ||
+		!Number.isFinite(Date.parse(fragment.createdAt)) ||
+		!Array.isArray(fragment.messages) ||
+		fragment.messages.length > MAX_FRAGMENT_MESSAGES
+	) {
 		throw new Error("AGENT_SESSION_FRAGMENT_FILE_INVALID");
 	}
 	const messages: DesktopAgentSessionFragmentMessage[] = [];
@@ -264,6 +287,7 @@ function decodeStoredFragment(value: unknown, expectedId: string): StoredDesktop
 		id: fragment.id,
 		title: fragment.title,
 		canvasId: fragment.canvasId,
+		...(typeof fragment.agentModelId === "string" ? { agentModelId: fragment.agentModelId } : {}),
 		createdAt: fragment.createdAt,
 		messages,
 	};
@@ -271,8 +295,11 @@ function decodeStoredFragment(value: unknown, expectedId: string): StoredDesktop
 
 function decodeProjectMetadata(value: unknown, expectedProjectId: string): DesktopProjectMetadata {
 	const metadata = objectValue(value);
-	if (!isBoundedText(metadata.projectId, 1, MAX_PROJECT_ID_LENGTH) || metadata.projectId !== expectedProjectId
-		|| !isBoundedText(metadata.canvasId, 1, MAX_CANVAS_ID_LENGTH)) {
+	if (
+		!isBoundedText(metadata.projectId, 1, MAX_PROJECT_ID_LENGTH) ||
+		metadata.projectId !== expectedProjectId ||
+		!isBoundedText(metadata.canvasId, 1, MAX_CANVAS_ID_LENGTH)
+	) {
 		throw new Error("AGENT_PROJECT_CHANGED");
 	}
 	return { projectId: metadata.projectId, canvasId: metadata.canvasId };
@@ -294,7 +321,12 @@ async function requireSafeFile(filePath: string, projectDirectory: string): Prom
 
 function isWithin(parent: string, candidate: string): boolean {
 	const relativePath = relative(parent, candidate);
-	return relativePath === "" || (!isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`));
+	return (
+		relativePath === "" ||
+		(!isAbsolute(relativePath) &&
+			relativePath !== ".." &&
+			!relativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`))
+	);
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

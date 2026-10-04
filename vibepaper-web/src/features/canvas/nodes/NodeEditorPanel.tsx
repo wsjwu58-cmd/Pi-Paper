@@ -18,16 +18,18 @@ import {
   X,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { uploadAsset } from '@/lib/api'
 import { resolveMediaUrl, useAuthedMediaUrl } from '@/lib/media'
 import { sid } from '@/lib/ids'
 import type { GenerationTask, Id, ModelInfo, NodePayload } from '@/lib/types'
-import type { DesktopLocalAudioModel } from '@/desktop/desktop-bridge'
+import type { DesktopLocalAudioModel, DesktopProviderConfiguration } from '@/desktop/desktop-bridge'
+import { defaultDesktopModelId, desktopProviderNameMap, toAvailableDesktopModels, type DesktopModelInfo } from '@/desktop/providerModels'
 import { ModelPicker } from '@/components/ui/ModelPicker'
 import { useCanvasStore, type FlowNode } from '../canvasStore'
 import { isDesktopRuntime } from '../canvasPort'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
-import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
+import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoDurationOptions, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
 import { downloadNodeOutput } from './nodeDownloads'
 
 const STYLE_PRESETS = ['赛博朋克', '水彩', '写实', '动漫', '电影感', '产品渲染', '三视图']
@@ -217,11 +219,21 @@ export function NodeFloatingToolbar({
   const [busy, setBusy] = useState(false)
   const [downloadBusy, setDownloadBusy] = useState(false)
   const [menu, setMenu] = useState<'crop' | 'upscale' | 'three' | null>(null)
-  const imageModel =
+  const { data: desktopProviderConfiguration } = useQuery({
+    queryKey: ['desktop-provider-configuration'],
+    enabled: desktopMode,
+    staleTime: 5_000,
+    queryFn: async () => {
+      const bridge = window.vibepaperDesktop
+      if (!bridge) throw new Error('桌面模型配置接口尚未接入。')
+      return bridge.getProviderConfiguration()
+    },
+  })
+  const imageModel = desktopMode ? undefined :
     models.find((m) => m.modelType === 'image' && /agnes-image/i.test(m.name))?.name ??
     models.find((m) => m.modelType === 'image' && /agnes|seedream/i.test(m.name))?.name ??
     models.find((m) => m.modelType === 'image')?.name
-  const videoModel =
+  const videoModel = desktopMode ? undefined :
     models.find((m) => m.modelType === 'video' && /agnes-video/i.test(m.name))?.name ??
     models.find((m) => m.modelType === 'video' && /agnes|seedance/i.test(m.name))?.name ??
     models.find((m) => m.modelType === 'video')?.name
@@ -240,6 +252,7 @@ export function NodeFloatingToolbar({
     try {
       const { submitNodeTask } = await import('./taskActions')
       let model = node.type === 'video' ? videoModel : imageModel
+      let desktopOptions: { providerType: 'local' | 'cloud'; providerId?: string; modelId?: string } | undefined
       if (localPostprocess) {
         if (!mediaUrl?.startsWith('vibe://')) {
           throw new Error('本地后处理需要当前项目中的素材或已完成任务结果。')
@@ -248,17 +261,31 @@ export function NodeFloatingToolbar({
       } else if (desktopMode) {
         const bridge = window.vibepaperDesktop
         if (!bridge) throw new Error('桌面本地模型接口不可用。')
-        const catalog = await bridge.getAgnesModels()
-        if (!catalog.apiKeyConfigured) throw new Error('请先配置 Agnes API Key。')
-        model = catalog.models.image
+        const modality = node.type === 'video' ? 'video' : 'image'
+        const configuration = desktopProviderConfiguration ?? await bridge.getProviderConfiguration()
+        const available = toAvailableDesktopModels(configuration, modality)
+        const preferredId = typeof node.params.model === 'string'
+          ? node.params.model
+          : defaultDesktopModelId(configuration, modality)
+        const selected = available.find((candidate) => candidate.id === preferredId)
+        if (!selected) throw new Error(`请先在模型配置中启用已适配的${modality === 'video' ? '视频' : '图片'}模型。`)
+        model = selected.id
+        desktopOptions = {
+          providerType: 'cloud',
+          providerId: selected.providerId,
+          modelId: selected.id,
+        }
+      } else {
+        desktopOptions = undefined
       }
       if (!model) throw new Error('无可用模型')
+      if (localPostprocess) desktopOptions = { providerType: 'local' }
       await submitNodeTask(
         node.id,
         model,
         { operation: op, count: 1, sourceUrl: mediaUrl, ...extra },
         desktopMode ? 0 : 8,
-        desktopMode ? { providerType: localPostprocess ? 'local' : 'cloud' } : undefined,
+        desktopOptions,
       )
       toastSuccess(`${op}已提交`)
       setMenu(null)
@@ -601,52 +628,35 @@ export function NodeEditorDialog({
   /** default：参考/提示词分框；split：合并在同一底栏卡片（双框节点布局） */
   layout?: 'default' | 'text' | 'split'
 }) {
+  const navigate = useNavigate()
   const nodeId = sid(node.id)
   const desktopMode = Boolean(window.vibepaperDesktop)
-  const { data: desktopCatalog = { models: [] as ModelInfo[], localAudio: null as DesktopLocalAudioModel | null }, refetch: refetchDesktopCatalog } = useQuery({
+  const { data: desktopCatalog = {
+    models: [] as DesktopModelInfo[],
+    localAudio: null as DesktopLocalAudioModel | null,
+    configuration: null as DesktopProviderConfiguration | null,
+    providerNames: {} as Record<string, string>,
+  }, refetch: refetchDesktopCatalog, error: desktopCatalogError } = useQuery({
     queryKey: ['desktop-node-models'],
     enabled: desktopMode,
     staleTime: 5_000,
-    queryFn: async (): Promise<{ models: ModelInfo[]; localAudio: DesktopLocalAudioModel | null }> => {
-      const bridge = window.vibepaperDesktop
-      if (!bridge) return { models: [], localAudio: null }
-      const [agnesResult, arkResult, localResult, localAudioResult] = await Promise.allSettled([
-        bridge.getAgnesModels(),
-        bridge.getArkModels(),
-        bridge.getLocalTextModel(),
-        typeof bridge.getLocalAudioModel === 'function' ? bridge.getLocalAudioModel() : Promise.resolve(null),
+    queryFn: async (): Promise<{
+      models: DesktopModelInfo[]
+      localAudio: DesktopLocalAudioModel | null
+      configuration: DesktopProviderConfiguration | null
+      providerNames: Record<string, string>
+    }> => {
+      const providerBridge = window.vibepaperDesktop
+      if (!providerBridge) return { models: [], localAudio: null, configuration: null, providerNames: {} }
+      const [configurationResult, localResult, localAudioResult] = await Promise.allSettled([
+        providerBridge.getProviderConfiguration(),
+        providerBridge.getLocalTextModel(),
+        typeof providerBridge.getLocalAudioModel === 'function' ? providerBridge.getLocalAudioModel() : Promise.resolve(null),
       ])
-      const available: ModelInfo[] = []
-      if (agnesResult.status === 'fulfilled') {
-        const catalog = agnesResult.value
-        if (catalog.apiKeyConfigured) {
-          for (const modality of ['text', 'image', 'video'] as const) {
-            const name = catalog.models[modality]
-            available.push({
-              id: name,
-              name,
-              modelType: modality,
-              displayName: name,
-              provider: 'agnes',
-              enabled: true,
-              basePrice: null as unknown as number,
-            })
-          }
-        }
-      }
-      if (arkResult.status === 'fulfilled' && arkResult.value.apiKeyConfigured) {
-        const name = arkResult.value.models.video
-        available.push({
-          id: name,
-          name,
-          modelType: 'video',
-          displayName: 'Seedance 2.5 · 火山方舟',
-          provider: 'volcengine-ark',
-          enabled: true,
-          basePrice: null as unknown as number,
-          description: '视频参考支持 HTTPS 图片、视频和音频地址；本地视频/音频暂不能上传到供应商。',
-        })
-      }
+      if (configurationResult.status === 'rejected') throw configurationResult.reason
+      const configuration = configurationResult.status === 'fulfilled' ? configurationResult.value : null
+      const available: DesktopModelInfo[] = configuration ? toAvailableDesktopModels(configuration) : []
+      const providerNames = configuration ? desktopProviderNameMap(configuration) : {}
       if (localResult.status === 'fulfilled' && localResult.value) {
         const local = localResult.value
         available.push({
@@ -655,6 +665,11 @@ export function NodeEditorDialog({
           modelType: 'text',
           displayName: local.modelId,
           provider: 'local',
+          providerId: 'local-openai-compatible',
+          providerType: 'local',
+          brandId: 'local',
+          apiModelId: local.modelId,
+          inputModes: ['text'],
           enabled: true,
           basePrice: null as unknown as number,
         })
@@ -667,11 +682,17 @@ export function NodeEditorDialog({
           modelType: 'audio',
           displayName: localAudio.modelId,
           provider: 'local',
+          providerId: 'local-sapi-tts',
+          providerType: 'local',
+          brandId: 'local',
+          apiModelId: localAudio.modelId,
+          inputModes: ['text'],
           enabled: true,
           basePrice: null as unknown as number,
         })
       }
-      return { models: available, localAudio }
+      providerNames.local = '本地模型'
+      return { models: available, localAudio, configuration, providerNames }
     },
   })
   useEffect(() => {
@@ -694,6 +715,9 @@ export function NodeEditorDialog({
   const [resKey, setResKey] = useState((node.params.resKey as string) || (node.type === 'video' && desktopMode ? '720P' : '2K'))
   const [style, setStyle] = useState((node.params.style as string) ?? '')
   const [camera, setCamera] = useState((node.params.camera as string) ?? '')
+  const [duration, setDuration] = useState(Number(node.params.duration) || 4)
+  const [generateAudio, setGenerateAudio] = useState(node.params.generate_audio !== false)
+  const [instrumental, setInstrumental] = useState(node.params.is_instrumental === true)
   const storedCount = Number(node.params.count)
   const initialCount = Number.isSafeInteger(storedCount) && storedCount > 0 ? storedCount : 1
   const [count, setCount] = useState(desktopMode && node.type === 'image' ? Math.min(initialCount, 4) : initialCount)
@@ -709,16 +733,46 @@ export function NodeEditorDialog({
       ),
     [editorModels, node.type],
   )
+  const configuredDefault = desktopMode
+    ? desktopCatalog.configuration?.providers
+      .map((provider) => provider.defaultModelIds?.[node.type])
+      .find((id): id is string => Boolean(id && typeModels.some((candidate) => candidate.name === id)))
+    : undefined
   const preferred =
-    (desktopMode && node.type === 'text' ? typeModels.find((m) => m.provider === 'local')?.name : undefined) ??
-    (desktopMode && node.type === 'audio' ? typeModels.find((m) => m.name === 'local-sapi-tts')?.name : undefined) ??
-    typeModels.find((m) => /agnes-image|agnes-video/i.test(m.name))?.name ??
-    typeModels.find((m) => /agnes|seedream|seedance/i.test(m.name))?.name ??
+    configuredDefault ??
+    (desktopMode && node.type === 'text' ? typeModels.find((m) => (m as DesktopModelInfo).providerType === 'local')?.name : undefined) ??
+    (desktopMode && node.type === 'audio' ? typeModels.find((m) => (m as DesktopModelInfo).providerId === 'local-sapi-tts')?.name : undefined) ??
+    (desktopMode ? typeModels.find((m) => m.displayName === ({ text: 'Claude Fable 5.1', image: 'Seedream 5.0 Pro', video: 'Seedance 2.5' } as Record<string, string>)[node.type])?.name : undefined) ??
     typeModels[0]?.name
   const selectedModel = typeModels.find((item) => item.name === (model || preferred))
+  const selectedDesktopModel = desktopMode && selectedModel ? selectedModel as DesktopModelInfo : undefined
   const resolutionMap = getNodeResolutionMap(node.type, selectedModel, desktopMode)
   const selectedResKey = resolutionMap[resKey] ? resKey : Object.keys(resolutionMap)[0] ?? resKey
   const resolutionKeys = Object.keys(resolutionMap)
+  const durationOptions = desktopMode ? getVideoDurationOptions(selectedDesktopModel?.constraints, selectedResKey) : []
+  const durationOptionsKey = durationOptions.join(',')
+  useEffect(() => {
+    if (durationOptions.length && !durationOptions.includes(duration)) setDuration(durationOptions[0])
+  }, [durationOptionsKey, duration])
+  const constrainedAspects = selectedDesktopModel?.constraints?.acceptedAspectRatios
+  const aspectOptions = desktopMode && Array.isArray(constrainedAspects)
+    ? constrainedAspects.filter((value): value is string => typeof value === 'string')
+    : desktopMode && ['volcengine-ark', 'alibaba-video'].includes(selectedDesktopModel?.providerId ?? '') ? ['adaptive', ...ASPECTS] : ASPECTS
+  const supportsAudioOption = desktopMode && selectedDesktopModel?.constraints?.supportsGenerateAudio === true
+  const isMusicModel = desktopMode && node.type === 'audio' && selectedDesktopModel?.operation === 'music'
+  const musicParams = isMusicModel ? { is_instrumental: instrumental, lyrics_optimizer: !instrumental } : {}
+  const maximumOutputs = desktopMode && node.type === 'image' ? Math.min(4, Number(selectedDesktopModel?.constraints?.maximumOutputs) || 4) : 4
+  useEffect(() => {
+    if (!desktopMode || !selectedModel) return
+    const defaults = selectedModel.defaultParams ?? {}
+    if (!node.params.aspect && typeof defaults.ratio === 'string') setAspect(defaults.ratio)
+    if (!node.params.resKey) {
+      const defaultSize = String(defaults.resolution ?? defaults.size ?? '').toUpperCase()
+      if (defaultSize) setResKey(defaultSize)
+    }
+    if (!node.params.duration && typeof defaults.duration === 'number') setDuration(defaults.duration)
+    if (node.params.generate_audio === undefined && typeof defaults.generate_audio === 'boolean') setGenerateAudio(defaults.generate_audio)
+  }, [desktopMode, selectedModel, node.params.aspect, node.params.resKey, node.params.duration, node.params.generate_audio])
 
   // 上游变化时合并进参考（保留本地上传；尊重用户删除的上游）
   useEffect(() => {
@@ -734,9 +788,9 @@ export function NodeEditorDialog({
   useEffect(() => {
     setPrompt(stripLegacyReferenceFidelity((node.params.prompt as string) ?? ''))
     const raw = (node.params.model as string) || preferred || ''
-    const allowed = typeModels.some((m) => m.name === raw) ? raw : preferred || ''
+    const allowed = desktopMode ? raw : typeModels.some((m) => m.name === raw) ? raw : preferred || ''
     setModel(allowed)
-  }, [node.id, node.params.prompt, node.params.model, preferred, typeModels])
+  }, [desktopMode, node.id, node.params.prompt, node.params.model, preferred, typeModels])
 
   useEffect(() => {
     const next = Number(node.params.count)
@@ -771,6 +825,12 @@ export function NodeEditorDialog({
   }, [desktopMode, frameOrder, localRefs, node.type])
 
   const { firstFrame, lastFrame } = getVideoFrameReferences(refsForUi, desktopMode)
+  const frameAspect = desktopMode && node.type === 'video'
+    ? firstFrame && lastFrame ? selectedDesktopModel?.constraints?.firstLastFrameAspectRatio
+      : firstFrame ? selectedDesktopModel?.constraints?.imageAspectRatio : undefined
+    : undefined
+  const effectiveAspect = typeof frameAspect === 'string' ? frameAspect : aspect
+  const effectiveAspectOptions = typeof frameAspect === 'string' ? [frameAspect] : aspectOptions
 
   const persistPrompt = (value: string) => {
     setPrompt(value)
@@ -800,8 +860,9 @@ export function NodeEditorDialog({
   const onUploadRef = async (file?: File) => {
     try {
       if (isDesktopRuntime()) {
-        if (!['image', 'video'].includes(node.type)) {
-          throw new Error('桌面版目前仅为图片和视频节点接入媒体参考。')
+        const voiceChange = node.type === 'audio' && selectedDesktopModel?.operation === 'voice-change'
+        if (!['image', 'video'].includes(node.type) && !voiceChange) {
+          throw new Error('当前模型不支持上传媒体参考。')
         }
         const bridge = window.vibepaperDesktop
         if (!bridge) throw new Error('桌面本地素材接口不可用。')
@@ -813,9 +874,8 @@ export function NodeEditorDialog({
         const asset = await bridge.importLocalAsset(project.projectId)
         if (!asset) return
         const kind = asset.assetType
-        if (!['image', 'video'].includes(node.type) || kind === 'text'
-          || node.type === 'image' && kind !== 'image') {
-          throw new Error('图片节点仅接受图片参考；视频节点可选择图片、视频或音频参考。')
+        if (kind === 'text' || node.type === 'image' && kind !== 'image' || voiceChange && kind !== 'audio') {
+          throw new Error(voiceChange ? '变声模型需要音频参考。' : '图片节点仅接受图片参考；视频节点可选择图片、视频或音频参考。')
         }
         setLocalRefs((prev) => [
           ...prev,
@@ -859,6 +919,10 @@ export function NodeEditorDialog({
   }
 
   const doSubmit = async () => {
+    if (desktopMode && (desktopCatalogError || !selectedModel)) {
+      setErr(desktopCatalogError instanceof Error ? desktopCatalogError.message : '所选模型已不可用，请重新选择或配置模型。')
+      return
+    }
     setBusy(true)
     setErr('')
     try {
@@ -870,32 +934,24 @@ export function NodeEditorDialog({
         trimmedPrompt && refTexts.length
           ? `${refTexts.join('\n')}\n\n${trimmedPrompt}`
           : trimmedPrompt || refTexts.join('\n')
-      if (!effectivePrompt.trim()) {
+      if (!effectivePrompt.trim() && !(desktopMode && selectedDesktopModel?.operation === 'voice-change' && refsForUi.some((ref) => ref.kind === 'audio' && ref.url))) {
         setErr('请填写提示词或添加参考')
         setBusy(false)
         return
       }
       const resolutionParameters = resolveNodeResolution(node.type, selectedModel, selectedResKey, desktopMode)
-      const outputCount = (isSplitLayout && node.type === 'text') || (desktopMode && node.type === 'image') ? count : 1
-      const nonImageMediaRefs = refsForUi.filter((ref) => Boolean(ref.url) && (ref.kind === 'video' || ref.kind === 'audio'))
-      if (desktopMode && node.type !== 'video' && refsForUi.some((ref) => Boolean(ref.url) && ref.kind !== 'image')) {
-        throw new Error('当前桌面模型只接受图片或文本参考，请移除视频和音频参考。')
-      }
-      if (desktopMode && node.type === 'video' && nonImageMediaRefs.length) {
-        if (selectedModel?.provider === 'agnes') {
-          throw new Error('Agnes 视频模型不支持视频或音频参考；请移除这些参考，或切换到火山方舟 Seedance。')
-        }
-        if (selectedModel?.provider !== 'volcengine-ark') {
-          throw new Error('当前视频模型不支持视频或音频参考。')
-        }
-        if (nonImageMediaRefs.some((ref) => ref.url?.startsWith('vibe://'))) {
+        const outputCount = (isSplitLayout && node.type === 'text') || (desktopMode && node.type === 'image') ? count : 1
+        if (desktopMode && node.type === 'image' && outputCount > maximumOutputs) throw new Error(`所选模型最多生成 ${maximumOutputs} 张图片，请调整数量。`)
+      if (desktopMode) {
+        const mediaRefs = refsForUi.filter((ref) => Boolean(ref.url) && ['image', 'video', 'audio'].includes(ref.kind))
+        const unsupportedRef = mediaRefs.find((ref) => !selectedDesktopModel?.inputModes.includes(ref.kind))
+        if (unsupportedRef) throw new Error(`所选模型尚未适配${unsupportedRef.kind === 'image' ? '图片' : unsupportedRef.kind === 'video' ? '视频' : '音频'}参考输入。`)
+        if (selectedDesktopModel?.providerId === 'volcengine-ark'
+          && mediaRefs.some((ref) => (ref.kind === 'video' || ref.kind === 'audio') && ref.url?.startsWith('vibe://'))) {
           throw new Error('火山方舟需要可访问的 HTTPS 视频/音频地址；本地参考尚无供应商上传链，未发送本地文件。')
         }
       }
-      if (desktopMode && !['image', 'video'].includes(node.type) && refsForUi.some((ref) => Boolean(ref.url))) {
-        throw new Error('当前桌面模型尚未接入媒体参考输入，请移除媒体参考后重试。')
-      }
-      const audioParams = desktopMode && node.type === 'audio'
+      const audioParams = desktopMode && node.type === 'audio' && !isMusicModel
         ? {
             ...(typeof node.params.voice === 'string' && node.params.voice ? { voice: node.params.voice } : {}),
             ...(typeof node.params.language === 'string' && node.params.language ? { language: node.params.language } : {}),
@@ -910,18 +966,24 @@ export function NodeEditorDialog({
           // References are supplied as separate model inputs. Never append
           // hidden fidelity instructions to the creator's prompt.
           prompt: effectivePrompt,
+          ...(desktopMode ? selectedModel?.defaultParams ?? {} : {}),
+          ...(desktopMode && node.type === 'video' ? { duration, ...(supportsAudioOption ? { generate_audio: generateAudio } : {}) } : {}),
           ...resolutionParameters,
-          aspect,
+          aspect: effectiveAspect,
+          ...(desktopMode ? { ratio: effectiveAspect } : {}),
           style,
           camera,
           count: outputCount,
           ...referenceParameters,
           ...audioParams,
+          ...musicParams,
         },
         10,
         {
-          providerType: selectedModel?.provider === 'local' ? 'local' : 'cloud',
-          ...(selectedModel?.provider === 'volcengine-ark' ? { providerId: 'volcengine-ark' as const, modelId: selectedModel.name } : {}),
+          providerType: selectedDesktopModel?.providerType ?? (selectedModel?.provider === 'local' ? 'local' : 'cloud'),
+          ...(selectedDesktopModel?.providerType !== 'local' && selectedDesktopModel?.providerId
+            ? { providerId: selectedDesktopModel.providerId, modelId: selectedModel?.name }
+            : {}),
         },
       )
       const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === nodeId)?.data.node
@@ -930,8 +992,11 @@ export function NodeEditorDialog({
           ...(current?.params ?? node.params),
           prompt: trimmedPrompt || effectivePrompt,
           model: model || preferred,
+          ...musicParams,
+          ...(desktopMode && node.type === 'video' ? { duration, generate_audio: generateAudio } : {}),
           ...resolutionParameters,
-          aspect,
+          aspect: effectiveAspect,
+          ...(desktopMode ? { ratio: effectiveAspect } : {}),
           style,
           camera,
           count: outputCount,
@@ -1023,7 +1088,9 @@ export function NodeEditorDialog({
               ? '添加本地图片参考；云端生成会向所选模型供应商发送参考图片。'
               : node.type === 'video'
                 ? '视频节点可选本地图片、视频或音频；当前只有本地图片可直接发送，视频和音频需使用 Ark 可访问的 HTTPS 地址。'
-                : '桌面版目前只支持为图片和视频节点添加媒体参考。'
+                : selectedDesktopModel?.operation === 'voice-change'
+                  ? '添加本地参考音频；变声生成会向 ElevenLabs 发送该音频。'
+                  : '当前模型不支持上传媒体参考。'
             : '上传参考媒体'}
           aria-label="添加参考媒体"
           role={desktopMode ? 'button' : undefined}
@@ -1035,7 +1102,7 @@ export function NodeEditorDialog({
               void onUploadRef()
             }
           } : undefined}
-          className={`flex h-14 w-14 flex-col items-center justify-center rounded-xl bg-[#f0f0f2] text-[#888] ring-1 ring-black/6 ${desktopMode ? ['image', 'video'].includes(node.type) ? 'cursor-pointer hover:bg-[#e8e8ec]' : 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-[#e8e8ec]'}`}
+          className={`flex h-14 w-14 flex-col items-center justify-center rounded-xl bg-[#f0f0f2] text-[#888] ring-1 ring-black/6 ${desktopMode ? ['image', 'video'].includes(node.type) || selectedDesktopModel?.operation === 'voice-change' ? 'cursor-pointer hover:bg-[#e8e8ec]' : 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-[#e8e8ec]'}`}
         >
           <ArrowUpFromLine size={16} />
           <input
@@ -1184,17 +1251,34 @@ export function NodeEditorDialog({
         className={isSplitLayout ? 'min-w-[140px] max-w-[200px] flex-[1_1_160px]' : 'max-w-[200px]'}
         models={typeModels}
         value={model || preferred || ''}
+        desktopProviderNames={desktopMode ? desktopCatalog.providerNames : undefined}
+        onConfigureModels={desktopMode ? () => navigate('/settings/providers', { state: { returnTo: window.location.pathname } }) : undefined}
         onChange={(v) => {
           setModel(v)
           const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === nodeId)?.data.node
+          const chosen = desktopMode ? typeModels.find((candidate) => candidate.name === v) : undefined
+          const defaults = chosen?.defaultParams ?? {}
+          const nextAspect = typeof defaults.ratio === 'string' ? defaults.ratio : aspect
+          const nextResolution = typeof (defaults.resolution ?? defaults.size) === 'string' ? String(defaults.resolution ?? defaults.size).toUpperCase() : resKey
+          const nextDuration = typeof defaults.duration === 'number' ? defaults.duration : duration
+          if (desktopMode) {
+            setAspect(nextAspect)
+            setResKey(nextResolution)
+            setDuration(nextDuration)
+            setCount(1)
+            if (typeof defaults.generate_audio === 'boolean') setGenerateAudio(defaults.generate_audio)
+          }
           useCanvasStore.getState().updateNodePayload(node.id, {
-            params: { ...(current?.params ?? node.params), model: v },
+            params: { ...(current?.params ?? node.params), model: v, ...(desktopMode ? {
+              aspect: nextAspect, ratio: nextAspect, resKey: nextResolution, duration: nextDuration, count: 1,
+              ...(typeof defaults.generate_audio === 'boolean' ? { generate_audio: defaults.generate_audio } : {}),
+            } : {}) },
           })
         }}
       />
       {isSplitLayout && (node.type === 'text' || desktopMode && node.type === 'image') && (
         <div className="flex shrink-0 overflow-hidden rounded-lg bg-white/10 p-0.5">
-          {(desktopMode && node.type === 'image' ? [1, 2, 3, 4] : [1, 2, 4]).map((n) => (
+          {(desktopMode && node.type === 'image' ? [1, 2, 3, 4].filter((n) => n <= maximumOutputs) : [1, 2, 4]).map((n) => (
             <button
               key={n}
               type="button"
@@ -1211,8 +1295,8 @@ export function NodeEditorDialog({
       {isSplitLayout && (node.type === 'image' || node.type === 'video') && (
         <>
           <SplitFooterSelect
-            value={aspect}
-            options={ASPECTS.map((a) => ({ value: a, label: a }))}
+            value={effectiveAspect}
+            options={effectiveAspectOptions.map((a) => ({ value: a, label: a }))}
             onChange={setAspect}
             className="max-w-[72px]"
           />
@@ -1226,8 +1310,8 @@ export function NodeEditorDialog({
       )}
       {(node.type === 'image' || node.type === 'video') && !isSplitLayout && (
         <>
-          <select className={splitCtrl} value={aspect} onChange={(e) => setAspect(e.target.value)}>
-            {ASPECTS.map((a) => (
+          <select className={splitCtrl} value={effectiveAspect} onChange={(e) => setAspect(e.target.value)}>
+            {effectiveAspectOptions.map((a) => (
               <option key={a} value={a}>
                 {a}
               </option>
@@ -1267,20 +1351,35 @@ export function NodeEditorDialog({
           ))}
         </select>
       )}
+      {desktopMode && node.type === 'video' && (
+        <>
+          <label className="flex items-center gap-1 text-[11px]" title="视频时长">
+            {durationOptions.length ? <select aria-label="视频时长（秒）" value={durationOptions.includes(duration) ? duration : durationOptions[0]} onChange={(event) => setDuration(Number(event.target.value))} className={`${splitCtrl} w-14`}>{durationOptions.map((value) => <option key={value} value={value}>{value}</option>)}</select> : <input type="number" aria-label="视频时长（秒）" value={duration}
+              min={Number(selectedDesktopModel?.constraints?.minimumDuration) || 1}
+              max={Number(selectedDesktopModel?.constraints?.maximumDuration) || 30}
+              onChange={(e) => setDuration(Number(e.target.value))}
+              className={`${splitCtrl} w-14`} />}秒
+          </label>
+          {supportsAudioOption && <label className="flex items-center gap-1 text-[11px]">
+            <input type="checkbox" checked={generateAudio} onChange={(e) => setGenerateAudio(e.target.checked)} />音频
+          </label>}
+        </>
+      )}
+      {isMusicModel && <label className="flex items-center gap-1 text-[11px]"><input type="checkbox" checked={instrumental} onChange={(event) => setInstrumental(event.target.checked)} />纯音乐（无歌词）</label>}
       <div className="ml-auto flex items-center gap-1.5">
         {latest?.status === 'succeeded' && (
           <Check size={14} className={isSplitLayout ? 'text-emerald-400' : 'text-emerald-600'} />
         )}
-        {err && (
+        {(err || desktopMode && (desktopCatalogError || model && !selectedModel)) && (
           <span
             className={`max-w-[120px] truncate text-[10px] font-semibold ${isSplitLayout ? 'text-red-300' : 'text-red-600'}`}
           >
-            {err}
+            {err || (desktopCatalogError instanceof Error ? desktopCatalogError.message : '所选模型已不可用，请重新选择或配置模型。')}
           </span>
         )}
         <button
           type="button"
-          disabled={busy || !(model || preferred) || (desktopMode && node.type === 'audio' && !typeModels.some((item) => item.name === 'local-sapi-tts'))}
+          disabled={busy || !(model || preferred) || !typeModels.length || desktopMode && (!selectedModel || Boolean(desktopCatalogError))}
           onClick={() => void doSubmit()}
           className={`flex h-9 w-9 items-center justify-center rounded-full hover:opacity-90 disabled:opacity-40 ${
             isSplitLayout ? 'bg-white/20 text-white' : 'bg-[#111] text-white'

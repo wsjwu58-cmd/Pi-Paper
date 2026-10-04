@@ -1,20 +1,42 @@
 # 桌面版模型提供方接入契约
 
-> 2026-09-24 起的目标规格；2026-09-28 实现状态见提供方表。当前仍没有通用 Provider Registry。模型目录和能力应在实际接入时按供应商官方文档与账号权限核验，不固定为本文撰写时的型号。
+> 2026-10-03 最新决策：恢复 Pi 二次开发与官方 API Key 自定义配置，扩展原 Pi 文本、图片、视频与音频接口；不使用 New API、LiteLLM。具体方案见 [Pi 官方接入设计](../plans/2026-10-03-pi-official-provider-implementation.md)。当前开发中，全型号及真实供应商调用尚未验收；仅实现并能力匹配的绑定开放使用。
 
 ## 接入范围
 
-| 提供方 | 接入方式 | 目标 | 当前状态 |
-| --- | --- | --- | --- |
-| OpenAI | 官方 API 与提供方适配器 | Agent、文本、可用的图/音/视频能力 | 待接入 |
-| Anthropic Claude | 官方 Messages API | Agent、文本及实际支持的输入能力 | 待接入 |
-| Google Gemini | 官方 Gemini API | Agent、文本及实际支持的多模态能力 | 待接入 |
-| DeepSeek | 官方 API | Agent、文本及实际支持的输入能力 | 待接入 |
-| 阿里云百炼 / Qwen | 官方 Model Studio API | Agent、文本及实际支持的图/音/视频能力 | 待接入 |
-| 其他用户自定义兼容服务 | 明确的 OpenAI 兼容配置与能力探测 | 按探测结果开放功能 | 待接入 |
-| Ollama、LM Studio 等本机服务 | 仅 loopback 地址，本地能力探测 | 本地 Agent、文本及实际支持的模态 | 本地文本原型 |
-| Agnes | 当前专用适配器 | 文本、图像、视频联调 | 原型可用，尚未完成完整端到端验收 |
-| 火山方舟 Ark | Seedance 视频生成任务 API | Seedance 2.5 文本/图片/视频/音频组合参考 | 桌面专用适配器已实现 HTTPS 参考、任务轮询与本地结果下载；mock 纵向测试通过，未用真实 Ark Key 验证。通用素材上传、音频生成及 Registry 尚未接入 |
+2026-10-03 当前源码快照的静态目录包含 **72 个目标型号**：文本 20、图像 16、视频 25、音频 11。`getOfficialProviderCatalog()` 将其中 **65 个标为 implemented**：文本 19、图像 15、视频 21、音频 10。这里的 `implemented` 表示代码已定义调用适配及相应目录项；不代表真实账号、权限或付费生成已经验收。启用还要求用户配置厂商凭据，并由设置目录标记为 enabled。
+
+| 厂商／目录提供方 | 代码中的已接入型号与能力 | 当前缺口／约束 |
+| --- | --- | --- |
+| Anthropic (`anthropic`) | Claude Fable 5.1、Haiku 4.5、Opus 5、Opus 5.5、Sonnet 4.6；Pi Messages 文本调用 | 桌面适配目录只声明文本输入；仍需真实 Key 验收 |
+| DeepSeek (`deepseek`) | DeepSeek V4.1 Flash (`deepseek-flash`)；Pi OpenAI Completions 文本调用，usage 读取 | 真实 Key 验收待完成 |
+| Google AI Studio (`google`) | Gemini 3.1 Pro、3.6 Flash、3.8 Flash；Banana 2、Banana 2 Lite、Banana Pro；Veo 3.1、Veo 3.1 Lite | Gemini Omni Flash 未实现；Veo 当前仅文本输入；图像型号参考数量和尺寸按模型分别限制 |
+| OpenAI (`openai`) | GPT-5.6 Sol/Terra/Luna、GPT-6 Astra/Sol/Luna；GPT-Image-2、GPT-Image-2.5 Flare/Sunburst | 图像尺寸、比例、参考数和输出数依型号目录校验；真实 Key 验收待完成 |
+| xAI (`xai`) | Grok 4.3、Grok 4.7；Grok Imagine 文生图；Grok Imagine Video、Grok Imagine Video 1.5 文生视频 | Grok Imagine 图像当前仅文本输入；两个视频型号当前仅文本输入，时长 1–15 秒，支持参数按版本限制 |
+| Moonshot (`moonshot`) | 当前没有可用型号 | Kimi K2.5 已于 2026-08-31 停用，不得改映射为 Kimi K3/K2.6；详见[不可接入型号核验](../research/2026-10-03-unavailable-official-models.md) |
+| 火山引擎方舟 (`volcengine`, `volcengine-ark`) | Seed 2.0 Mini、Seed 2.1 Pro；Seedream 5.0/5.0 Pro；Seedance 2.0、2.0 Fast、2.0 Mini、2.5 | Seed 2.0 Mini 的 8192 上下文／2048 输出是保守应用预算，不是供应商公布上限；Seedance 1.5 Pro 已下线；本地音视频参考受下文说明限制 |
+| BytePlus (`byteplus`) | BytePlus Seedance 2.0、2.0 Fast、2.0 Mini | 当前代码目录声明文本、图像、视频、音频参考及最多 50 个参考；真实账号能力仍待验收 |
+| 阿里云百炼 (`alibaba`, `alibaba-video`) | Qwen Image Edit Plus、Wan 2.7 Image Pro、Z-Image Turbo；Wan 2.7 (`wan2.7-t2v`)、Wan 3.0 (`wan3.0-video`)、HappyHorse 1.1 (`happyhorse-1.1-t2v`) 文生视频 | 视频使用独立 workspace/region 凭据。Wan 2.7 与 HappyHorse 1.1 的当前画布绑定均仅接受文本，不能将底层 Pi 模块的 I2V/R2V 能力宣称为画布可选能力；HappyHorse 1.1 默认保留水印 |
+| MiniMax (`minimax`) | Hailuo 2.3 Fast (`MiniMax-Hailuo-2.3-Fast`)、H3 视频、Speech 2.8 HD/Turbo、Music 2.6；音乐使用独立 `music` 操作 | Hailuo Fast 必须提供一张首帧，画幅自适应，768P 支持 6/10 秒，1080P 仅6秒；H3 Local 未实现；Music 2.6 受官方账户开通资格限制，新账户不一定可用；语音需配置 Voice ID |
+| 豆包／方舟兼容路由 (`doubao`) | catalog 保留 Ark endpoint provider，但当前72项目标中没有直接绑定到此 ID 的型号 | Seed 文本/图片/视频使用 `volcengine` 或 `volcengine-ark`；豆包音频另用下方 v1/v2 独立端点和凭据 |
+| Agnes (`agnes`) | Image 2.0/2.1/2.5 Flash、Video 2.5 Flash；旧 Agnes 2.5 路径保留兼容 | Image 2.0/2.1 为文本输入；legacy Image 2.5 与 Video 2.5 的 catalog 均声明文本／图像输入，Video 2.5 支持首尾帧与参考模式。仍需端到端及真实 Key 验收 |
+| ElevenLabs (`elevenlabs`) | Eleven Flash v2.5、Multilingual v2 TTS；Voice Changer speech-to-speech | Voice ID 必填；Voice Changer 只接受一个受校验的音频参考，不代表通用参考音频上传 |
+| Fish Audio (`fish-audio`) | S1、S2 Pro 文本转语音 | 仅文本输入；可使用服务端 Reference ID，不实现本地参考音频克隆上传 |
+| 豆包语音 (`doubao-voice`, `doubao-voice-v1`) | TTS v2 (`seed-tts-2.0`)；兼容 TTS v1 (`seed-tts-1.1`) | v2 使用语音控制台 Key 和 Voice ID，与方舟 Key 分开；v1 另需 AppID、Access Token 和 Voice Type；Voice Creation 未实现 |
+| Kling (`kling`) | Kling V3、Kling 3.0 Omni | 目录当前仅开放文本输入，参考媒体未接入；AK/SK 签名与任务查询路径已实现 |
+| Vidu (`vidu`) | Vidu Q3 Pro | 文本和图像输入，最多 2 个参考；当前任务适配不等于真实账号验证 |
+| PixVerse (`pixverse`) | PixVerse V6 | 目录当前仅文本输入；任务能力按模型约束校验 |
+| Midjourney (`midjourney`) | 目标型号仅用于显示不可用原因，不可配置／调用 | 官方 V8.2 页面确认当前版本；官方规则不提供公开 API，禁止未授权自动化；详见[不可接入型号核验](../research/2026-10-03-unavailable-official-models.md) |
+| HappyHorse (`alibaba-video`；旧目标仍为 `happyhorse`) | HappyHorse 1.1 `happyhorse-1.1-t2v` 已通过百炼 workspace/region 凭据接入，画布仅开放文本输入；另有 `Happyhorse` 旧目标保留不可用 | Alibaba 官方发布页链接 HappyHorse 官网并说明 Model Studio API 服务；旧展示型号 `Happyhorse` 的精确调用 ID 未核验，catalog 保持不可配置，不能用1.1代替。参见 [HappyHorse 官方发布](https://www.alibabacloud.com/blog/alibaba-rolls-out-happyhorse-1-0-in-limited-beta_603068/) 与 [Model Studio API](https://www.alibabacloud.com/help/en/model-studio/happyhorse-text-to-video-api-reference) |
+| Agnes、Ark 及本机服务 | 原 Agnes、Ark 与 local provider/Agent 路径保留；本机服务仍由 loopback 能力探测 | 本表的新官方云端 catalog 不替代现有 local 路径；其他 OpenAI 兼容服务尚未接入 |
+
+桌面资源包当前有 **19 个官方来源图标文件**，包括 Anthropic、OpenAI、Google、DeepSeek、xAI、MiniMax、ElevenLabs、Fish Audio、ByteDance/Volcano Engine、Alibaba Cloud、Agnes、Kling、Vidu、PixVerse、BytePlus、Moonshot、Kimi、Qwen 和 HappyHorse。文件清单、来源与 SHA-256 见[图标来源记录](../research/2026-10-03-official-provider-icon-provenance.md)。Midjourney 官网与官方文档 favicon 下载均返回 403，因此继续使用通用符号，不以第三方资源替代。
+
+Pi 百炼视频模块还实现了尚未开放给当前 catalog 的 Wan 2.7 `wan2.7-i2v`、`wan2.7-i2v-2026-04-25`、`wan2.7-r2v-2026-06-12`，以及 `wan2.7-t2v-2026-06-12`、`wan2.7-t2v-2026-04-25` 两个版本化 T2V ID；当前仅 `wan2.7-t2v` 文生视频绑定进入可选目录。HappyHorse 1.1 的底层任务路由也实现 `happyhorse-1.1-i2v` 与 `happyhorse-1.1-r2v`，但当前只开放 `happyhorse-1.1-t2v`。未进入 catalog 的协议路由不计为可选择型号，也不能视为已有 UI 能力。
+
+媒体与文本的精确 model ID、操作、输入模式、默认值及约束以 `pi-main/packages/ai/src/media/catalog.ts`、`official-text-models.ts`、`official-media-models.ts` 为代码权威。2026-10-04 的设置连接检测覆盖 Anthropic、DeepSeek、Google、OpenAI、xAI、Moonshot、BytePlus、方舟 Seedance、MiniMax、ElevenLabs、Fish Audio、Kling、Vidu、PixVerse 共 14 个配置分组，发送真实官方鉴权 GET 请求，不创建生成任务、不回显余额或历史任务。Kling 支持新版单 API Key 或旧 AK/SK，二者不能混填；更换鉴权族时受控进程清除旧族并保留模型设置。
+
+当前 `volcengine`／`doubao` 文本图片分组、百炼文本图片／视频、Agnes、豆包语音 v3／v1 共 7 个配置分组尚无已接通安全探测，页面明确显示暂不支持检测，IPC 返回 `unsupported/success=false`；不把格式校验呈现为鉴权成功。这些分组的生成配置不因此移除。方舟 Key 可在 Seedance 配置分组进行已实现的任务列表鉴权，但该结果不能替代文本图片型号的权限验收。官方凭据入口和附加字段见 [官方 Key 获取指南](../guides/official-provider-api-key-setup.md)。所有提供方仍须独立完成真实 Key 的模型调用验收。
 
 Ark 参考请求选用 `doubao-seedance-2-5-260628`。官方[模型目录](https://docs.volcengine.com/docs/ark/model-list?lang=zh)列出全模态参考生视频能力、4–30 秒时长和 480p/720p/1080p 输出；[创建视频任务 API](https://api.volcengine.com/api-docs/view?action=CreateContentsGenerationsTasks&serviceCode=ark&version=2024-01-01)把参考视频和音频定义为 `video_url.url`、`audio_url.url`，示例使用 Ark 可访问的 HTTPS 地址。Seedance 2.5 提示指南说明单次最多 50 个图像/音视频参考，并要求首尾帧任务使用 `ratio=adaptive`；桌面请求据此限制参考总量并转换节点分辨率/首尾帧参数。
 

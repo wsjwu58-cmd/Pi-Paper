@@ -1,5 +1,5 @@
 import type { Agent, AgentEvent, AgentMessage, AgentOptions, AgentTool } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 
 import type { ServiceConfig } from "../config.ts";
@@ -15,6 +15,7 @@ import { createLoadSkillTool, type LoadedSkillResource } from "../tools/skill-to
 import { dedupeRepeatedSegments, removeRepeatedOpening } from "./assistant-text.ts";
 import { compactContext } from "./context-compaction-service.ts";
 import { resolveInstructionPrecedence } from "./instruction-precedence.ts";
+import { withModelStreamRetry } from "./model-stream-retry.ts";
 import { composeUserContent, type NodeReferenceSnapshot, nodeReferencesFromMeta } from "./node-reference-context.ts";
 import { referenceMappingClarification } from "./reference-mapping-clarification.ts";
 
@@ -58,6 +59,8 @@ export interface AgentRuntimeHooks {
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	shouldStopAfterTurn?: NonNullable<AgentOptions["shouldStopAfterTurn"]>;
 	modelId?: string;
+	/** Desktop host resolves this from its configured official provider registry. Contains no secret. */
+	modelDefinition?: Model<Api>;
 	desktopMode?: boolean;
 	memoryContext?: string;
 	sessionContext?: SessionContext;
@@ -245,17 +248,34 @@ export async function runDramaTurn(
 				return context.message.stopReason === "length";
 			}
 		: hooks.shouldStopAfterTurn;
+	const events: AgentTurnEvent[] = [];
+	const modelStream = hooks.desktopMode
+		? withModelStreamRetry(hooks.streamFn ?? streamSimple, {
+				onRetry: async (attempt, delayMs) => {
+					const event: AgentTurnEvent = {
+						type: "thinking",
+						content: `连接暂时失败，${delayMs / 1000} 秒后自动重试（${attempt}/2）…`,
+					};
+					events.push(event);
+					await hooks.onEvent?.(event);
+				},
+			})
+		: (hooks.streamFn ?? streamSimple);
 	const agent = createDramaAgent(store, {
 		initialState: {
-			model: agnesModel(config, hooks.modelId, hooks.desktopMode === true),
+			model:
+				hooks.desktopMode && hooks.modelDefinition
+					? hooks.modelDefinition
+					: agnesModel(config, hooks.modelId, hooks.desktopMode === true),
 			messages: initialMessages,
 			thinkingLevel: hooks.desktopMode ? "low" : "off",
 		},
-		streamFn: hooks.requiredToolName
-			? forceInitialToolCall(hooks.requiredToolName, hooks.streamFn ?? streamSimple)
-			: (hooks.streamFn ?? streamSimple),
+		streamFn: hooks.requiredToolName ? forceInitialToolCall(hooks.requiredToolName, modelStream) : modelStream,
 		sessionId,
-		getApiKey: async (provider) => (provider === "agnes" ? config.llmApiKey : undefined),
+		getApiKey: async (provider) =>
+			provider === (hooks.desktopMode && hooks.modelDefinition ? hooks.modelDefinition.provider : "agnes")
+				? config.llmApiKey
+				: undefined,
 		systemPromptSuffix:
 			desktopTurnContext?.systemPromptSuffix ??
 			([
@@ -280,7 +300,6 @@ export async function runDramaTurn(
 		shouldStopAfterTurn,
 	});
 	hooks.onAgent?.(agent);
-	const events: AgentTurnEvent[] = [];
 	let assistantText = "";
 	let totalTokens = 0;
 	agent.subscribe(async (event) => {

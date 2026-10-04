@@ -437,6 +437,7 @@ function getDisabledThinkingConfig(model: Model<"google-generative-ai">): Thinki
 		return { thinkingLevel: "LOW" as any };
 	}
 	if (isGemini3FlashModel(model)) {
+		if (model.id === "gemini-3.8-flash") return { thinkingLevel: "LOW" as any };
 		return { thinkingLevel: "MINIMAL" as any };
 	}
 	if (isGemma4Model(model)) {

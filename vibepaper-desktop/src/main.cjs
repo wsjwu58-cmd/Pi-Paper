@@ -3,6 +3,8 @@ const fs = require('node:fs/promises')
 const nativeFs = require('node:fs')
 const { Readable } = require('node:stream')
 const { randomUUID } = require('node:crypto')
+const { createProviderNetworkProbe } = require('./provider-network.cjs')
+const { workerProxyEnvironment } = require('./worker-network.cjs')
 const { pathToFileURL } = require('node:url')
 const {
   discoverLocalModels,
@@ -41,6 +43,8 @@ const { isDesktopRendererRoute, isTrustedRendererUrl: checkRendererUrl } = requi
 const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
 const { createDramaBatchTaskInput } = require('./drama-render-batch.cjs')
 const { exportNodeOutput } = require('./node-export.cjs')
+const { createProviderSettings } = require('./provider-settings.cjs')
+const { isOfficialDocumentationUrl } = require('./official-documentation.cjs')
 
 app.setName('VibePaper')
 protocol.registerSchemesAsPrivileged([{
@@ -58,6 +62,7 @@ let recentProjectCatalog = null
 let desktopSettingsFile = null
 let agnesCredentialFile = null
 let arkCredentialFile = null
+let providerSettings = null
 let quittingAfterCoreClose = false
 let stopping = false
 let generationWorker = null
@@ -75,6 +80,92 @@ const webRoot = path.resolve(desktopRoot, '..', 'vibepaper-web')
 const rendererRoot = path.join(webRoot, 'dist')
 const rendererIndex = path.join(rendererRoot, 'index.html')
 const developmentUrl = process.env.VITE_DEV_SERVER_URL
+
+function getOfficialCatalog() {
+  return require(path.join(desktopRoot, 'dist', 'pi-official-media.cjs')).getOfficialProviderCatalog()
+}
+
+async function getUnifiedAgentModelDirectory() {
+  const [agnes, localTextModel, registry] = await Promise.all([
+    getAgnesModelSettings(), getLocalTextModelConfig(), providerSettings.snapshot(),
+  ])
+  const old = buildDesktopAgentModelDirectory(agnes, localTextModel, getLocalAudioModel())
+  return [...old.filter((model) => model.providerId !== AGNES_PROVIDER_ID || model.modelType === 'text').map((model) => ({
+    ...model,
+    id: model.modelType === 'text' && model.providerId === AGNES_PROVIDER_ID ? AGNES_MODELS.text : model.name,
+    ...(model.modelType === 'text' && model.providerId === AGNES_PROVIDER_ID ? { apiModelId: AGNES_MODELS.text } : {}),
+    displayName: model.modelType === 'text' && model.providerId === AGNES_PROVIDER_ID ? 'Agnes 2.5 Flash' : model.displayName,
+    toolCalling: model.modelType === 'text' && model.providerId === AGNES_PROVIDER_ID,
+  })), ...registry.models.map((m) => ({
+    ...m, name: m.id, displayName: m.displayName || m.name || m.id,
+    modalities: [m.modelType], toolCalling: m.toolCalling === true,
+    streaming: m.streaming === true, cancellation: false,
+  }))]
+}
+
+async function resolveAgentOfficialConnection(modelId) {
+  if (modelId !== undefined && (typeof modelId !== 'string' || modelId.length > 256)) throw codedError('AGENT_MODEL_INVALID')
+  const bindingId = modelId ?? AGNES_MODELS.text
+  if (bindingId === AGNES_MODELS.text) {
+    const apiKey = (await providerSettings.credentials(AGNES_PROVIDER_ID)).apiKey
+    if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
+    return { bindingId, apiKey }
+  }
+  const registry = await providerSettings.snapshot()
+  const binding = registry.models.find((m) => m.id === bindingId)
+  if (!binding || binding.modelType !== 'text' || binding.implemented !== true
+    || binding.toolCalling !== true || binding.enabled !== true) {
+    throw codedError('MODEL_UNAVAILABLE', '请先配置并启用支持工具调用的文本模型。')
+  }
+  const config = await providerSettings.resolve(binding.providerId, binding.id, 'text')
+  const { model } = require(path.join(desktopRoot, 'dist', 'pi-official-media.cjs')).resolveOfficialTextModel({
+    providerId: config.providerId, modelId: config.apiModelId, modality: 'text', prompt: '',
+  }, { apiKey: config.apiKey, credentials: config.credentials, baseUrl: config.endpoint })
+  return { bindingId, apiKey: config.apiKey, modelDefinition: model }
+}
+
+async function getAgentModelCatalog() {
+  const registry = await providerSettings.snapshot()
+  const providerNames = Object.fromEntries(registry.providers.map((provider) => [provider.id, provider.name]))
+  const agnesConfigured = Boolean((await providerSettings.credentials(AGNES_PROVIDER_ID)).apiKey)
+  providerNames[AGNES_PROVIDER_ID] = providerNames[AGNES_PROVIDER_ID] || 'Agnes'
+  const legacy = {
+    id: AGNES_MODELS.text,
+    name: AGNES_MODELS.text,
+    displayName: 'Agnes 2.5 Flash',
+    providerId: AGNES_PROVIDER_ID,
+    providerType: 'cloud',
+    modelType: 'text',
+    apiModelId: AGNES_MODELS.text,
+    implemented: true,
+    enabled: agnesConfigured,
+    inputModes: ['text'],
+    toolCalling: true,
+    streaming: false,
+    cancellation: false,
+  }
+  const selectable = registry.models
+    .filter((model) => model.modelType === 'text' && model.implemented === true
+      && model.toolCalling === true && model.enabled === true)
+    .map((model) => ({ ...model, providerType: 'cloud' }))
+  if (legacy.enabled) selectable.unshift(legacy)
+  const unique = [...new Map(selectable.map((model) => [model.id, model])).values()]
+  const configuredDefault = registry.providers
+    .map((provider) => provider.defaultModelIds?.text)
+    .find((id) => unique.some((model) => model.id === id))
+  const defaultModelId = configuredDefault ?? (unique.some((model) => model.id === AGNES_MODELS.text)
+    ? AGNES_MODELS.text : unique[0]?.id ?? null)
+  return { models: unique, providerNames, defaultModelId }
+}
+
+async function resolveAgentSessionConnection(worker, projectId, sessionId, requestedModelId) {
+  const session = await worker.request('agent:get-session-model', { projectId, sessionId })
+  const bindingId = requestedModelId ?? session?.bindingId
+  if (typeof bindingId !== 'string' || bindingId !== session?.bindingId) {
+    throw codedError('AGENT_SESSION_MODEL_MISMATCH')
+  }
+  return { bindingId, ...(await resolveAgentOfficialConnection(bindingId)) }
+}
 
 function isTrustedRendererUrl(value) {
   return checkRendererUrl(value, developmentUrl)
@@ -199,11 +290,14 @@ function codedError(code, message = code) {
   return error
 }
 
-function startGenerationWorker() {
+async function startGenerationWorker() {
+  if (generationWorker) return generationWorker
+  const proxy = await session.defaultSession.resolveProxy('https://api.openai.com/v1')
   if (generationWorker) return generationWorker
   const child = utilityProcess.fork(path.join(__dirname, 'generation-worker.cjs'), [], {
     serviceName: 'VibePaper Local Generation Worker',
     stdio: 'ignore',
+    env: workerProxyEnvironment(process.env, proxy),
   })
   const pending = new Map()
   let nextRequestId = 1
@@ -216,7 +310,7 @@ function startGenerationWorker() {
 
   const worker = {
     child,
-    async request(method, payload) {
+    async request(method, payload, onCheckpoint) {
       await started
       if (exitError) throw exitError
       const id = nextRequestId++
@@ -236,7 +330,7 @@ function startGenerationWorker() {
           child.kill()
           reject(codedError(payload?.providerType === 'cloud' ? 'CLOUD_REQUEST_TIMEOUT' : 'LOCAL_MODEL_UNAVAILABLE'))
         }, timeout)
-        pending.set(id, { resolve, reject, timer, apiKey: payload?.apiKey })
+        pending.set(id, { resolve, reject, timer, apiKey: payload?.apiKey, credentials: payload?.credentials, onCheckpoint })
         try {
           child.postMessage({ id, method, payload })
         } catch {
@@ -272,6 +366,16 @@ function startGenerationWorker() {
     if (!message || !Number.isSafeInteger(message.id)) return
     const request = pending.get(message.id)
     if (!request) return
+    if (message.type === 'provider-checkpoint') {
+      Promise.resolve().then(() => {
+        if (typeof request.onCheckpoint !== 'function') throw codedError('TASK_CHECKPOINT_UNAVAILABLE')
+        return request.onCheckpoint(message.checkpoint)
+      }).then(
+        () => child.postMessage({ type: 'provider-checkpoint-ack', id: message.id, sequence: message.sequence, ok: true }),
+        () => child.postMessage({ type: 'provider-checkpoint-ack', id: message.id, sequence: message.sequence, ok: false }),
+      )
+      return
+    }
     clearTimeout(request.timer)
     pending.delete(message.id)
     if (message.ok) request.resolve(message.result)
@@ -280,6 +384,9 @@ function startGenerationWorker() {
       let errorMessage = typeof message.errorMessage === 'string' ? message.errorMessage : errorCode
       const apiKey = typeof request.apiKey === 'string' ? request.apiKey : ''
       if (apiKey) errorMessage = errorMessage.split(apiKey).join('[已隐藏凭据]')
+      for (const secret of Object.values(request.credentials || {})) {
+        if (typeof secret === 'string' && secret) errorMessage = errorMessage.split(secret).join('[已隐藏凭据]')
+      }
       errorMessage = errorMessage.replace(/\bBearer\s+[^\s"'<>]+/giu, 'Bearer [已隐藏凭据]')
         .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, ' ')
         .replace(/\s+/gu, ' ').trim().slice(0, 800)
@@ -297,10 +404,12 @@ function startGenerationWorker() {
   return worker
 }
 
-function createAgentWorker() {
+async function createAgentWorker() {
+  const proxy = await session.defaultSession.resolveProxy('https://api.openai.com/v1')
   const child = utilityProcess.fork(path.join(desktopRoot, 'dist', 'agent-worker.cjs'), [], {
     serviceName: 'VibePaper Agent Worker',
     stdio: 'ignore',
+    env: workerProxyEnvironment(process.env, proxy),
   })
   const pending = new Map()
   let nextRequestId = 1
@@ -381,8 +490,7 @@ function createAgentWorker() {
       case 'agent:core:list-assets':
         return localCore.request('asset:list', { projectId: input.projectId }, 15_000)
       case 'agent:core:list-models': {
-        const [agnes, localTextModel] = await Promise.all([getAgnesModelSettings(), getLocalTextModelConfig()])
-        return buildDesktopAgentModelDirectory(agnes, localTextModel, getLocalAudioModel())
+        return getUnifiedAgentModelDirectory()
       }
       case 'agent:core:create-generation-task': {
         const modalities = ['text', 'image', 'video', 'audio', 'compose']
@@ -394,7 +502,7 @@ function createAgentWorker() {
           || typeof input.providerId !== 'string' || !input.providerId
           || typeof input.modelId !== 'string' || !input.modelId
           || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
-          || typeof input.prompt !== 'string' || (input.modality !== 'compose' && !input.prompt.trim()) || input.prompt.length > 200_000
+          || typeof input.prompt !== 'string' || (!['compose', 'audio'].includes(input.modality) && !input.prompt.trim()) || input.prompt.length > 200_000
           || !input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)) {
           throw new Error('AGENT_GENERATION_INPUT_INVALID')
         }
@@ -407,18 +515,19 @@ function createAgentWorker() {
         if (!isDesktopAgentGenerationTarget(targetNode, input.modality)) {
           throw new Error('AGENT_GENERATION_TARGET_MISMATCH')
         }
-        const [agnes, localTextModel] = await Promise.all([getAgnesModelSettings(), getLocalTextModelConfig()])
-        const model = buildDesktopAgentModelDirectory(agnes, localTextModel, getLocalAudioModel()).find((entry) =>
+        const model = (await getUnifiedAgentModelDirectory()).find((entry) =>
           entry.enabled === true && entry.name === input.modelId && entry.modelType === input.modality
           && entry.providerType === input.providerType && entry.providerId === input.providerId)
         if (!model) throw new Error('AGENT_GENERATION_MODEL_UNAVAILABLE')
-        if ((input.providerType === 'local' && !['text', 'audio', 'compose'].includes(input.modality))
-          || (input.providerType === 'cloud' && !agnes?.apiKeyConfigured)) {
+        if (!input.prompt.trim() && input.modality !== 'compose' && model.operation !== 'voice-change') {
+          throw new Error('AGENT_GENERATION_INPUT_INVALID')
+        }
+        if (input.providerType === 'local' && !['text', 'audio', 'compose'].includes(input.modality)) {
           throw new Error(input.providerType === 'cloud' ? 'CLOUD_CREDENTIAL_MISSING' : 'UNSUPPORTED_MODALITY')
         }
         beginTaskCreation()
         try {
-          const task = await localCore.request('task:create', {
+          const task = input.modality === 'compose' ? await localCore.request('task:create', {
             projectId: input.projectId,
             canvasId: input.canvasId,
             canvasVersion: input.canvasVersion,
@@ -429,7 +538,7 @@ function createAgentWorker() {
             modelId: input.modelId,
             idempotencyKey: input.idempotencyKey,
             parameters: { ...input.parameters, prompt: input.prompt },
-          }, 30_000)
+          }, 30_000) : await createGenerationTaskInStore(input)
           void scheduleTaskPump(input.projectId)
           return task
         } finally {
@@ -550,7 +659,7 @@ function createAgentWorker() {
 
 async function startAgentWorker(projectDirectory) {
   await stopAgentWorker()
-  const worker = createAgentWorker()
+  const worker = await createAgentWorker()
   agentWorker = worker
   try {
     const opened = await worker.request('agent:open', {
@@ -579,9 +688,25 @@ async function notifyAgentTaskState(projectId) {
   const worker = agentWorker
   if (stopping || !worker || typeof projectId !== 'string' || !projectId || agentProjectId !== projectId) return
   try {
-    const apiKey = await getAgnesApiKey().catch(() => null)
+    const sessions = await worker.request('agent:list-continuation-models', { projectId })
     if (stopping || agentWorker !== worker || agentProjectId !== projectId) return
-    await worker.request('agent:reconcile-tasks', { projectId, apiKey: apiKey ?? '' })
+    if (!Array.isArray(sessions)) throw new Error('AGENT_CONTINUATION_MODELS_INVALID')
+    const connectionsBySession = {}
+    const unavailableSessionIds = []
+    for (const session of sessions) {
+      if (!session || typeof session.sessionId !== 'string') continue
+      if (typeof session.bindingId !== 'string') {
+        unavailableSessionIds.push(session.sessionId)
+        continue
+      }
+      try {
+        connectionsBySession[session.sessionId] = await resolveAgentOfficialConnection(session.bindingId)
+      } catch {
+        unavailableSessionIds.push(session.sessionId)
+      }
+    }
+    if (stopping || agentWorker !== worker || agentProjectId !== projectId) return
+    await worker.request('agent:reconcile-tasks', { projectId, connectionsBySession, unavailableSessionIds })
   } catch {
     // Snapshot polling retries reconciliation; task results remain authoritative.
     console.warn('AGENT_TASK_RECONCILIATION_UNAVAILABLE')
@@ -595,7 +720,7 @@ async function drainTaskQueue(projectId) {
     const claimed = await localCore.request('task:claim-next', { projectId })
     if (!claimed) return
     if (stopping) return
-    const { task, parameters, outputDirectory } = claimed
+    const { task, parameters, outputDirectory, providerCheckpoint } = claimed
     let taskWorker = null
     let taskCredential = ''
     let workerMethod = null
@@ -655,8 +780,16 @@ async function drainTaskQueue(projectId) {
           throw codedError('LOCAL_MODEL_CONFIGURATION_CHANGED')
         }
       } else if (task.providerType === 'cloud') {
-        if (task.providerId === ARK_PROVIDER_ID) {
-          const apiKey = await getArkApiKey()
+        const binding = (await providerSettings.snapshot()).models.find((m) => m.id === task.modelId && m.providerId === task.providerId)
+        if (binding) {
+          model = await providerSettings.resolve(task.providerId, task.modelId, task.modality)
+          taskCredential = model.apiKey || ''
+          if (binding.route === 'legacy-agnes' && AGNES_MODELS[task.modality] === model.apiModelId) {
+            model = { ...model, modelId: model.apiModelId, officialPi: false }
+            workerMethod = `generate:${task.modality}`
+          } else workerMethod = 'generate:official'
+        } else if (task.providerId === ARK_PROVIDER_ID) {
+          const apiKey = (await providerSettings.credentials(ARK_PROVIDER_ID)).apiKey
           let arkModel
           try {
             arkModel = resolveArkVideoModelConfig({
@@ -674,7 +807,7 @@ async function drainTaskQueue(projectId) {
           if (task.providerId !== AGNES_PROVIDER_ID || AGNES_MODELS[task.modality] !== task.modelId) {
             throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
           }
-          const apiKey = await getAgnesApiKey()
+          const apiKey = (await providerSettings.credentials(AGNES_PROVIDER_ID)).apiKey
           if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
           taskCredential = apiKey
           model = {
@@ -701,7 +834,7 @@ async function drainTaskQueue(projectId) {
           throw codedError('UNSUPPORTED_REFERENCE_MEDIA', '火山方舟 Seedance 当前仅接入视频生成。')
         }
       }
-      if (task.providerType === 'cloud' && ['image', 'video'].includes(task.modality)) {
+      if (task.providerType === 'cloud' && ['image', 'video', 'audio'].includes(task.modality)) {
         const taskProjectDirectory = activeProjectDirectory
         const activeProject = await localCore.request('project:get-active')
         if (!taskProjectDirectory || activeProject?.projectId !== projectId
@@ -712,6 +845,7 @@ async function drainTaskQueue(projectId) {
           localCore,
           projectId,
           projectDirectory: taskProjectDirectory,
+          allowInlineAudio: model.officialPi === true && model.providerId === 'elevenlabs' && model.model.operation === 'voice-change',
           validateProvider(value, field) {
             const hasValue = Array.isArray(value[field]) ? value[field].length > 0 : Boolean(value[field])
             if (!hasValue || task.providerId !== AGNES_PROVIDER_ID) return
@@ -723,7 +857,10 @@ async function drainTaskQueue(projectId) {
         })
         if (activeProjectDirectory !== taskProjectDirectory) throw codedError('TASK_PROJECT_CONTEXT_CHANGED')
       }
-      taskWorker = startGenerationWorker()
+      taskWorker = await startGenerationWorker()
+      if (stopping) return
+      const beforeSubmit = await localCore.request('task:get', { projectId, taskId: task.taskId })
+      if (beforeSubmit?.status === 'cancelled') continue
       activeGenerationExecution = { projectId, taskId: task.taskId, worker: taskWorker }
       const result = await taskWorker.request(workerMethod ?? `generate:${task.modality}`, {
         taskId: task.taskId,
@@ -734,10 +871,14 @@ async function drainTaskQueue(projectId) {
         endpoint: model.endpoint,
         modelId: model.modelId,
         apiKey: model.apiKey,
+        ...(model.officialPi ? { apiModelId: model.apiModelId, credentials: model.credentials, timeoutMs: model.timeoutMs,
+          operation: model.model.operation, pluginKey: model.model.pluginKey,
+          inputModes: model.model.inputModes,
+          remoteTaskId: providerCheckpoint?.remoteTaskId } : {}),
         parameters: workerParameters,
         ...(inputPaths ? { inputPaths } : {}),
         outputDirectory,
-      })
+      }, (checkpoint) => localCore.request('task:provider-checkpoint', { projectId, taskId: task.taskId, checkpoint }))
       if (stopping) return
       await localCore.request('task:succeeded', {
         projectId,
@@ -957,7 +1098,8 @@ async function clearAgnesApiKey() {
 }
 
 async function getAgnesModelSettings() {
-  return getAgnesModelCatalog(Boolean(await getAgnesApiKey()))
+  const apiKey = providerSettings ? (await providerSettings.credentials(AGNES_PROVIDER_ID)).apiKey : await getAgnesApiKey()
+  return getAgnesModelCatalog(Boolean(apiKey))
 }
 
 async function writeArkCredentialCiphertext(ciphertext) {
@@ -1021,7 +1163,8 @@ async function clearArkApiKey() {
 }
 
 async function getArkModelSettings() {
-  return getArkModelCatalog(Boolean(await getArkApiKey()))
+  const apiKey = providerSettings ? (await providerSettings.credentials(ARK_PROVIDER_ID)).apiKey : await getArkApiKey()
+  return getArkModelCatalog(Boolean(apiKey))
 }
 
 async function getLocalTextModelConfig() {
@@ -1297,13 +1440,15 @@ async function createGenerationTaskInStore(input) {
     || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
     || !modalities.includes(input.modality)
     || !['local', 'cloud'].includes(input.providerType)
-    || input.providerId !== undefined && ![AGNES_PROVIDER_ID, ARK_PROVIDER_ID].includes(input.providerId)
+    || input.providerId !== undefined && (typeof input.providerId !== 'string' || !getOfficialCatalog().providers.some((p) => p.id === input.providerId) && ![AGNES_PROVIDER_ID, ARK_PROVIDER_ID].includes(input.providerId))
     || input.modelId !== undefined && (typeof input.modelId !== 'string' || !input.modelId.trim() || input.modelId.length > 256)
     || (input.parameters !== undefined && (!input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)))) {
     throw codedError('INVALID_INPUT', '生成任务请求无效。')
   }
   let providerId
   let modelId
+  let modelDefaults = {}
+  let modelConstraints = {}
   if (input.providerType === 'local') {
     if (input.modality === 'audio') {
       providerId = SAPI_PROVIDER_ID
@@ -1323,7 +1468,14 @@ async function createGenerationTaskInStore(input) {
       modelId = model.modelId
     }
   } else {
-    if (input.providerId === ARK_PROVIDER_ID) {
+    const officialBinding = (await providerSettings.snapshot()).models.find((m) => m.id === input.modelId && m.providerId === input.providerId)
+    if (officialBinding) {
+      const resolved = await providerSettings.resolve(input.providerId, input.modelId, input.modality)
+      providerId = resolved.providerId
+      modelId = resolved.modelId
+      modelDefaults = { ...resolved.model.defaults }
+      modelConstraints = resolved.model.constraints || {}
+    } else if (input.providerId === ARK_PROVIDER_ID) {
       if (input.modality !== 'video') throw codedError('MODEL_UNAVAILABLE', '火山方舟当前仅接入视频生成。')
       const catalog = await getArkModelSettings()
       if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING', '尚未配置火山方舟 API Key。')
@@ -1331,6 +1483,7 @@ async function createGenerationTaskInStore(input) {
       if (modelId !== catalog.models.video) throw codedError('CLOUD_MODEL_CONFIGURATION_INVALID')
       providerId = ARK_PROVIDER_ID
     } else {
+      if (input.providerId !== undefined && input.providerId !== AGNES_PROVIDER_ID) throw codedError('MODEL_UNAVAILABLE')
       if (input.modality === 'audio') throw codedError('MODEL_UNAVAILABLE')
       const catalog = await getAgnesModelSettings()
       if (!catalog.apiKeyConfigured) throw codedError('CLOUD_CREDENTIAL_MISSING')
@@ -1339,7 +1492,24 @@ async function createGenerationTaskInStore(input) {
       providerId = AGNES_PROVIDER_ID
     }
   }
-  const parameters = { ...(input.parameters ?? {}) }
+  // Snapshot user defaults when the task is created, so later settings changes
+  // cannot change an already submitted task's recovery parameters.
+  const suppliedParameters = input.parameters ?? {}
+  const hasImageInput = Boolean(suppliedParameters.firstFrameUrl || suppliedParameters.imageUrl || suppliedParameters.referenceImages?.length || suppliedParameters.referenceUrls?.length)
+  const hasDerivedAspect = modelConstraints.imageAspectRatio && hasImageInput
+    || modelConstraints.firstLastFrameAspectRatio && suppliedParameters.firstFrameUrl && suppliedParameters.lastFrameUrl
+  if (hasDerivedAspect && suppliedParameters.ratio === undefined && suppliedParameters.aspect === undefined) delete modelDefaults.ratio
+  if (suppliedParameters.aspect !== undefined && suppliedParameters.ratio === undefined) delete modelDefaults.ratio
+  if (input.modality === 'video' && suppliedParameters.size !== undefined && suppliedParameters.resolution === undefined) delete modelDefaults.resolution
+  const parameters = { ...modelDefaults, ...suppliedParameters }
+  if (input.providerType === 'cloud' && input.modality === 'image') {
+    const counts = [parameters.count, parameters.n, parameters.num_images].filter((value) => value !== undefined)
+    const count = counts[0] ?? 1
+    if (!Number.isInteger(count) || count < 1 || count > 4 || counts.some((value) => value !== count)) {
+      throw codedError('INVALID_IMAGE_COUNT', '每次图片任务须生成 1–4 张，数量参数须一致。')
+    }
+    parameters.count = count
+  }
   if (input.modality !== 'audio' || input.prompt.trim() || !String(parameters.prompt ?? '').trim()) {
     parameters.prompt = input.prompt
   }
@@ -1417,6 +1587,16 @@ function localAssetImportName(sourcePath) {
 }
 
 function registerProjectIpc() {
+  for (const [channel, method] of Object.entries({
+    get: 'snapshot', save: 'save', clear: 'clear', test: 'test',
+  })) {
+    ipcMain.handle(`desktop:model:providers:${channel}`, async (event, input) => {
+      assertTrustedSender(event)
+      const result = await providerSettings[method](input)
+      if (method === 'save' || method === 'clear') void notifyAgentTaskState(agentProjectId)
+      return result
+    })
+  }
   ipcMain.handle('desktop:node:export-output', async (event, input) => {
     assertTrustedSender(event)
     return exportNodeOutput(input, {
@@ -2395,12 +2575,16 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:model:save-agnes-key', async (event, apiKey) => {
     assertTrustedSender(event)
     const settings = await saveAgnesApiKey(apiKey)
+    const provider = (await providerSettings.snapshot()).providers.find((item) => item.id === AGNES_PROVIDER_ID)
+    await providerSettings.save({ providerId: AGNES_PROVIDER_ID, credentials: { apiKey },
+      enabledModelIds: provider.enabledModelIds, defaultModelIds: provider.defaultModelIds })
     void notifyAgentTaskState(agentProjectId)
     return settings
   })
   ipcMain.handle('desktop:model:clear-agnes-key', async (event) => {
     assertTrustedSender(event)
     const settings = await clearAgnesApiKey()
+    await providerSettings.clear(AGNES_PROVIDER_ID)
     void notifyAgentTaskState(agentProjectId)
     return settings
   })
@@ -2410,11 +2594,17 @@ function registerProjectIpc() {
   })
   ipcMain.handle('desktop:model:save-ark-key', async (event, apiKey) => {
     assertTrustedSender(event)
-    return saveArkApiKey(apiKey)
+    const settings = await saveArkApiKey(apiKey)
+    const provider = (await providerSettings.snapshot()).providers.find((item) => item.id === ARK_PROVIDER_ID)
+    await providerSettings.save({ providerId: ARK_PROVIDER_ID, credentials: { apiKey },
+      enabledModelIds: provider.enabledModelIds, defaultModelIds: provider.defaultModelIds })
+    return settings
   })
   ipcMain.handle('desktop:model:clear-ark-key', async (event) => {
     assertTrustedSender(event)
-    return clearArkApiKey()
+    const settings = await clearArkApiKey()
+    await providerSettings.clear(ARK_PROVIDER_ID)
+    return settings
   })
   ipcMain.handle('desktop:model:get-local-text', (event) => {
     assertTrustedSender(event)
@@ -2456,6 +2646,28 @@ function registerAgentIpc() {
     }
     return agentWorker
   }
+
+  ipcMain.handle('desktop:agent:get-model-catalog', async (event) => {
+    assertTrustedSender(event)
+    return getAgentModelCatalog()
+  })
+
+  ipcMain.handle('desktop:agent:set-session-model', async (event, projectId, sessionId, bindingId) => {
+    assertTrustedSender(event)
+    if (typeof projectId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/u.test(projectId)
+      || typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)
+      || typeof bindingId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(bindingId)) {
+      throw codedError('AGENT_MODEL_INVALID')
+    }
+    const connection = await resolveAgentOfficialConnection(bindingId)
+    const worker = await getAgentWorker(projectId)
+    const active = await localCore.request('project:get-active')
+    if (!active || active.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
+    const result = await worker.request('agent:set-session-model', { projectId, sessionId, bindingId })
+    if (connection.bindingId !== result.bindingId) throw codedError('AGENT_SESSION_MODEL_MISMATCH')
+    void notifyAgentTaskState(projectId)
+    return result
+  })
 
   ipcMain.handle('desktop:agent:list-sessions', async (event, projectId, filter) => {
     assertTrustedSender(event)
@@ -2716,6 +2928,7 @@ function registerAgentIpc() {
       || typeof input.content !== 'string' || !input.content.trim() || input.content.length > 20_000
       || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0
       || typeof input.idempotencyKey !== 'string' || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
+      || (input.modelId !== undefined && (typeof input.modelId !== 'string' || input.modelId.length > 256))
       || (input.selectedSkillId !== undefined && (typeof input.selectedSkillId !== 'string'
         || input.selectedSkillId.length < 1 || input.selectedSkillId.length > 160))
       || (input.selectedNodeIds !== undefined && (!Array.isArray(input.selectedNodeIds)
@@ -2723,8 +2936,7 @@ function registerAgentIpc() {
       throw codedError('AGENT_RUN_INPUT_INVALID')
     }
     const worker = await getAgentWorker(input.projectId)
-    const apiKey = await getAgnesApiKey()
-    if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
+    const agentConnection = await resolveAgentSessionConnection(worker, input.projectId, input.sessionId, input.modelId)
     const active = await localCore.request('project:get-active')
     if (!active || active.projectId !== input.projectId || active.canvasId !== input.canvasId) throw codedError('AGENT_PROJECT_CHANGED')
     const canvas = await localCore.request('canvas:load', { projectId: input.projectId, canvasId: input.canvasId })
@@ -2739,11 +2951,12 @@ function registerAgentIpc() {
     const canvasDomain = getAgentCanvasDomain(latestCanvas)
     return worker.request('agent:start-run', {
       ...input,
+      modelId: agentConnection.bindingId,
       content: input.content.trim(),
       canvasContext,
       canvasDomain,
       canvasNodeCount: latestCanvas.nodes.length,
-      apiKey,
+      ...agentConnection,
     }, 30_000)
   })
   ipcMain.handle('desktop:agent:confirm-action', async (event, input) => {
@@ -2781,16 +2994,19 @@ function registerAgentIpc() {
     }
     return worker.request('agent:cancel-run', { projectId, sessionId, runId })
   })
-  ipcMain.handle('desktop:agent:send-message', async (event, projectId, sessionId, content, selectedSkillId) => {
+  ipcMain.handle('desktop:agent:send-message', async (event, projectId, sessionId, content, selectedSkillId, modelId) => {
     assertTrustedSender(event)
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)
+      || (modelId !== undefined && (typeof modelId !== 'string' || modelId.length > 256))) {
+      throw codedError('AGENT_SESSION_INPUT_INVALID')
+    }
     if (typeof content !== 'string' || !content.trim() || content.length > 20_000) {
       throw codedError('AGENT_MESSAGE_INVALID')
     }
     if (selectedSkillId !== undefined && (typeof selectedSkillId !== 'string'
       || selectedSkillId.length < 1 || selectedSkillId.length > 160)) throw codedError('AGENT_SKILL_ID_INVALID')
     const worker = await getAgentWorker(projectId)
-    const apiKey = await getAgnesApiKey()
-    if (!apiKey) throw codedError('CLOUD_CREDENTIAL_MISSING')
+    const agentConnection = await resolveAgentSessionConnection(worker, projectId, sessionId, modelId)
     const active = await localCore.request('project:get-active')
     if (!active || active.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
     const canvas = await localCore.request('canvas:load', { projectId, canvasId: active.canvasId })
@@ -2807,11 +3023,13 @@ function registerAgentIpc() {
       sessionId,
       content,
       selectedSkillId,
+      modelId: agentConnection.bindingId,
       canvasId: latestProject.canvasId,
       canvasVersion: latestCanvas.version,
       canvasNodeCount: latestCanvas.nodes.length,
       canvasContext,
-      apiKey,
+      apiKey: agentConnection.apiKey,
+      ...(agentConnection.modelDefinition ? { modelDefinition: agentConnection.modelDefinition } : {}),
       idempotencyKey: randomUUID(),
     }, 270_000)
   })
@@ -2836,7 +3054,13 @@ async function createWindow() {
     },
   })
 
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  const providerDocumentation = require(path.join(webRoot, developmentUrl ? 'public' : 'dist', 'provider-documentation.json'))
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isOfficialDocumentationUrl(url, providerDocumentation)) {
+      void shell.openExternal(url).catch(() => console.warn('OFFICIAL_DOCUMENTATION_OPEN_FAILED'))
+    }
+    return { action: 'deny' }
+  })
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!isTrustedRendererUrl(url)) event.preventDefault()
   })
@@ -2865,6 +3089,18 @@ if (hasSingleInstanceLock) {
     desktopSettingsFile = path.join(app.getPath('userData'), 'settings.json')
     agnesCredentialFile = path.join(app.getPath('userData'), 'credentials', 'agnes-api-key.bin')
     arkCredentialFile = path.join(app.getPath('userData'), 'credentials', 'ark-api-key.bin')
+    providerSettings = createProviderSettings({
+      directory: app.getPath('userData'), safeStorage, catalog: getOfficialCatalog,
+      testOfficialProviderConnection: createProviderNetworkProbe({
+        catalog: getOfficialCatalog,
+        probe: (providerId, options) => require(path.join(desktopRoot, 'dist', 'pi-official-media.cjs')).testOfficialProviderConnection(providerId, options),
+        fetch: (input, init) => net.fetch(input, init),
+      }),
+      legacyCredentials: {
+        agnes: { read: getAgnesApiKey, clear: clearAgnesApiKey },
+        volcengine: { read: getArkApiKey, clear: clearArkApiKey },
+      },
+    })
     localCore = startLocalCore()
     recentProjectCatalog = createRecentProjectCatalog({
       catalogFile: recentProjectsFile,

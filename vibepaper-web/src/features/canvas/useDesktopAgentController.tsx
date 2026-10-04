@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import type { AgentPanelDesktopAdapter } from './AgentPanel'
 import { isChatVisibleMessage } from './agentEventHandlers'
 import {
@@ -13,8 +14,8 @@ import {
 } from './agentEventEnvelope'
 import { isActionableConfirmation } from './confirmationState'
 import type { AgentChatMsg, AgentConfirmation } from './agentTypes'
-import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentSession, DesktopAgentSkill } from '@/desktop/desktop-bridge'
-import type { SkillView } from '@/lib/types'
+import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentModelCatalog, DesktopAgentSession, DesktopAgentSkill, DesktopProviderModel } from '@/desktop/desktop-bridge'
+import type { ModelInfo, SkillView } from '@/lib/types'
 import { useCanvasStore } from './canvasStore'
 import { nodeReferencesForComposer, refFromNode, type ComposerRef } from './agentNodeReferences'
 
@@ -43,6 +44,18 @@ function toSkillView(skill: DesktopAgentSkill): SkillView {
   }
 }
 
+function toAgentPickerModel(model: DesktopProviderModel): ModelInfo {
+  return {
+    id: model.id,
+    name: model.id,
+    modelType: model.modelType,
+    displayName: model.displayName,
+    provider: model.providerId,
+    enabled: true,
+    basePrice: 0,
+  }
+}
+
 function createEventState(messages: AgentChatMsg[]): AgentEventState {
   return {
     messages,
@@ -59,7 +72,10 @@ function createEventState(messages: AgentChatMsg[]): AgentEventState {
 
 function normalizeError(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : ''
-  if (message.includes('CLOUD_CREDENTIAL_MISSING')) return '请先配置 Agnes API Key。'
+  if (message.includes('CLOUD_CREDENTIAL_MISSING')) return '当前 Agent 模型凭据不可用，请在模型设置中配置对应提供方。'
+  if (message.includes('MODEL_UNAVAILABLE')) return '当前 Agent 模型未配置或不支持工具调用，请选择一个已启用的文本模型。'
+  if (message.includes('AGENT_SESSION_MODEL_MISMATCH')) return '会话模型已变更，请重新选择会话后再发送。'
+  if (message.includes('SESSION_BUSY')) return '当前会话正在运行，完成或停止后再切换模型。'
   if (message.includes('AGENT_CANVAS_CHANGED')) return '画布已更新，请重新发送后再确认。'
   if (message.includes('AGENT_PROJECT_CHANGED')) return '当前本地项目已切换，请重新打开画布。'
   if (message.includes('AGENT_RUN_ALREADY_PROCESSED')) return '这条消息已处理，请检查会话记录后再继续。'
@@ -83,6 +99,7 @@ export function useDesktopAgentController({
   closeSettings: () => void
   settingsDialog: React.ReactNode
 } {
+  const navigate = useNavigate()
   const [sessions, setSessions] = useState<DesktopAgentSession[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<AgentChatMsg[]>([])
@@ -91,6 +108,8 @@ export function useDesktopAgentController({
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [agnesCatalog, setAgnesCatalog] = useState<DesktopAgnesModelCatalog | null>(null)
+  const [agentModelCatalog, setAgentModelCatalog] = useState<DesktopAgentModelCatalog | null>(null)
+  const [selectedModelId, setSelectedModelId] = useState('')
   const [skills, setSkills] = useState<SkillView[]>([])
   const [loadedSkillIds, setLoadedSkillIds] = useState<string[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
@@ -105,6 +124,11 @@ export function useDesktopAgentController({
   const sendingRef = useRef(false)
   const confirmingActionRef = useRef<string | null>(null)
   const skillRequestEpochRef = useRef(0)
+
+  const agentModelOptions = (agentModelCatalog?.models ?? []).map(toAgentPickerModel)
+  const providerNames = agentModelCatalog?.providerNames ?? {}
+  const selectedAgentModel = agentModelCatalog?.models.find((model) => model.id === selectedModelId)
+  const selectedModelAvailable = selectedAgentModel !== undefined
 
   const loadSkills = useCallback(async (sessionId?: string | null) => {
     if (!bridge || !projectId) {
@@ -172,6 +196,8 @@ export function useDesktopAgentController({
       setSessions(listed)
       const preferred = preferredSessionId ? listed.find((item) => item.sessionId === preferredSessionId) : undefined
       const nextId = preferred?.sessionId ?? listed.find((item) => item.status !== 'archived')?.sessionId ?? listed[0]?.sessionId ?? null
+      const nextSession = nextId ? listed.find((item) => item.sessionId === nextId) : undefined
+      setSelectedModelId(nextSession?.agentModelId ?? agentModelCatalog?.defaultModelId ?? '')
       activeSessionRef.current = nextId
       setActiveSessionId(nextId)
       if (!nextId) {
@@ -192,7 +218,7 @@ export function useDesktopAgentController({
     } catch (cause) {
       if (epoch === requestEpochRef.current) setError(normalizeError(cause))
     }
-  }, [loadSession, loadSkills, projectId])
+  }, [agentModelCatalog?.defaultModelId, loadSession, loadSkills, projectId])
 
   useEffect(() => {
     activeSessionRef.current = null
@@ -206,16 +232,25 @@ export function useDesktopAgentController({
     setSending(false)
     if (!bridge || !projectId) return
     let current = true
-    void Promise.allSettled([bridge.getAgnesModels(), bridge.listAgentSessions(projectId)]).then(async ([catalog, listed]) => {
+    void Promise.allSettled([
+      bridge.getAgnesModels(),
+      bridge.getAgentModelCatalog(),
+      bridge.listAgentSessions(projectId),
+    ]).then(async ([agnes, agentCatalog, listed]) => {
       if (!current) return
-      if (catalog.status === 'fulfilled') setAgnesCatalog(catalog.value)
-      else setError(normalizeError(catalog.reason))
+      if (agnes.status === 'fulfilled') setAgnesCatalog(agnes.value)
+      else setError(normalizeError(agnes.reason))
+      if (agentCatalog.status === 'fulfilled') setAgentModelCatalog(agentCatalog.value)
+      else setError(normalizeError(agentCatalog.reason))
       if (listed.status !== 'fulfilled') {
         setError(normalizeError(listed.reason))
         return
       }
       setSessions(listed.value)
       const initial = listed.value[0]?.sessionId ?? null
+      const initialSession = listed.value[0]
+      setSelectedModelId(initialSession?.agentModelId
+        ?? (agentCatalog.status === 'fulfilled' ? agentCatalog.value.defaultModelId ?? '' : ''))
       activeSessionRef.current = initial
       setActiveSessionId(initial)
       if (initial) {
@@ -298,13 +333,16 @@ export function useDesktopAgentController({
     setError('')
     try {
       const created = await bridge.createAgentSession(projectId, '新对话')
+      if (selectedModelId && selectedModelAvailable) {
+        await bridge.setAgentSessionModel(projectId, created.sessionId, selectedModelId)
+      }
       await refreshSessions(created.sessionId)
     } catch (cause) {
       setError(normalizeError(cause))
     } finally {
       setCreating(false)
     }
-  }, [creating, projectId, refreshSessions])
+  }, [creating, projectId, refreshSessions, selectedModelAvailable, selectedModelId])
 
   const onSelectSession = useCallback(async (sessionId: string) => {
     if (!bridge || !projectId) return
@@ -321,12 +359,15 @@ export function useDesktopAgentController({
         setSessions(listed)
         if (!listed.some((session) => session.sessionId === sessionId)) throw new Error('SESSION_NOT_FOUND')
       }
+      const session = sessions.find((candidate) => candidate.sessionId === sessionId)
+      const refreshedSession = session ?? await bridge.getAgentSession(projectId, sessionId)
+      setSelectedModelId(refreshedSession.agentModelId ?? agentModelCatalog?.defaultModelId ?? '')
       await loadSession(sessionId, epoch)
       await loadSkills(sessionId)
     } catch (cause) {
       if (epoch === requestEpochRef.current) setError(normalizeError(cause))
     }
-  }, [loadSession, loadSkills, projectId, sessions])
+  }, [agentModelCatalog?.defaultModelId, loadSession, loadSkills, projectId, sessions])
 
   const updateSession = useCallback(async (sessionId: string, patch: { title?: string; status?: 'active' | 'archived' }) => {
     if (!bridge || !projectId) return
@@ -365,11 +406,49 @@ export function useDesktopAgentController({
     }
   }, [projectId, refreshSessions])
 
+  const onSelectAgentModel = useCallback(async (modelId: string) => {
+    if (!bridge || !projectId) return
+    if (!agentModelCatalog?.models.some((model) => model.id === modelId)) {
+      setError('此模型尚未配置、启用或不支持 Agent 工具调用。')
+      return
+    }
+    if (sendingRef.current) {
+      setError('当前会话正在运行，完成或停止后再切换模型。')
+      return
+    }
+    const sessionId = activeSessionRef.current
+    if (!sessionId) {
+      setSelectedModelId(modelId)
+      setError('')
+      return
+    }
+    const activeSession = sessions.find((session) => session.sessionId === sessionId)
+    if (activeSession?.status === 'archived') {
+      setError('请先恢复此会话，再更换模型。')
+      return
+    }
+    setError('')
+    try {
+      const result = await bridge.setAgentSessionModel(projectId, sessionId, modelId)
+      if (result.bindingId !== modelId) throw new Error('AGENT_SESSION_MODEL_MISMATCH')
+      setSelectedModelId(modelId)
+      setSessions((current) => current.map((session) => session.sessionId === sessionId
+        ? { ...session, agentModelId: modelId }
+        : session))
+    } catch (cause) {
+      setError(normalizeError(cause))
+    }
+  }, [agentModelCatalog, projectId, sessions])
+
   const sendWithReferences = useCallback(async (input: { selectedNodeIds: string[]; selectedSkillId?: string }): Promise<boolean> => {
     const content = draft.trim()
     if (!bridge || !projectId || !content || sendingRef.current) return false
     if (sessions.find((session) => session.sessionId === activeSessionRef.current)?.status === 'archived') {
       setError('此会话已归档，请先恢复后继续发送。')
+      return false
+    }
+    if (!selectedModelId || !selectedModelAvailable) {
+      setError('当前会话选择的 Agent 模型不可用，请配置其提供方或切换到可用模型。')
       return false
     }
     const hasPendingConfirmation = messages.some((message) => {
@@ -393,12 +472,15 @@ export function useDesktopAgentController({
       if (!currentCanvas || String(currentCanvas.canvas.id) !== canvasId) throw new Error('AGENT_PROJECT_CHANGED')
       if (!sessionId) {
         const created = await bridge.createAgentSession(projectId, '新对话')
+        const binding = await bridge.setAgentSessionModel(projectId, created.sessionId, selectedModelId)
+        if (binding.bindingId !== selectedModelId) throw new Error('AGENT_SESSION_MODEL_MISMATCH')
         sessionId = created.sessionId
         activeSessionRef.current = sessionId
         setActiveSessionId(sessionId)
         setSessions((current) => [{
           sessionId: created.sessionId,
           title: content.slice(0, 48) || '新对话',
+          agentModelId: selectedModelId,
           createdAt: created.createdAt,
           modifiedAt: created.createdAt,
         }, ...current])
@@ -415,6 +497,7 @@ export function useDesktopAgentController({
           canvasId,
           canvasVersion: currentCanvas.canvas.version,
           sessionId,
+          modelId: selectedModelId,
           content,
           selectedNodeIds,
           selectedSkillId: input?.selectedSkillId,
@@ -443,7 +526,7 @@ export function useDesktopAgentController({
         setMessages(optimisticState.messages)
         await loadSession(sessionId, requestEpochRef.current)
       } else {
-        await bridge.sendAgentMessage(projectId, sessionId, content, input?.selectedSkillId)
+        await bridge.sendAgentMessage(projectId, sessionId, content, input?.selectedSkillId, selectedModelId)
         setDraft('')
         await loadSkills(sessionId)
         await refreshSessions(sessionId)
@@ -457,7 +540,8 @@ export function useDesktopAgentController({
       }
       return false
     }
-  }, [agnesCatalog?.apiKeyConfigured, canvasId, draft, flushCanvas, loadSession, loadSkills, messages, projectId, refreshSessions, sessions])
+  }, [canvasId, draft, flushCanvas, loadSession, loadSkills, messages, projectId, refreshSessions,
+    selectedModelAvailable, selectedModelId, sessions])
 
   const onSend = useCallback(async () => {
     await sendWithReferences({ selectedNodeIds: [] })
@@ -519,12 +603,32 @@ export function useDesktopAgentController({
   }, [loadSession, projectId])
 
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
+  const openProviderSettings = useCallback(() => {
+    setSettingsOpen(false)
+    navigate('/settings/providers', { state: { returnTo: window.location.pathname } })
+  }, [navigate])
+  const refreshAgentModelCatalog = useCallback(async () => {
+    if (!bridge) return
+    const catalog = await bridge.getAgentModelCatalog()
+    setAgentModelCatalog(catalog)
+    if (!activeSessionRef.current) setSelectedModelId(catalog.defaultModelId ?? '')
+  }, [])
   const refreshSkills = useCallback(async () => loadSkills(activeSessionId), [activeSessionId, loadSkills])
   const settingsDialog = settingsOpen && projectId
     ? <DesktopAgentModelSettings
         configured={agnesCatalog?.apiKeyConfigured === true}
-        onSaved={(catalog) => { setAgnesCatalog(catalog); setSettingsOpen(false); setError('') }}
-        onCleared={(catalog) => { setAgnesCatalog(catalog); setError('') }}
+        onSaved={(catalog) => {
+          setAgnesCatalog(catalog)
+          setSettingsOpen(false)
+          setError('')
+          void refreshAgentModelCatalog().catch((cause) => setError(normalizeError(cause)))
+        }}
+        onCleared={(catalog) => {
+          setAgnesCatalog(catalog)
+          setError('')
+          void refreshAgentModelCatalog().catch((cause) => setError(normalizeError(cause)))
+        }}
+        onOpenProviderSettings={openProviderSettings}
         onClose={closeSettings}
       />
     : null
@@ -538,8 +642,13 @@ export function useDesktopAgentController({
     sending,
     activeRunId: activeRunSessionIdRef.current === activeSessionId ? activeRunIdRef.current : null,
     creating,
-    configured: agnesCatalog?.apiKeyConfigured === true,
-    modelLabel: 'Agnes 2.5 Flash',
+    configured: selectedModelAvailable,
+    modelLabel: selectedAgentModel?.displayName
+      ?? (selectedModelId ? `${selectedModelId}（当前不可用）` : '选择 Agent 模型'),
+    modelOptions: agentModelOptions,
+    selectedModelId,
+    providerNames,
+    onSelectModel: onSelectAgentModel,
     error,
     skills,
     loadedSkillIds,
@@ -565,10 +674,11 @@ export function useDesktopAgentController({
   }
 }
 
-function DesktopAgentModelSettings({ configured, onSaved, onCleared, onClose }: {
+function DesktopAgentModelSettings({ configured, onSaved, onCleared, onOpenProviderSettings, onClose }: {
   configured: boolean
   onSaved: (catalog: DesktopAgnesModelCatalog) => void
   onCleared: (catalog: DesktopAgnesModelCatalog) => void
+  onOpenProviderSettings: () => void
   onClose: () => void
 }) {
   const [apiKey, setApiKey] = useState('')
@@ -613,7 +723,7 @@ function DesktopAgentModelSettings({ configured, onSaved, onCleared, onClose }: 
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 id="agent-model-settings-title" className="text-lg font-bold">模型与 API Key</h2>
-          <p className="mt-1 text-xs leading-5 text-[#777]">Agent 请求由你选择的 Agnes 云端模型处理。</p>
+          <p className="mt-1 text-xs leading-5 text-[#777]">Agent 按会话保存文本模型选择；工具调用只会发送给已配置并启用的兼容模型。</p>
         </div>
         <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">关闭</button>
       </div>
@@ -632,6 +742,10 @@ function DesktopAgentModelSettings({ configured, onSaved, onCleared, onClose }: 
         </div>
         {(message || error) && <p role={error ? 'alert' : 'status'} className={`mt-3 text-xs ${error ? 'text-red-700' : 'text-[#666]'}`}>{error || message}</p>}
       </section>
+      <button type="button" onClick={onOpenProviderSettings} className="mt-4 w-full rounded-xl border border-black/10 px-4 py-3 text-left text-xs font-semibold text-[#555] hover:bg-black/[0.03]">
+        配置其他官方模型提供方
+        <span className="mt-1 block font-normal text-[#888]">设置厂商 API 凭据、启用模型并选择画布默认模型。</span>
+      </button>
     </section>
   </div>
 }

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SessionRunService } from "../src/application/session-run-service.ts";
 import { DesktopAgentControlStore } from "../src/desktop/control-store.ts";
-import { DesktopAgentSessionStore } from "../src/desktop/session-store.ts";
+import { DesktopAgentSessionStore, LEGACY_AGENT_MODEL_BINDING_ID } from "../src/desktop/session-store.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -29,6 +29,11 @@ describe("desktop Agent session management", () => {
 		let sessions = new DesktopAgentSessionStore(projectId, projectDirectory, sessionsDirectory, control);
 		try {
 			const original = await sessions.createSession("原会话", "canvas-local-1");
+			expect((await sessions.getSession(original.id)).agentModelId).toBe(LEGACY_AGENT_MODEL_BINDING_ID);
+			await sessions.setAgentModelBinding(original.id, "target-deepseek-v4-1-flash");
+			await expect(sessions.setAgentModelBinding(original.id, "not a binding")).rejects.toThrow(
+				"AGENT_MODEL_INVALID",
+			);
 			await sessions.appendMessage(original.id, {
 				role: "user",
 				content: [{ type: "text", text: "这条记录不应复制。" }],
@@ -38,6 +43,7 @@ describe("desktop Agent session management", () => {
 			const copied = await sessions.copySession(original.id);
 			expect(copied).toMatchObject({
 				title: "原会话 副本",
+				agentModelId: "target-deepseek-v4-1-flash",
 				status: "active",
 				canvasId: "canvas-local-1",
 				copiedFrom: original.id,
@@ -46,6 +52,7 @@ describe("desktop Agent session management", () => {
 				order: "oldestFirst",
 			});
 			expect(copiedEntries.some((entry) => entry.type === "message")).toBe(false);
+			expect(JSON.stringify(copiedEntries)).not.toContain("test-only-api-key");
 
 			await expect(
 				sessions.updateSession(original.id, { title: "不能部分改名", status: "unknown" } as never),
@@ -80,6 +87,8 @@ describe("desktop Agent session management", () => {
 			control = new DesktopAgentControlStore(controlPath);
 			sessions = new DesktopAgentSessionStore(projectId, projectDirectory, sessionsDirectory, control);
 			expect((await sessions.getSession(original.id)).status).toBe("archived");
+			expect((await sessions.getSession(original.id)).agentModelId).toBe("target-deepseek-v4-1-flash");
+			expect(await sessions.getAgentModelBinding(copied.sessionId)).toBe("target-deepseek-v4-1-flash");
 			expect(await sessions.hasSession(original.id)).toBe(true);
 
 			await sessions.deleteSession(original.id);

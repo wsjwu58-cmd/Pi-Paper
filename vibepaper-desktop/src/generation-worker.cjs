@@ -4,6 +4,8 @@ const { randomUUID } = require('node:crypto')
 const dns = require('node:dns').promises
 const net = require('node:net')
 const parentPort = process.parentPort
+const { initializeWorkerProxy } = require('./worker-network.cjs')
+if (parentPort) initializeWorkerProxy()
 const { imageMimeFromBytes, MAX_REFERENCE_IMAGE_BYTES, MAX_REFERENCE_PAYLOAD_BYTES } = require('./reference-media.cjs')
 const { normalizeLocalTextModelConfig } = require('./local-model-catalog.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('./agnes-model-catalog.cjs')
@@ -258,7 +260,7 @@ async function writeOutput(outputDirectory, taskId, fileName, output) {
     throw new WorkerFailure('LOCAL_MODEL_OUTPUT_INVALID', '本地任务输出目录缺失或路径无效。')
   }
 
-  if (!/^(?:result\.txt|result(?:-[1-3])?\.(?:png|jpg|webp|mp4|webm))$/u.test(fileName)
+  if (!/^(?:result\.txt|result(?:-[1-3])?\.(?:png|jpg|webp|mp4|webm|wav|mp3|ogg|m4a))$/u.test(fileName)
     || !Buffer.isBuffer(output) || output.length === 0 || output.length > MAX_MEDIA_OUTPUT_BYTES) {
     throw new WorkerFailure('MODEL_OUTPUT_INVALID', '模型结果为空、格式无效或超过本地保存上限。')
   }
@@ -295,6 +297,10 @@ function hasMediaSignature(extension, bytes) {
   if (extension === 'webp') return bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
   if (extension === 'mp4') return bytes.length >= 8 && bytes.toString('ascii', 4, 8) === 'ftyp'
   if (extension === 'webm') return bytes.length >= 4 && bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
+  if (extension === 'wav') return bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WAVE'
+  if (extension === 'mp3') return bytes.length >= 3 && (bytes.toString('ascii', 0, 3) === 'ID3' || bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)
+  if (extension === 'ogg') return bytes.length >= 4 && bytes.toString('ascii', 0, 4) === 'OggS'
+  if (extension === 'm4a') return bytes.length >= 8 && bytes.toString('ascii', 4, 8) === 'ftyp'
   return false
 }
 
@@ -552,7 +558,7 @@ async function downloadAgnesOutput(urlValue, outputDirectory, taskId, modality, 
     if (error instanceof WorkerFailure) throw error
     throw new WorkerFailure('MODEL_OUTPUT_INVALID', '无法保存 Agnes 媒体结果。')
   }
-  return `generated/${taskId}/result.${extension}`
+  return `generated/${taskId}/${fileName(extension)}`
 }
 
 function extensionForMediaType(contentType, modality, fallbackUrl = '') {
@@ -565,6 +571,12 @@ function extensionForMediaType(contentType, modality, fallbackUrl = '') {
   if (modality === 'video') {
     if (type === 'video/mp4') return 'mp4'
     if (type === 'video/webm') return 'webm'
+  }
+  if (modality === 'audio') {
+    if (['audio/mpeg', 'audio/mp3'].includes(type)) return 'mp3'
+    if (['audio/wav', 'audio/x-wav'].includes(type)) return 'wav'
+    if (type === 'audio/ogg') return 'ogg'
+    if (['audio/mp4', 'audio/x-m4a'].includes(type)) return 'm4a'
   }
   if (!type || ['application/octet-stream', 'binary/octet-stream', 'application/download'].includes(type)) {
     if (modality === 'image' && /\.png(?:$|[?#])/iu.test(fallbackUrl)) return 'png'
@@ -1185,17 +1197,124 @@ function assertTaskOutputTarget(job) {
 }
 
 let running = false
+let checkpointSequence = 0
+const checkpointWaiters = new Map()
+function checkpointToMain(requestId, checkpoint) {
+  const sequence = ++checkpointSequence
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { checkpointWaiters.delete(sequence); reject(new WorkerFailure('TASK_CHECKPOINT_FAILED', '无法持久化官方任务状态，已停止后续请求。')) }, 30_000)
+    checkpointWaiters.set(sequence, { resolve, reject, timer })
+    parentPort.postMessage({ id: requestId, sequence, type: 'provider-checkpoint', checkpoint })
+  })
+}
+
+function officialReferences(parameters = {}) {
+  const refs = []
+  const add = (value, type, role) => {
+    for (const item of Array.isArray(value) ? value : value ? [value] : []) {
+      if (typeof item !== 'string') throw new WorkerFailure('CLOUD_INPUT_INVALID', '参考素材格式无效。')
+      if (/^(?:file|vibe|blob):/iu.test(item)) throw new WorkerFailure('CLOUD_REFERENCE_UNAVAILABLE', '该参考素材尚未完成安全读取。')
+      const data = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/u.exec(item)
+      const reference = data ? { type, base64: data[2], mimeType: data[1], role } : { type, url: item, role }
+      if (!refs.some((existing) => existing.type === type && existing.role === role
+        && existing.url === reference.url && existing.base64 === reference.base64)) refs.push(reference)
+    }
+  }
+  add(parameters.firstFrameUrl, 'image', 'first_frame')
+  add(parameters.lastFrameUrl, 'image', 'last_frame')
+  for (const field of ['referenceImages', 'reference_images', 'referenceUrls', 'image', 'imageUrl', 'image_url', 'referenceUrl', 'sourceUrl']) {
+    add(parameters[field], 'image', 'reference')
+  }
+  add(parameters.maskUrl, 'image', 'mask')
+  add(parameters.referenceVideos ?? parameters.reference_videos, 'video', 'reference')
+  add(parameters.referenceAudios ?? parameters.reference_audios, 'audio', 'reference')
+  return refs
+}
+
+async function runOfficialTask(job, dependencies = {}) {
+  assertTaskOutputTarget(job)
+  const api = dependencies.api || require(path.join(__dirname, '..', 'dist', 'pi-official-media.cjs'))
+  const params = { ...(job.parameters || {}) }
+  const instructions = ['style', 'camera'].flatMap((field) => typeof params[field] === 'string' && params[field].trim()
+    ? [`${field === 'style' ? 'Style' : 'Camera'}: ${params[field].trim()}`] : [])
+  for (const field of ['prompt', 'model', 'resKey', 'style', 'camera', 'referenceTexts', 'upstreamNodeIds',
+    'referenceImages', 'reference_images', 'referenceUrls', 'image', 'imageUrl', 'image_url', 'referenceUrl', 'sourceUrl',
+    'firstFrameUrl', 'lastFrameUrl', 'maskUrl', 'referenceVideos', 'reference_videos', 'referenceAudios', 'reference_audios']) delete params[field]
+  if (params.aspect !== undefined) {
+    if (params.ratio !== undefined && params.ratio !== params.aspect) throw new WorkerFailure('CLOUD_INPUT_INVALID', '画幅参数不一致。')
+    params.ratio ??= params.aspect
+    delete params.aspect
+  }
+  if (job.modality === 'video' && params.size !== undefined) {
+    if (params.resolution !== undefined && String(params.resolution).toLowerCase() !== String(params.size).toLowerCase()) throw new WorkerFailure('CLOUD_INPUT_INVALID', '分辨率参数不一致。')
+    params.resolution ??= params.size
+    delete params.size
+  }
+  if (job.modality !== 'image' && params.count !== undefined) {
+    if (params.count !== 1) throw new WorkerFailure('CLOUD_INPUT_INVALID', '此媒体任务只支持一次生成一个结果。')
+    delete params.count
+  }
+  if (job.modality === 'audio' || job.modality === 'text') {
+    // These fields are visual editor controls, not speech or chat parameters.
+    delete params.ratio
+    delete params.resolution
+    delete params.size
+  }
+  const input = { providerId: job.providerId, modelId: job.apiModelId, modality: job.modality,
+    prompt: [job.prompt || '', ...instructions].filter(Boolean).join('\n\n'), params, operation: job.operation,
+    pluginKey: job.pluginKey, references: officialReferences(job.parameters), remoteTaskId: job.remoteTaskId }
+  if (Array.isArray(job.inputModes) && input.references.some((reference) => !job.inputModes.includes(reference.type))) {
+    throw new WorkerFailure('UNSUPPORTED_INPUT_MODE', '该模型不支持本次使用的参考素材类型。')
+  }
+    const checkpoint = dependencies.checkpoint || (async () => {
+      throw new WorkerFailure('TASK_CHECKPOINT_REQUIRED', '异步生成需要持久化任务检查点。')
+    })
+  const result = await api.executeOfficialGeneration(input, {
+    apiKey: job.apiKey, credentials: job.credentials, baseUrl: job.endpoint, timeoutMs: job.timeoutMs,
+    onSubmitting: async () => checkpoint({ phase: 'submitting' }),
+    onSubmitted: async (value) => {
+      const remoteTaskId = typeof value === 'string' ? value : value?.remoteTaskId || value?.taskId
+      if (!remoteTaskId) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '官方服务未返回任务标识。')
+      await checkpoint({ phase: 'submitted', remoteTaskId })
+    },
+  })
+  if (job.modality === 'text') {
+    if (typeof result.text !== 'string' || !result.text.trim()) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '官方模型没有返回文本。')
+    return { outputPath: await writeTextOutput(job.outputDirectory, job.taskId, result.text) }
+  }
+  const outputPaths = []
+  if (!Array.isArray(result.outputs) || !result.outputs.length || result.outputs.length > 4) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '官方模型没有返回可保存的媒体结果。')
+  for (const [index, output] of result.outputs.entries()) {
+    if (output.base64) {
+      const bytes = Buffer.from(output.base64, 'base64')
+      if (bytes.toString('base64').replace(/=+$/u, '') !== output.base64.replace(/=+$/u, '')) throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '媒体数据无效。')
+      const ext = extensionForMediaType(output.mimeType, job.modality)
+      assertMediaSignature(ext, bytes)
+      outputPaths.push(await writeOutput(job.outputDirectory, job.taskId, `result${index ? `-${index}` : ''}.${ext}`, bytes))
+    } else if (output.url) {
+      outputPaths.push(await (dependencies.download || downloadAgnesOutput)(output.url, job.outputDirectory, job.taskId, job.modality, {}, index))
+    } else throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '媒体结果没有内容或下载地址。')
+  }
+  return { outputPath: outputPaths[0], outputPaths }
+}
 if (parentPort) parentPort.on('message', async (event) => {
   const request = event?.data ?? event
+  if (request?.type === 'provider-checkpoint-ack') {
+    const waiter = checkpointWaiters.get(request.sequence)
+    if (waiter) { clearTimeout(waiter.timer); checkpointWaiters.delete(request.sequence)
+      request.ok ? waiter.resolve() : waiter.reject(new WorkerFailure('TASK_CHECKPOINT_FAILED', '官方任务状态保存失败。')) }
+    return
+  }
   if (!request || !Number.isSafeInteger(request.id)
-    || !['generate:text', 'generate:image', 'generate:audio', 'generate:video', 'generate:compose', 'postprocess:image', 'postprocess:video'].includes(request.method)) return
+    || !['generate:official', 'generate:text', 'generate:image', 'generate:audio', 'generate:video', 'generate:compose', 'postprocess:image', 'postprocess:video'].includes(request.method)) return
   if (running) {
     parentPort.postMessage({ id: request.id, ok: false, errorCode: 'WORKER_BUSY' })
     return
   }
   running = true
   try {
-    const result = request.method === 'generate:text' ? await runTextTask(request.payload)
+    const result = request.method === 'generate:official' ? await runOfficialTask(request.payload, { checkpoint: (value) => checkpointToMain(request.id, value) })
+      : request.method === 'generate:text' ? await runTextTask(request.payload)
       : request.method === 'generate:image' ? await runImageTask(request.payload)
           : request.method === 'generate:audio' ? await runAudioTask(request.payload)
           : request.method === 'generate:video' ? request.payload?.providerId === ARK_PROVIDER_ID
@@ -1204,15 +1323,18 @@ if (parentPort) parentPort.on('message', async (event) => {
               : await runLocalMediaOperation(request.payload)
     parentPort.postMessage({ id: request.id, ok: true, result })
   } catch (error) {
+    const networkFailure = request.payload?.providerType === 'cloud' && /fetch failed|ECONNRESET|ETIMEDOUT|connect timeout/i.test(error?.message || '')
     const errorCode = error instanceof WorkerFailure || error instanceof ComposeFailure || error instanceof SapiFailure
       || error instanceof MediaOperationFailure
-      ? error.code : 'LOCAL_MODEL_EXECUTION_FAILED'
+      ? error.code : networkFailure ? 'CLOUD_PROVIDER_UNAVAILABLE' : typeof error?.code === 'string' && /^[A-Z0-9_]{1,120}$/u.test(error.code) ? error.code : 'LOCAL_MODEL_EXECUTION_FAILED'
     const apiKey = typeof request.payload?.apiKey === 'string' ? request.payload.apiKey : ''
     parentPort.postMessage({
       id: request.id,
       ok: false,
       errorCode,
-      errorMessage: sanitizeWorkerErrorMessage(error?.message, apiKey, errorCode),
+      errorMessage: networkFailure
+        ? '无法连接云端模型服务，请检查网络与系统代理。请求结果尚未确认，请勿连续重复提交。'
+        : sanitizeWorkerErrorMessage(error?.message, apiKey, errorCode),
     })
   } finally {
     running = false
@@ -1244,6 +1366,7 @@ module.exports = {
   postJson,
   providerErrorDetail,
   runImageTask,
+  runOfficialTask,
   runArkVideoTask,
   runVideoTask,
   sizeFromImageParameters,

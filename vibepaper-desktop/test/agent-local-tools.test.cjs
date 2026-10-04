@@ -59,6 +59,7 @@ test('Main and Worker share the restricted agent:core method allowlist', () => {
   assert.match(mainSource, /canvas\.version !== input\.canvasVersion/u)
   assert.match(mainSource, /canvas\.nodes\.some\(\(node\) => node\.id === input\.targetNodeId\)/u)
   assert.match(mainSource, /localCore\.request\('render-reviews:create'/u)
+  assert.match(mainSource, /canvasVersion: input\.canvasVersion,/u)
   assert.match(mainSource, /durations\.some\(\(duration\) => !Number\.isSafeInteger\(duration\) \|\| duration < 0\)/u)
   assert.match(mainSource, /getAgentCanvasDomain\(latestCanvas\)/u)
 

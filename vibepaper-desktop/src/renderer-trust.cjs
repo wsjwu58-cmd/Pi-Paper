@@ -1,5 +1,5 @@
 function isDesktopRendererRoute(pathname) {
-  return pathname === '/' || pathname === '/workspace' || pathname === '/history'
+  return pathname === '/' || pathname === '/workspace' || pathname === '/history' || pathname === '/settings/providers'
     || /^\/canvas\/[A-Za-z0-9_-]{1,256}$/u.test(pathname)
 }
 

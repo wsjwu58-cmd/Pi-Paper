@@ -25,6 +25,8 @@ import type { DesktopAgentSkillSnapshot } from "./skill-context.ts";
 
 const RUN_EVENT_ENTRY_TYPE = "vibepaper_run_event";
 const MESSAGE_METADATA_ENTRY_TYPE = "vibepaper_message_metadata";
+const AGENT_MODEL_METADATA_ENTRY_TYPE = "vibepaper_agent_model";
+export const LEGACY_AGENT_MODEL_BINDING_ID = "agnes-2.5-flash";
 const MAX_MESSAGE_REFERENCES = 8;
 const MAX_MESSAGE_ID_LENGTH = 128;
 const MAX_MESSAGE_RUN_ID_LENGTH = 128;
@@ -54,6 +56,8 @@ export type DesktopAgentTimelineRun = {
 
 export type DesktopAgentSessionView = {
 	sessionId: string;
+	/** Stable model binding selected for this session; never contains credentials. */
+	agentModelId: string;
 	title: string;
 	status: Exclude<DesktopAgentSessionStatus, "deleted">;
 	canvasId?: string;
@@ -169,7 +173,26 @@ export class DesktopAgentSessionStore {
 		const state = this.controlStore?.getSessionState(sessionId) ?? { status: "active" as const };
 		if (state.status === "deleted") throw new Error("SESSION_NOT_FOUND");
 		const title = await this.resolveSessionTitle(sessionId);
-		return toSessionView(metadata, title, state);
+		const agentModelId = await this.readAgentModelBinding(metadata);
+		return toSessionView(metadata, title, state, agentModelId);
+	}
+
+	async getAgentModelBinding(sessionId: string): Promise<string> {
+		const metadata = (await this.listSessions()).find((candidate) => candidate.id === sessionId);
+		if (!metadata || this.controlStore?.getSessionState(sessionId).status === "deleted") {
+			throw new Error("SESSION_NOT_FOUND");
+		}
+		return this.readAgentModelBinding(metadata);
+	}
+
+	async setAgentModelBinding(sessionId: string, bindingId: string): Promise<DesktopAgentSessionView> {
+		if (!isAgentModelBindingId(bindingId)) throw new Error("AGENT_MODEL_INVALID");
+		this.assertSessionActive(sessionId);
+		await this.withSessionMutation(sessionId, async () => {
+			const session = await this.openSession(sessionId);
+			await session.appendCustomEntry(AGENT_MODEL_METADATA_ENTRY_TYPE, { bindingId });
+		});
+		return this.getSession(sessionId);
 	}
 
 	async listAgentSessions(
@@ -199,7 +222,8 @@ export class DesktopAgentSessionStore {
 					return undefined;
 				const title = await this.resolveSessionTitle(session.id);
 				if (normalizedSearch && !title.toLocaleLowerCase().includes(normalizedSearch)) return undefined;
-				return toSessionView(session, title, state);
+				const agentModelId = await this.readAgentModelBinding(session);
+				return toSessionView(session, title, state, agentModelId);
 			}),
 		);
 		return sessions
@@ -261,6 +285,7 @@ export class DesktopAgentSessionStore {
 		const canvasId = options.canvasId ?? source.canvasId;
 		const title = normalizeSessionTitle(options.title?.trim() || `${source.title} 副本`);
 		const copy = await this.createSession(title, canvasId);
+		await this.setAgentModelBinding(copy.id, await this.getAgentModelBinding(sessionId));
 		const view = await this.getSession(copy.id);
 		return { ...view, copiedFrom: source.sessionId };
 	}
@@ -524,6 +549,20 @@ export class DesktopAgentSessionStore {
 	private requireControlStore(): DesktopAgentControlStore {
 		if (!this.controlStore) throw new Error("SESSION_STATE_STORE_REQUIRED");
 		return this.controlStore;
+	}
+
+	private async readAgentModelBinding(metadata: JsonlSessionMetadata): Promise<string> {
+		const session = await this.repo.open(metadata);
+		const entries = await session.findEntries({ order: "oldestFirst" });
+		for (let index = entries.length - 1; index >= 0; index--) {
+			const entry = entries[index];
+			if (entry?.type !== "custom" || entry.customType !== AGENT_MODEL_METADATA_ENTRY_TYPE) continue;
+			const data = objectValue(entry.data);
+			if (isAgentModelBindingId(data.bindingId)) return data.bindingId;
+		}
+		// Sessions created before provider selection used Agnes. Preserve that explicit
+		// binding; callers must still resolve its own key and may not substitute another provider.
+		return LEGACY_AGENT_MODEL_BINDING_ID;
 	}
 
 	private assertSessionActive(sessionId: string): void {
@@ -1142,18 +1181,24 @@ function toSessionView(
 	metadata: JsonlSessionMetadata,
 	title: string,
 	state: DesktopAgentSessionState,
+	agentModelId: string,
 ): DesktopAgentSessionView {
 	if (state.status === "deleted") throw new Error("SESSION_NOT_FOUND");
 	const canvasId = metadata.metadata?.canvasId;
 	const modifiedAt = Math.max(metadata.modifiedAt, state.updatedAt?.getTime() ?? 0);
 	return {
 		sessionId: metadata.id,
+		agentModelId,
 		title,
 		status: state.status,
 		...(typeof canvasId === "string" && canvasId.length > 0 ? { canvasId } : {}),
 		createdAt: metadata.createdAt,
 		modifiedAt,
 	};
+}
+
+function isAgentModelBindingId(value: unknown): value is string {
+	return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value);
 }
 
 function normalizeSessionTitle(value: string): string {

@@ -96,6 +96,7 @@ export function AgentLauncher({ onOpen }: { onOpen: () => void }) {
 export interface AgentPanelDesktopSession {
   sessionId: string
   title: string
+  agentModelId?: string
   createdAt: number
   modifiedAt: number
   status?: 'active' | 'archived'
@@ -112,6 +113,10 @@ export interface AgentPanelDesktopAdapter {
   creating: boolean
   configured: boolean
   modelLabel: string
+  modelOptions?: ModelInfo[]
+  selectedModelId?: string
+  providerNames?: Record<string, string>
+  onSelectModel?: (modelId: string) => Promise<void> | void
   error: string
   skills?: SkillView[]
   loadedSkillIds?: string[]
@@ -1392,14 +1397,26 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                   </div>
                   <div className="min-w-0 shrink">
                     {desktop ? (
-                      <button
-                        type="button"
-                        onClick={openConfiguration}
-                        className="max-w-[140px] truncate rounded-lg px-2 py-1 text-[11px] font-semibold text-[#555] hover:bg-[var(--canvas-hover)]"
-                        title={desktopAdapter?.configured ? desktopAdapter.modelLabel : '配置模型'}
-                      >
-                        {desktopAdapter?.configured ? desktopAdapter.modelLabel : '配置模型'}
-                      </button>
+                      desktopAdapter?.modelOptions?.length && desktopAdapter.onSelectModel ? (
+                        <ModelPicker
+                          composer
+                          models={desktopAdapter.modelOptions}
+                          value={desktopAdapter.configured ? desktopAdapter.selectedModelId ?? '' : ''}
+                          placeholder={desktopAdapter.modelLabel}
+                          onChange={(modelId) => { void desktopAdapter.onSelectModel?.(modelId) }}
+                          desktopProviderNames={desktopAdapter.providerNames}
+                          onConfigureModels={openConfiguration}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={openConfiguration}
+                          className="max-w-[140px] truncate rounded-lg px-2 py-1 text-[11px] font-semibold text-[#555] hover:bg-[var(--canvas-hover)]"
+                          title={desktopAdapter?.modelLabel || '配置模型'}
+                        >
+                          {desktopAdapter?.modelLabel || '配置模型'}
+                        </button>
+                      )
                     ) : (
                       <ModelPicker
                         composer
