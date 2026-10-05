@@ -25,7 +25,7 @@ module.exports = {
   mac: {
     icon: 'assets/app-icon.icns',
     category: 'public.app-category.productivity',
-    target: [{ target: 'dmg', arch: ['x64', 'arm64'] }, { target: 'zip', arch: ['x64', 'arm64'] }],
+    target: ['dmg', 'zip'],
     identity: '-',
   },
   linux: {

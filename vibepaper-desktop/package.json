@@ -9,7 +9,7 @@
     "build:package": "node scripts/build-package.cjs",
     "dist": "npm run build:package && electron-builder --config electron-builder.cjs --publish never && npm run checksums",
     "dist:win": "npm run build:package && electron-builder --config electron-builder.cjs --win --x64 --publish never && npm run checksums",
-    "dist:mac": "npm run build:package && electron-builder --config electron-builder.cjs --mac --publish never && npm run checksums",
+    "dist:mac": "npm run build:package && electron-builder --config electron-builder.cjs --mac --x64 --arm64 --publish never && npm run checksums",
     "dist:linux": "npm run build:package && electron-builder --config electron-builder.cjs --linux --x64 --publish never && npm run checksums",
     "checksums": "node scripts/package-checksums.cjs",
     "verify:packaged": "node scripts/verify-packaged.cjs",
