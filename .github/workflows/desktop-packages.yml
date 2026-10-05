@@ -40,8 +40,10 @@ jobs:
           cache: npm
           cache-dependency-path: |
             vibepaper-desktop/package-lock.json
-            vibepaper-web/package-lock.json
             pi-main/package-lock.json
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
       - name: Install Pi dependencies
         run: npm ci --prefix pi-main --ignore-scripts
       - name: Build Pi dependencies offline
@@ -52,7 +54,8 @@ jobs:
           npm run build:offline --workspace=@earendil-works/pi-ai
           npm run build --workspace=@earendil-works/pi-agent-core
       - name: Install renderer dependencies
-        run: npm ci --prefix vibepaper-web
+        working-directory: vibepaper-web
+        run: pnpm install --frozen-lockfile
       - name: Install desktop dependencies
         run: npm ci --prefix vibepaper-desktop
       - name: Build standalone desktop application
