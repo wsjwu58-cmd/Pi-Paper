@@ -84,7 +84,9 @@ class CallbackDatabase implements MigrationDatabase {
 	async query<T extends QueryResultRow>(text: string): Promise<{ rows: T[] }> {
 		if (text.includes("FROM agent_actions a WHERE a.task_id")) {
 			return {
-				rows: [{ task_id: "task-1", action_id: "action-1", session_id: "session-1", run_id: "run-1" }] as unknown as T[],
+				rows: [
+					{ task_id: "task-1", action_id: "action-1", session_id: "session-1", run_id: "run-1" },
+				] as unknown as T[],
 			};
 		}
 		if (text.includes("INSERT INTO agent_wakeup_notices")) return { rows: [{ id: "action-1" }] as unknown as T[] };

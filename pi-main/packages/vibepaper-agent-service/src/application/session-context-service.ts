@@ -38,11 +38,7 @@ export class SessionContextService {
 		return next;
 	}
 
-	async applyEvents(
-		sessionId: string,
-		events: readonly AgentRunEvent[],
-		canvasId?: string,
-	): Promise<SessionContext> {
+	async applyEvents(sessionId: string, events: readonly AgentRunEvent[], canvasId?: string): Promise<SessionContext> {
 		const current = await this.load(sessionId, canvasId);
 		const reduced = reduceSessionEvents(current, events);
 		const next = canvasId && !reduced.canvasId ? { ...reduced, canvasId } : reduced;

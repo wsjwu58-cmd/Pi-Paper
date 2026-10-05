@@ -9,7 +9,7 @@ export function HubLayout() {
     return (
       <div className="min-h-screen bg-[#f6f8fb] text-[#172238]">
         <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-[#e4e9f1] bg-[#f9fbfd] px-5 lg:px-8">
-          <NavLink to="/workspace" className="flex items-center gap-3 text-lg font-bold tracking-tight"><LayoutGrid size={23} />VibePaper</NavLink>
+          <NavLink to="/workspace" className="flex items-center gap-3 text-lg font-bold tracking-tight"><LayoutGrid size={23} />Pi-Paper</NavLink>
           <NavLink to="/workspace" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-[#647086] hover:bg-[#edf1f7]"><ArrowLeft size={16} />返回画布管理</NavLink>
         </header>
         <div className="flex min-h-[calc(100vh-4rem)]">

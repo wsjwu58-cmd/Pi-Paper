@@ -35,11 +35,17 @@ export function createDramaAgent(store: DramaStateStore | undefined, options: Cr
 			!profileToolNames || profileToolNames.has(tool.name) || dramaTools.some((item) => item.name === tool.name),
 	);
 	const memoryToolNames = new Set([
-		"read_project_memory", "remember_project_preference", "edit_project_memory", "delete_project_memory",
+		"read_project_memory",
+		"remember_project_preference",
+		"edit_project_memory",
+		"delete_project_memory",
 	]);
 	const desktopMemoryTools = options.desktopMode
-		? (options.desktopMemoryTools ?? []).filter((tool) => memoryToolNames.has(tool.name)
-			&& (options.profile !== "audit-readonly" || tool.name === "read_project_memory"))
+		? (options.desktopMemoryTools ?? []).filter(
+				(tool) =>
+					memoryToolNames.has(tool.name) &&
+					(options.profile !== "audit-readonly" || tool.name === "read_project_memory"),
+			)
 		: [];
 	const tools = [...profileTools, ...desktopMemoryTools];
 	const allowedToolNames = new Set(tools.map((tool) => tool.name));

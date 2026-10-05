@@ -20,9 +20,7 @@ configureIdGenerator(settings.workerId, settings.datacenterId);
 await applyMigrations(database, migrationDirectoryFromUrl(import.meta.url));
 const redis = settings.redisUrl ? new Redis(settings.redisUrl, { maxRetriesPerRequest: null }) : undefined;
 const dailyRedis = redis?.duplicate();
-const dailyMemoryService = dailyRedis
-	? new DailyMemoryService(new RedisDailyMemoryRepository(dailyRedis))
-	: undefined;
+const dailyMemoryService = dailyRedis ? new DailyMemoryService(new RedisDailyMemoryRepository(dailyRedis)) : undefined;
 const memoryUpdateQueue = redis ? new RedisMemoryUpdateQueue(redis) : undefined;
 const app = createApp({ config: settings, database, dailyMemoryService, memoryUpdateQueue });
 const nacos = new NacosRegistrar(settings, settings.port);

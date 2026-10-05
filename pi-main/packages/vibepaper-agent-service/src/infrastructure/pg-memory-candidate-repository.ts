@@ -47,7 +47,10 @@ export class PgMemoryCandidateRepository implements MemoryCandidateRepository {
 	}
 
 	async get(id: string, userId: string): Promise<MemoryCandidate | undefined> {
-		const result = await this.database.query<CandidateRow>(`${selectSql()} WHERE id = $1 AND user_id = $2`, [id, userId]);
+		const result = await this.database.query<CandidateRow>(`${selectSql()} WHERE id = $1 AND user_id = $2`, [
+			id,
+			userId,
+		]);
 		return result.rows[0] ? toCandidate(result.rows[0]) : undefined;
 	}
 

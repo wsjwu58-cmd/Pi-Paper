@@ -8,7 +8,8 @@ export type ExtractedMemoryCandidate = {
 	explicit: boolean;
 };
 
-const MEMORY_PREFIX = /^(?:请|麻烦)?(?:记住|记下|牢记|以后记得|以后都要|默认使用|默认采用|我偏好|我喜欢|我习惯)\s*[:：,，]?\s*(.+)$/u;
+const MEMORY_PREFIX =
+	/^(?:请|麻烦)?(?:记住|记下|牢记|以后记得|以后都要|默认使用|默认采用|我偏好|我喜欢|我习惯)\s*[:：,，]?\s*(.+)$/u;
 const ENGLISH_MEMORY_PREFIX = /^(?:please\s+)?(?:remember|always use|my preference is|i prefer)\s*[:：,，]?\s*(.+)$/iu;
 
 /**

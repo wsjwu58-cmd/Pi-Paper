@@ -6,11 +6,13 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pnpm-store/
+.npm-cache/
 
 # --- Build outputs ---
 dist/
 dist-ssr/
 build/
+/vibepaper-desktop/release/
 target/
 *.class
 *.jar

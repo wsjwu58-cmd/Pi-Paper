@@ -1,7 +1,6 @@
 import type { QueryResultRow } from "pg";
-
-import { type AgentArtifact, type AgentArtifactRole } from "../domain/agent-artifact.ts";
 import type { AgentArtifactRepository } from "../application/agent-artifact-service.ts";
+import type { AgentArtifact, AgentArtifactRole } from "../domain/agent-artifact.ts";
 import type { SqlExecutor } from "./database.ts";
 
 type AgentArtifactRow = QueryResultRow & {
@@ -70,7 +69,11 @@ export class PgAgentArtifactRepository implements AgentArtifactRepository {
 }
 
 function toArtifact(row: AgentArtifactRow): AgentArtifact {
-	if (!isPlainRecord(row.content) || !Array.isArray(row.evidence_refs) || row.evidence_refs.some((item) => typeof item !== "string"))
+	if (
+		!isPlainRecord(row.content) ||
+		!Array.isArray(row.evidence_refs) ||
+		row.evidence_refs.some((item) => typeof item !== "string")
+	)
 		throw new AgentArtifactRepositoryError("INVALID_ARTIFACT");
 	return {
 		id: row.id,

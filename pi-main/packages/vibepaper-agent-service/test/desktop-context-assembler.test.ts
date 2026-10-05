@@ -1,12 +1,12 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { prepareDesktopAgentTurnContext } from "../src/application/agent-runtime.ts";
-import type { AgentRunEvent } from "../src/domain/agent-run.ts";
 import {
 	assembleDesktopMemoryContext,
 	planDesktopContextBudget,
 	projectDesktopSessionContext,
 } from "../src/desktop/context-assembler.ts";
+import type { AgentRunEvent } from "../src/domain/agent-run.ts";
 
 function toolTurn(index: number): AgentMessage[] {
 	const callId = `tool-${index}`;
@@ -82,7 +82,9 @@ describe("desktop context assembly", () => {
 			history,
 			currentUserInput: "本轮唯一输入标记 current-turn-only",
 			systemPrompt: "system prompt ".repeat(1_000),
-			toolSchemas: [{ name: "read_canvas", parameters: { type: "object", properties: { canvasId: { type: "string" } } } }],
+			toolSchemas: [
+				{ name: "read_canvas", parameters: { type: "object", properties: { canvasId: { type: "string" } } } },
+			],
 			contextWindowTokens: 6_000,
 			outputReserveTokens: 1_000,
 			safetyMarginTokens: 500,
@@ -95,10 +97,12 @@ describe("desktop context assembly", () => {
 		expect(plan.retainedHistory.some((message) => JSON.stringify(message).includes("current-turn-only"))).toBe(false);
 		const retainedCalls = plan.retainedHistory.flatMap((message) =>
 			message.role === "assistant" && Array.isArray(message.content)
-				? message.content.flatMap((part) => part.type === "toolCall" ? [part.id] : [])
+				? message.content.flatMap((part) => (part.type === "toolCall" ? [part.id] : []))
 				: [],
 		);
-		const retainedResults = plan.retainedHistory.flatMap((message) => message.role === "toolResult" ? [message.toolCallId] : []);
+		const retainedResults = plan.retainedHistory.flatMap((message) =>
+			message.role === "toolResult" ? [message.toolCallId] : [],
+		);
 		expect([...retainedCalls].sort()).toEqual([...retainedResults].sort());
 		expect(plan.summarizedHistory.length + plan.retainedHistory.length).toBe(history.length);
 	});
@@ -110,13 +114,15 @@ describe("desktop context assembly", () => {
 			timestamp: 1,
 		};
 		const descriptor = prepareDesktopAgentTurnContext(
-			[{
-				role: "user",
-				content: "过去的用户输入",
-				meta: {},
-				createdAt: new Date(1),
-				piMessage: prior,
-			}],
+			[
+				{
+					role: "user",
+					content: "过去的用户输入",
+					meta: {},
+					createdAt: new Date(1),
+					piMessage: prior,
+				},
+			],
 			"本轮唯一输入标记 current-turn-only",
 			{ indexLines: [], skills: [], loadedSkillIds: [], loadedSkills: [], onLoad: async () => undefined },
 			[],
@@ -135,7 +141,11 @@ describe("desktop context assembly", () => {
 			canvasId: "canvas-1",
 			initialGoal: "完成当前画布方案",
 			events: [
-				runEvent({ eventSeq: 1, type: "task_status", data: { taskId: "task-1", nodeId: "node-live", status: "succeeded" } }),
+				runEvent({
+					eventSeq: 1,
+					type: "task_status",
+					data: { taskId: "task-1", nodeId: "node-live", status: "succeeded" },
+				}),
 				runEvent({ eventSeq: 2, type: "tool_completed", data: { nodeId: "node-removed" } }),
 				runEvent({ eventSeq: 3, type: "run_completed", data: {} }),
 			],
@@ -159,7 +169,12 @@ describe("desktop context assembly", () => {
 				{ scope: "project", content: "保持 16:9 分镜构图", confidence: 0.9, createdAt: "2026-09-29T00:00:00.000Z" },
 				{ scope: "daily", content: "已过期内容", confidence: 1, expiresAt: "2026-09-30T11:00:00.000Z" },
 				{ scope: "canvas", content: "其他画布记录", confidence: 1, canvasId: "canvas-2" },
-				{ scope: "session", content: "其他相关构图比例记录", confidence: 0.7, createdAt: "2026-09-29T00:00:00.000Z" },
+				{
+					scope: "session",
+					content: "其他相关构图比例记录",
+					confidence: 0.7,
+					createdAt: "2026-09-29T00:00:00.000Z",
+				},
 			],
 		});
 

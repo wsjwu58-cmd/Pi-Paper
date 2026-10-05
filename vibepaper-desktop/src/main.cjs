@@ -47,7 +47,9 @@ const { registerCanvasMediaIpc } = require('./canvas-media.cjs')
 const { createProviderSettings } = require('./provider-settings.cjs')
 const { isOfficialDocumentationUrl } = require('./official-documentation.cjs')
 
-app.setName('VibePaper')
+// Keep the existing settings, credentials and Chromium profile after rebranding.
+app.setPath('userData', path.join(app.getPath('appData'), 'VibePaper'))
+app.setName('Pi-Paper')
 protocol.registerSchemesAsPrivileged([{
   scheme: 'vibe',
   // Local video/audio responses use file streams, including byte-range requests.
@@ -78,7 +80,7 @@ let projectTransitionCount = 0
 const taskCreationWaiters = []
 const desktopRoot = path.resolve(__dirname, '..')
 const webRoot = path.resolve(desktopRoot, '..', 'vibepaper-web')
-const rendererRoot = path.join(webRoot, 'dist')
+const rendererRoot = app.isPackaged ? path.join(desktopRoot, 'renderer') : path.join(webRoot, 'dist')
 const rendererIndex = path.join(rendererRoot, 'index.html')
 const developmentUrl = process.env.VITE_DEV_SERVER_URL
 
@@ -220,7 +222,7 @@ function assertGroupStackRequest(input, label, options = {}) {
 
 function startLocalCore() {
   const child = utilityProcess.fork(path.join(__dirname, 'local-core.cjs'), [], {
-    serviceName: 'VibePaper Local Core',
+    serviceName: 'Pi-Paper Local Core',
     stdio: 'ignore',
   })
   const pending = new Map()
@@ -256,7 +258,7 @@ function startLocalCore() {
     }
     pending.clear()
     if (mainWindow && !quittingAfterCoreClose) {
-      void dialog.showErrorBox('本地核心已停止', '本地项目服务意外退出。请重新启动 VibePaper 后继续。')
+      void dialog.showErrorBox('本地核心已停止', '本地项目服务意外退出。请重新启动 Pi-Paper 后继续。')
       app.quit()
     }
   })
@@ -296,7 +298,7 @@ async function startGenerationWorker() {
   const proxy = await session.defaultSession.resolveProxy('https://api.openai.com/v1')
   if (generationWorker) return generationWorker
   const child = utilityProcess.fork(path.join(__dirname, 'generation-worker.cjs'), [], {
-    serviceName: 'VibePaper Local Generation Worker',
+    serviceName: 'Pi-Paper Local Generation Worker',
     stdio: 'ignore',
     env: workerProxyEnvironment(process.env, proxy),
   })
@@ -408,7 +410,7 @@ async function startGenerationWorker() {
 async function createAgentWorker() {
   const proxy = await session.defaultSession.resolveProxy('https://api.openai.com/v1')
   const child = utilityProcess.fork(path.join(desktopRoot, 'dist', 'agent-worker.cjs'), [], {
-    serviceName: 'VibePaper Agent Worker',
+    serviceName: 'Pi-Paper Agent Worker',
     stdio: 'ignore',
     env: workerProxyEnvironment(process.env, proxy),
   })
@@ -1724,7 +1726,7 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:open', async (event) => {
     assertTrustedSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '打开 VibePaper 本地项目',
+      title: '打开 Pi-Paper 本地项目',
       properties: ['openDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1755,7 +1757,7 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:restore-backup', async (event) => {
     assertTrustedSender(event)
     const sourceResult = await dialog.showOpenDialog(mainWindow, {
-      title: '选择要恢复的 VibePaper 项目备份',
+      title: '选择要恢复的 Pi-Paper 项目备份',
       properties: ['openDirectory'],
     })
     if (sourceResult.canceled || sourceResult.filePaths.length === 0) return null
@@ -3055,6 +3057,7 @@ function registerAgentIpc() {
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
+    title: 'Pi-Paper',
     icon: require('./application-icon.cjs').applicationIcon(require('electron').nativeImage, path.join(__dirname, '..', 'assets')),
     width: 1440,
     height: 920,
@@ -3073,7 +3076,7 @@ async function createWindow() {
     },
   })
 
-  const providerDocumentation = require(path.join(webRoot, developmentUrl ? 'public' : 'dist', 'provider-documentation.json'))
+  const providerDocumentation = require(path.join(developmentUrl ? path.join(webRoot, 'public') : rendererRoot, 'provider-documentation.json'))
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isOfficialDocumentationUrl(url, providerDocumentation)) {
       void shell.openExternal(url).catch(() => console.warn('OFFICIAL_DOCUMENTATION_OPEN_FAILED'))
@@ -3102,6 +3105,7 @@ if (hasSingleInstanceLock) {
   })
 
   app.whenReady().then(async () => {
+    if (process.platform === 'win32') app.setAppUserModelId('com.vibepaper.desktop')
     if (process.platform === 'darwin') app.dock.setIcon(require('./application-icon.cjs').applicationIcon(require('electron').nativeImage, path.join(__dirname, '..', 'assets')))
     if (!developmentUrl) await fs.access(rendererIndex)
     recentProjectFile = path.join(app.getPath('userData'), 'recent-project.json')
@@ -3146,7 +3150,7 @@ if (hasSingleInstanceLock) {
     })
   }).catch((error) => {
     const message = error instanceof Error ? error.message : '桌面应用启动失败。'
-    void dialog.showErrorBox('VibePaper 启动失败', message)
+    void dialog.showErrorBox('Pi-Paper 启动失败', message)
     app.quit()
   })
 

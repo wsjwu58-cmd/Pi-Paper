@@ -1,0 +1,78 @@
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/desktop-packages-*']
+    tags: ['desktop-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            arch: x64
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+          - os: macos-15
+            platform: mac
+            arch: arm64
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x64
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            vibepaper-desktop/package-lock.json
+            vibepaper-web/package-lock.json
+            pi-main/package-lock.json
+      - name: Install Pi dependencies
+        run: npm ci --prefix pi-main --ignore-scripts
+      - name: Build Pi dependencies offline
+        working-directory: pi-main
+        run: |
+          npm run build --workspace=@earendil-works/pi-telemetry
+          npm run hydrate:model-data
+          npm run build:offline --workspace=@earendil-works/pi-ai
+          npm run build --workspace=@earendil-works/pi-agent-core
+      - name: Install renderer dependencies
+        run: npm ci --prefix vibepaper-web
+      - name: Install desktop dependencies
+        run: npm ci --prefix vibepaper-desktop
+      - name: Build standalone desktop application
+        run: npm run build:package --prefix vibepaper-desktop
+      - name: Create installers
+        working-directory: vibepaper-desktop
+        run: npx electron-builder --config electron-builder.cjs --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+      - name: Verify packaged Electron runtime
+        run: node vibepaper-desktop/scripts/verify-packaged.cjs
+      - name: Generate checksums
+        run: node vibepaper-desktop/scripts/package-checksums.cjs
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pi-Paper-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            vibepaper-desktop/release/*.exe
+            vibepaper-desktop/release/*.dmg
+            vibepaper-desktop/release/*.zip
+            vibepaper-desktop/release/*.AppImage
+            vibepaper-desktop/release/*.deb
+            vibepaper-desktop/release/SHA256SUMS.txt

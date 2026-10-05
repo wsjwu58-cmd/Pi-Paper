@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { AgentArtifactError, AgentArtifactService, type AgentArtifactRepository } from "../src/application/agent-artifact-service.ts";
+import {
+	AgentArtifactError,
+	type AgentArtifactRepository,
+	AgentArtifactService,
+} from "../src/application/agent-artifact-service.ts";
 import type { AgentArtifact } from "../src/domain/agent-artifact.ts";
 
 const artifact = (role: AgentArtifact["producerRole"], id = `${role}-1`): AgentArtifact => ({
@@ -29,7 +33,9 @@ class MemoryArtifactRepository implements AgentArtifactRepository {
 describe("AgentArtifactService", () => {
 	it("allows roles to publish typed data but rejects tool-bearing artifacts", async () => {
 		const service = new AgentArtifactService(new MemoryArtifactRepository());
-		await expect(service.publish({ ownerId: "user-1", actorRole: "script", artifact: artifact("script") })).resolves.toMatchObject({
+		await expect(
+			service.publish({ ownerId: "user-1", actorRole: "script", artifact: artifact("script") }),
+		).resolves.toMatchObject({
 			producerRole: "script",
 		});
 		await expect(
@@ -62,8 +68,8 @@ describe("AgentArtifactService", () => {
 
 	it("does not let a role impersonate another role", async () => {
 		const service = new AgentArtifactService(new MemoryArtifactRepository());
-		await expect(service.publish({ ownerId: "user-1", actorRole: "visual", artifact: artifact("audit") })).rejects.toThrow(
-			new AgentArtifactError("ROLE_NOT_ALLOWED"),
-		);
+		await expect(
+			service.publish({ ownerId: "user-1", actorRole: "visual", artifact: artifact("audit") }),
+		).rejects.toThrow(new AgentArtifactError("ROLE_NOT_ALLOWED"));
 	});
 });
