@@ -1,262 +1,173 @@
 <div align="center">
 
-# Pi-Paper
+# Pi-Paper Desktop
 
-**An AI-native node-based infinite canvas for creative production**
+**A local-first AI canvas for creative production**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![React](https://img.shields.io/badge/React_19-61DAFB?logo=react&logoColor=white)](https://react.dev)
-[![Java](https://img.shields.io/badge/Java_21-Spring_Boot_3-6DB33F?logo=springboot&logoColor=white)](https://spring.io)
-[![FastAPI](https://img.shields.io/badge/FastAPI-Python_3.12-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Node.js](https://img.shields.io/badge/Node.js_22-Pi_Agent_Core-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
-[![Docker](https://img.shields.io/badge/Docker-Deployment-2496ED?logo=docker&logoColor=white)](#docker-deployment-recommended)
+[![Desktop](https://img.shields.io/badge/Electron-Desktop-47848F?logo=electron&logoColor=white)](./vibepaper-desktop/README.md)
+[![Branch](https://img.shields.io/badge/default-feat%2Fdesktop--local--migration-339933)](https://github.com/wsjwu58-cmd/Pi-Paper/tree/feat/desktop-local-migration)
 
-Pi-Paper is an AI-native creative workspace built around an infinite canvas. Text, images, video, audio, prompts, and production notes become connected nodes; the Agent helps turn an idea into an editable, reproducible workflow:
+<img src="vibepaper-desktop/assets/app-icon.png" alt="Pi-Paper application icon" width="140">
 
-**Idea → Generation → Editing → Composition → Export**
+Pi-Paper is a single-user desktop creative workspace. Connect text, images, video, audio, and production notes on an infinite canvas, then work with the Xiaop (小P) Agent to develop an idea into an editable workflow.
 
-<img src="docs/images/screenshot.png" alt="Pi-Paper interface screenshot" width="880">
+**Local project → Connected nodes → Generation → Editing → Composition → Export**
+
+[Desktop setup and usage](./vibepaper-desktop/README.md) · [Migration and validation status](./docs/specs/desktop-agent-functional-spec.md)
 
 </div>
 
-> This repository is a personal learning and experimentation project under active development. It aims to reproduce confirmed product capabilities and key interactions from vibepaper-ai.com without using its trademarks, copyrighted assets, or proprietary algorithms.
+> This is a personal learning and experimentation project under active development. Desktop migration reuses the original frontend and Pi Agent source. Complete 1:1 parity, all provider accounts, long-session stress tests, and Windows/macOS/Linux installers have not yet passed their full acceptance gates.
 
 ---
 
 ## Branches
 
 | Branch | Purpose |
-|--------|---------|
-| dev | Default branch; integrates the latest Node.js + Pi Agent Core version and full-stack development work |
-| main | Python-based branch; preserves the Python runtime baseline for agent-service and generation-service |
+| --- | --- |
+| `feat/desktop-local-migration` | **Default branch.** Local desktop projects, the original canvas and Agent UI, local persistence, and provider adapters |
+| `dev` | Historical Web and service development baseline retained for migration comparison |
+| `main` | Historical Python service baseline retained for comparison; not the desktop startup path |
 
----
+Use the default desktop branch for the instructions below.
 
 ## Feature Overview
 
-| Capability | Description |
-|------------|-------------|
-| Canvas-first creation | Pan and zoom across an infinite canvas, create and connect nodes, autosave with optimistic locking, and import/export reusable workflows |
-| Xiaop (小P) Agent companion | A warm, creative partner that understands the current canvas, discusses ideas, plans the next step, and reports progress in plain language |
-| Multimodal generation | Create text, image, video, and audio outputs as editable nodes with task status, cost previews, and recoverable execution records |
-| Workflow-aware orchestration | Let the Agent read references, create nodes, connect inputs, submit generation tasks, and resume interrupted runs through an allowlisted tool gateway |
-| Short-form drama pipeline | Move from story bible to episodes, shots, prompts, keyframes, video, audio/subtitles, and composition dependencies |
-| Asset and reference library | Upload or reuse assets, drag them onto the canvas, reference selected nodes in a conversation, and preserve the source-to-result graph |
-| Workspace management | Manage canvases, browse history, inspect personal settings, and keep creative work organized in one place |
-| Billing and safety controls | Preview point usage, freeze and settle costs safely, audit task state changes, and require confirmation for high-risk operations |
-| Creative Gallery | Publish approved works, browse community creations, clone a work, and inspect its node arrangement for learning and remixing |
+| Capability | Desktop behavior |
+| --- | --- |
+| Canvas-first creation | Original infinite canvas with pan/zoom, six node types, autosave, connection rules, upstream references, and JSON import/export |
+| Xiaop (小P) Agent companion | Original creative role and tool chain, canvas-aware conversation, progress, execution records, and local session history |
+| Multimodal generation | Text, image, video, audio, and composition tasks through implemented model bindings; task status and specific failures remain visible in their nodes |
+| Controlled workflows | Agent canvas edits use the local tool gateway. Single and batch generation require confirmation; recovery checks durable tasks and idempotency records before continuing |
+| Short-form drama production | Local story/character/shot assets, production state, references, keyframes, video, and composition dependencies |
+| Asset and reference library | Import supported local media, preview, reference, rename, replace, and download assets/results; preserve the source-to-result graph |
+| Canvas organization | Box selection and grouping, horizontal/vertical arrangement, independent member dragging, ungrouping, and group downloads |
+| Image cropping | Adjustable single-image, four-cell, and nine-cell crops; results become editable nodes in a group |
+| Generation feedback | Reference previews, animated generation backgrounds, elapsed time, and white flow highlights over blue reference connections |
+| Text reading | Markdown headings, lists, tables, quotes, and code blocks; double-click a text node for a large, scrollable reading view |
+| Sessions, Skills, and memory | Session titles and management, reusable fragments, Skill snapshots, persistent plans, context compression, scoped memory, and memory candidate review |
+| Local project management | Canvas showcase, real local task history, project covers, backups, and restoration; current storage is one canvas per project |
+| Model configuration | User-configured official provider credentials and model defaults, with Agnes/Ark compatibility and local text service support; selectable capabilities follow the implemented catalog |
 
-## Product Showcase
+Desktop use does not require platform login, points, billing settlement, enterprise accounts, or Creative Gallery publishing. Cloud providers may charge for API requests. Local project storage does not prevent selected prompts and reference media from being sent to the chosen cloud provider.
 
-The same canvas can hold a complete creative workflow while the Agent stays beside it as a conversational companion. The workspace hub provides a visual overview of saved canvases and recent creations.
+## Desktop Showcase
+
+The desktop app opens at the canvas showcase. Create or open a local project to enter the original canvas editor and Agent panel. Generated content stays in the project, and local task history remains accessible from the navigation.
+
+### Canvas and Agent workflow
+
+Connect character references, keyframes, video clips, and composition nodes in a local project, with the Agent conversation beside the canvas.
 
 <p align="center">
-  <img src="docs/images/canvas-agent-workflow.png" alt="Pi-Paper canvas with Xiaop Agent and connected creative workflow" width="49%">
-  <img src="docs/images/canvas-management.png" alt="Pi-Paper canvas management workspace" width="49%">
+  <img src="docs/images/desktop-canvas-workflow.png" alt="Pi-Paper desktop canvas with character references, generated clips, composition, and the Agent panel" width="880">
 </p>
 
----
+### Provider configuration
 
-## Technical Architecture
+Configure official provider credentials, enable implemented models, and set defaults in the desktop API configuration page. Credentials remain encrypted on the device and are not read back into the form.
 
-```mermaid
-flowchart TB
-    Web["vibepaper-web\nReact + TypeScript + Vite + @xyflow/react"]
-    Gateway["vibepaper-gateway\nSpring Cloud Gateway\nREST / SSE / Auth"]
-
-    subgraph Java["Java 21 · Spring Boot 3"]
-        Identity["identity-service"]
-        Canvas["canvas-service"]
-        Asset["asset-service"]
-        Billing["billing-service"]
-        Enterprise["enterprise-service"]
-        Gallery["gallery-service"]
-        Admin["admin-service"]
-    end
-
-    Generation["generation-service\nPython 3.12 · FastAPI"]
-    Agent["agent-service\nNode.js 22 · TypeScript · Pi Agent Core"]
-
-    subgraph Infra["Shared infrastructure"]
-        PostgreSQL[("PostgreSQL")]
-        Redis[("Redis")]
-        Nacos[("Nacos")]
-        RocketMQ[("RocketMQ")]
-        MinIO[("MinIO / local files")]
-    end
-
-    Web -->|REST + SSE| Gateway
-    Gateway --> Identity
-    Gateway --> Canvas
-    Gateway --> Asset
-    Gateway --> Billing
-    Gateway --> Enterprise
-    Gateway --> Gallery
-    Gateway --> Admin
-    Gateway --> Generation
-    Gateway --> Agent
-
-    Agent -->|controlled tools| Canvas
-    Agent -->|generation tasks| Generation
-    Agent -->|sessions and runs| PostgreSQL
-    Java --> PostgreSQL
-    Generation --> PostgreSQL
-    Java -. events .-> RocketMQ
-    Agent -. events .-> Redis
-    Asset --> MinIO
-    Java --> Nacos
-    Generation --> Nacos
-    Agent --> Nacos
-```
-
-| Module | Technology | Responsibility |
-|--------|------------|----------------|
-| vibepaper-web | React 19 · Vite · Zustand · TanStack Query · Tailwind | Single-page frontend application |
-| vibepaper-services | Java 21 · Spring Boot 3 · Spring Cloud Gateway | Business microservices and gateway |
-| generation-service | FastAPI · task state machine · mock/real providers | Generation tasks and model catalog |
-| agent-service | Node.js 22.19+ · TypeScript · Fastify · Pi Agent Core · SSE | Agent sessions, short-form drama orchestration, and controlled tools |
-| deploy/ | PowerShell / Docker Compose | Local startup, shutdown, and infrastructure |
-
----
+<p align="center">
+  <img src="docs/images/desktop-provider-configuration.png" alt="Pi-Paper desktop API configuration with provider selection, hidden credential input, model capabilities, and connection testing" width="880">
+</p>
 
 ## Repository Structure
 
-~~~
-docs/                  # PRD, technical overview, feature list, specs, and execution plans
-vibepaper-services/    # Java microservices (common + gateway + business services)
-generation-service/    # Python generation service
-pi-main/               # Pinned Pi upstream source and the Pi-Paper Agent workspace
-  packages/vibepaper-agent-service/  # Node.js + Pi Agent service
-vibepaper-web/         # React frontend
-deploy/                # One-command startup/shutdown and infrastructure
-Dockerfile             # Multi-stage build (web / Java / generation / agent)
-docker-compose.yml     # Full-stack one-command deployment
-AGENTS.md              # Engineering contract for agents and contributors
-~~~
+```text
+vibepaper-desktop/      # Desktop host, local project/task services, IPC, and tests
+vibepaper-web/          # Original pages, canvas nodes, editors, and Agent panel
+pi-main/               # Pi source with desktop Agent and official media adaptations
+  packages/vibepaper-agent-service/  # Original TypeScript Agent and local adapters
+  packages/ai/         # Text and official media provider interfaces
+  packages/coding-agent/ # Pi session, Skill, and compaction support
+docs/                  # Desktop contracts, parity checklists, plans, and evidence
+AGENTS.md              # Current desktop engineering contract
 
----
+vibepaper-services/    # Original Java services retained for domain-rule comparison
+generation-service/    # Original generation service retained for comparison
+deploy/                # Historical Web deployment scripts
+Dockerfile             # Historical Web image build
+docker-compose.yml     # Historical Web stack; not needed for desktop startup
+```
 
 ## Getting Started
 
-### Docker Deployment (Recommended)
+### Requirements
 
-The repository includes a multi-stage [Dockerfile](./Dockerfile) for the frontend, Java services, generation service, and Agent service, together with [docker-compose.yml](./docker-compose.yml). Start the full stack with:
+- Node.js **22.19.0 or newer**, npm, and pnpm for the frontend lockfile.
+- Network access for initial dependency installation and any cloud model calls you choose to make.
+- FFmpeg for local video composition and relevant media processing. Set `VIBEPAPER_FFMPEG_PATH` / `FFMPEG_PATH`, or make FFmpeg available on `PATH`.
+- Windows SAPI provides the current Windows local speech path; it is not a cross-platform speech implementation.
 
-~~~bash
-docker compose up -d --build
-~~~
+Desktop startup does not require Java services, Docker, PostgreSQL, Redis, Nacos, RocketMQ, or a platform account. There is no installer configuration in this directory yet; use source startup during development.
 
-The stack includes:
+### Install
 
-| Category | Services |
-|----------|----------|
-| Infrastructure | PostgreSQL 18 · Redis 7 · Nacos |
-| Java microservices | gateway (8080) · identity (8081) · canvas (8082) · asset (8083) · billing (8084) · enterprise (8085) · gallery (8086) · admin (8087) |
-| Generation service | generation-service (FastAPI, 8090) |
-| Agent service | agent-service (Node.js + Pi Agent Core, 8091) |
-| Frontend | vibepaper-web (Nginx, http://localhost:5173) |
+```powershell
+git clone --branch feat/desktop-local-migration git@github.com:wsjwu58-cmd/Pi-Paper.git
+cd Pi-Paper
 
-To enable real generation capabilities, set the model API key before startup. The service accepts an Agnes-compatible interface:
+npm --prefix pi-main ci
+npm --prefix pi-main run build:offline
+pnpm --dir vibepaper-web install --frozen-lockfile
+npm --prefix vibepaper-desktop ci
+```
 
-~~~bash
-VIBEPAPER_LLM_API_KEY=your_key VIBEPAPER_AGNES_API_KEY=your_key docker compose up -d --build
-~~~
+`build:offline` builds Pi dependencies using local model data. It does not change whether later model requests use a local or cloud provider.
 
-Common commands:
+### Start the Desktop App
 
-~~~bash
-docker compose ps                         # View service status
-docker compose logs -f agent-service      # Follow a service's logs
-docker compose down                       # Stop services and keep volumes
-docker compose down -v                     # Stop services and remove volumes
-~~~
+From the repository root, start development mode:
 
-Notes:
+```powershell
+npm --prefix vibepaper-desktop run dev
+```
 
-- The database is initialized automatically from deploy/init-db.sql; Java services create tables through Flyway.
-- The generation service uses the inline executor by default and does not require RocketMQ. To use MQ or MinIO, start the relevant infrastructure from deploy/docker-compose.yml.
-- Inject sensitive settings such as the Agent confirmation-token signing key through environment variables (VIBEPAPER_CONFIRM_SIGNING_SECRET and VIBEPAPER_INTERNAL_SERVICE_TOKEN). Do not commit secrets to the repository.
-- To build one image only, use <code>docker build --target web -t vibepaper-web .</code>. Available targets are <code>web</code>, <code>java</code>, <code>generation</code>, and <code>agent</code>.
+This starts Vite on `http://127.0.0.1:5173`, then launches Electron when the renderer is ready. The port must be available. Opening that URL in a regular browser does not provide the desktop project bridge.
 
-### Prerequisites
+For the built renderer:
 
-- JDK 21 and Maven
-- Python 3.12 and [uv](https://github.com/astral-sh/uv) or venv (for generation-service only)
-- Node.js 22.19+, npm, and pnpm
-- PostgreSQL and Redis; Nacos, RocketMQ, and MinIO are optional
+```powershell
+npm --prefix vibepaper-web run build
+npm --prefix vibepaper-desktop start
+```
 
-Provide local database, middleware endpoints, and passwords through environment variables or local configuration files. Do not commit real credentials to the repository. See the .env.example files in individual services when available.
+The desktop `predev` / `prestart` hooks build the Agent Worker and Pi official media bundle automatically. Rebuild the renderer after frontend changes; restart Electron after Main/Preload or runtime icon changes.
 
-### Java Backend
+### Configure Models and Create
 
-~~~powershell
-cd vibepaper-services
-mvn -s settings-project.xml install -DskipTests
-~~~
+1. Open **API 配置**, or **自定义配置** from a canvas model menu. Configure a provider, enable implemented models, and set their defaults.
+2. Create or open a local project from **画布展示**.
+3. Add nodes and connect references, or ask Xiaop to organize the canvas. Agent generation requests wait for explicit confirmation before submission.
+4. Inspect results and errors in the nodes, download outputs, and review local tasks in **历史记录**.
 
-### Python Generation Service
+Only implemented, enabled, capability-matching bindings can be called. A successful credential probe does not guarantee generation access to every model. Local text endpoints are restricted to loopback addresses, and their current catalog does not declare Agent tool-calling support.
 
-~~~powershell
-cd generation-service
-# After creating a virtual environment and installing dependencies:
-python scripts\init_db.py
-~~~
+Cloud API keys are handled by controlled processes and system encryption, not exposed to the Renderer or included in project exports. Model configuration discloses the provider, sent data, and potential fees; ordinary messages do not require a repeated API confirmation. Agent generation and high-risk actions retain their separate confirmations.
 
-### Pi Agent Service
+See the [desktop README](./vibepaper-desktop/README.md) for local file layout, project movement, single-writer locks, backups, recovery, and verification commands.
 
-agent-service has been migrated to a Node.js service based on Pi Agent Core. The Pi upstream source is located in pi-main/; Pi-Paper's customization code is limited to pi-main/packages/vibepaper-agent-service/. The upstream packages/agent, packages/ai, and packages/coding-agent packages are not modified.
+## Validation Status
 
-~~~powershell
-cd pi-main
-npm install --ignore-scripts
-npm run build --workspace=@vibepaper/pi-agent-service
+- The latest canvas interaction repair passed the frontend build, 20 focused frontend regressions, and 32 local canvas-core tests. Narrow-window menus, durable edge deletion, generation animation fixtures, and text reading were checked in an isolated desktop project.
+- Fixture protocols and UI checks do not replace real-account generation or long-running Agent recovery acceptance.
+- Remaining acceptance work includes full original UI/domain parity, all supported official model accounts and input modes, local Agent capabilities, long-context stress, and installers on each target operating system.
 
-Copy-Item packages\vibepaper-agent-service\.env.example packages\vibepaper-agent-service\.env
-# Set VIBEPAPER_DATABASE_URL, VIBEPAPER_REDIS_URL, and the Agnes API key in .env
-npm run start --workspace=@vibepaper/pi-agent-service
-~~~
+Current contracts and evidence:
 
-The service listens on port 8091 by default. Model configuration uses the existing Agnes-compatible interface: VIBEPAPER_LLM_* takes precedence, with VIBEPAPER_AGNES_* as a fallback. The default model is agnes-2.5-flash.
+- [Desktop engineering contract](./AGENTS.md)
+- [Desktop setup and usage](./vibepaper-desktop/README.md)
+- [UI parity checklist](./docs/specs/desktop-ui-parity.md) and [backend domain comparison](./docs/specs/desktop-backend-parity.md)
+- [Agent functional specification](./docs/specs/desktop-agent-functional-spec.md)
+- [Provider registry](./docs/specs/desktop-provider-registry.md) and [provider data contract](./docs/specs/desktop-provider-data-contract.md)
+- [Canvas interaction repair evidence](./docs/plans/2026-10-05-canvas-interaction-repairs.md)
 
-The short-form drama Agent treats characters, world-building, episode indexes, and shot chains as readable and writable persistent facts. It executes the workflow in layers: “story bible → episode → shots → prompts → keyframes → video → composition”. Server-side tools reject cases such as missing character reference images or submitting a video before keyframes are ready; these constraints cannot be bypassed through prompts alone.
+## Project Notes
 
-Skills inject only an index into the session; their full content is loaded on demand through load_skill. Built-in canvas skills and user-managed dynamic skills follow this priority order: the current user instruction, one-card override, global preference, skill content, and model defaults.
-
-### One-Command Startup and Shutdown
-
-When the required middleware is already installed locally:
-
-~~~powershell
-.\deploy\start-all.ps1
-.\deploy\stop-all.ps1
-~~~
-
-After startup, run the full-stack health check. The script checks connectivity for the frontend, Java services, generation service, Agent service, PostgreSQL, Redis, Nacos, and RocketMQ:
-
-~~~powershell
-.\deploy\verify-all.ps1
-.\deploy\verify-all.ps1 -Json
-~~~
-
-### Frontend
-
-~~~powershell
-cd vibepaper-web
-pnpm install
-pnpm dev   # http://localhost:5173
-~~~
-
----
-
----
-
-## Disclaimer
-
-- This is an independently developed project for personal learning and experimentation. Its interfaces, architecture, and features may change significantly.
-- Pi-Paper has no official affiliation with any commercial product. The reproduction scope is limited to publicly confirmed product capabilities and interaction patterns.
-- Issues, discussions, and focused pull requests are welcome.
-
----
+- Pi-Paper is independently developed for personal learning and experimentation and has no official affiliation with commercial products referenced by historical materials.
+- Desktop behavior follows the current desktop contract. Older Web PRDs, services, and deployment files remain comparison material rather than desktop runtime requirements.
+- Interfaces and behavior may change during migration. Focused issues and pull requests with reproducible desktop scenarios are welcome.
 
 ## License
 
