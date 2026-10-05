@@ -18,8 +18,6 @@ Pi-Paper is a single-user desktop creative workspace. Connect text, images, vide
 
 </div>
 
-> This is a personal learning and experimentation project under active development. Desktop migration reuses the original frontend and Pi Agent source. Complete 1:1 parity, all provider accounts, long-session stress tests, and Windows/macOS/Linux installers have not yet passed their full acceptance gates.
-
 ---
 
 ## Branches
