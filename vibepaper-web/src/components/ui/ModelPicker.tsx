@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, SlidersHorizontal } from 'lucide-react'
 import type { ModelInfo } from '@/lib/types'
 import { ModelBrandIcon } from './ModelBrandIcon'
@@ -32,6 +33,9 @@ export function ModelPicker({
   const [open, setOpen] = useState(false)
   const [activeBrand, setActiveBrand] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPosition, setMenuPosition] = useState<CSSProperties>({ left: 8, bottom: 8, width: 480, maxHeight: 360 })
   const current = models.find((m) => m.name === value)
   const iconSize = composer ? 20 : dark || compact ? 16 : 20
   const visible = models.filter((m) => !/兼容别名|已停用/.test(String(m.description || '')))
@@ -52,13 +56,47 @@ export function ModelPicker({
     : current?.provider || desktopGroups[0]?.[0]
   const brandModels = desktopGroups.find(([id]) => id === selectedBrand)?.[1] ?? []
 
+  useLayoutEffect(() => {
+    if (!open) return
+    const position = () => {
+      const rect = rootRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const viewportWidth = Math.max(0, window.innerWidth)
+      const viewportHeight = Math.max(0, window.innerHeight)
+      const width = Math.min(onConfigureModels ? 480 : Math.max(220, rect.width), Math.max(0, viewportWidth - 16))
+      const left = Math.max(8, Math.min(rect.right - width, viewportWidth - width - 8))
+      const spaceAbove = Math.max(0, rect.top - 14)
+      const spaceBelow = Math.max(0, viewportHeight - rect.bottom - 14)
+      const preferredHeight = Math.min(onConfigureModels ? 360 : 240, Math.max(0, viewportHeight - 16))
+      const preferAbove = rect.top >= 180 && (dark || compact || composer)
+      const fitsAbove = spaceAbove >= preferredHeight
+      const fitsBelow = spaceBelow >= preferredHeight
+      const above = (preferAbove && fitsAbove) || (!fitsBelow && spaceAbove > spaceBelow)
+      const maxHeight = above ? spaceAbove : spaceBelow
+      setMenuPosition({ left, ...(above ? { bottom: viewportHeight - rect.top + 6 } : { top: rect.bottom + 6 }), width, maxHeight })
+    }
+    position()
+    window.addEventListener('resize', position)
+    window.addEventListener('scroll', position, true)
+    return () => { window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true) }
+  }, [open, onConfigureModels, dark, compact, composer])
+
   useEffect(() => {
     if (!open) return
-    const close = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+    const closeOutside = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) setOpen(false)
     }
-    window.addEventListener('mousedown', close)
-    return () => window.removeEventListener('mousedown', close)
+    const closeOnEscape = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setOpen(false)
+      triggerRef.current?.focus()
+    }
+    window.addEventListener('mousedown', closeOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('mousedown', closeOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
   }, [open])
 
   const triggerClass = composer
@@ -71,7 +109,7 @@ export function ModelPicker({
 
   return (
     <div ref={rootRef} className={`relative ${className}`}>
-      <button type="button" onClick={() => setOpen((v) => !v)} className={triggerClass} aria-label="选择 Agent 思考模型">
+      <button ref={triggerRef} type="button" onClick={() => setOpen((v) => !v)} className={triggerClass} aria-label="选择 Agent 思考模型" aria-expanded={open}>
         {current ? <ModelBrandIcon model={current} size={iconSize} desktop={Boolean(onConfigureModels)} /> : null}
         <span className="min-w-0 flex-1 truncate text-left">
           {current?.displayName || current?.name || value || placeholder}
@@ -82,16 +120,16 @@ export function ModelPicker({
           <span className={`shrink-0 text-[10px] ${dark ? 'text-white/50' : 'text-[#999]'}`}>▾</span>
         )}
       </button>
-      {open && (
+      {open && createPortal(
         <div
-          className={`absolute z-[100] min-w-[220px] overflow-hidden rounded-xl border border-[var(--canvas-border)] bg-[var(--canvas-popover)] shadow-xl ${
-            dark || compact || composer ? 'bottom-full left-0 mb-1' : 'left-0 top-full mt-1 w-full'
-          } ${onConfigureModels ? 'w-[480px] max-w-[calc(100vw-32px)]' : ''}`}
+          ref={menuRef}
+          style={menuPosition}
+          className="fixed z-[1000] overflow-auto rounded-xl border border-[var(--canvas-border)] bg-[var(--canvas-popover)] shadow-xl"
         >
           {onConfigureModels ? (
             <>
-              <div className="flex min-h-40 w-[min(480px,calc(100vw-32px))] max-w-full">
-                <div className="max-h-72 w-40 shrink-0 overflow-auto border-r border-[var(--canvas-border)] p-2">
+              <div className="flex min-h-40 w-full">
+                <div className="max-h-72 w-[34%] min-w-24 shrink-0 overflow-auto border-r border-[var(--canvas-border)] p-2">
                   {desktopGroups.map(([providerId, providerModels]) => (
                     <button key={providerId} type="button" onClick={() => setActiveBrand(providerId)}
                       className={`mb-1 flex w-full items-center gap-1.5 rounded-lg px-2 py-2.5 text-left hover:bg-black/[0.05] ${providerId === selectedBrand ? 'bg-black/[0.06]' : ''}`}>
@@ -174,7 +212,7 @@ export function ModelPicker({
               })}
             </div>
           )}
-        </div>
+        </div>, document.body
       )}
     </div>
   )

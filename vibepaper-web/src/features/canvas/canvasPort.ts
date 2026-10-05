@@ -1,4 +1,5 @@
 import type { Edge, Node } from '@xyflow/react'
+import { canonicalCanvasEdges } from './canvasEdges'
 import { api, uploadAsset } from '@/lib/api'
 import { sid } from '@/lib/ids'
 import type { AssetView, CanvasDetail, CanvasView, EdgePayload, GroupPayload, NodePayload, StackPayload } from '@/lib/types'
@@ -254,7 +255,7 @@ export async function saveCanvasPort(input: {
     ...input,
     idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
     nodes: input.nodes.map(desktopFlowNode),
-    edges: input.edges.map(desktopFlowEdge),
+    edges: canonicalCanvasEdges(input.nodes, input.edges).map(desktopFlowEdge),
     groups: input.groups.map((group): DesktopCanvasGroup => ({
       ...group,
       id: sid(group.id),
@@ -266,6 +267,26 @@ export async function saveCanvasPort(input: {
       nodeIds: stack.nodeIds.map(sid),
     })),
   })
+}
+
+export async function deleteCanvasEdgePort(input: {
+  projectId?: string
+  canvasId: string
+  edgeId: string
+}): Promise<void> {
+  if (isDesktopRuntime()) {
+    const bridge = window.vibepaperDesktop
+    if (!bridge) throw new Error('桌面本地连线服务尚未就绪。')
+    if (!input.projectId) throw new Error('没有已打开的本地项目，无法删除连线。')
+    await bridge.deleteEdge({
+      projectId: input.projectId,
+      canvasId: sid(input.canvasId),
+      edgeId: sid(input.edgeId),
+    })
+    return
+  }
+
+  await api(`/canvases/${sid(input.canvasId)}/edges/${sid(input.edgeId)}`, { method: 'DELETE' })
 }
 
 export async function createCanvasNodePort(input: {

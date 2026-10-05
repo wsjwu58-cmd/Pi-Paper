@@ -124,7 +124,7 @@ export const useCanvasStore = create<CanvasState>((set) => ({
     set((s) => ({
       dirty: true,
       nodes: s.nodes.map((n) =>
-        sid(n.id) === sid(id) ? { ...n, data: { ...n.data, node: { ...n.data.node, ...patch } } } : n,
+        sid(n.id) === sid(id) ? { ...n, data: { ...n.data, ...patch, node: { ...n.data.node, ...patch } } } : n,
       ),
     }))
   },

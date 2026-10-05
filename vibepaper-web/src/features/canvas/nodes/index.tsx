@@ -20,7 +20,9 @@ import { downloadNodeOutput } from './nodeDownloads'
 import { ImageCropOverlay } from './ImageCropOverlay'
 import { saveCropArtifactsAsNodes, type CropSourceSnapshot } from './cropActions'
 import type { CropMode } from './cropGeometry'
-import { isGenerationInFlight, type GenerationModality, type GenerationProgressInput, type GenerationReferencePreview } from './generation-progress'
+import { AgentMarkdown } from '../AgentMarkdown'
+import { isGenerationInFlight, type GenerationReferencePreview } from './generation-progress'
+import { generationProgressForNode, pickLatestTask } from './generation-task-selection'
 
 function useNodeData(nodeId: string) {
   return useCanvasStore((s) => s.nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node)
@@ -78,6 +80,12 @@ export function useNodeTasks(nodeId = '') {
     if (!latest) return
     const node = useCanvasStore.getState().nodes.find((n) => sid(n.id) === sid(nodeId))
     if (!node) return
+    if (isGenerationInFlight(latest.status)) {
+      if (sid(node.data.node.currentOutputId) !== sid(latest.taskId) || node.data.node.status !== latest.status || node.data.node.execStatus !== latest.status) {
+        useCanvasStore.getState().updateNodePayload(nodeId, { currentOutputId: latest.taskId, ...syncExecFields(latest.status) })
+      }
+      return
+    }
     if (['succeeded', 'failed', 'cancelled', 'expired'].includes(latest.status)) {
       const out = latest.outputs?.[0]
       const url = resolveMediaUrl(out?.url, out?.meta as Record<string, unknown>)
@@ -124,14 +132,11 @@ export function useNodeTasks(nodeId = '') {
     return () => window.removeEventListener('vp-task-updated', handler)
   }, [canvasKey, nodeId, qc, queryKey])
 
-  const currentId = useCanvasStore(
-    (s) => s.nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node.currentOutputId,
-  )
   const latest = useMemo(() => {
     if (!nodeId) return null
     const items = data.filter((t) => sid(t.nodeId) === sid(nodeId))
-    return pickLatestTask(items, currentId)
-  }, [currentId, data, nodeId])
+    return pickLatestTask(items)
+  }, [data, nodeId])
 
   return { tasks: data, latest }
 }
@@ -560,23 +565,6 @@ async function importDesktopImageToNode(nodeId: Id, fallbackNode: NodePayload) {
   }
 }
 
-function pickLatestTask(items: GenerationTask[], currentId?: Id): GenerationTask | null {
-  if (currentId) {
-    const pinned = items.find((t) => sid(t.taskId) === sid(currentId))
-    if (pinned) return pinned
-  }
-  const inflight = items.find((t) => t.status === 'running' || t.status === 'queued')
-  const succeeded = items.find((t) => t.status === 'succeeded' && (t.outputs?.length ?? 0) > 0)
-    ?? items.find((t) => t.status === 'succeeded')
-  if (inflight && succeeded) {
-    const inflightAt = Date.parse(inflight.createdAt || '') || 0
-    const doneAt = Date.parse(succeeded.createdAt || '') || 0
-    // 更早的僵尸 running 不应盖住已经成功的产物
-    return inflightAt > doneAt ? inflight : succeeded
-  }
-  return inflight ?? succeeded ?? items[0] ?? null
-}
-
 function nodeHasPreview(node: NodePayload, latest: GenerationTask | null): boolean {
   if ((latest?.outputs?.length ?? 0) > 0) return true
   const p = node.params || {}
@@ -629,35 +617,6 @@ function useGenerationReferencePreviews(
   })
 }
 
-function generationProgressForNode(
-  node: NodePayload,
-  latest: GenerationTask | null,
-  references: GenerationReferencePreview[],
-): GenerationProgressInput | null {
-  const taskId = node.currentOutputId
-  if (taskId == null) return null
-  const currentTask = latest && sid(latest.taskId) === sid(taskId) ? latest : null
-  if (currentTask) {
-    if (!isGenerationInFlight(currentTask.status)) return null
-    return {
-      taskId: currentTask.taskId,
-      status: currentTask.status,
-      modality: node.type as GenerationModality,
-      startedAt: currentTask.createdAt,
-      references,
-    }
-  }
-
-  const nodeStatus = String(node.execStatus || node.status || '').toLowerCase()
-  if (!isGenerationInFlight(nodeStatus)) return null
-  return {
-    taskId,
-    status: nodeStatus,
-    modality: node.type as GenerationModality,
-    references,
-  }
-}
-
 function SplitNodeEditor({
   node,
   models,
@@ -687,6 +646,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
   const generationReferences = useNodeGenerationReferences(nodeId, node)
   const { tasks, latest } = useNodeTasks(nodeId)
   const [outputDraft, setOutputDraft] = useState('')
+  const lastReaderPointerRef = useRef<{ timestamp: number; x: number; y: number } | null>(null)
 
   const outputText = textNodeContent(latest?.outputs?.[0]?.meta?.text, node?.params)
 
@@ -710,7 +670,50 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
   }
 
   return (
-    <div className="relative">
+    <div
+      className="relative"
+      onPointerDownCapture={(event) => {
+        if (event.button !== 0 || !event.isPrimary) {
+          lastReaderPointerRef.current = null
+          return
+        }
+        const target = event.target
+        if (!(target instanceof Element) || !target.closest('[data-text-output-area]') || target.closest('button, [role="button"], .react-flow__handle')) {
+          lastReaderPointerRef.current = null
+          return
+        }
+
+        const now = performance.now()
+        const previous = lastReaderPointerRef.current
+        const sameSpot = previous
+          && now - previous.timestamp < 350
+          && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 6
+        if (sameSpot && node.type === 'text' && displayOutput.trim()) {
+          lastReaderPointerRef.current = null
+          event.preventDefault()
+          event.stopPropagation()
+          window.dispatchEvent(new CustomEvent('vp-read-text-node', { detail: { nodeId } }))
+          return
+        }
+        lastReaderPointerRef.current = { timestamp: now, x: event.clientX, y: event.clientY }
+      }}
+      onMouseDownCapture={(event) => {
+        if (event.button !== 0 || event.detail < 2) return
+        const target = event.target
+        if (!(target instanceof Element) || !target.closest('[data-text-output-area]') || target.closest('button, [role="button"], .react-flow__handle')) return
+        if (node.type !== 'text' || !displayOutput.trim()) return
+        lastReaderPointerRef.current = null
+        event.preventDefault()
+        event.stopPropagation()
+        window.dispatchEvent(new CustomEvent('vp-read-text-node', { detail: { nodeId } }))
+      }}
+      onDoubleClick={(event) => {
+        if (node.type !== 'text' || !displayOutput.trim()) return
+        if (!(event.target instanceof Element) || !event.target.closest('[data-text-output-area]')) return
+        event.stopPropagation()
+        window.dispatchEvent(new CustomEvent('vp-read-text-node', { detail: { nodeId } }))
+      }}
+    >
       {selected && displayOutput && (
         <NodeFloatingToolbar
           node={node}
@@ -732,6 +735,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
         topContent={
           selected ? (
             <textarea
+              data-text-output-area
               className="nodrag nowheel h-full max-h-[108px] w-full resize-none whitespace-pre-wrap bg-transparent px-0 py-0 text-[12px] leading-relaxed text-[#222] outline-none placeholder:text-[#b0b0b8]"
               value={displayOutput}
               placeholder="生成结果…"
@@ -739,9 +743,9 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
               onChange={(e) => persistOutput(e.target.value)}
             />
           ) : displayOutput ? (
-            <div className="w-full line-clamp-4 px-0 py-0 text-[12px] leading-relaxed text-[#222]">{displayOutput}</div>
+            <div data-text-output-area className="w-full max-h-[120px] overflow-hidden"><AgentMarkdown text={displayOutput} className="!text-[12px] !leading-relaxed" compact /></div>
           ) : (
-            <div className="px-0 py-0 text-[12px] text-[#b0b0b8]">点击编辑文本</div>
+            <div data-text-output-area className="px-0 py-0 text-[12px] text-[#b0b0b8]">点击编辑文本</div>
           )
         }
         bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={selected} />}
@@ -1038,7 +1042,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
         const payload = byId.get(id)!.data.node
         const p = payload.params ?? {}
         const localVideoTask = desktopMode
-          ? pickLatestTask(tasks.filter((task) => sid(task.nodeId) === id), payload.currentOutputId)
+          ? pickLatestTask(tasks.filter((task) => sid(task.nodeId) === id))
           : null
         const url = desktopMode
           ? localVideoTask?.status === 'succeeded' && localVideoTask.outputs?.[0]?.outputType === 'video'

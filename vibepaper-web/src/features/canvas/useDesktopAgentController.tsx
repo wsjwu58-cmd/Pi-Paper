@@ -295,12 +295,6 @@ export function useDesktopAgentController({
           if (active) setSessions(listed)
         }).catch(() => undefined)
       } else if (event.type === 'task_status') {
-        const taskStatus = String(event.data.status ?? '')
-        if (projectId && ['succeeded', 'failed', 'cancelled', 'expired', 'settlement_error', 'interrupted'].includes(taskStatus)) {
-          // Refresh the existing node task feed so failures and outputs appear
-          // in their original canvas nodes as soon as the durable task changes.
-          void queryClient.invalidateQueries({ queryKey: ['canvas-tasks', projectId] })
-        }
         // Task updates can arrive after run_completed. Do not let a late task
         // event resurrect the Agent's busy state or stop button.
         if (isAgentRunActive(next, event.runId) && (!activeRunIdRef.current || event.runId === activeRunIdRef.current)) {
@@ -317,7 +311,13 @@ export function useDesktopAgentController({
           setSending(true)
         }
       }
-      if (event.type === 'tool_completed' || (event.type === 'task_status' && String(event.data.status ?? '') === 'succeeded')) {
+      if (event.type === 'tool_completed' || event.type === 'task_status') {
+        if (projectId) {
+          // Refresh the original node task feed for queued, running, and
+          // terminal updates. One invalidation per event keeps replay bursts
+          // from starting redundant task loads.
+          void queryClient.invalidateQueries({ queryKey: ['canvas-tasks', projectId] })
+        }
         onCanvasChanged()
       }
     })

@@ -32,6 +32,8 @@ import { CanvasToolbar } from './CanvasToolbar'
 import { CanvasGroupView } from './CanvasGroupView'
 import { arrangeCanvasGroupNodes, canvasGroupMemberIds, getCanvasGroupBounds, getCanvasGroupDownloadCandidates, moveCanvasGroupNodes, detachOutsideGroup, type CanvasGroupBounds } from './canvasGroupUtils'
 import { GenerationReferenceEdge } from './GenerationReferenceEdge'
+import { canonicalCanvasEdges } from './canvasEdges'
+import { AgentMarkdown } from './AgentMarkdown'
 import { downloadNodeOutput } from './nodes/nodeDownloads'
 import { AssetLibrary } from './AssetLibrary'
 import { AgentLauncher, AgentPanel } from './AgentPanel'
@@ -41,7 +43,7 @@ import { AccountSidePanels } from './AccountSidePanels'
 import { CanvasWelcome } from './CanvasWelcome'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
-import { applySavedCanvasStaleNodeIds, createCanvasNodePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
+import { applySavedCanvasStaleNodeIds, createCanvasNodePort, deleteCanvasEdgePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
 import { flushCanvasPersistence, registerCanvasPersistence } from './canvasPersistence'
 import type { DesktopCanvas } from '@/desktop/desktop-bridge'
 
@@ -100,6 +102,50 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     direction?: 'upstream' | 'downstream'
   } | null>(null)
   const [nodeMenu, setNodeMenu] = useState<{ x: number; y: number; nodeIds: string[] } | null>(null)
+  const [edgeMenu, setEdgeMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const [readingNodeId, setReadingNodeId] = useState<string | null>(null)
+  const readingDialogRef = useRef<HTMLDivElement>(null)
+  const readingCloseButtonRef = useRef<HTMLButtonElement>(null)
+  const readingNode = nodes.find((node) => node.id === readingNodeId)?.data.node
+  useEffect(() => {
+    if (!readingNodeId) return
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    readingCloseButtonRef.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setReadingNodeId(null)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = readingDialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), [tabindex="0"]')
+      if (!focusable?.length) {
+        event.preventDefault()
+        return
+      }
+      const first = focusable.item(0)
+      const last = focusable.item(focusable.length - 1)
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      if (previousFocus?.isConnected) previousFocus.focus()
+    }
+  }, [readingNodeId])
+  useEffect(() => {
+    const openReader = (event: Event) => {
+      const nodeId = (event as CustomEvent<{ nodeId?: string }>).detail?.nodeId
+      if (nodeId) setReadingNodeId(sid(nodeId))
+    }
+    window.addEventListener('vp-read-text-node', openReader)
+    return () => window.removeEventListener('vp-read-text-node', openReader)
+  }, [])
   const [deleteConfirm, setDeleteConfirm] = useState<{
     nodeIds: string[]
     downstream: Array<{ id: string; type: string }>
@@ -667,7 +713,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             targetPort: conn.targetHandle ?? 'input',
           })
           const edge = result.edge
-          setEdges([
+          setEdges(canonicalCanvasEdges(useCanvasStore.getState().nodes, [
             ...useCanvasStore.getState().edges,
             {
               id: sid(edge.id),
@@ -678,7 +724,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               style: { stroke: '#93c5fd', strokeWidth: 1.5 },
               data: { valid: edge.valid, edge },
             },
-          ])
+          ]))
           const wasEditedAgain = useCanvasStore.getState().dirty
           const latest = useCanvasStore.getState().canvas ?? current
           setCanvas({ ...latest, canvas: { ...latest.canvas, version: result.version } })
@@ -712,6 +758,29 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     },
     [canvasId, desktopProjectId, edges, flushDesktopEdits, setCanvas, setDirty, setEdges],
   )
+
+  const deleteEdgeById = useCallback(async (edgeId: string) => {
+    try {
+      // A pending full snapshot must land before the direct edge delete, or a
+      // delayed save could put the removed edge back into the authoritative graph.
+      if (isDesktopRuntime()) {
+        if (saveTimer.current) {
+          window.clearTimeout(saveTimer.current)
+          saveTimer.current = null
+        }
+        await persistDesktopChanges()
+      }
+      await deleteCanvasEdgePort({ projectId: desktopProjectId, canvasId, edgeId })
+      const current = useCanvasStore.getState()
+      if (sid(current.canvas?.canvas.id) === canvasId) {
+        setEdges(current.edges.filter((edge) => sid(edge.id) !== sid(edgeId)))
+      }
+      toastSuccess('连线已删除')
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : '无法删除连线。')
+      if (isDesktopRuntime()) void refetch()
+    }
+  }, [canvasId, desktopProjectId, persistDesktopChanges, refetch, setEdges])
 
   const requestDeleteNodes = useCallback(
     (ids: string[]) => {
@@ -1096,6 +1165,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
   const onDoubleClick = useCallback(
     (e: React.MouseEvent) => {
+      if (e.target instanceof Element && e.target.closest('.react-flow__node, .react-flow__edge')) return
       openAddMenu(e.clientX, e.clientY)
     },
     [openAddMenu],
@@ -1336,6 +1406,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         onConnect={onConnect}
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
+        onEdgeContextMenu={(event, edge) => {
+          event.preventDefault()
+          event.stopPropagation()
+          setNodeMenu(null)
+          setEdgeMenu({ x: Math.min(event.clientX, window.innerWidth - 160), y: Math.min(event.clientY, window.innerHeight - 60), id: sid(edge.id) })
+        }}
         onDoubleClick={onDoubleClick}
         onPaneContextMenu={(e) => {
           e.preventDefault()
@@ -1351,6 +1427,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           setNodeMenu({ x: e.clientX, y: e.clientY, nodeIds: ids })
         }}
         onPaneClick={() => {
+          setEdgeMenu(null)
           setAddMenu(null)
           setNodeMenu(null)
           selectNode(null)
@@ -1391,9 +1468,14 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           setNodeMenu(null)
           selectNode(sid(n.id))
         }}
-        onNodeDoubleClick={(_e, n) => {
+        onNodeDoubleClick={(event, n) => {
+          event.stopPropagation()
           if (!nodes.some((node) => sid(node.id) === sid(n.id))) return
           const id = sid(n.id)
+          if (n.type === 'text') {
+            setReadingNodeId(id)
+            return
+          }
           selectNode(id)
           setEditingNodeId(id)
           // 指南：双击堆叠卡片展开
@@ -1475,6 +1557,23 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       </ReactFlow>
       </div>
 
+      {readingNode && (
+        <div ref={readingDialogRef} className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-8 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="文本阅读" onClick={() => setReadingNodeId(null)} onDoubleClick={(event) => event.stopPropagation()}>
+          <button ref={readingCloseButtonRef} type="button" aria-label="关闭文本阅读" className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full bg-white/20 text-2xl text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white" onClick={() => setReadingNodeId(null)}>×</button>
+          <div role="document" aria-label="文本内容" tabIndex={0} className="h-[80vh] w-[min(1000px,90vw)] overflow-auto rounded-2xl bg-white p-8 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <AgentMarkdown text={textNodeContent(readingNode.output?.text, readingNode.params)} className="select-text break-words" variant="document" />
+          </div>
+        </div>
+      )}
+      {edgeMenu && (
+        <div className="fixed z-[150] rounded-xl border border-black/10 bg-white p-1 shadow-xl" style={{ left: edgeMenu.x, top: edgeMenu.y }}>
+          <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-black/5" onClick={() => {
+            const id = edgeMenu.id
+            setEdgeMenu(null)
+            void deleteEdgeById(id)
+          }}><Trash2 size={18} />删除连线</button>
+        </div>
+      )}
       {addMenu && (
         <div
           className="fixed z-40 w-40 rounded-xl border border-black/10 bg-white p-1.5 shadow-xl"
