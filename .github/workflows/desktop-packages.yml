@@ -48,7 +48,7 @@ jobs:
         working-directory: pi-main
         run: |
           npm run build --workspace=@earendil-works/pi-telemetry
-          npm run hydrate:model-data
+          node ../vibepaper-desktop/scripts/restore-model-data.cjs
           npm run build:offline --workspace=@earendil-works/pi-ai
           npm run build --workspace=@earendil-works/pi-agent-core
       - name: Install renderer dependencies

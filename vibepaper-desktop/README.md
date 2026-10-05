@@ -116,7 +116,7 @@ npm --prefix vibepaper-desktop run dist:linux
 npm --prefix vibepaper-desktop run verify:packaged
 ```
 
-首次构建先为 `pi-main`、`vibepaper-web`、`vibepaper-desktop` 安装锁定依赖，并构建 Pi telemetry、ai、agent-core；可参考 `.github/workflows/desktop-packages.yml`。该流程在三种原生系统打包并使用包内 Electron 检查 SQLite 画布恢复、Agent Skill 和会话片段重启恢复，不需要平台账号或开发工具随包安装。
+首次构建先为 `pi-main`、`vibepaper-web`、`vibepaper-desktop` 安装锁定依赖，运行 `node vibepaper-desktop/scripts/restore-model-data.cjs`，并构建 Pi telemetry、ai（`build:offline`）、agent-core；可参考 `.github/workflows/desktop-packages.yml`。构建使用 `assets/pi-model-data.snapshot.json` 中当前版本的公开模型目录，无凭据，也不因在线目录变化修改打包版本。该流程在三种原生系统打包并使用包内 Electron 检查 SQLite 画布恢复、Agent Skill 和会话片段重启恢复，不需要平台账号或开发工具随包安装。
 
 当前产物为开发验收包：Windows 尚无发行证书，macOS 使用 ad-hoc 签名，尚未 Apple 公证。安装包构建和 Worker 检查不代表完整 UI、真实供应商生成或三平台安装/卸载验收完成。现有本地 FFmpeg 操作继续读取用户配置或系统 FFmpeg，当前不随安装包分发 FFmpeg；本地模型服务同样需用户配置。
 
