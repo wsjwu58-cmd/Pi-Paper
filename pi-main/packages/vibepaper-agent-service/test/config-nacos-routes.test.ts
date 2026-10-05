@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { loadConfig, validateStartupConfig } from "../src/config.ts";
@@ -25,15 +23,4 @@ describe("production startup and routing contracts", () => {
 		expect(() => validateStartupConfig(config)).not.toThrow();
 	});
 
-	it("routes all Agent control-plane resources and requires a Pi CI job", () => {
-		const root = resolve(import.meta.dirname, "../../../../");
-		const gateway = readFileSync(
-			resolve(root, "vibepaper-services/vibepaper-gateway/src/main/resources/application.yml"),
-			"utf8",
-		);
-		const ci = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
-		expect(gateway).toContain("/api/v1/drama/**");
-		expect(gateway).toContain("/api/v1/render-reviews/**");
-		expect(ci).toContain("pi-agent-service:");
-	});
 });

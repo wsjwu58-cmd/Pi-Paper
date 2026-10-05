@@ -33,9 +33,9 @@ VibePaper 桌面版是单用户、本地项目文件优先的 AI 节点化画布
 
 - `vibepaper-web` 的 React + TypeScript + Vite + `@xyflow/react`、Zustand 画布状态和原页面/组件源码直接迁移到 Electron Renderer；在原 UI 源码上改造本地 API、状态与服务适配，不另建平行桌面 UI。Renderer 不持有任意磁盘权限或 API Key。
 - Electron Main 管生命周期、项目选择、受限 IPC、系统凭据、备份和子进程。Agent 在独立 Node worker/进程运行；生成适配器可在受控 Python 子进程运行。
-- 本地核心负责画布、素材、任务、模型目录与设置。桌面版正常创作不依赖 Java 微服务、网关、PostgreSQL、Redis、Nacos、RocketMQ、MinIO、XXL-JOB、Docker 或旧平台服务。旧源码可保留供对照，但不进入最终桌面运行依赖。
+- 本地核心负责画布、素材、任务、模型目录与设置。桌面版正常创作不依赖 Java 微服务、网关、PostgreSQL、Redis、Nacos、RocketMQ、MinIO、XXL-JOB、Docker 或旧平台服务。按用户清理授权，旧 Java、Python 服务与 Web 部署文件从桌面分支取消跟踪；原实现通过 Git 历史供对照，基线与恢复方式见 `docs/specs/desktop-source-boundary.md`。本机旧文件与用户数据不得因取消跟踪而删除。
 - 本地核心须把原 `canvas-service`、`asset-service`、`generation-service` 和 Agent 服务的用户可见领域能力迁移为等价实现：节点/连线约束、分组堆叠、素材引用、生成参数与任务状态、Agent 工具和 Skill 等逐项保真。替换运行依赖不等于删减业务功能；暂未迁移的能力必须标为缺口，不能以禁用入口或模拟结果通过 1:1 验收。
-- 原 Java 服务按现有本地核心迁移路线逐项对照实现，保留原 Java 源码作为 API、校验、状态转移、错误语义和业务副作用的验收基线；每项迁移均需对应测试或端到端证据。桌面运行时不依赖 Java 服务，但不得因换用本地存储或 TypeScript/CJS 实现而省去原领域规则。
+- 原 Java 服务按现有本地核心迁移路线逐项对照实现，以 Git 历史中的原 Java 源码作为 API、校验、状态转移、错误语义和业务副作用的验收基线；每项迁移均需对应测试或端到端证据。桌面运行时不依赖 Java 服务，但不得因换用本地存储或 TypeScript/CJS 实现而省去原领域规则。
 - 优先保留现有 `/api/v1` DTO 与 SSE 语义以减少前端改动；本地通信可用受限 IPC 或仅绑定 loopback 的随机端口与启动令牌。不得信任 Renderer 自报的 `X-User-Id`、角色或内部服务头。
 
 ## 4. 任务、模型与 Agent 安全

@@ -75,3 +75,13 @@ output/pdf/武世杰-后端开发-Agent开发-优化版简历.pdf
 # --- Misc ---
 *.local
 .cursor/
+
+# Historical Web services retained locally, removed from desktop branch tracking
+/vibepaper-services/
+/generation-service/
+/agent-service/
+/deploy/
+/Dockerfile
+/docker-compose.yml
+/nginx.conf
+/.dockerignore

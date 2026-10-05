@@ -1,11 +1,11 @@
 name: CI
 
-# 触发条件：push 到 dev/main 分支，或向 dev/main 发起 PR
+# 桌面分支与桌面 PR 的质量检查
 on:
   push:
-    branches: [main, dev]
+    branches: [feat/desktop-local-migration]
   pull_request:
-    branches: [main, dev]
+    branches: [feat/desktop-local-migration]
 
 # 同分支新推送取消旧运行，节省额度
 concurrency:
@@ -26,94 +26,19 @@ jobs:
       - name: Setup Node 22
         uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: '22.19.0'
           cache: npm
           cache-dependency-path: pi-main/package-lock.json
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Build Pi core packages
-        run: |
-          npm run build --workspace=@earendil-works/pi-telemetry
-          npm run hydrate:model-data
-          npm run build:offline --workspace=@earendil-works/pi-ai
-          npm run build --workspace=@earendil-works/pi-agent-core
+        run: npm run build:offline
       - name: Biome lint
         run: npx biome check packages/vibepaper-agent-service/src packages/vibepaper-agent-service/test
       - name: Typecheck
         run: npx tsgo -p packages/vibepaper-agent-service/tsconfig.build.json --noEmit
       - name: Unit and migration tests
         run: npm exec -- vitest --run packages/vibepaper-agent-service/test
-
-  # ──────────────────────────────────────────────
-  # Java 微服务：Maven 编译 + verify（含 Flyway 迁移检查）
-  # 对齐 AGENTS.md §9.3 门禁：规范检查 → 单元测试 → 迁移测试
-  # ──────────────────────────────────────────────
-  java-services:
-    name: Java 服务 (Maven verify)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: vibepaper-services
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Java 21
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
-          cache-dependency-path: vibepaper-services/pom.xml
-
-      - name: Maven verify（编译 + 测试 + 打包）
-        run: mvn -B -ntp -T 1C verify
-
-  # ──────────────────────────────────────────────
-  # Python 服务：ruff 规范检查 + pytest 单元测试
-  # agent-service / generation-service 矩阵并行
-  # ──────────────────────────────────────────────
-  python-services:
-    name: Python ${{ matrix.service }} (ruff + pytest)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [agent-service, generation-service]
-
-    defaults:
-      run:
-        working-directory: ${{ matrix.service }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          cache-dependency-glob: ${{ matrix.service }}/uv.lock
-
-      - name: 安装项目依赖
-        run: uv sync
-
-      - name: 安装开发工具 (ruff, pytest)
-        run: uv pip install ruff pytest
-
-      - name: Ruff 规范检查
-        run: uv run ruff check src tests
-
-      - name: Pytest 单元测试
-        run: uv run pytest -q
 
   # ──────────────────────────────────────────────
   # 前端：oxlint 规范检查 + Vite 生产构建
@@ -138,7 +63,7 @@ jobs:
       - name: Setup Node 22
         uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: '22.19.0'
           cache: pnpm
           cache-dependency-path: vibepaper-web/pnpm-lock.yaml
 
@@ -150,3 +75,27 @@ jobs:
 
       - name: 构建 (tsc + vite build)
         run: pnpm build
+
+  desktop:
+    name: Desktop Worker and local canvas tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.19.0'
+          cache: npm
+          cache-dependency-path: |
+            pi-main/package-lock.json
+            vibepaper-desktop/package-lock.json
+      - name: Install Pi and desktop dependencies
+        run: |
+          npm --prefix pi-main ci --ignore-scripts
+          npm --prefix vibepaper-desktop ci --ignore-scripts
+      - name: Build Pi dependencies
+        run: npm --prefix pi-main run build:offline
+      - name: Desktop Worker smoke
+        run: npm --prefix vibepaper-desktop run test:agent-runtime
+      - name: Local canvas and export tests
+        run: node --test vibepaper-desktop/test/project-store-canvas-validation.test.cjs vibepaper-desktop/test/canvas-media.test.cjs vibepaper-desktop/test/node-export.test.cjs

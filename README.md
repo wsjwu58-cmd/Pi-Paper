@@ -82,12 +82,9 @@ pi-main/               # Pi source with desktop Agent and official media adaptat
 docs/                  # Desktop contracts, parity checklists, plans, and evidence
 AGENTS.md              # Current desktop engineering contract
 
-vibepaper-services/    # Original Java services retained for domain-rule comparison
-generation-service/    # Original generation service retained for comparison
-deploy/                # Historical Web deployment scripts
-Dockerfile             # Historical Web image build
-docker-compose.yml     # Historical Web stack; not needed for desktop startup
 ```
+
+Legacy Java services, Python services, and Web deployment files are no longer tracked on the desktop branch. Their original implementation remains available in Git history for migration comparison; see the [source boundary and recovery instructions](./docs/specs/desktop-source-boundary.md). Existing local copies are preserved and ignored.
 
 ## Getting Started
 
@@ -164,7 +161,7 @@ Current contracts and evidence:
 ## Project Notes
 
 - Pi-Paper is independently developed for personal learning and experimentation and has no official affiliation with commercial products referenced by historical materials.
-- Desktop behavior follows the current desktop contract. Older Web PRDs, services, and deployment files remain comparison material rather than desktop runtime requirements.
+- Desktop behavior follows the current desktop contract. Older Web PRDs remain comparison material; legacy services and deployment files are available in Git history.
 - Interfaces and behavior may change during migration. Focused issues and pull requests with reproducible desktop scenarios are welcome.
 
 ## License
