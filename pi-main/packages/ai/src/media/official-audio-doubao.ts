@@ -54,7 +54,7 @@ export async function generateDoubaoSpeech(
 				Accept: "text/event-stream",
 			},
 			body: JSON.stringify({
-				user: { uid: "pi-paper-desktop" },
+				user: { uid: "vibepaper-desktop" },
 				req_params: {
 					text: input.prompt,
 					speaker: voice,

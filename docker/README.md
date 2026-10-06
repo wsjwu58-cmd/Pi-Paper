@@ -59,6 +59,11 @@ docker compose up -d --build --wait --wait-timeout 180
 
 ## 验证
 
+[完整 Linux 容器验收已通过](https://github.com/wsjwu58-cmd/Pi-Paper/actions/runs/37397662837)，包含真实浏览器连接和容器重启检查。
+
+![Docker/noVNC 中的原桌面画布入口](../docs/images/docker-desktop-novnc.png)
+
+
 `.github/workflows/docker-desktop.yml` 会实际构建镜像、等待 Electron 窗口与 noVNC 健康检查、验证包内 SQLite/Agent 恢复、建立带密码的浏览器 VNC 连接并保存截图，再重启容器核对项目卷持久化。此检查不替代真实供应商账号生成、完整 UI 保真或音频传输验收。
 
 基础配置参考 [Docker Compose](https://docs.docker.com/reference/compose-file/services/) 和 [noVNC](https://github.com/novnc/noVNC)。
