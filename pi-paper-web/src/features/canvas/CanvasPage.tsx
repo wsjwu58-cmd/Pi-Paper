@@ -1323,7 +1323,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
   return (
     <div
-      className="vp-canvas-motion flex h-screen w-screen overflow-hidden bg-[#f2f2f2]"
+      className="vp-canvas-motion flex h-screen w-screen overflow-hidden bg-[var(--canvas-background)]"
       onPointerDownCapture={layoutMotion.cancel}
       onWheelCapture={layoutMotion.cancel}
       onDrop={onDrop}
@@ -1403,7 +1403,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             return usableSource ? 'vp-generation-reference-edge' : undefined
           })(),
           style: {
-            stroke: e.selected ? '#111111' : ((e.style?.stroke as string | undefined) ?? '#93c5fd'),
+            stroke: e.selected ? 'var(--canvas-selected-edge)' : ((e.style?.stroke as string | undefined) ?? '#93c5fd'),
             strokeWidth: e.selected ? 2.5 : 1.5,
           },
         })).map((edge) => ({ ...edge, data: { ...edge.data, generationReference: edge.className === 'vp-generation-reference-edge' } }))}
@@ -1561,7 +1561,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         connectionRadius={28}
         className="vp-dot-grid"
       >
-        <Background gap={20} size={1} color="#c8c8c8" />
+        <Background gap={20} size={1} color="var(--canvas-grid)" />
         <MiniMap pannable zoomable className="!bg-white" nodeStrokeColor="#111" />
         <Controls showInteractive={false} />
         <CanvasGroupView

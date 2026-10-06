@@ -52,7 +52,7 @@ const WELCOME_CARDS = [
 
 export function CanvasWelcome({ onCreate, availableTypes }: { onCreate: (type: string) => void; availableTypes?: string[] }) {
   return (
-    <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center overflow-hidden p-6">
+    <div className="vp-canvas-welcome pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center overflow-hidden p-6">
       <div className="pointer-events-auto flex w-full max-w-3xl flex-col items-center">
         <div className="mb-10 flex flex-col items-center gap-4">
           <OrigamiBird className="h-14 w-auto text-black/90" />
@@ -77,7 +77,7 @@ export function CanvasWelcome({ onCreate, availableTypes }: { onCreate: (type: s
                   isBottom && 'sm:col-span-2 lg:col-span-1',
                   idx === 3 && 'lg:col-start-2',
                 )}
-                style={{ backgroundColor: card.bg }}
+                style={{ backgroundColor: `var(--vp-welcome-background, ${card.bg})` }}
               >
                 <span className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-white/90 text-black shadow-sm">
                   <Icon size={20} strokeWidth={1.8} />

@@ -24,6 +24,7 @@ import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Modal } from '@/components/ui/Modal'
 import { cn } from '@/lib/cn'
 import { PublicationDialog } from './PublicationDialog'
+import { ThemeToggle } from '@/components/ui/ThemeToggle'
 
 export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean }) {
   const nav = useNavigate()
@@ -145,6 +146,7 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
           <TopIconButton title="Agent" active={agentOpen} onClick={() => setAgentOpen(!agentOpen)}><Bot size={17} /></TopIconButton>
           <TopIconButton title="素材库" active={assetOpen} onClick={() => setAssetOpen(!assetOpen)}><Library size={17} /></TopIconButton>
           <TopIconButton title="导出画布" onClick={() => void onExport()}><Download size={17} /></TopIconButton>
+          <ThemeToggle />
         </div>
       </>
     )

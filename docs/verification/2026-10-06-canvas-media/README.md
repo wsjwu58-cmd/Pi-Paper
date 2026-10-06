@@ -68,3 +68,15 @@ MiniMax 音乐官方 API 对新账户有限制，设置中明确提示权限条�
 在独立工作区将本轮提交接到远程最新分支，保留远程已完成的 pi-paper-web／pi-paper-desktop 目录重命名。本机共享工作目录、其他任务的改动与运行中的桌面应用均保持原样。
 
 补齐已有离线模型元数据后，独立工作区的 Pi `npm run check` 完整通过（Biome、依赖版本、相对导入、shrinkwrap、安装锁、TypeScript、浏览器打包检查）。检查器自动格式化的 47 个其他基线文件恢复原样，不纳入本轮提交。合并后的 Pi 指定协议测试 87 项、桌面指定测试 35 项、Web 参数测试 8 项，共 130 项通过；前端完整 TypeScript 和生产构建通过，原有 bundle／导入方式警告仍存在。
+
+## 桌面亮暗模式
+
+在原 CanvasTopBar、PillNav 和 API 配置页顶栏加入可用键盘操作的太阳／月亮按钮。统一 html 主题变量，使 body 中的规格／模型选择等 Portal 与节点、Agent、画布展示、历史记录、API 配置同步切换。默认浅色，在本机 localStorage 保存 `vibepaper:appearance`；入口在第一次 React 渲染前应用已保存的偏好。存储不可用时仍允许本次会话切换。Web 旧账户偏好路径保持原样。
+
+原组件隔离浏览器验证：点击切到深色，画布、Agent、输入框、规格弹层变为暗色；刷新继续显示深色，按钮变为“切换到浅色模式”。从画布展示进入历史记录、API 配置时选择继续保留；切回浅色，API 配置主背景恢复白色、原标题色恢复。原图片内容不做滤镜修改，只有 Agent 的单色品牌标记在深色下变为浅色。Web TypeScript 与生产构建通过。此前临时工作区归档误影响的 Pi 缺失文件已从本地 Git／已推送媒体提交恢复，离线工具链已恢复；Pi TypeScript、19 项指定模型测试及 5 项桌面规格测试通过。
+
+![深色画布及规格弹层](theme-canvas-dark.png)
+
+![深色画布管理](theme-workspace-dark.png)
+
+![深色 API 配置](theme-provider-dark.png)

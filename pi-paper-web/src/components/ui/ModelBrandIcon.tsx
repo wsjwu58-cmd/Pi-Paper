@@ -264,7 +264,7 @@ export function ModelBrandIcon({
     if (desktopIconUrl && !imgFailed) {
       return (
         <span
-          className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-black/10 bg-white p-0.5 ${className}`}
+          className={`vp-brand-mark inline-flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-black/10 bg-white p-0.5 ${className}`}
           style={{ width: size, height: size }}
           title={title}
           aria-hidden

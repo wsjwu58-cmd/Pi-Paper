@@ -2,6 +2,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { ArrowLeft, Clock, LayoutGrid, Settings2 } from 'lucide-react'
 import { PillNav } from '@/components/ui/PillNav'
 import { isDesktopRuntime } from '@/features/canvas/canvasPort'
+import { ThemeToggle } from '@/components/ui/ThemeToggle'
 
 export function HubLayout() {
   const location = useLocation()
@@ -10,7 +11,10 @@ export function HubLayout() {
       <div className="min-h-screen bg-[#f6f8fb] text-[#172238]">
         <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-[#e4e9f1] bg-[#f9fbfd] px-5 lg:px-8">
           <NavLink to="/workspace" className="flex items-center gap-3 text-lg font-bold tracking-tight"><LayoutGrid size={23} />Pi-Paper</NavLink>
-          <NavLink to="/workspace" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-[#647086] hover:bg-[#edf1f7]"><ArrowLeft size={16} />返回画布管理</NavLink>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <NavLink to="/workspace" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-[#647086] hover:bg-[#edf1f7]"><ArrowLeft size={16} />返回画布管理</NavLink>
+          </div>
         </header>
         <div className="flex min-h-[calc(100vh-4rem)]">
           <aside className="hidden w-[220px] shrink-0 border-r border-[#e4e9f1] px-4 py-7 lg:flex lg:flex-col xl:w-[232px]">

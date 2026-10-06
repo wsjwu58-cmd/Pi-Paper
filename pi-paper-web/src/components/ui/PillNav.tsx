@@ -3,6 +3,7 @@ import { LayoutGrid, Clock, Compass, User, Building2, ShieldCheck, LogOut, Setti
 import { useAuth } from '@/lib/auth'
 import { cn } from '@/lib/cn'
 import { isDesktopRuntime } from '@/features/canvas/canvasPort'
+import { ThemeToggle } from './ThemeToggle'
 
 const items = [
   { to: '/workspace', label: '画布管理', icon: LayoutGrid },
@@ -42,6 +43,7 @@ export function PillNav() {
             <span>{item.label}</span>
           </NavLink>
         ))}
+        <ThemeToggle />
       </nav>
     )
   }
