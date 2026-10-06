@@ -196,10 +196,10 @@ TaskStore 在提交前落盘 bindingId、连接 ID、API ID、配置版本、合
 
 ## 9. 实施位置
 
-- 新页面建议放 vibepaper-web/src/features/settings/ModelConfigurationPage.tsx，复用原组件与布局。
-- 修改 vibepaper-web/src/app/router.tsx、原设置/导航入口、components/ui/ModelPicker.tsx、ModelBrandIcon.tsx。
+- 新页面建议放 pi-paper-web/src/features/settings/ModelConfigurationPage.tsx，复用原组件与布局。
+- 修改 pi-paper-web/src/app/router.tsx、原设置/导航入口、components/ui/ModelPicker.tsx、ModelBrandIcon.tsx。
 - 原 NodeEditorPanel.tsx、videoNodeParameters.ts、AgentPanel.tsx 统一读取目录和参数规则。
-- 扩展 vibepaper-web/src/desktop/desktop-bridge.d.ts、vibepaper-desktop/src/preload.cjs、main.cjs 的受限接口。
+- 扩展 pi-paper-web/src/desktop/desktop-bridge.d.ts、pi-paper-desktop/src/preload.cjs、main.cjs 的受限接口。
 - 新增本地 Registry、配置存储、凭据封装及分协议适配器，保留现有 TaskStore 和 Generation Worker 生命周期。
 - 不在平行 DesktopWorkspace 上实现本功能，不改动当前无关的未提交修改。
 

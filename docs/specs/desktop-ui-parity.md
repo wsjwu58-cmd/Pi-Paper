@@ -55,7 +55,7 @@
 
 ## 基线与例外
 
-除 Agent 的上下文压缩、短期记忆、长期记忆及恢复能力外，桌面版沿用旧 Web 的可见界面、布局、组件、操作入口、状态反馈和结果呈现。Agent 面板的可见对话体验也沿用原版。**实现方式是直接以 `vibepaper-web/src` 原页面/组件源码为迁移基线并在原代码上改造**：本地 API、IPC、状态和事件通过明确适配接入 `CanvasPage`、节点/编辑器和 `AgentPanel`；不另建平行 `DesktopWorkspace`、`DesktopAgentPanel` 或简化节点实现来替代。Electron 窗口壳、preload/IPC 和本地服务适配可独立实现；共享 UI 中的平台差异须保持显式，且不得改变 Web 默认路径契约。桌面只替换本地数据、模型和任务适配层，以及明确移除的注册登录、平台计费、企业、运营、公开发布等能力；不得以迁移为由新增独立任务抽屉、逐次 API 发送确认或不同风格的节点编辑器。
+除 Agent 的上下文压缩、短期记忆、长期记忆及恢复能力外，桌面版沿用旧 Web 的可见界面、布局、组件、操作入口、状态反馈和结果呈现。Agent 面板的可见对话体验也沿用原版。**实现方式是直接以 `pi-paper-web/src` 原页面/组件源码为迁移基线并在原代码上改造**：本地 API、IPC、状态和事件通过明确适配接入 `CanvasPage`、节点/编辑器和 `AgentPanel`；不另建平行 `DesktopWorkspace`、`DesktopAgentPanel` 或简化节点实现来替代。Electron 窗口壳、preload/IPC 和本地服务适配可独立实现；共享 UI 中的平台差异须保持显式，且不得改变 Web 默认路径契约。桌面只替换本地数据、模型和任务适配层，以及明确移除的注册登录、平台计费、企业、运营、公开发布等能力；不得以迁移为由新增独立任务抽屉、逐次 API 发送确认或不同风格的节点编辑器。
 
 本清单只记录可见界面的对照；完成条件还包括原项目后端能力和语义 1:1 对齐。Canvas/Asset/Generation/Agent 的领域校验、节点与连线规则、分组堆叠、素材引用、生成参数、任务状态与恢复、Agent 工具及 Skill 均须用原服务测试场景对照本地核心。未实现的后端功能即使界面相同，仍属迁移缺口。
 
@@ -64,7 +64,7 @@
 | 区域 | 原版源码基线 | 桌面验收 |
 | --- | --- | --- |
 | 应用入口与导航 | `features/workspace/WorkspacePage.tsx`、`features/history/HistoryPage.tsx`、`components/ui/PillNav.tsx` | 启动先到画布展示；保留画布展示与历史记录两项导航。用户选择已有本地项目/画布或新建本地项目后进入画布创作页；历史记录显示本地真实生成任务，去掉平台点数。单项目单画布限制需明确呈现。 |
-| 画布总体 | `vibepaper-web/src/features/canvas/CanvasPage.tsx`、`CanvasTopBar.tsx`、`CanvasToolbar.tsx` | 相同的顶栏、左侧工具栏、点阵背景、连线、缩放控件、小地图、欢迎卡片与响应式布局；切换项目和本地保存状态可替换原账户信息。 |
+| 画布总体 | `pi-paper-web/src/features/canvas/CanvasPage.tsx`、`CanvasTopBar.tsx`、`CanvasToolbar.tsx` | 相同的顶栏、左侧工具栏、点阵背景、连线、缩放控件、小地图、欢迎卡片与响应式布局；切换项目和本地保存状态可替换原账户信息。 |
 | 节点与编辑 | `nodes/index.tsx`、`nodes/SplitNodeLayout.tsx`、`nodes/NodeEditorPanel.tsx` | 文/图/音/视频及合成等原有节点的卡片、端口、选中/展开、编辑和生成参数保持相同；不得用简化卡片代替。没有可用提供方时按原版位置显示不可用原因。 |
 | 画布操作 | `CanvasPage.tsx` | 拖动、连接、选择、右键添加/复制/删除、自动布局、导入、素材引用与结果回写按原版操作链验收；本地存储不改变操作路径。 |
 | Agent | `AgentPanel.tsx`、`AgentEmptyState.tsx`、`pi-main/packages/vibepaper-agent-service/src/pi/profile-agents.ts` | 侧栏宽度、标题、空状态、会话、消息、输入框、模型选择和原版面板功能保持一致；用户可见角色是“小P”，画布工具能力要对齐原版。压缩和记忆仅改变运行层。 |

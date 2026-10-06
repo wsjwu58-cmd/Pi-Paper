@@ -1,0 +1,29 @@
+{
+  "name": "pi-paper-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "productName": "Pi-Paper",
+  "description": "Electron host for the Pi-Paper local desktop app",
+  "main": "src/main.cjs",
+  "scripts": {
+    "build:package": "node scripts/build-package.cjs",
+    "dist": "npm run build:package && electron-builder --config electron-builder.cjs --publish never && npm run checksums",
+    "dist:win": "npm run build:package && electron-builder --config electron-builder.cjs --win --x64 --publish never && npm run checksums",
+    "dist:mac": "npm run build:package && electron-builder --config electron-builder.cjs --mac --x64 --arm64 --publish never && npm run checksums",
+    "dist:linux": "npm run build:package && electron-builder --config electron-builder.cjs --linux --x64 --publish never && npm run checksums",
+    "checksums": "node scripts/package-checksums.cjs",
+    "verify:packaged": "node scripts/verify-packaged.cjs",
+    "build:agent": "node scripts/build-agent-worker.cjs",
+    "smoke:agent": "node scripts/smoke-agent-worker.cjs",
+    "test:agent-runtime": "npm run build:agent && npm run smoke:agent",
+    "predev": "npm run build:agent",
+    "dev": "node scripts/dev.cjs",
+    "prestart": "npm run build:agent",
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "44.4.4",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.1"
+  }
+}

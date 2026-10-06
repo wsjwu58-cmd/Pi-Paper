@@ -5,16 +5,16 @@
 **A local-first AI canvas for creative production**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Desktop](https://img.shields.io/badge/Electron-Desktop-47848F?logo=electron&logoColor=white)](./vibepaper-desktop/README.md)
+[![Desktop](https://img.shields.io/badge/Electron-Desktop-47848F?logo=electron&logoColor=white)](./pi-paper-desktop/README.md)
 [![Branch](https://img.shields.io/badge/default-feat%2Fdesktop--local--migration-339933)](https://github.com/wsjwu58-cmd/Pi-Paper/tree/feat/desktop-local-migration)
 
-<img src="vibepaper-desktop/assets/app-icon.png" alt="Pi-Paper application icon" width="140">
+<img src="pi-paper-desktop/assets/app-icon.png" alt="Pi-Paper application icon" width="140">
 
 Pi-Paper is a single-user desktop creative workspace. Connect text, images, video, audio, and production notes on an infinite canvas, then work with the Xiaop (小P) Agent to develop an idea into an editable workflow.
 
 **Local project → Connected nodes → Generation → Editing → Composition → Export**
 
-[Desktop setup and usage](./vibepaper-desktop/README.md) · [Migration and validation status](./docs/specs/desktop-agent-functional-spec.md)
+[Desktop setup and usage](./pi-paper-desktop/README.md) · [Migration and validation status](./docs/specs/desktop-agent-functional-spec.md)
 
 </div>
 
@@ -73,18 +73,32 @@ Configure official provider credentials, enable implemented models, and set defa
 ## Repository Structure
 
 ```text
-vibepaper-desktop/      # Desktop host, local project/task services, IPC, and tests
-vibepaper-web/          # Original pages, canvas nodes, editors, and Agent panel
+pi-paper-desktop/      # Desktop host, local project/task services, IPC, and tests
+pi-paper-web/          # Original pages, canvas nodes, editors, and Agent panel
 pi-main/               # Pi source with desktop Agent and official media adaptations
   packages/vibepaper-agent-service/  # Original TypeScript Agent and local adapters
   packages/ai/         # Text and official media provider interfaces
   packages/coding-agent/ # Pi session, Skill, and compaction support
+docker/                # noVNC runtime, password initialization, and deployment guide
+Dockerfile             # Multi-stage build of the full Linux desktop
+docker-compose.yml     # Single-user desktop with persistent volumes
 docs/                  # Desktop contracts, parity checklists, plans, and evidence
 AGENTS.md              # Current desktop engineering contract
 
 ```
 
-Legacy Java services, Python services, and Web deployment files are no longer tracked on the desktop branch. Their original implementation remains available in Git history for migration comparison; see the [source boundary and recovery instructions](./docs/specs/desktop-source-boundary.md). Existing local copies are preserved and ignored.
+Legacy Java/Python services and the old Web deployment are no longer tracked on the desktop branch. The current Docker files run the local desktop through noVNC. Their original implementation remains available in Git history for migration comparison; see the [source boundary and recovery instructions](./docs/specs/desktop-source-boundary.md). Existing local copies are preserved and ignored.
+
+## Docker / Browser Access
+
+Run the current Electron desktop in a Linux container and access its full desktop through noVNC. It uses the original canvas, local services and Agent; project data lives on the Docker host in persistent volumes.
+
+```bash
+docker run --rm -v "${PWD}:/workspace" -w /workspace node:24-bookworm-slim node docker/create-secrets.cjs
+docker compose up -d --build --wait --wait-timeout 180
+```
+
+Open **http://127.0.0.1:8080/vnc.html** and enter the generated noVNC password. Create projects in `/projects`. The image includes FFmpeg and an encrypted system keyring; preserve both Docker volumes and `docker/secrets/` across upgrades. See [Docker setup, remote access, storage and verification](./docker/README.md).
 
 ## Getting Started
 
@@ -95,7 +109,7 @@ Legacy Java services, Python services, and Web deployment files are no longer tr
 - FFmpeg for local video composition and relevant media processing. Set `VIBEPAPER_FFMPEG_PATH` / `FFMPEG_PATH`, or make FFmpeg available on `PATH`.
 - Windows SAPI provides the current Windows local speech path; it is not a cross-platform speech implementation.
 
-Desktop startup does not require Java services, Docker, PostgreSQL, Redis, Nacos, RocketMQ, or a platform account. There is no installer configuration in this directory yet; use source startup during development.
+Desktop startup does not require Java services, Docker, PostgreSQL, Redis, Nacos, RocketMQ, or a platform account. Installers are available from [GitHub Releases](https://github.com/wsjwu58-cmd/Pi-Paper/releases/tag/v0.1.0). Windows includes the runtime icon fix; macOS provides Intel and Apple Silicon DMGs; Linux provides AppImage and DEB. These are development prereleases without Windows distribution signing or Apple notarization.
 
 ### Install
 
@@ -104,9 +118,10 @@ git clone --branch feat/desktop-local-migration git@github.com:wsjwu58-cmd/Pi-Pa
 cd Pi-Paper
 
 npm --prefix pi-main ci
+node pi-paper-desktop/scripts/restore-model-data.cjs
 npm --prefix pi-main run build:offline
-pnpm --dir vibepaper-web install --frozen-lockfile
-npm --prefix vibepaper-desktop ci
+pnpm --dir pi-paper-web install --frozen-lockfile
+npm --prefix pi-paper-desktop ci
 ```
 
 `build:offline` builds Pi dependencies using local model data. It does not change whether later model requests use a local or cloud provider.
@@ -116,7 +131,7 @@ npm --prefix vibepaper-desktop ci
 From the repository root, start development mode:
 
 ```powershell
-npm --prefix vibepaper-desktop run dev
+npm --prefix pi-paper-desktop run dev
 ```
 
 This starts Vite on `http://127.0.0.1:5173`, then launches Electron when the renderer is ready. The port must be available. Opening that URL in a regular browser does not provide the desktop project bridge.
@@ -124,8 +139,8 @@ This starts Vite on `http://127.0.0.1:5173`, then launches Electron when the ren
 For the built renderer:
 
 ```powershell
-npm --prefix vibepaper-web run build
-npm --prefix vibepaper-desktop start
+npm --prefix pi-paper-web run build
+npm --prefix pi-paper-desktop start
 ```
 
 The desktop `predev` / `prestart` hooks build the Agent Worker and Pi official media bundle automatically. Rebuild the renderer after frontend changes; restart Electron after Main/Preload or runtime icon changes.
@@ -141,18 +156,18 @@ Only implemented, enabled, capability-matching bindings can be called. A success
 
 Cloud API keys are handled by controlled processes and system encryption, not exposed to the Renderer or included in project exports. Model configuration discloses the provider, sent data, and potential fees; ordinary messages do not require a repeated API confirmation. Agent generation and high-risk actions retain their separate confirmations.
 
-See the [desktop README](./vibepaper-desktop/README.md) for local file layout, project movement, single-writer locks, backups, recovery, and verification commands.
+See the [desktop README](./pi-paper-desktop/README.md) for local file layout, project movement, single-writer locks, backups, recovery, and verification commands.
 
 ## Validation Status
 
 - The latest canvas interaction repair passed the frontend build, 20 focused frontend regressions, and 32 local canvas-core tests. Narrow-window menus, durable edge deletion, generation animation fixtures, and text reading were checked in an isolated desktop project.
 - Fixture protocols and UI checks do not replace real-account generation or long-running Agent recovery acceptance.
-- Remaining acceptance work includes full original UI/domain parity, all supported official model accounts and input modes, local Agent capabilities, long-context stress, and installers on each target operating system.
+- Remaining acceptance work includes full original UI/domain parity, all supported official model accounts and input modes, local Agent capabilities, long-context stress, and manual installer acceptance on each target operating system. Native installer builds and packaged restart checks have passed; Docker/noVNC has a dedicated build and browser verification workflow.
 
 Current contracts and evidence:
 
 - [Desktop engineering contract](./AGENTS.md)
-- [Desktop setup and usage](./vibepaper-desktop/README.md)
+- [Desktop setup and usage](./pi-paper-desktop/README.md)
 - [UI parity checklist](./docs/specs/desktop-ui-parity.md) and [backend domain comparison](./docs/specs/desktop-backend-parity.md)
 - [Agent functional specification](./docs/specs/desktop-agent-functional-spec.md)
 - [Provider registry](./docs/specs/desktop-provider-registry.md) and [provider data contract](./docs/specs/desktop-provider-data-contract.md)

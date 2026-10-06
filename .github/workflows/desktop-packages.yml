@@ -1,0 +1,102 @@
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/desktop-packages-*']
+    tags: ['desktop-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            arch: x64
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+          - os: macos-15
+            platform: mac
+            arch: arm64
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x64
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            pi-paper-desktop/package-lock.json
+            pi-main/package-lock.json
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - name: Install Pi dependencies
+        run: npm ci --prefix pi-main --ignore-scripts
+      - name: Build Pi dependencies offline
+        working-directory: pi-main
+        run: |
+          npm run build --workspace=@earendil-works/pi-telemetry
+          node ../pi-paper-desktop/scripts/restore-model-data.cjs
+          npm run build:offline --workspace=@earendil-works/pi-ai
+          npm run build --workspace=@earendil-works/pi-agent-core
+      - name: Install renderer dependencies
+        working-directory: pi-paper-web
+        run: pnpm install --frozen-lockfile
+      - name: Install desktop dependencies
+        run: npm ci --prefix pi-paper-desktop
+      - name: Build standalone desktop application
+        run: npm run build:package --prefix pi-paper-desktop
+      - name: Create installers
+        working-directory: pi-paper-desktop
+        run: npx electron-builder --config electron-builder.cjs --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+      - name: Verify packaged Electron runtime
+        run: node pi-paper-desktop/scripts/verify-packaged.cjs
+      - name: Generate checksums
+        run: node pi-paper-desktop/scripts/package-checksums.cjs
+      - name: Upload installers
+        if: matrix.platform != 'mac'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pi-Paper-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            pi-paper-desktop/release/*.exe
+            pi-paper-desktop/release/*.dmg
+            pi-paper-desktop/release/*.zip
+            pi-paper-desktop/release/*.AppImage
+            pi-paper-desktop/release/*.deb
+            pi-paper-desktop/release/SHA256SUMS.txt
+      - name: Upload macOS disk image
+        if: matrix.platform == 'mac'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pi-Paper-mac-${{ matrix.arch }}-dmg
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            pi-paper-desktop/release/*.dmg
+            pi-paper-desktop/release/SHA256SUMS.txt
+      - name: Upload macOS application archive
+        if: matrix.platform == 'mac'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pi-Paper-mac-${{ matrix.arch }}-zip
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            pi-paper-desktop/release/*.zip
+            pi-paper-desktop/release/SHA256SUMS.txt

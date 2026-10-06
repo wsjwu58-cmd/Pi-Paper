@@ -8,7 +8,7 @@ import { DesktopProjectMemory } from "../src/desktop/project-memory.ts";
 import { openDesktopAgentStores } from "../src/desktop/agent-stores.ts";
 import { SessionRunService } from "../src/application/session-run-service.ts";
 import { createDramaAgent } from "../src/pi/drama-agent.ts";
-const { createLocalProjectStore } = createRequire(import.meta.url)("../../../../vibepaper-desktop/src/project-store.cjs");
+const { createLocalProjectStore } = createRequire(import.meta.url)("../../../../pi-paper-desktop/src/project-store.cjs");
 
 let temporaryRoot: string;
 

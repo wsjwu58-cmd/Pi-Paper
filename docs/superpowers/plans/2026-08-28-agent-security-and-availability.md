@@ -242,7 +242,7 @@ Expected: PASS.
 **Files:**
 - Modify: `pi-main/packages/vibepaper-agent-service/src/application/agent-runtime.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/api/app.ts`
-- Modify: `vibepaper-web/src/features/canvas/AgentPanel.tsx`
+- Modify: `pi-paper-web/src/features/canvas/AgentPanel.tsx`
 - Modify: `pi-main/packages/vibepaper-agent-service/package.json`
 - Test: `pi-main/packages/vibepaper-agent-service/test/agent-streaming.test.ts`
 - Test: `pi-main/packages/vibepaper-agent-service/test/api-contract.test.ts`

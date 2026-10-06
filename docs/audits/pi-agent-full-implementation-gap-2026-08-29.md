@@ -28,11 +28,11 @@
 - `cd E:\VibePaperProject\pi-main && npm run check`：通过。
 - `cd E:\VibePaperProject\pi-main && npx vitest run packages/vibepaper-agent-service/test`：39 个文件、101 个测试通过。
 - `cd E:\VibePaperProject\pi-main && npx tsgo -p packages/vibepaper-agent-service/tsconfig.build.json --noEmit`：通过。
-- `cd E:\VibePaperProject\vibepaper-web && pnpm exec tsc -b --pretty false`：通过。
+- `cd E:\VibePaperProject\pi-paper-web && pnpm exec tsc -b --pretty false`：通过。
 - `cd E:\VibePaperProject\generation-service && uv run --with pytest --with redis --with httpx --with sqlalchemy --with psycopg2-binary --with pydantic-settings --with fastapi --with python-multipart --with pillow --with alembic pytest -q`：10 个测试通过，2 个既有弃用/缓存警告。
 - `cd E:\VibePaperProject\vibepaper-services\canvas-service && mvn -DskipTests compile`：通过。
 - `cd E:\VibePaperProject\pi-main && npx tsgo -p packages/vibepaper-agent-service/tsconfig.build.json --noEmit`：通过（含 RenderBatch/内部终态回写）。
-- `cd E:\VibePaperProject\vibepaper-web && pnpm exec tsc -b --pretty false`：通过（含生产链批次状态展示）。
-- `cd E:\VibePaperProject\vibepaper-web && pnpm exec oxlint src/features/canvas/DramaProductionPanel.tsx`：通过。
+- `cd E:\VibePaperProject\pi-paper-web && pnpm exec tsc -b --pretty false`：通过（含生产链批次状态展示）。
+- `cd E:\VibePaperProject\pi-paper-web && pnpm exec oxlint src/features/canvas/DramaProductionPanel.tsx`：通过。
 
 `git diff --check` 的失败来自工作区已有的二进制 PDF 变更，不涉及本轮源码文件，未对用户文件执行清理或回滚。

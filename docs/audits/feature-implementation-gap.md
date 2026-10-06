@@ -1,23 +1,23 @@
 # VibePaper 功能实现缺口清单
 
-> **审计结论：当前项目未 100% 真实实现飞书产品指南 / PRD / 技术架构中的功能。**  
+> **审计结论：当前项目未 100% 真实实现飞书产品指南 / PRD / 技术架构中的功能。**
 > 多数管理空间与画布 CRUD、计费冻结结算、任务状态机、Agent SSE/确认令牌具备真实 API 与持久化；但 **AI 生成供应商、支付通道、图视频加工、合成/导演台、Agent 规划智能** 等核心体验价值仍为 Mock 或半成品。
 >
-> **2026-08-02 补齐进度（本轮）**  
-> - 画布：右键新建、本地文件拖入、素材导入事件、输出端创建下游、连线选中黑色、风格预设、全屏预览  
-> - Agent UI：偏好落库、新建对话、历史切换、片段导入、Skill 空白/对话/上传三种创建、attach API  
-> - Agent 规划：配置 `VIBEPAPER_LLM_*` 后走 OpenAI 兼容 LLM（httpx），失败回退规则  
-> - Generation：按模态正确分流 mock provider；文本支持 openai-text；加工/合成/导演台改为真实 `/tasks`（本地 Pillow/ffmpeg）  
-> - 支付：仍保持 mock-pay（按产品要求暂不接微信/支付宝）  
-> - Seedance 视频：已接火山方舟 `volcengine-ark`（需配置 `VIBEPAPER_ARK_API_KEY`）  
-> - ComfyUI：**仍未接入**（仅探测占位；需 `VIBEPAPER_COMFYUI_BASE_URL` + workflow 提交实现）  
+> **2026-08-02 补齐进度（本轮）**
+> - 画布：右键新建、本地文件拖入、素材导入事件、输出端创建下游、连线选中黑色、风格预设、全屏预览
+> - Agent UI：偏好落库、新建对话、历史切换、片段导入、Skill 空白/对话/上传三种创建、attach API
+> - Agent 规划：配置 `VIBEPAPER_LLM_*` 后走 OpenAI 兼容 LLM（httpx），失败回退规则
+> - Generation：按模态正确分流 mock provider；文本支持 openai-text；加工/合成/导演台改为真实 `/tasks`（本地 Pillow/ffmpeg）
+> - 支付：仍保持 mock-pay（按产品要求暂不接微信/支付宝）
+> - Seedance 视频：已接火山方舟 `volcengine-ark`（需配置 `VIBEPAPER_ARK_API_KEY`）
+> - ComfyUI：**仍未接入**（仅探测占位；需 `VIBEPAPER_COMFYUI_BASE_URL` + workflow 提交实现）
 > - Seedance 素材认证接口：仍待供应商认证 API
 
 | 项 | 内容 |
 |----|------|
 | 审计日期 | 2026-08-02 |
 | 对照来源 | [飞书《VibePaper产品介绍与使用说明》](https://zcntlxao3dgg.feishu.cn/wiki/GM9ywBfj7iCkCTk5gMqcA2ZVnzb) · `docs/VibePaper产品需求文档新版.md` · `docs/技术概要设计方案.md` · `docs/VibePaper 产品功能清单.md` · `AGENTS.md` |
-| 方法 | 静态代码审计（前端 `vibepaper-web`、Java 微服务、`generation-service`、`agent-service`）；未做端到端运行验收 |
+| 方法 | 静态代码审计（前端 `pi-paper-web`、Java 微服务、`generation-service`、`agent-service`）；未做端到端运行验收 |
 | 状态定义 | **MOCK** = 假数据 / Toast 假装成功 / Mock Provider；**PARTIAL** = 有真实 API 或 UI 但缺关键路径；**MISSING** = 代码中不存在 |
 
 ---
@@ -78,7 +78,7 @@
 
 | 位置 | 行为 |
 |------|------|
-| `vibepaper-web/src/features/canvas/nodes/index.tsx` | 裁剪/扩图/超分、剪辑/提帧/超分、合成、导演台拍照：`toastSuccess('…（Mock）')` |
+| `pi-paper-web/src/features/canvas/nodes/index.tsx` | 裁剪/扩图/超分、剪辑/提帧/超分、合成、导演台拍照：`toastSuccess('…（Mock）')` |
 | 同上 `AudioNodeView` | 「上传参考」选文件后仅 Toast「参考音频已上传」，无实际上传 API |
 | `AdminPage.tsx` 新建模型 | 硬编码 `provider: 'mock'` |
 
@@ -155,15 +155,15 @@
 
 以下路径在审计中判定为「真实 API + 持久化 + 可用 UI」（**生成内容质量仍依赖 Mock Provider**）：
 
-- 注册 / 登录 / JWT 刷新 / 个人资料  
-- 画布列表 CRUD、导入导出 `schema_version`、乐观锁保存  
-- 节点增删改移、框选、连线增删、选择/抓手、适应视图  
-- 文本/图/音/视频节点参数表单 → 估价 → 冻结 → 建任务 → SSE → 成功后下载/存素材库  
-- 个人素材库侧边栏 CRUD（图标/列表）、拖拽入画  
-- Agent 面板开合、SSE 对话、工具调用改画布/触发生成、高风险确认令牌、用量查询  
-- 任务历史筛选、分享链接、发布创意广场、克隆  
-- 奖励签到/每日任务、邀请中心、公告  
-- 企业邀请、成员分配/回收/移出、分配记录 CSV、用量、改名/解散  
+- 注册 / 登录 / JWT 刷新 / 个人资料
+- 画布列表 CRUD、导入导出 `schema_version`、乐观锁保存
+- 节点增删改移、框选、连线增删、选择/抓手、适应视图
+- 文本/图/音/视频节点参数表单 → 估价 → 冻结 → 建任务 → SSE → 成功后下载/存素材库
+- 个人素材库侧边栏 CRUD（图标/列表）、拖拽入画
+- Agent 面板开合、SSE 对话、工具调用改画布/触发生成、高风险确认令牌、用量查询
+- 任务历史筛选、分享链接、发布创意广场、克隆
+- 奖励签到/每日任务、邀请中心、公告
+- 企业邀请、成员分配/回收/移出、分配记录 CSV、用量、改名/解散
 - 点数账户、流水只追加、冻结超时解冻逻辑（实现存在；需集成测试背书）
 
 ---
@@ -191,9 +191,9 @@
 generation-service/src/generation/providers/providers.py   # 全 Mock Provider
 generation-service/src/generation/services/model_service.py # 种子 provider=mock
 vibepaper-services/billing-service/.../RechargeController.java # mock-pay
-vibepaper-web/src/features/canvas/nodes/index.tsx          # 加工/合成/导演台 Mock Toast
-vibepaper-web/src/features/canvas/nodes/NodeShell.tsx      # 风格文本、运镜下拉
-vibepaper-web/src/features/canvas/AgentPanel.tsx           # Agent 偏好/Skill/历史半成品
+pi-paper-web/src/features/canvas/nodes/index.tsx          # 加工/合成/导演台 Mock Toast
+pi-paper-web/src/features/canvas/nodes/NodeShell.tsx      # 风格文本、运镜下拉
+pi-paper-web/src/features/canvas/AgentPanel.tsx           # Agent 偏好/Skill/历史半成品
 agent-service/src/agent/agent/planner.py                   # 规则 mock 规划
 docs/plans/execution-plan.md                               # 允许 MockProvider 不阻塞联调
 AGENTS.md §7                                               # V1.0 禁止多人实时共编

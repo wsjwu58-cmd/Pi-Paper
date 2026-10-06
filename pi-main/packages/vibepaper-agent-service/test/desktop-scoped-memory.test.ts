@@ -8,7 +8,7 @@ import { openDesktopAgentStores } from "../src/desktop/agent-stores.ts";
 import { DesktopProjectMemory } from "../src/desktop/project-memory.ts";
 import { DesktopScopedMemoryStore, desktopCandidateScope } from "../src/desktop/scoped-memory.ts";
 
-const { createLocalProjectStore } = createRequire(import.meta.url)("../../../../vibepaper-desktop/src/project-store.cjs");
+const { createLocalProjectStore } = createRequire(import.meta.url)("../../../../pi-paper-desktop/src/project-store.cjs");
 
 it("maps project, canvas and general preference hints to distinct desktop scopes", () => {
 	expect(desktopCandidateScope("记住这个项目的主角姓林", "long_term")).toBe("project");

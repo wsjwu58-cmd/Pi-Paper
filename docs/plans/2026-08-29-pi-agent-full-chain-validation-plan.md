@@ -45,8 +45,8 @@
 - `generation-service/tests/test_agnes_free_model_contracts.py`：三个 Agnes 模型的请求和响应合同。
 - `generation-service/tests/test_local_sapi_tts.py`：离线 TTS 合同测试。
 - `generation-service/tests/test_media_processing_matrix.py`：剪辑、抽帧、超分、扩图、音轨和合成矩阵。
-- `vibepaper-web/src/features/canvas/director/directorCaptureBridge.ts`：Agent 请求与 Three.js 捕获之间的前端桥接。
-- `vibepaper-web/src/features/canvas/director/directorCaptureBridge.test.ts`：导演台捕获状态机测试。
+- `pi-paper-web/src/features/canvas/director/directorCaptureBridge.ts`：Agent 请求与 Three.js 捕获之间的前端桥接。
+- `pi-paper-web/src/features/canvas/director/directorCaptureBridge.test.ts`：导演台捕获状态机测试。
 - `deploy/verify-all.ps1`：全栈启动前置与健康检查。
 - `deploy/tests/verify-all.tests.ps1`：不启动付费任务的脚本级回归。
 - `scripts/e2e/run-agent-browser-evals.ps1`：浏览器多轮执行与截图入口。
@@ -67,9 +67,9 @@
 - `pi-main/packages/vibepaper-agent-service/src/api/app.ts`：评测需要的恢复/确认合同与导演台动作事件。
 - `skills/skills.md`：补齐商业视觉、实景纸刊和界面设计 Skill。
 - `pi-main/packages/vibepaper-agent-service/src/domain/skill-manifest.generated.ts`：由生成脚本更新，不手工编辑。
-- `vibepaper-web/src/features/canvas/AgentPanel.tsx`：多轮状态、确认、前端动作与错误展示。
-- `vibepaper-web/src/features/canvas/director/DirectorStageEditor.tsx`：接收 Agent 配置并完成捕获回写。
-- `vibepaper-web/src/features/canvas/nodes/NodeEditorPanel.tsx`：统一供应商参数和派生结果显示。
+- `pi-paper-web/src/features/canvas/AgentPanel.tsx`：多轮状态、确认、前端动作与错误展示。
+- `pi-paper-web/src/features/canvas/director/DirectorStageEditor.tsx`：接收 Agent 配置并完成捕获回写。
+- `pi-paper-web/src/features/canvas/nodes/NodeEditorPanel.tsx`：统一供应商参数和派生结果显示。
 - `deploy/start-all.ps1`：本地 `.env`、进程和健康检查。
 
 ---
@@ -98,7 +98,7 @@ if ($json -match 'sk-[A-Za-z0-9]') { throw 'secret leaked' }
 
 - [x] **Step 2: 运行测试并确认当前失败**
 
-Run: `pwsh -File deploy/tests/verify-all.tests.ps1`  
+Run: `pwsh -File deploy/tests/verify-all.tests.ps1`
 Expected: FAIL，原因是 `verify-all.ps1` 尚不存在。
 
 - [x] **Step 3: 实现安全 preflight 与条件等待**
@@ -111,8 +111,8 @@ Expected: FAIL，原因是 `verify-all.ps1` 尚不存在。
 
 - [x] **Step 5: 运行脚本测试与泄密扫描**
 
-Run: `pwsh -File deploy/tests/verify-all.tests.ps1`  
-Run: `rg -n 'sk-[A-Za-z0-9]{20,}' . -g '!generation-service/.env' -g '!pi-main/packages/vibepaper-agent-service/.env' -g '!node_modules/**' -g '!.git/**'`  
+Run: `pwsh -File deploy/tests/verify-all.tests.ps1`
+Run: `rg -n 'sk-[A-Za-z0-9]{20,}' . -g '!generation-service/.env' -g '!pi-main/packages/vibepaper-agent-service/.env' -g '!node_modules/**' -g '!.git/**'`
 Expected: 测试 PASS；泄密扫描没有新命中。
 
 - [x] **Step 6: 记录检查点**
@@ -172,7 +172,7 @@ def test_video_mode_and_flash_limits(params: dict, mode: str) -> None:
 
 - [x] **Step 4: 运行测试并确认因旧 2.0 契约失败**
 
-Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_agnes_free_model_contracts.py -q`  
+Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_agnes_free_model_contracts.py -q`
 Expected: FAIL，至少显示旧 `agnes-video-v2.0`、旧尺寸或旧轮询参数。
 
 - [x] **Step 5: 最小实现三个纯函数并接入 Provider**
@@ -192,7 +192,7 @@ Expected: FAIL，至少显示旧 `agnes-video-v2.0`、旧尺寸或旧轮询参�
 
 - [x] **Step 7: 运行定向与全量 Generation 测试**
 
-Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_agnes_free_model_contracts.py tests/test_model_resolve.py tests/test_model_capability_and_fallback.py -q`  
+Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_agnes_free_model_contracts.py tests/test_model_resolve.py tests/test_model_capability_and_fallback.py -q`
 Expected: PASS。
 
 ---
@@ -232,7 +232,7 @@ def test_sapi_generates_non_empty_wave(tmp_path: Path) -> None:
 
 - [ ] **Step 3: 运行并确认 Provider 不存在**
 
-Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_local_sapi_tts.py -q`  
+Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_local_sapi_tts.py -q`
 Expected: FAIL with import/provider error。
 
 - [x] **Step 4: 实现 SAPI 调用与脱敏错误**
@@ -245,7 +245,7 @@ Expected: FAIL with import/provider error。
 
 - [x] **Step 6: 验证**
 
-Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_local_sapi_tts.py -q`  
+Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_local_sapi_tts.py -q`
 Expected: PASS，生成文件可由 Python `wave` 打开。
 
 ---
@@ -287,7 +287,7 @@ def test_extract_frame_returns_image_at_valid_timestamp(timestamp: float, media_
 
 - [ ] **Step 5: 运行并确认缺口**
 
-Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_media_processing_matrix.py -q`  
+Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_media_processing_matrix.py -q`
 Expected: FAIL 于未支持的 operation、lineage 或媒体边界。
 
 - [ ] **Step 6: 实现最小操作分发**
@@ -296,7 +296,7 @@ Expected: FAIL 于未支持的 operation、lineage 或媒体边界。
 
 - [ ] **Step 7: 验证**
 
-Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_media_processing_matrix.py -q`  
+Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_media_processing_matrix.py -q`
 Expected: PASS。
 
 ---
@@ -327,7 +327,7 @@ export type GenerationIntent =
 
 - [x] **Step 2: 运行并确认模块不存在**
 
-Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/generation-intent.test.ts`  
+Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/generation-intent.test.ts`
 Expected: FAIL with module not found。
 
 - [x] **Step 3: 实现归一化和确定性节点映射**
@@ -342,7 +342,7 @@ export function compileIntent(intent: GenerationIntent): CompiledCanvasPlan {
 
 - [x] **Step 4: 验证**
 
-Run: 同 Step 2。  
+Run: 同 Step 2。
 Expected: PASS。
 
 ---
@@ -375,7 +375,7 @@ expect(profileToolNames("asset-assistant")).not.toContain("submit_generation");
 
 - [ ] **Step 3: 运行并确认工具缺失**
 
-Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/media-tools.test.ts test/tool-manifest.test.ts`  
+Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/media-tools.test.ts test/tool-manifest.test.ts`
 Expected: FAIL on missing tools。
 
 - [ ] **Step 4: 最小实现并接入 runtime**
@@ -384,7 +384,7 @@ Expected: FAIL on missing tools。
 
 - [ ] **Step 5: 验证**
 
-Run: 同 Step 3。  
+Run: 同 Step 3。
 Expected: PASS。
 
 ---
@@ -412,7 +412,7 @@ Expected: PASS。
 
 - [ ] **Step 3: 运行并确认至少一个真实缺口**
 
-Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/multiturn-generation-resume.test.ts test/approval-service.test.ts test/generation-action-executor.test.ts`  
+Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/multiturn-generation-resume.test.ts test/approval-service.test.ts test/generation-action-executor.test.ts`
 Expected: FAIL at missing resume/idempotency behavior。
 
 - [ ] **Step 4: 实现单一根因修复**
@@ -421,7 +421,7 @@ Expected: FAIL at missing resume/idempotency behavior。
 
 - [ ] **Step 5: 验证**
 
-Run: 同 Step 3。  
+Run: 同 Step 3。
 Expected: PASS，事件无重复、只产生一个 task。
 
 ---
@@ -429,11 +429,11 @@ Expected: PASS，事件无重复、只产生一个 task。
 ### Task 8：补齐 3D 导演台 Agent→浏览器→素材闭环
 
 **Files:**
-- Create: `vibepaper-web/src/features/canvas/director/directorCaptureBridge.ts`
-- Create: `vibepaper-web/src/features/canvas/director/directorCaptureBridge.test.ts`
-- Modify: `vibepaper-web/src/features/canvas/director/DirectorStageEditor.tsx`
-- Modify: `vibepaper-web/src/features/canvas/director/DirectorNodeView.tsx`
-- Modify: `vibepaper-web/src/features/canvas/AgentPanel.tsx`
+- Create: `pi-paper-web/src/features/canvas/director/directorCaptureBridge.ts`
+- Create: `pi-paper-web/src/features/canvas/director/directorCaptureBridge.test.ts`
+- Modify: `pi-paper-web/src/features/canvas/director/DirectorStageEditor.tsx`
+- Modify: `pi-paper-web/src/features/canvas/director/DirectorNodeView.tsx`
+- Modify: `pi-paper-web/src/features/canvas/AgentPanel.tsx`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/api/app.ts`
 
 **Interfaces:**
@@ -454,7 +454,7 @@ export type DirectorCaptureResult = {
 
 - [ ] **Step 2: 运行并确认桥接模块缺失**
 
-Run: `cd vibepaper-web; pnpm vitest --run src/features/canvas/director/directorCaptureBridge.test.ts`  
+Run: `cd pi-paper-web; pnpm vitest --run src/features/canvas/director/directorCaptureBridge.test.ts`
 Expected: FAIL with module not found。
 
 - [ ] **Step 3: 实现捕获桥接**
@@ -463,8 +463,8 @@ Agent 只写结构化场景和捕获命令；前端使用现有 Three.js Canvas 
 
 - [ ] **Step 4: 验证单元测试与类型**
 
-Run: `cd vibepaper-web; pnpm vitest --run src/features/canvas/director/directorCaptureBridge.test.ts`  
-Run: `cd vibepaper-web; pnpm exec tsc -b --pretty false`  
+Run: `cd pi-paper-web; pnpm vitest --run src/features/canvas/director/directorCaptureBridge.test.ts`
+Run: `cd pi-paper-web; pnpm exec tsc -b --pretty false`
 Expected: PASS。
 
 ---
@@ -490,7 +490,7 @@ Expected: PASS。
 
 - [ ] **Step 3: 运行并确认缺少 7 个 Skill**
 
-Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/skill-execution-contracts.test.ts`  
+Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/skill-execution-contracts.test.ts`
 Expected: FAIL，缺少产品视觉、产品喷绘广告、反重力产品广告、电商经营、潮流视觉 PV、实景纸刊、界面设计。
 
 - [ ] **Step 4: 增加缺失 Skill 并统一现有 Skill 合同**
@@ -499,8 +499,8 @@ Expected: FAIL，缺少产品视觉、产品喷绘广告、反重力产品广告
 
 - [x] **Step 5: 重新生成 manifest 并验证**
 
-Run: `cd pi-main; npm run generate:skills --workspace=@vibepaper/pi-agent-service`  
-Run: 同 Step 3。  
+Run: `cd pi-main; npm run generate:skills --workspace=@vibepaper/pi-agent-service`
+Run: 同 Step 3。
 Expected: PASS，21 个 Skill 全覆盖且 manifest 可重复生成无额外 diff。
 
 ---
@@ -545,7 +545,7 @@ export interface EvalClient {
 
 - [ ] **Step 3: 运行并确认现有 loader 不满足合同**
 
-Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/eval-schema.test.ts test/eval-runner.test.ts`  
+Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/eval-schema.test.ts test/eval-runner.test.ts`
 Expected: FAIL。
 
 - [x] **Step 4: 实现 runner**
@@ -560,7 +560,7 @@ runner 不直接修改业务数据库；通过 Identity、Billing、Canvas 和 A
 
 - [x] **Step 5: 验证**
 
-Run: 同 Step 3。  
+Run: 同 Step 3。
 Expected: PASS。
 
 ---
@@ -601,7 +601,7 @@ expect(coverage.totalTurns).toBeGreaterThanOrEqual(32);
 
 - [ ] **Step 4: 运行 Schema 验证**
 
-Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/eval-schema.test.ts`  
+Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/eval-schema.test.ts`
 Expected: PASS。
 
 ---
@@ -640,7 +640,7 @@ Expected: PASS。
 
 - [ ] **Step 6: 运行 Schema 与 Skill 合同测试**
 
-Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/eval-schema.test.ts test/skill-execution-contracts.test.ts`  
+Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/eval-schema.test.ts test/skill-execution-contracts.test.ts`
 Expected: PASS。
 
 ---
@@ -670,7 +670,7 @@ Expected: PASS。
 
 - [ ] **Step 4: 运行覆盖测试**
 
-Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/eval-security-coverage.test.ts`  
+Run: `cd pi-main/packages/vibepaper-agent-service; node ..\..\..\node_modules\vitest\dist\cli.js --run test/eval-security-coverage.test.ts`
 Expected: PASS。
 
 ---
@@ -697,7 +697,7 @@ if ($LASTEXITCODE -eq 0) { throw 'missing screenshot should fail' }
 
 - [x] **Step 2: 运行并确认检查器不存在**
 
-Run: `pwsh -File scripts/e2e/tests/check-evidence.tests.ps1`  
+Run: `pwsh -File scripts/e2e/tests/check-evidence.tests.ps1`
 Expected: FAIL。
 
 - [ ] **Step 3: 实现 agent-browser 流程**
@@ -706,7 +706,7 @@ Expected: FAIL。
 
 - [x] **Step 4: 实现证据检查器并验证**
 
-Run: 同 Step 2。  
+Run: 同 Step 2。
 Expected: PASS。
 
 ---
@@ -723,8 +723,8 @@ Expected: PASS。
 
 - [x] **Step 1: 启动服务**
 
-Run: `pwsh -File deploy/start-all.ps1`  
-Run: `pwsh -File deploy/verify-all.ps1 -Wait -Json`  
+Run: `pwsh -File deploy/start-all.ps1`
+Run: `pwsh -File deploy/verify-all.ps1 -Wait -Json`
 Expected: 所有目标端口和 health 通过；模型目录只显示指定正式模型和本地 TTS/Compose/Director。
 
 - [ ] **Step 2: 执行不生成媒体的 API smoke**
@@ -783,18 +783,18 @@ Expected: 所有目标端口和 health 通过；模型目录只显示指定正�
 
 - [ ] **Step 1: 运行全量服务级验证**
 
-Run: `cd pi-main; npm run check`  
-Run: `cd pi-main; bash ./test.sh` 或按 `pi-main/AGENTS.md` 使用具体 Vitest 命令排除真实 provider E2E  
-Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest -q`  
-Run: `cd vibepaper-services; mvn -s settings-project.xml test`  
-Run: `cd vibepaper-web; pnpm test; pnpm exec tsc -b --pretty false; pnpm build`  
+Run: `cd pi-main; npm run check`
+Run: `cd pi-main; bash ./test.sh` 或按 `pi-main/AGENTS.md` 使用具体 Vitest 命令排除真实 provider E2E
+Run: `cd generation-service; .\.venv\Scripts\python.exe -m pytest -q`
+Run: `cd vibepaper-services; mvn -s settings-project.xml test`
+Run: `cd pi-paper-web; pnpm test; pnpm exec tsc -b --pretty false; pnpm build`
 Expected: 所有命令 exit 0；警告逐条记录，不笼统忽略。
 
 - [ ] **Step 2: 运行全部多轮 API 和浏览器用例**
 
-Run: `cd pi-main; npm run eval --workspace=@vibepaper/pi-agent-service -- packages/vibepaper-agent-service/evals/cases/*.json`  
-Run: `pwsh -File scripts/e2e/run-agent-browser-evals.ps1`  
-Run: `pwsh -File scripts/e2e/check-evidence.ps1 -Root output/evals/2026-08-29`  
+Run: `cd pi-main; npm run eval --workspace=@vibepaper/pi-agent-service -- packages/vibepaper-agent-service/evals/cases/*.json`
+Run: `pwsh -File scripts/e2e/run-agent-browser-evals.ps1`
+Run: `pwsh -File scripts/e2e/check-evidence.ps1 -Root output/evals/2026-08-29`
 Expected: Appendix A/B/C/D 所有 case 有结果和证据；短剧完整单集的视频、音轨、字幕和画布依赖图均通过；任何失败保持失败状态。
 
 - [ ] **Step 3: 编写 coverage matrix**
@@ -811,8 +811,8 @@ Expected: Appendix A/B/C/D 所有 case 有结果和证据；短剧完整单集�
 
 - [ ] **Step 6: 最终泄密与 diff 检查**
 
-Run: `rg -n 'sk-[A-Za-z0-9]{20,}' docs deploy scripts pi-main/packages/vibepaper-agent-service generation-service vibepaper-web vibepaper-services -g '!**/.env' -g '!**/node_modules/**' -g '!**/dist/**'`  
-Run: `git diff --check`  
+Run: `rg -n 'sk-[A-Za-z0-9]{20,}' docs deploy scripts pi-main/packages/vibepaper-agent-service generation-service pi-paper-web vibepaper-services -g '!**/.env' -g '!**/node_modules/**' -g '!**/dist/**'`
+Run: `git diff --check`
 Expected: 无密钥命中；源码文本 diff 无空白错误。已存在二进制变更如仍导致全局检查噪声，在报告中精确列出路径，不清理用户文件。
 
 ---
@@ -1103,5 +1103,5 @@ Expected: 无密钥命中；源码文本 diff 无空白错误。已存在二进�
 pwsh -File deploy/verify-all.ps1 -Json
 cd pi-main/packages/vibepaper-agent-service; .\node_modules\.bin\vitest.cmd run
 cd generation-service; .\.venv\Scripts\python.exe -m pytest tests/test_agnes_free_model_contracts.py tests/test_model_resolve.py tests/test_model_capability_and_fallback.py tests/test_local_sapi_tts.py -q
-cd vibepaper-web; pnpm exec vitest run src/features/canvas/confirmationVersion.test.ts src/features/canvas/AgentHistorySessionItem.test.tsx; pnpm exec tsc -b --pretty false
+cd pi-paper-web; pnpm exec vitest run src/features/canvas/confirmationVersion.test.ts src/features/canvas/AgentHistorySessionItem.test.tsx; pnpm exec tsc -b --pretty false
 ```

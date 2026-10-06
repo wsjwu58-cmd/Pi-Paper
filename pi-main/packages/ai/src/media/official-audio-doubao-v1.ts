@@ -85,8 +85,8 @@ export async function generateDoubaoV1Speech(
 			method: "POST",
 			headers: { Authorization: `Bearer;${token}`, "Content-Type": "application/json" },
 			body: JSON.stringify({
-				app: { appid: appId, token: "vibepaper-desktop", cluster: "volcano_tts" },
-				user: { uid: "vibepaper-desktop" },
+				app: { appid: appId, token: "pi-paper-desktop", cluster: "volcano_tts" },
+				user: { uid: "pi-paper-desktop" },
 				audio: {
 					voice_type: voiceId,
 					encoding: format,

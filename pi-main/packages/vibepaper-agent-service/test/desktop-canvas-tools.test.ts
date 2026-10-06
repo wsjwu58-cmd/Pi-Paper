@@ -18,7 +18,7 @@ type DesktopModelDirectoryEntry = {
 
 const desktopRequire = createRequire(import.meta.url);
 const { buildDesktopAgentModelDirectory } = desktopRequire(
-	"../../../../vibepaper-desktop/src/agent-model-directory.cjs",
+	"../../../../pi-paper-desktop/src/agent-model-directory.cjs",
 ) as {
 	buildDesktopAgentModelDirectory: (
 		agnes: { apiKeyConfigured: boolean },

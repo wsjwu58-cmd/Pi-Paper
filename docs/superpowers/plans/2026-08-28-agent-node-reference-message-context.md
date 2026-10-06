@@ -294,14 +294,14 @@ Expected: 新增和基线测试全部 PASS，类型检查退出码 0。
 ### Task 3: 前端不可变类型、选择跃迁和消息卡片
 
 **Files:**
-- Modify: vibepaper-web/package.json
-- Modify: vibepaper-web/pnpm-lock.yaml
-- Modify: vibepaper-web/src/features/canvas/agentTypes.ts
-- Modify: vibepaper-web/src/features/canvas/AgentComposerBar.tsx
-- Create: vibepaper-web/src/features/canvas/agentNodeReferences.ts
-- Create: vibepaper-web/src/features/canvas/AgentNodeReferenceCards.tsx
-- Create: vibepaper-web/src/features/canvas/agentNodeReferences.test.ts
-- Create: vibepaper-web/src/features/canvas/AgentNodeReferenceCards.test.tsx
+- Modify: pi-paper-web/package.json
+- Modify: pi-paper-web/pnpm-lock.yaml
+- Modify: pi-paper-web/src/features/canvas/agentTypes.ts
+- Modify: pi-paper-web/src/features/canvas/AgentComposerBar.tsx
+- Create: pi-paper-web/src/features/canvas/agentNodeReferences.ts
+- Create: pi-paper-web/src/features/canvas/AgentNodeReferenceCards.tsx
+- Create: pi-paper-web/src/features/canvas/agentNodeReferences.test.ts
+- Create: pi-paper-web/src/features/canvas/AgentNodeReferenceCards.test.tsx
 
 **Interfaces:**
 - Produces: AgentNodeReference、nodeReferencesForComposer()、newlySelectedComposerRefs()、consumeSentNodeRefs()、AgentNodeReferenceCards。
@@ -311,7 +311,7 @@ Expected: 新增和基线测试全部 PASS，类型检查退出码 0。
 package.json 增加 script test: vitest --run 和 devDependency vitest: 4.1.9。
 
 ~~~powershell
-Set-Location E:\VibePaperProject\vibepaper-web
+Set-Location E:\VibePaperProject\pi-paper-web
 pnpm install --lockfile-only
 ~~~
 
@@ -411,8 +411,8 @@ git diff --check -- src/features/canvas package.json pnpm-lock.yaml
 ### Task 4: AgentPanel 发送与历史渲染接线
 
 **Files:**
-- Modify: vibepaper-web/src/features/canvas/AgentPanel.tsx
-- Modify: vibepaper-web/src/features/canvas/agentNodeReferences.test.ts
+- Modify: pi-paper-web/src/features/canvas/AgentPanel.tsx
+- Modify: pi-paper-web/src/features/canvas/agentNodeReferences.test.ts
 
 - [ ] **Step 1: 选择订阅改为跃迁加入**
 
@@ -457,7 +457,7 @@ fetch 抛错或非 2xx 时不消费。本轮 skill ref 和响应期间新加入 
 - [ ] **Step 5: 运行前端全量验证**
 
 ~~~powershell
-Set-Location E:\VibePaperProject\vibepaper-web
+Set-Location E:\VibePaperProject\pi-paper-web
 pnpm test
 pnpm exec tsc -b --pretty false
 pnpm lint
@@ -488,7 +488,7 @@ npx tsgo -p packages/vibepaper-agent-service/tsconfig.build.json --noEmit
 - [ ] **Step 2: 前端完整验证**
 
 ~~~powershell
-Set-Location E:\VibePaperProject\vibepaper-web
+Set-Location E:\VibePaperProject\pi-paper-web
 pnpm test
 pnpm exec tsc -b --pretty false
 pnpm lint
@@ -516,7 +516,7 @@ pnpm lint
 Set-Location E:\VibePaperProject
 git diff --check
 git status --short
-git diff -- docs/audits/pi-agent-secondary-development-comprehensive-review-2026-08-28.md docs/superpowers/plans/2026-08-28-agent-node-reference-message-context.md pi-main/packages/vibepaper-agent-service vibepaper-web
+git diff -- docs/audits/pi-agent-secondary-development-comprehensive-review-2026-08-28.md docs/superpowers/plans/2026-08-28-agent-node-reference-message-context.md pi-main/packages/vibepaper-agent-service pi-paper-web
 ~~~
 
 确认未修改 .worktrees/agent-security-hardening，未覆盖用户原有未跟踪文件，未生成提交。

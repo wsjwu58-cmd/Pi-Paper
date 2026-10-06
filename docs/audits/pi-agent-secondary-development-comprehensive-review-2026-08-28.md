@@ -1,8 +1,8 @@
 # VibePaper Pi Agent 二次开发模块全面审查报告
 
-> 审查日期：2026-08-28  
-> 审查基线：`codex/pi-agent-secondary-development`，提交 `fa87a64`  
-> 主要实现：`pi-main/packages/vibepaper-agent-service`  
+> 审查日期：2026-08-28
+> 审查基线：`codex/pi-agent-secondary-development`，提交 `fa87a64`
+> 主要实现：`pi-main/packages/vibepaper-agent-service`
 > 结论口径：以已提交源码为准；设计文档、未合并 worktree 和仅存在的数据表不计为已实现
 
 ## 1. 执行结论
@@ -116,7 +116,7 @@ flowchart LR
 | AGT-PI-P0-02 | 工具面不具备产品功能 | [drama-tools.ts](../../pi-main/packages/vibepaper-agent-service/src/tools/drama-tools.ts) 只注册两个 prepare 工具；[skill-tools.ts](../../pi-main/packages/vibepaper-agent-service/src/tools/skill-tools.ts) 只增加 `load_skill` | 不能读取画布、创建节点/连线、查询素材/模型/任务或提交生成 |
 | AGT-PI-P0-03 | `submitGeneration()` 是死代码，且信任调用方估价 | [tool-gateway.ts](../../pi-main/packages/vibepaper-agent-service/src/infrastructure/tool-gateway.ts) 36-69 行；完整检索无调用者 | 点数和生成主链未接入；未来直接接入时，模型可控的 `estimatedCost` 也不能作为服务端权威估价 |
 | AGT-PI-P0-04 | SSE 是完成后批量返回 | [app.ts](../../pi-main/packages/vibepaper-agent-service/src/api/app.ts) 167-175 行先 `await runDramaTurn`，876 行后才拼接全部事件；[agent-runtime.ts](../../pi-main/packages/vibepaper-agent-service/src/application/agent-runtime.ts) 113 行等待 `agent.prompt` 完成 | 首 token 延迟等于整轮执行时间；无法实时展示工具、确认和长任务进度 |
-| AGT-PI-P0-05 | 前端“停止”不能取消后端 Agent | [AgentPanel.tsx](../../vibepaper-web/src/features/canvas/AgentPanel.tsx) 358-361 行只 abort fetch；服务端没有 run 注册或 `agent.abort()` API | 用户看到已停止，服务端仍可能继续调用模型或产生副作用 |
+| AGT-PI-P0-05 | 前端“停止”不能取消后端 Agent | [AgentPanel.tsx](../../pi-paper-web/src/features/canvas/AgentPanel.tsx) 358-361 行只 abort fetch；服务端没有 run 注册或 `agent.abort()` API | 用户看到已停止，服务端仍可能继续调用模型或产生副作用 |
 | AGT-PI-P0-06 | 关键前后端合同已经断裂 | 前端调用 `/agent/sessions/{id}/events` 和 `/skills/{id}/attach`；Pi API 无这两个路由。本机 8091 实测均返回 404 | 后台任务通知、主动消息和 Skill 应用不可用 |
 | AGT-PI-P0-07 | generation 终态回调与新接口字段不兼容 | [task_service.py](../../generation-service/src/generation/services/task_service.py) 390-403 行不发送 `sessionId`；[app.ts](../../pi-main/packages/vibepaper-agent-service/src/api/app.ts) 630 行要求 `sessionId` | 所有正常终态回调都无法写入 Agent notice，异步恢复主路径断开 |
 | AGT-PI-P0-08 | notice 只写不消费 | [app.ts](../../pi-main/packages/vibepaper-agent-service/src/api/app.ts) 623-650 行只有 insert；没有 events/notifications、consumer 或 processed 更新 | 即使回调成功，用户也收不到任务完成通知，Agent也不会推进下游 |
@@ -154,7 +154,7 @@ flowchart LR
 | AGT-PI-P1-20 | 数据完整性约束不足 | messages/actions/approvals/notices 与 session/action 缺少外键和必要唯一/check 约束；审批 action_id 也无唯一约束 |
 | AGT-PI-P1-21 | Snowflake 生成器不满足多实例安全 | [ids.ts](../../pi-main/packages/vibepaper-agent-service/src/infrastructure/ids.ts) 用 `pid & 0x3ff` 作为节点号，单毫秒第 4097 个 ID 回绕；跨主机 PID 可碰撞 |
 | AGT-PI-P1-22 | 部署配置来源不一致 | README 指导在 Pi 包创建 `.env`，但 [start-all.ps1](../../deploy/start-all.ps1) 45 行读取旧 `agent-service/.env`；当前 Pi 包 `.env` 实际不存在 |
-| AGT-PI-P1-23 | 节点参考只完成“选择和传 ID”，没有形成消息与上下文闭环 | [AgentComposerBar.tsx](../../vibepaper-web/src/features/canvas/AgentComposerBar.tsx) 已能展示选中节点参考，[AgentPanel.tsx](../../vibepaper-web/src/features/canvas/AgentPanel.tsx) 也会发送 `selectedNodeIds`；但乐观用户消息不保存引用快照、消息气泡不渲染引用卡片，服务端 `readHistory()` 丢弃消息 `meta`，`runDramaTurn()` 最终只接收纯文本 `content`。结果是截图所示“节点卡片 + 用户指令”不能在当前消息或历史会话稳定回显，Pi 也没有获得节点正文、媒体 URL、状态或提示词 |
+| AGT-PI-P1-23 | 节点参考只完成“选择和传 ID”，没有形成消息与上下文闭环 | [AgentComposerBar.tsx](../../pi-paper-web/src/features/canvas/AgentComposerBar.tsx) 已能展示选中节点参考，[AgentPanel.tsx](../../pi-paper-web/src/features/canvas/AgentPanel.tsx) 也会发送 `selectedNodeIds`；但乐观用户消息不保存引用快照、消息气泡不渲染引用卡片，服务端 `readHistory()` 丢弃消息 `meta`，`runDramaTurn()` 最终只接收纯文本 `content`。结果是截图所示“节点卡片 + 用户指令”不能在当前消息或历史会话稳定回显，Pi 也没有获得节点正文、媒体 URL、状态或提示词 |
 
 > **AGT-PI-P1-23 本分支整改状态（2026-08-28）：已实现，视觉手工验收待运行。** Agent 服务现在使用用户身份通过画布公开详情接口读取并校验最多 8 个节点，生成受限快照写入 `agent_messages.meta.nodeReferences`；当前轮和历史用户消息均以“不可信参考数据”注入 Pi。前端已增加文本/图片/视频节点引用卡片、不可变历史回显、选择跃迁检测和按轮消费，发送失败保留引用。自动化证据：Pi 包 5 个测试文件共 20 个测试通过，Pi TypeScript 检查通过；前端 2 个测试文件共 4 个测试通过，TypeScript 检查通过，oxlint 0 error（仅保留仓库既有 warning）。已执行变异检查，移除 Pi 引用注入会使回归测试失败。由于本轮未启动完整微服务栈进行浏览器操作，截图级视觉效果仍需手工验收。
 

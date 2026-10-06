@@ -25,7 +25,7 @@
 
 ## 2. 现状与迁移目标
 
-当前前端 `vibepaper-web/src/lib/api.ts` 以 `/api/v1` 和 JWT 调网关；`vibepaper-services/vibepaper-gateway/src/main/resources/application.yml` 将 `POST /tasks` 路由到 billing，再把任务查询路由到 generation。`billing-service/PointService` 冻结点数并通过 outbox 创建任务，Node Agent 的 `GenerationActionExecutor` 也直接调用 `freezeGeneration`。`generation-service` 用 PostgreSQL 保存任务、Redis 推送事件，并向 billing/identity/admin 回调。`pi-main/packages/vibepaper-agent-service/src/server.ts` 启动时要求 PostgreSQL。Java canvas/asset 已有重要领域校验和本地素材模式，不能仅换数据库驱动就视为桌面化。
+当前前端 `pi-paper-web/src/lib/api.ts` 以 `/api/v1` 和 JWT 调网关；`vibepaper-services/vibepaper-gateway/src/main/resources/application.yml` 将 `POST /tasks` 路由到 billing，再把任务查询路由到 generation。`billing-service/PointService` 冻结点数并通过 outbox 创建任务，Node Agent 的 `GenerationActionExecutor` 也直接调用 `freezeGeneration`。`generation-service` 用 PostgreSQL 保存任务、Redis 推送事件，并向 billing/identity/admin 回调。`pi-main/packages/vibepaper-agent-service/src/server.ts` 启动时要求 PostgreSQL。Java canvas/asset 已有重要领域校验和本地素材模式，不能仅换数据库驱动就视为桌面化。
 
 目标进程：
 
@@ -49,7 +49,7 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 
 | 现有单元 | 桌面版处理 | 主要实施点 |
 | --- | --- | --- |
-| `vibepaper-web` | 以原页面/组件源码直接迁移，改造后运行于 Electron Renderer | 在 `CanvasPage`、节点组件、编辑器和 `AgentPanel` 原源码上接入本地状态/API/事件适配；移除 JWT 页面守卫与云端账户请求；保留画布交互、SSE/任务历史语义；隐藏创意广场等旧入口；提供本地项目与模型设置。Electron 壳与 IPC 可独立实现，但不得以平行 `Desktop*` 页面替代原 UI；Web 默认路径保持原契约 |
+| `pi-paper-web` | 以原页面/组件源码直接迁移，改造后运行于 Electron Renderer | 在 `CanvasPage`、节点组件、编辑器和 `AgentPanel` 原源码上接入本地状态/API/事件适配；移除 JWT 页面守卫与云端账户请求；保留画布交互、SSE/任务历史语义；隐藏创意广场等旧入口；提供本地项目与模型设置。Electron 壳与 IPC 可独立实现，但不得以平行 `Desktop*` 页面替代原 UI；Web 默认路径保持原契约 |
 | `vibepaper-gateway` | 桌面运行时退出 | Local Core 提供兼容 `/api/v1` 路由或窄 IPC；不再透传用户/企业头，不允许 Renderer 任意调用内部端口 |
 | `identity-service` | 桌面运行时退出 | 本地配置负责昵称、界面与默认模型偏好；无注册、JWT、刷新令牌、签到与邀请；保留稳定本地 profileId 供新项目关联 |
 | `canvas-service` | 将必需领域能力移入 Local Core | 画布 CRUD、节点/连线、GraphService 的能力/依赖校验、分组堆叠、短剧素材、导入导出和 version 乐观锁；保留现有语义测试作为迁移对照 |
@@ -113,11 +113,11 @@ Electron Main：项目选择、生命周期、凭据、备份、受限 IPC
 | 阶段 | 工作 | 完成条件 |
 | --- | --- | --- |
 | 0. 契约与切片 | 固定桌面版 API/数据字典、旧接口对照、模型能力表、项目目录及备份格式；选一条“创建画布 → Agent 连线 → 提交任务 → 本地保存输出”纵向用例 | 契约评审通过；旧 Web 运行路径和工作区未提交改动不受影响 |
-| 1. 桌面宿主 | 新建 `vibepaper-desktop` Electron 工程；项目选择、单实例/项目锁、受限 IPC、用户数据目录、空白项目创建；React 在桌面窗口运行 | 三平台开发构建能打开空白画布；无登录/网关/基础设施要求 |
+| 1. 桌面宿主 | 新建 `pi-paper-desktop` Electron 工程；项目选择、单实例/项目锁、受限 IPC、用户数据目录、空白项目创建；React 在桌面窗口运行 | 三平台开发构建能打开空白画布；无登录/网关/基础设施要求 |
 | 2. 本地核心 | 实现 CanvasStore、AssetStore 与 `/api/v1` 兼容层；迁移 Java 领域校验和画布版本规则；本地 profile/preferences | 新建、保存、关闭重开、导入导出、引用素材和删除影响测试通过；Agent 可读本地画布摘要 |
 | 3. 本地任务与模型 | TaskStore、持久事件流、Worker 协议、模型目录和云端/本地 provider；先打通一种文本与一种图像能力，再逐步验音/视频 | 手工节点生成、取消、重试、断点恢复通过；无 billing/Redis/MQ/PG；未支持模态可见不可用 |
 | 4. Agent 本地化 | 按 Agent 专项方案接入 Pi JSONL、SQLite 控制账本与 Local Tool Gateway；去掉按点数确认，保留风险确认；实现本地/云端模型选择 | 同一纵向用例由自然语言完成；重启不重放写工具，跨 50+ 消息与压缩仍能正确读取画布；无 Agent PG/Redis/Nacos |
-| 5. 原前端源码桌面迁移与范围收敛 | 直接改造 `vibepaper-web/src` 原页面、节点、编辑器、Agent 面板和状态/事件逻辑，以本地适配替换旧 API、账户与存储依赖；去掉桌面路径中的登录、点数、套餐、签到、邀请、企业、运营、公告、创意广场 | Electron Renderer 运行原迁移页面与组件；不靠平行 `Desktop*` 页面交差；Web 默认路径契约不变；桌面安装包无旧服务调用和相关入口；旧 gallery 源码保留；云端发送范围提示可见 |
+| 5. 原前端源码桌面迁移与范围收敛 | 直接改造 `pi-paper-web/src` 原页面、节点、编辑器、Agent 面板和状态/事件逻辑，以本地适配替换旧 API、账户与存储依赖；去掉桌面路径中的登录、点数、套餐、签到、邀请、企业、运营、公告、创意广场 | Electron Renderer 运行原迁移页面与组件；不靠平行 `Desktop*` 页面交差；Web 默认路径契约不变；桌面安装包无旧服务调用和相关入口；旧 gallery 源码保留；云端发送范围提示可见 |
 | 6. 交付 | 项目备份/恢复、升级迁移、日志、崩溃恢复、三平台签名/安装包、真机 E2E | Windows、macOS、Linux 各自安装包从空项目完成画布+Agent+任务+素材闭环；无 Docker 与平台账户 |
 
 阶段 2–4 的实施应按纵向切片反复穿透，不等所有模块整体重写才测试。各阶段用现有 API 行为与画布验收用例对照；旧数据迁移、旧账本兼容、公开画廊不构成门禁。

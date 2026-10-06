@@ -1,0 +1,31 @@
+name: pi-paper
+services:
+  pi-paper:
+    image: pi-paper:desktop
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    shm_size: 1gb
+    ports:
+      - "${PI_PAPER_BIND_ADDRESS:-127.0.0.1}:${PI_PAPER_PORT:-8080}:8080"
+    environment:
+      SCREEN_WIDTH: "${PI_PAPER_SCREEN_WIDTH:-1600}"
+      SCREEN_HEIGHT: "${PI_PAPER_SCREEN_HEIGHT:-1000}"
+    volumes:
+      - desktop-home:/home/pi-paper
+      - projects:/projects
+    secrets:
+      - vnc-password
+      - keyring-password
+    stop_grace_period: 30s
+volumes:
+  desktop-home:
+  projects:
+secrets:
+  vnc-password:
+    file: ./docker/secrets/vnc-password.txt
+  keyring-password:
+    file: ./docker/secrets/keyring-password.txt

@@ -28,7 +28,7 @@ uv run --python .venv\Scripts\python.exe --with pytest pytest -q
 
 ```text
 npm run build --workspace=@vibepaper/pi-agent-service
-cd E:\VibePaperProject\vibepaper-web
+cd E:\VibePaperProject\pi-paper-web
 pnpm test
 pnpm build
 pwsh -File E:\VibePaperProject\scripts\e2e\check-evidence.ps1 -Root E:\VibePaperProject\output\evals\2026-08-29
