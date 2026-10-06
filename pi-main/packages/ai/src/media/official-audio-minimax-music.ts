@@ -1,15 +1,15 @@
 import { endpoint, OfficialProviderError, officialJson, redactSecret, requireApiKey, resolveBaseUrl } from "./http.ts";
 import type { OfficialGenerationInput, OfficialGenerationOptions, OfficialGenerationResult } from "./types.ts";
 
-/** MiniMax Music 2.6; deliberately does not alias the newer Music 3 model. */
+/** Explicit Music 2.6 and Music 3.0 bindings share the documented generation protocol. */
 export async function generateMiniMaxMusic(
 	input: OfficialGenerationInput,
 	options: OfficialGenerationOptions,
 ): Promise<OfficialGenerationResult> {
-	if (input.providerId !== "minimax" || input.modelId !== "music-2.6") {
+	if (input.providerId !== "minimax" || !["music-2.6", "music-3.0"].includes(input.modelId)) {
 		throw new OfficialProviderError(
 			"UNSUPPORTED_MODEL",
-			"This adapter implements the exact MiniMax Music 2.6 model only.",
+			"This adapter implements MiniMax Music 2.6 and Music 3.0 only.",
 		);
 	}
 	if (input.operation !== "music")
@@ -64,8 +64,8 @@ export async function generateMiniMaxMusic(
 	if (sampleRate !== undefined && ![16000, 24000, 32000, 44100].includes(sampleRate))
 		throw new OfficialProviderError("INVALID_AUDIO_PARAMETER", "sample_rate must be 16000, 24000, 32000, or 44100.");
 	const bitrate = readInteger(params, "bitrate");
-	if (bitrate !== undefined && ![64000, 128000, 192000, 256000].includes(bitrate))
-		throw new OfficialProviderError("INVALID_AUDIO_PARAMETER", "bitrate must be 64000, 128000, 192000, or 256000.");
+	if (bitrate !== undefined && ![32000, 64000, 128000, 256000].includes(bitrate))
+		throw new OfficialProviderError("INVALID_AUDIO_PARAMETER", "bitrate must be 32000, 64000, 128000, or 256000.");
 	const apiKey = requireApiKey(options, input.providerId);
 	const baseUrl = resolveBaseUrl(
 		{ ...options, baseUrl: "https://api.minimax.io/v1" },
@@ -78,7 +78,7 @@ export async function generateMiniMaxMusic(
 			method: "POST",
 			headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
 			body: JSON.stringify({
-				model: "music-2.6",
+				model: input.modelId,
 				prompt,
 				stream: false,
 				output_format: "hex",

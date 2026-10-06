@@ -10,6 +10,7 @@ import type { DesktopAssetImportResult } from '@/desktop/desktop-bridge'
 import { desktopAssetView, isDesktopRuntime } from './canvasPort'
 import { useCanvasStore } from './canvasStore'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
+import { useSoftPresence } from './canvasMotion'
 
 type AssetLibraryItem = AssetView & { referenceCount?: number }
 
@@ -41,6 +42,7 @@ export function AssetLibrary({
 }) {
   const isDesktop = desktopMode || isDesktopRuntime()
   const open = useCanvasStore((s) => s.assetOpen)
+  const presence = useSoftPresence(open)
   const setOpen = useCanvasStore((s) => s.setAssetOpen)
   const canvas = useCanvasStore((s) => s.canvas)
   const enterpriseId = useAuth((s) => s.user?.enterpriseId)
@@ -227,9 +229,10 @@ export function AssetLibrary({
     window.setTimeout(() => replaceInputRef.current?.click(), 0)
   }
 
-  if (!open) return null
+  if (!presence.present && !open) return null
   return (
-    <div className="absolute left-[72px] top-20 z-40 flex h-[calc(100%-104px)] w-80 flex-col rounded-2xl border border-black/8 bg-white shadow-[0_16px_48px_rgba(15,23,42,0.18)]">
+    <div className="vp-soft-popover absolute left-[72px] top-20 z-40 flex h-[calc(100%-104px)] w-80 flex-col rounded-2xl border border-black/8 bg-white shadow-[0_16px_48px_rgba(15,23,42,0.18)]"
+      data-open={presence.visible} aria-hidden={!open} inert={!open}>
       <input
         ref={replaceInputRef}
         type="file"

@@ -4,16 +4,20 @@ import {
   ArrowLeftRight,
   ArrowUpFromLine,
   Check,
+  ChevronDown,
   Crop,
   Download,
   Expand,
+  FileText,
   Film,
   Library,
   Link2,
   Loader2,
   Maximize2,
+  Music2,
   Ratio,
   Scan,
+  Settings2,
   Type,
   X,
 } from 'lucide-react'
@@ -27,9 +31,11 @@ import type { DesktopLocalAudioModel, DesktopProviderConfiguration } from '@/des
 import { defaultDesktopModelId, desktopProviderNameMap, toAvailableDesktopModels, type DesktopModelInfo } from '@/desktop/providerModels'
 import { ModelPicker } from '@/components/ui/ModelPicker'
 import { useCanvasStore, type FlowNode } from '../canvasStore'
+import { useSoftPresence } from '../canvasMotion'
 import { isDesktopRuntime } from '../canvasPort'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
-import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoDurationOptions, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
+import { MediaSpecificationPicker } from './MediaSpecificationPicker'
+import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoDurationCapability, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
 import { downloadNodeOutput } from './nodeDownloads'
 import type { CropMode } from './cropGeometry'
 
@@ -623,6 +629,162 @@ function DesktopMediaUrlReferencePrompt({ kind, onCancel, onSubmit }: {
   )
 }
 
+function PortalChoiceSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+  dark = false,
+  disabled = false,
+}: {
+  value: T
+  options: Array<{ value: T; label: string }>
+  onChange: (value: T) => void
+  label: string
+  dark?: boolean
+  disabled?: boolean
+}) {
+  const anchorRef = useRef<HTMLButtonElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState({ left: 12, top: 12 })
+  const presence = useSoftPresence(open)
+  const selected = options.find((option) => option.value === value)
+
+  const toggle = () => {
+    if (disabled) return
+    const rect = anchorRef.current?.getBoundingClientRect()
+    if (rect) {
+      const width = Math.min(260, window.innerWidth - 24)
+      const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))
+      const top = rect.bottom + 8 + 210 < window.innerHeight ? rect.bottom + 8 : Math.max(12, rect.top - 8 - 210)
+      setPosition({ left, top })
+    }
+    setOpen((current) => !current)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (anchorRef.current?.contains(target) || popoverRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
+    window.addEventListener('pointerdown', closeOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('pointerdown', closeOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  return (
+    <div className="vp-audio-choice relative shrink-0">
+      <button
+        ref={anchorRef}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={toggle}
+        className={`flex h-8 max-w-[190px] items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold disabled:opacity-50 ${dark ? 'text-white/90 hover:bg-white/10' : 'text-[#444] hover:bg-black/[0.05]'}`}
+      >
+        <span className="truncate">{selected?.label ?? label}</span>
+        <ChevronDown size={12} className="shrink-0 opacity-60" />
+      </button>
+      {presence.present && createPortal(
+        <div
+          ref={popoverRef}
+          role="dialog"
+          aria-label={label}
+          aria-hidden={!open}
+          inert={!open}
+          data-open={presence.visible}
+          className={`vp-soft-popover vp-editor-popover fixed z-[10050] min-w-48 rounded-xl border border-black/8 bg-white p-1.5 shadow-xl ${presence.visible ? '' : 'pointer-events-none'}`}
+          style={position}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={option.value === value}
+              onClick={() => { onChange(option.value); setOpen(false) }}
+              className={`block w-full rounded-lg px-3 py-2 text-left text-[12px] ${option.value === value ? 'bg-black/[0.06] font-semibold text-[#111]' : 'text-[#555] hover:bg-black/[0.04]'}`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}
+
+type DesktopAudioMode = 'speech' | 'music'
+type MusicLyricsMode = 'auto' | 'manual' | 'instrumental'
+
+function desktopAudioModeForModel(model?: DesktopModelInfo): DesktopAudioMode | undefined {
+  if (model?.operation === 'music') return 'music'
+  if (model?.operation === 'speech' || model?.operation === 'text-to-speech' || model?.operation === 'tts'
+    || model?.providerId === 'local-sapi-tts') return 'speech'
+  return undefined
+}
+
+function isDesktopSpeechModel(model?: DesktopModelInfo): boolean {
+  return desktopAudioModeForModel(model) === 'speech'
+}
+
+function isDesktopMusicModel(model?: DesktopModelInfo): boolean {
+  return desktopAudioModeForModel(model) === 'music'
+}
+
+function getDesktopAudioVoiceOptions(model?: DesktopModelInfo): Array<{ id: string; label: string }> {
+  const values = model?.constraints?.voices
+  if (!Array.isArray(values)) return []
+  return values.flatMap((item) => {
+    if (typeof item === 'string' && item.trim()) return [{ id: item, label: item }]
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+    const value = item as Record<string, unknown>
+    const id = [value.voiceId, value.id, value.value].find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0)
+    if (!id) return []
+    const label = [value.label, value.name, value.displayName].find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0)
+    return [{ id, label: label ?? id }]
+  })
+}
+
+function withoutModelSpecification(params: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...params }
+  for (const key of ['aspect', 'ratio', 'resKey', 'resolution', 'size', 'duration', 'generate_audio']) delete next[key]
+  return next
+}
+
+function durationForCapability(
+  capability: ReturnType<typeof getVideoDurationCapability>,
+  preferred: unknown,
+  previous: number,
+): number | undefined {
+  if (!capability) return undefined
+  if (capability.kind === 'fixed') return capability.value
+  if (capability.kind === 'discrete') {
+    return typeof preferred === 'number' && capability.values.includes(preferred)
+      ? preferred
+      : capability.values.includes(previous) ? previous : capability.values[0]
+  }
+  const candidate = typeof preferred === 'number' && Number.isFinite(preferred) ? preferred : previous
+  return Math.min(capability.maximum, Math.max(capability.minimum, candidate))
+}
+
+function aspectOptionsForModel(model: DesktopModelInfo | undefined, desktopMode: boolean): string[] {
+  if (!desktopMode) return ASPECTS
+  const accepted = model?.constraints?.acceptedAspectRatios
+  if (Array.isArray(accepted)) return accepted.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  const defaultRatio = model?.defaultParams?.ratio
+  return typeof defaultRatio === 'string' && defaultRatio.trim() ? [defaultRatio] : []
+}
+
 /** 选中编辑对话框：参考区 + 提示词 + 底栏生成 */
 export function NodeEditorDialog({
   node,
@@ -690,6 +852,7 @@ export function NodeEditorDialog({
           id: localAudio.modelId,
           name: localAudio.modelId,
           modelType: 'audio',
+          operation: 'speech',
           displayName: localAudio.modelId,
           provider: 'local',
           providerId: 'local-sapi-tts',
@@ -721,13 +884,27 @@ export function NodeEditorDialog({
   const [frameOrder, setFrameOrder] = useState<'asc' | 'swap'>('asc')
   const [prompt, setPrompt] = useState(stripLegacyReferenceFidelity((node.params.prompt as string) ?? ''))
   const [model, setModel] = useState((node.params.model as string) ?? '')
+  const [audioMode, setAudioMode] = useState<DesktopAudioMode>(() =>
+    node.params.audioMode === 'music' || node.params.is_instrumental === true
+      || typeof node.params.lyrics === 'string' || node.params.lyrics_optimizer === true
+      ? 'music'
+      : 'speech',
+  )
+  const [lyricsMode, setLyricsMode] = useState<MusicLyricsMode>(() =>
+    node.params.is_instrumental === true
+      ? 'instrumental'
+      : node.params.lyrics_optimizer === false && typeof node.params.lyrics === 'string' && node.params.lyrics.length > 0
+        ? 'manual'
+        : 'auto',
+  )
+  const [lyrics, setLyrics] = useState(typeof node.params.lyrics === 'string' ? node.params.lyrics : '')
+  const [voiceId, setVoiceId] = useState(typeof node.params.voiceId === 'string' ? node.params.voiceId : '')
   const [aspect, setAspect] = useState((node.params.aspect as string) || '1:1')
   const [resKey, setResKey] = useState((node.params.resKey as string) || (node.type === 'video' && desktopMode ? '720P' : '2K'))
   const [style, setStyle] = useState((node.params.style as string) ?? '')
   const [camera, setCamera] = useState((node.params.camera as string) ?? '')
   const [duration, setDuration] = useState(Number(node.params.duration) || 4)
   const [generateAudio, setGenerateAudio] = useState(node.params.generate_audio !== false)
-  const [instrumental, setInstrumental] = useState(node.params.is_instrumental === true)
   const storedCount = Number(node.params.count)
   const initialCount = Number.isSafeInteger(storedCount) && storedCount > 0 ? storedCount : 1
   const [count, setCount] = useState(desktopMode && node.type === 'image' ? Math.min(initialCount, 4) : initialCount)
@@ -736,13 +913,26 @@ export function NodeEditorDialog({
   const promptRef = useRef<HTMLTextAreaElement>(null)
 
   const editorModels = desktopMode ? desktopModels : models
-  const typeModels = useMemo(
+  const modalityModels = useMemo(
     () =>
       editorModels.filter(
         (m) => m.modelType === node.type && !/兼容别名|已停用/.test(String(m.description || '')),
       ),
     [editorModels, node.type],
   )
+  const desktopAudioModels = desktopMode && node.type === 'audio'
+    ? modalityModels as DesktopModelInfo[]
+    : []
+  const speechModels = useMemo(() => desktopAudioModels.filter(isDesktopSpeechModel), [desktopAudioModels])
+  const musicModels = useMemo(() => desktopAudioModels.filter(isDesktopMusicModel), [desktopAudioModels])
+  const typeModels = desktopMode && node.type === 'audio'
+    ? audioMode === 'music' ? musicModels : speechModels
+    : modalityModels
+  useEffect(() => {
+    if (!desktopMode || node.type !== 'audio' || node.params.audioMode === 'music' || audioMode !== 'speech') return
+    const storedModel = desktopModels.find((candidate) => candidate.id === node.params.model)
+    if (desktopAudioModeForModel(storedModel) === 'music') setAudioMode('music')
+  }, [audioMode, desktopMode, desktopModels, node.params.audioMode, node.params.model, node.type])
   const configuredDefault = desktopMode
     ? desktopCatalog.configuration?.providers
       .map((provider) => provider.defaultModelIds?.[node.type])
@@ -756,33 +946,60 @@ export function NodeEditorDialog({
     typeModels[0]?.name
   const selectedModel = typeModels.find((item) => item.name === (model || preferred))
   const selectedDesktopModel = desktopMode && selectedModel ? selectedModel as DesktopModelInfo : undefined
-  const resolutionMap = getNodeResolutionMap(node.type, selectedModel, desktopMode)
+  const resolutionMap = getNodeResolutionMap(node.type, selectedModel, desktopMode, aspect)
   const selectedResKey = resolutionMap[resKey] ? resKey : Object.keys(resolutionMap)[0] ?? resKey
   const resolutionKeys = Object.keys(resolutionMap)
-  const durationOptions = desktopMode ? getVideoDurationOptions(selectedDesktopModel?.constraints, selectedResKey) : []
-  const durationOptionsKey = durationOptions.join(',')
+  const resolutionOptions = resolutionKeys.map((key) => ({ key, value: resolutionMap[key] }))
+  const durationResolutionValue = resolutionMap[selectedResKey] ?? selectedResKey
+  const durationCapability = useMemo(
+    () => desktopMode && node.type === 'video'
+      ? getVideoDurationCapability(selectedDesktopModel?.constraints, durationResolutionValue, selectedDesktopModel?.defaultParams?.duration)
+      : null,
+    [desktopMode, durationResolutionValue, node.type, selectedDesktopModel?.constraints, selectedDesktopModel?.defaultParams?.duration],
+  )
   useEffect(() => {
-    if (durationOptions.length && !durationOptions.includes(duration)) setDuration(durationOptions[0])
-  }, [durationOptionsKey, duration])
-  const constrainedAspects = selectedDesktopModel?.constraints?.acceptedAspectRatios
-  const aspectOptions = desktopMode && Array.isArray(constrainedAspects)
-    ? constrainedAspects.filter((value): value is string => typeof value === 'string')
-    : desktopMode && ['volcengine-ark', 'alibaba-video'].includes(selectedDesktopModel?.providerId ?? '') ? ['adaptive', ...ASPECTS] : ASPECTS
+    if (!durationCapability) return
+    const nextDuration = durationForCapability(durationCapability, duration, duration)
+    if (nextDuration !== undefined && nextDuration !== duration) setDuration(nextDuration)
+  }, [durationCapability, duration, selectedDesktopModel?.defaultParams?.duration])
+  const aspectOptions = aspectOptionsForModel(selectedDesktopModel, desktopMode)
   const supportsAudioOption = desktopMode && selectedDesktopModel?.constraints?.supportsGenerateAudio === true
-  const isMusicModel = desktopMode && node.type === 'audio' && selectedDesktopModel?.operation === 'music'
-  const musicParams = isMusicModel ? { is_instrumental: instrumental, lyrics_optimizer: !instrumental } : {}
+  const isMusicModel = desktopMode && node.type === 'audio' && isDesktopMusicModel(selectedDesktopModel)
+  const musicParams = isMusicModel ? {
+    is_instrumental: lyricsMode === 'instrumental',
+    lyrics_optimizer: lyricsMode === 'auto',
+    ...(lyricsMode === 'manual' && lyrics.trim() ? { lyrics: lyrics.trim() } : {}),
+  } : {}
+  const voiceOptions = desktopMode && node.type === 'audio' ? getDesktopAudioVoiceOptions(selectedDesktopModel) : []
   const maximumOutputs = desktopMode && node.type === 'image' ? Math.min(4, Number(selectedDesktopModel?.constraints?.maximumOutputs) || 4) : 4
   useEffect(() => {
-    if (!desktopMode || !selectedModel) return
-    const defaults = selectedModel.defaultParams ?? {}
-    if (!node.params.aspect && typeof defaults.ratio === 'string') setAspect(defaults.ratio)
-    if (!node.params.resKey) {
-      const defaultSize = String(defaults.resolution ?? defaults.size ?? '').toUpperCase()
-      if (defaultSize) setResKey(defaultSize)
+    if (!desktopMode || !selectedDesktopModel) return
+    const defaults = selectedDesktopModel.defaultParams ?? {}
+    const savedRatio = node.params.ratio ?? node.params.aspect
+    const ratio = aspectOptions.includes(String(savedRatio))
+      ? String(savedRatio)
+      : aspectOptions.includes(String(defaults.ratio)) ? String(defaults.ratio) : aspectOptions[0]
+    if (ratio) setAspect((current) => current === ratio ? current : ratio)
+
+    const defaultResolution = defaults.resolution ?? defaults.size
+    const defaultResolutionKey = typeof defaultResolution === 'string'
+      ? Object.entries(resolutionMap).find(([, value]) => value.toLowerCase() === defaultResolution.toLowerCase())?.[0]
+      : undefined
+    const savedResolutionKey = typeof node.params.resKey === 'string' && resolutionMap[node.params.resKey]
+      ? node.params.resKey
+      : undefined
+    const nextResolutionKey = savedResolutionKey ?? defaultResolutionKey ?? resolutionKeys[0]
+    if (nextResolutionKey) setResKey((current) => current === nextResolutionKey ? current : nextResolutionKey)
+
+    if (durationCapability) {
+      const savedDuration = typeof node.params.duration === 'number' ? node.params.duration : undefined
+      const nextDuration = durationForCapability(durationCapability, savedDuration ?? defaults.duration, duration)
+      if (nextDuration !== undefined) setDuration((current) => current === nextDuration ? current : nextDuration)
     }
-    if (!node.params.duration && typeof defaults.duration === 'number') setDuration(defaults.duration)
-    if (node.params.generate_audio === undefined && typeof defaults.generate_audio === 'boolean') setGenerateAudio(defaults.generate_audio)
-  }, [desktopMode, selectedModel, node.params.aspect, node.params.resKey, node.params.duration, node.params.generate_audio])
+    if (supportsAudioOption && typeof (node.params.generate_audio ?? defaults.generate_audio) === 'boolean') {
+      setGenerateAudio(Boolean(node.params.generate_audio ?? defaults.generate_audio))
+    }
+  }, [aspectOptions, desktopMode, durationCapability, node.params.aspect, node.params.duration, node.params.generate_audio, node.params.resKey, node.params.ratio, resolutionKeys, resolutionMap, selectedDesktopModel, supportsAudioOption])
 
   // 上游变化时合并进参考（保留本地上传；尊重用户删除的上游）
   useEffect(() => {
@@ -798,7 +1015,7 @@ export function NodeEditorDialog({
   useEffect(() => {
     setPrompt(stripLegacyReferenceFidelity((node.params.prompt as string) ?? ''))
     const raw = (node.params.model as string) || preferred || ''
-    const allowed = desktopMode ? raw : typeModels.some((m) => m.name === raw) ? raw : preferred || ''
+    const allowed = typeModels.some((m) => m.name === raw) ? raw : preferred || ''
     setModel(allowed)
   }, [desktopMode, node.id, node.params.prompt, node.params.model, preferred, typeModels])
 
@@ -848,6 +1065,137 @@ export function NodeEditorDialog({
     useCanvasStore.getState().updateNodePayload(nodeId, {
       params: { ...(current?.params ?? node.params), prompt: value },
     })
+  }
+
+  const persistNodeParams = (patch: Record<string, unknown>, remove: string[] = []) => {
+    const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === nodeId)?.data.node
+    const params = { ...(current?.params ?? node.params) }
+    for (const key of remove) delete params[key]
+    useCanvasStore.getState().updateNodePayload(node.id, { params: { ...params, ...patch } })
+  }
+
+  const changeAspect = (value: string) => {
+    setAspect(value)
+    if (desktopMode) {
+      const nextMap = getNodeResolutionMap(node.type, selectedModel, true, value)
+      const nextKey = nextMap[resKey] ? resKey : Object.keys(nextMap)[0]
+      if (nextKey) setResKey(nextKey)
+      persistNodeParams({ aspect: value, ratio: value, ...(nextKey ? resolveNodeResolution(node.type, selectedModel, nextKey, true, value) : {}) })
+    }
+    else persistNodeParams({ aspect: value })
+  }
+
+  const changeResolution = (value: string) => {
+    setResKey(value)
+    if (desktopMode) persistNodeParams(resolveNodeResolution(node.type, selectedModel, value, true, effectiveAspect))
+  }
+
+  const changeDuration = (value: number) => {
+    setDuration(value)
+    if (desktopMode && node.type === 'video') persistNodeParams({ duration: value })
+  }
+
+  const changeLyrics = (value: string) => {
+    setLyrics(value)
+    persistNodeParams({ lyrics: value })
+  }
+
+  const changeLyricsMode = (value: MusicLyricsMode) => {
+    setLyricsMode(value)
+    const patch = value === 'instrumental'
+      ? { is_instrumental: true, lyrics_optimizer: false }
+      : value === 'manual'
+        ? { is_instrumental: false, lyrics_optimizer: false }
+        : { is_instrumental: false, lyrics_optimizer: true }
+    persistNodeParams(patch)
+  }
+
+  const changeVoice = (value: string) => {
+    setVoiceId(value)
+    persistNodeParams({ voiceId: value })
+  }
+
+  const chooseDesktopAudioMode = (value: DesktopAudioMode) => {
+    setAudioMode(value)
+    const choices = value === 'music' ? musicModels : speechModels
+    if (value === audioMode && choices.some((candidate) => candidate.name === model)) return
+    const configured = desktopCatalog.configuration?.providers
+      .map((provider) => provider.defaultModelIds?.audio)
+      .find((id): id is string => Boolean(id && choices.some((candidate) => candidate.name === id)))
+    const selected = choices.find((candidate) => candidate.name === model) ?? choices.find((candidate) => candidate.name === configured) ?? choices[0]
+    if (selected) applyDesktopModel(selected.name)
+    else {
+      setModel('')
+      persistNodeParams({ audioMode: value }, ['model'])
+    }
+  }
+
+  const applyDesktopModel = (value: string) => {
+    const chosen = modalityModels.find((candidate) => candidate.name === value) as DesktopModelInfo | undefined
+    setModel(value)
+    if (!desktopMode || !chosen) {
+      persistNodeParams({ model: value })
+      return
+    }
+
+    const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === nodeId)?.data.node
+    const params = withoutModelSpecification(current?.params ?? node.params)
+    if (!isDesktopMusicModel(chosen)) {
+      for (const key of ['lyrics', 'lyrics_optimizer', 'is_instrumental']) delete params[key]
+    }
+    delete params.voiceId
+    delete params.voice
+    params.model = value
+    if (node.type === 'audio') params.audioMode = desktopAudioModeForModel(chosen) ?? audioMode
+
+    const defaults = chosen.defaultParams ?? {}
+    const nextAspects = aspectOptionsForModel(chosen, true)
+    const nextAspect = nextAspects.includes(String(defaults.ratio))
+      ? String(defaults.ratio)
+      : nextAspects[0]
+    if (nextAspect) {
+      params.aspect = nextAspect
+      params.ratio = nextAspect
+      setAspect(nextAspect)
+    } else setAspect('')
+
+    const nextMap = getNodeResolutionMap(node.type, chosen, true, nextAspect)
+    const defaultResolution = defaults.resolution ?? defaults.size
+    const defaultKey = typeof defaultResolution === 'string'
+      ? Object.entries(nextMap).find(([, item]) => item.toLowerCase() === defaultResolution.toLowerCase())?.[0]
+      : undefined
+    const nextResolutionKey = defaultKey ?? Object.keys(nextMap)[0]
+    if (nextResolutionKey) {
+      setResKey(nextResolutionKey)
+      Object.assign(params, resolveNodeResolution(node.type, chosen, nextResolutionKey, true, nextAspect))
+    } else setResKey('')
+
+    if (node.type === 'video') {
+      const nextDurationCapability = getVideoDurationCapability(chosen.constraints, nextMap[nextResolutionKey ?? ''] ?? nextResolutionKey ?? '', defaults.duration)
+      const nextDuration = durationForCapability(nextDurationCapability, defaults.duration, duration)
+      if (nextDuration !== undefined) {
+        params.duration = nextDuration
+        setDuration(nextDuration)
+      }
+      if (chosen.constraints?.supportsGenerateAudio === true) {
+        const nextGenerateAudio = typeof defaults.generate_audio === 'boolean' ? defaults.generate_audio : false
+        params.generate_audio = nextGenerateAudio
+        setGenerateAudio(nextGenerateAudio)
+      } else setGenerateAudio(false)
+    }
+    if (node.type === 'image') {
+      params.count = 1
+      setCount(1)
+    }
+    if (node.type === 'audio') {
+      const voices = getDesktopAudioVoiceOptions(chosen)
+      const voice = voices.find((item) => item.id === voiceId)?.id ?? voices[0]?.id
+      if (voice) {
+        params.voiceId = voice
+        setVoiceId(voice)
+      } else setVoiceId('')
+    }
+    useCanvasStore.getState().updateNodePayload(node.id, { params })
   }
 
   const removeRef = (ref: LocalRef) => {
@@ -949,9 +1297,9 @@ export function NodeEditorDialog({
         setBusy(false)
         return
       }
-      const resolutionParameters = resolveNodeResolution(node.type, selectedModel, selectedResKey, desktopMode)
-        const outputCount = (isSplitLayout && node.type === 'text') || (desktopMode && node.type === 'image') ? count : 1
-        if (desktopMode && node.type === 'image' && outputCount > maximumOutputs) throw new Error(`所选模型最多生成 ${maximumOutputs} 张图片，请调整数量。`)
+      const resolutionParameters = resolveNodeResolution(node.type, selectedModel, selectedResKey, desktopMode, effectiveAspect)
+      const outputCount = (isSplitLayout && node.type === 'text') || (desktopMode && node.type === 'image') ? count : 1
+      if (desktopMode && node.type === 'image' && outputCount > maximumOutputs) throw new Error(`所选模型最多生成 ${maximumOutputs} 张图片，请调整数量。`)
       if (desktopMode) {
         const mediaRefs = refsForUi.filter((ref) => Boolean(ref.url) && ['image', 'video', 'audio'].includes(ref.kind))
         const unsupportedRef = mediaRefs.find((ref) => !selectedDesktopModel?.inputModes.includes(ref.kind))
@@ -963,6 +1311,7 @@ export function NodeEditorDialog({
       }
       const audioParams = desktopMode && node.type === 'audio' && !isMusicModel
         ? {
+            ...(voiceId ? { voiceId } : {}),
             ...(typeof node.params.voice === 'string' && node.params.voice ? { voice: node.params.voice } : {}),
             ...(typeof node.params.language === 'string' && node.params.language ? { language: node.params.language } : {}),
             ...(typeof node.params.speed === 'number' ? { speed: node.params.speed } : {}),
@@ -979,8 +1328,7 @@ export function NodeEditorDialog({
           ...(desktopMode ? selectedModel?.defaultParams ?? {} : {}),
           ...(desktopMode && node.type === 'video' ? { duration, ...(supportsAudioOption ? { generate_audio: generateAudio } : {}) } : {}),
           ...resolutionParameters,
-          aspect: effectiveAspect,
-          ...(desktopMode ? { ratio: effectiveAspect } : {}),
+          ...(!desktopMode || node.type === 'image' || node.type === 'video' ? { aspect: effectiveAspect, ...(desktopMode && effectiveAspect ? { ratio: effectiveAspect } : {}) } : {}),
           style,
           camera,
           count: outputCount,
@@ -1033,7 +1381,7 @@ export function NodeEditorDialog({
       : node.type === 'text'
         ? '旧句未歇纸上，新意已在心间'
         : node.type === 'audio'
-          ? '描述你要生成的音频内容…'
+          ? desktopMode ? audioMode === 'speech' ? '输入需要朗读的文字…' : '描述曲风、情绪、乐器与场景，例如：夏日公路旅行的轻快华语流行，木吉他与明亮鼓点' : '描述你要生成的音频内容…'
           : '墨痕未落纸上，山水已在眼前'
 
   const addTextReference = (text: string) => {
@@ -1243,160 +1591,102 @@ export function NodeEditorDialog({
     />
   )
 
-  const splitCtrl = isSplitLayout
+  const darkFooter = isSplitLayout && !desktopMode
+  const splitCtrl = darkFooter
     ? 'h-8 rounded-lg bg-white/10 px-2 text-[11px] font-bold text-white/90 outline-none'
-    : 'h-8 rounded-lg bg-black/[0.04] px-2 text-[11px] font-bold text-[#333]'
-
+    : 'h-8 rounded-lg bg-black/[0.04] px-2 text-[11px] font-bold text-[#555] outline-none'
+  const configureModels = () => navigate('/settings/providers', { state: { returnTo: window.location.pathname } })
+  const audioTabs = desktopMode && node.type === 'audio' && (
+    <div className="flex items-center gap-2" role="tablist" aria-label="音频创作模式">
+      {([{ value: 'speech', label: '文字转语音', Icon: FileText }, { value: 'music', label: '音乐生成', Icon: Music2 }] as const).map(({ value, label, Icon }) => (
+        <button key={value} type="button" role="tab" aria-selected={audioMode === value}
+          onClick={() => chooseDesktopAudioMode(value)}
+          className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] ${audioMode === value ? 'bg-[#111] text-white' : 'text-[#777] hover:bg-black/[0.04]'}`}>
+          <Icon size={15} />{label}
+        </button>
+      ))}
+    </div>
+  )
+  const lyricsField = isMusicModel && lyricsMode === 'manual' && (
+    <label className="flex flex-col gap-1.5 text-[12px] text-[#777]">歌词
+      <textarea aria-label="歌词" value={lyrics} onChange={(event) => changeLyrics(event.target.value)}
+        placeholder="输入歌词，可用 [Verse]、[Chorus] 标记段落…"
+        className="min-h-[100px] w-full resize-none rounded-xl border border-black/10 bg-[#fafafa] px-3.5 py-3 text-[13px] text-[#222] outline-none" />
+    </label>
+  )
   const footerBar = (
-    <div
-      className={
-        isSplitLayout
-          ? 'flex flex-wrap items-center gap-2 border-t border-white/10 bg-[#1a1a1a] px-3.5 py-2.5'
-          : 'flex flex-wrap items-center gap-1.5 border-t border-black/6 pt-2'
-      }
-    >
-      <ModelPicker
-        dark={isSplitLayout}
-        compact={!isSplitLayout}
-        className={isSplitLayout ? 'min-w-[140px] max-w-[200px] flex-[1_1_160px]' : 'max-w-[200px]'}
-        models={typeModels}
-        value={model || preferred || ''}
+    <div className={isSplitLayout
+      ? `flex flex-wrap items-center gap-1.5 rounded-b-[20px] px-3.5 py-2.5 ${darkFooter ? 'border-t border-white/10 bg-[#1a1a1a]' : 'bg-white'}`
+      : 'flex flex-wrap items-center gap-1.5 border-t border-black/6 pt-2'}>
+      <ModelPicker dark={darkFooter} compact={!isSplitLayout}
+        className={isSplitLayout ? 'min-w-[120px] max-w-[210px] flex-[1_1_140px]' : 'max-w-[200px]'}
+        models={typeModels} value={model || preferred || ''}
         desktopProviderNames={desktopMode ? desktopCatalog.providerNames : undefined}
-        onConfigureModels={desktopMode ? () => navigate('/settings/providers', { state: { returnTo: window.location.pathname } }) : undefined}
-        onChange={(v) => {
-          setModel(v)
-          const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === nodeId)?.data.node
-          const chosen = desktopMode ? typeModels.find((candidate) => candidate.name === v) : undefined
-          const defaults = chosen?.defaultParams ?? {}
-          const nextAspect = typeof defaults.ratio === 'string' ? defaults.ratio : aspect
-          const nextResolution = typeof (defaults.resolution ?? defaults.size) === 'string' ? String(defaults.resolution ?? defaults.size).toUpperCase() : resKey
-          const nextDuration = typeof defaults.duration === 'number' ? defaults.duration : duration
-          if (desktopMode) {
-            setAspect(nextAspect)
-            setResKey(nextResolution)
-            setDuration(nextDuration)
-            setCount(1)
-            if (typeof defaults.generate_audio === 'boolean') setGenerateAudio(defaults.generate_audio)
-          }
-          useCanvasStore.getState().updateNodePayload(node.id, {
-            params: { ...(current?.params ?? node.params), model: v, ...(desktopMode ? {
-              aspect: nextAspect, ratio: nextAspect, resKey: nextResolution, duration: nextDuration, count: 1,
-              ...(typeof defaults.generate_audio === 'boolean' ? { generate_audio: defaults.generate_audio } : {}),
-            } : {}) },
-          })
-        }}
-      />
-      {isSplitLayout && (node.type === 'text' || desktopMode && node.type === 'image') && (
-        <div className="flex shrink-0 overflow-hidden rounded-lg bg-white/10 p-0.5">
-          {(desktopMode && node.type === 'image' ? [1, 2, 3, 4].filter((n) => n <= maximumOutputs) : [1, 2, 4]).map((n) => (
-            <button
-              key={n}
-              type="button"
-              onClick={() => setCount(n)}
-              className={`rounded-md px-2.5 py-1 text-[10px] font-bold ${
-                count === n ? 'bg-white text-[#111]' : 'text-white/70 hover:bg-white/10'
-              }`}
-            >
-              {n}x
-            </button>
-          ))}
-        </div>
+        onConfigureModels={desktopMode ? configureModels : undefined}
+        onChange={applyDesktopModel} />
+      {desktopMode && (node.type === 'image' || node.type === 'video') && (
+        <MediaSpecificationPicker mediaType={node.type} aspect={effectiveAspect} aspectOptions={effectiveAspectOptions}
+          resolution={selectedResKey} resolutionOptions={resolutionOptions}
+          duration={node.type === 'video' ? duration : undefined} durationCapability={durationCapability}
+          onAspectChange={changeAspect} onResolutionChange={changeResolution} onDurationChange={changeDuration} />
       )}
-      {isSplitLayout && (node.type === 'image' || node.type === 'video') && (
+      {!desktopMode && (node.type === 'image' || node.type === 'video') && (
         <>
-          <SplitFooterSelect
-            value={effectiveAspect}
-            options={effectiveAspectOptions.map((a) => ({ value: a, label: a }))}
-            onChange={setAspect}
-            className="max-w-[72px]"
-          />
-          <SplitFooterSelect
-            value={selectedResKey}
-            options={resolutionKeys.map((k) => ({ value: k, label: k }))}
-            onChange={setResKey}
-            className="max-w-[56px]"
-          />
+          {isSplitLayout ? <SplitFooterSelect value={effectiveAspect} options={effectiveAspectOptions.map((value) => ({ value, label: value }))} onChange={changeAspect} />
+            : <select className={splitCtrl} aria-label="比例" value={effectiveAspect} onChange={(event) => changeAspect(event.target.value)}>{effectiveAspectOptions.map((value) => <option key={value}>{value}</option>)}</select>}
+          {isSplitLayout ? <SplitFooterSelect value={selectedResKey} options={resolutionKeys.map((value) => ({ value, label: value }))} onChange={setResKey} />
+            : <select className={splitCtrl} aria-label="分辨率" value={selectedResKey} onChange={(event) => setResKey(event.target.value)}>{resolutionKeys.map((value) => <option key={value}>{value}</option>)}</select>}
         </>
       )}
       {(node.type === 'image' || node.type === 'video') && !isSplitLayout && (
-        <>
-          <select className={splitCtrl} value={effectiveAspect} onChange={(e) => setAspect(e.target.value)}>
-            {effectiveAspectOptions.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
-          <select className={splitCtrl} value={selectedResKey} onChange={(e) => setResKey(e.target.value)}>
-            {resolutionKeys.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-          <select
-            className={`${splitCtrl} max-w-[100px]`}
-            value={STYLE_PRESETS.includes(style) ? style : style ? '__custom__' : ''}
-            onChange={(e) => {
-              const v = e.target.value === '__custom__' ? style || '自定义' : e.target.value
-              setStyle(v)
-            }}
-          >
-            <option value="">风格</option>
-            {STYLE_PRESETS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </>
-      )}
-      {node.type === 'video' && !isSplitLayout && (
-        <select className={splitCtrl} value={camera} onChange={(e) => setCamera(e.target.value)}>
-          <option value="">运镜</option>
-          {['推近', '拉远', '左移', '右移', '环绕', '升降'].map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
+        <select className={`${splitCtrl} max-w-[100px]`} aria-label="风格" value={STYLE_PRESETS.includes(style) ? style : style ? '__custom__' : ''}
+          onChange={(event) => setStyle(event.target.value === '__custom__' ? style || '自定义' : event.target.value)}>
+          <option value="">风格</option>{STYLE_PRESETS.map((value) => <option key={value} value={value}>{value}</option>)}
         </select>
       )}
-      {desktopMode && node.type === 'video' && (
-        <>
-          <label className="flex items-center gap-1 text-[11px]" title="视频时长">
-            {durationOptions.length ? <select aria-label="视频时长（秒）" value={durationOptions.includes(duration) ? duration : durationOptions[0]} onChange={(event) => setDuration(Number(event.target.value))} className={`${splitCtrl} w-14`}>{durationOptions.map((value) => <option key={value} value={value}>{value}</option>)}</select> : <input type="number" aria-label="视频时长（秒）" value={duration}
-              min={Number(selectedDesktopModel?.constraints?.minimumDuration) || 1}
-              max={Number(selectedDesktopModel?.constraints?.maximumDuration) || 30}
-              onChange={(e) => setDuration(Number(e.target.value))}
-              className={`${splitCtrl} w-14`} />}秒
-          </label>
-          {supportsAudioOption && <label className="flex items-center gap-1 text-[11px]">
-            <input type="checkbox" checked={generateAudio} onChange={(e) => setGenerateAudio(e.target.checked)} />音频
-          </label>}
-        </>
+      {node.type === 'video' && !isSplitLayout && (
+        <select className={splitCtrl} aria-label="运镜" value={camera} onChange={(event) => setCamera(event.target.value)}>
+          <option value="">运镜</option>{['推近', '拉远', '左移', '右移', '环绕', '升降'].map((value) => <option key={value} value={value}>{value}</option>)}
+        </select>
       )}
-      {isMusicModel && <label className="flex items-center gap-1 text-[11px]"><input type="checkbox" checked={instrumental} onChange={(event) => setInstrumental(event.target.checked)} />纯音乐（无歌词）</label>}
+      {desktopMode && node.type === 'video' && supportsAudioOption && (
+        <label className="flex items-center gap-1 text-[11px] text-[#777]">
+          <input type="checkbox" checked={generateAudio} onChange={(event) => {
+            setGenerateAudio(event.target.checked); persistNodeParams({ generate_audio: event.target.checked })
+          }} />音频
+        </label>
+      )}
+      {desktopMode && node.type === 'audio' && audioMode === 'speech' && (
+        voiceOptions.length ? <PortalChoiceSelect value={voiceId || voiceOptions[0].id} label="音色"
+          options={voiceOptions.map(({ id, label }) => ({ value: id, label }))} onChange={changeVoice} />
+          : selectedDesktopModel?.providerId !== 'local-sapi-tts' && <button type="button" onClick={configureModels}
+              title="使用此模型在提供方设置中配置的音色" className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-[#777] hover:bg-black/[0.04]">
+              <Settings2 size={13} />音色设置
+            </button>
+      )}
+      {isMusicModel && <PortalChoiceSelect<MusicLyricsMode> value={lyricsMode} label="歌词模式" onChange={changeLyricsMode}
+        options={[{ value: 'auto', label: '自动写词' }, { value: 'manual', label: '自定义歌词' }, { value: 'instrumental', label: '纯音乐' }]} />}
       <div className="ml-auto flex items-center gap-1.5">
-        {latest?.status === 'succeeded' && (
-          <Check size={14} className={isSplitLayout ? 'text-emerald-400' : 'text-emerald-600'} />
+        {isSplitLayout && (node.type === 'text' || desktopMode && node.type === 'image') && (
+          <div className={`flex shrink-0 overflow-hidden rounded-full p-0.5 ${darkFooter ? 'bg-white/10' : 'bg-[#f0f0f2]'}`}>
+            {(desktopMode && node.type === 'image' ? [1, 2, 4].filter((value) => value <= maximumOutputs) : [1, 2, 4]).map((value) => (
+              <button key={value} type="button" onClick={() => { setCount(value); persistNodeParams({ count: value }) }}
+                className={`rounded-full px-2.5 py-1.5 text-[11px] font-bold ${count === value ? darkFooter ? 'bg-white text-[#111]' : 'bg-[#111] text-white' : darkFooter ? 'text-white/70' : 'text-[#777]'}`}>
+                {value}x
+              </button>
+            ))}
+          </div>
         )}
+        {latest?.status === 'succeeded' && <Check size={14} className="text-emerald-600" />}
         {(err || desktopMode && (desktopCatalogError || model && !selectedModel)) && (
-          <span
-            className={`max-w-[120px] truncate text-[10px] font-semibold ${isSplitLayout ? 'text-red-300' : 'text-red-600'}`}
-          >
+          <span role="alert" title={err} className={`max-w-[170px] text-[10px] font-semibold ${darkFooter ? 'text-red-300' : 'text-red-600'}`}>
             {err || (desktopCatalogError instanceof Error ? desktopCatalogError.message : '所选模型已不可用，请重新选择或配置模型。')}
           </span>
         )}
-        <button
-          type="button"
-          disabled={busy || !(model || preferred) || !typeModels.length || desktopMode && (!selectedModel || Boolean(desktopCatalogError))}
-          onClick={() => void doSubmit()}
-          className={`flex h-9 w-9 items-center justify-center rounded-full hover:opacity-90 disabled:opacity-40 ${
-            isSplitLayout ? 'bg-white/20 text-white' : 'bg-[#111] text-white'
-          }`}
-          title="生成"
-        >
-          {busy ? <Loader2 size={16} className="animate-spin" /> : <span className="text-[14px] leading-none">→</span>}
+        <button type="button" disabled={busy || !(model || preferred) || !typeModels.length || desktopMode && (!selectedModel || Boolean(desktopCatalogError))}
+          onClick={() => void doSubmit()} title="生成"
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl hover:opacity-90 disabled:opacity-40 ${darkFooter ? 'bg-white/20 text-white' : 'bg-[#111] text-white'}`}>
+          {busy ? <Loader2 size={16} className="animate-spin" /> : <span className="text-[20px] leading-none">→</span>}
         </button>
       </div>
     </div>
@@ -1407,8 +1697,11 @@ export function NodeEditorDialog({
       <>
         <div className="nodrag nowheel flex flex-col rounded-[20px]" onMouseDown={(e) => e.stopPropagation()}>
           <div className="flex flex-col gap-3 p-4">
-            {refSection}
+            {audioTabs}
+            {!(desktopMode && node.type === 'audio') && refSection}
+            {isMusicModel && <p className="text-[12px] text-[#777]">描述曲风</p>}
             {promptField}
+            {lyricsField}
           </div>
           {footerBar}
         </div>
@@ -1420,8 +1713,9 @@ export function NodeEditorDialog({
   return (
     <>
       <div className="nodrag nowheel flex flex-col gap-3" onMouseDown={(e) => e.stopPropagation()}>
+        {audioTabs}
         {/* 参考区：与提示词框分开的独立展示框 */}
-        <div className="rounded-xl border border-black/10 bg-white p-2.5">{refSection}</div>
+        {!(desktopMode && node.type === 'audio') && <div className="rounded-xl border border-black/10 bg-white p-2.5">{refSection}</div>}
 
         {/* 提示词框：与参考区视觉上分离 */}
         <div className="rounded-xl border border-black/10 bg-white p-2.5">
@@ -1429,6 +1723,7 @@ export function NodeEditorDialog({
           {promptField}
         </div>
 
+        {lyricsField}
         {footerBar}
       </div>
       {desktopReferencePrompt}

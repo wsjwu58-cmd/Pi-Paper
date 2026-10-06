@@ -133,6 +133,11 @@ function createProviderSettings({ directory, safeStorage, catalog, legacyCredent
         return [key, value]
       }))
       const merged = { ...model.defaults, ...validated }
+      for (const [field, table] of [['size', constraints.sizesByAspectRatio], ['resolution', constraints.resolutionsByAspectRatio]]) {
+        if (table && merged[field] !== undefined && !table[merged.ratio]?.includes(merged[field])) {
+          throw failure('PROVIDER_DEFAULT_INVALID', '默认比例与所选尺寸或分辨率不匹配。')
+        }
+      }
       const durations = constraints.durationByResolution?.[merged.resolution] || constraints.acceptedDurations
       if (Array.isArray(durations) && merged.duration !== undefined && !durations.includes(merged.duration)) {
         throw failure('PROVIDER_DEFAULT_INVALID', '默认时长与所选分辨率不匹配。')

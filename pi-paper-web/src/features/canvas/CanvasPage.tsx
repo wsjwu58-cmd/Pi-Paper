@@ -46,6 +46,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { applySavedCanvasStaleNodeIds, createCanvasNodePort, deleteCanvasEdgePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
 import { flushCanvasPersistence, registerCanvasPersistence } from './canvasPersistence'
 import type { DesktopCanvas } from '@/desktop/desktop-bridge'
+import { canvasMotionDuration, CANVAS_MOTION, markNodeArrival, useLayoutMotion, useSoftValue } from './canvasMotion'
 
 const saveDebounce = 500
 const edgeTypes = { default: GenerationReferenceEdge }
@@ -69,6 +70,7 @@ export function CanvasPage() {
 
 function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const nodes = useCanvasStore((s) => s.nodes)
+  const layoutMotion = useLayoutMotion(nodes)
   const [dragGroupBounds, setDragGroupBounds] = useState<Record<string, CanvasGroupBounds>>({})
   const dragBoundsRef = useRef<Record<string, CanvasGroupBounds>>({})
   const edges = useCanvasStore((s) => s.edges)
@@ -103,10 +105,17 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   } | null>(null)
   const [nodeMenu, setNodeMenu] = useState<{ x: number; y: number; nodeIds: string[] } | null>(null)
   const [edgeMenu, setEdgeMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const addMenuPresence = useSoftValue(addMenu)
+  const nodeMenuPresence = useSoftValue(nodeMenu)
+  const edgeMenuPresence = useSoftValue(edgeMenu)
+  const animatedAddMenu = addMenuPresence.value
+  const animatedNodeMenu = nodeMenuPresence.value
+  const animatedEdgeMenu = edgeMenuPresence.value
   const [readingNodeId, setReadingNodeId] = useState<string | null>(null)
   const readingDialogRef = useRef<HTMLDivElement>(null)
   const readingCloseButtonRef = useRef<HTMLButtonElement>(null)
   const readingNode = nodes.find((node) => node.id === readingNodeId)?.data.node
+  const readingPresence = useSoftValue(readingNode)
   useEffect(() => {
     if (!readingNodeId) return
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -225,6 +234,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     if (!detail) return
     hydratingRef.current = true
     skipNextSave.current = true
+    const previousCanvas = useCanvasStore.getState().canvas
+    const existingNodeIds = new Set(useCanvasStore.getState().nodes.map((n) => sid(n.id)))
+    const sameCanvas = previousCanvas && sid(previousCanvas.canvas.id) === sid(detail.canvas.id)
+    if (sameCanvas && externalSyncPending.current) {
+      for (const node of detail.nodes) if (!existingNodeIds.has(sid(node.id))) markNodeArrival(sid(node.id))
+    }
     setCanvas(detail)
     const flow = buildFlow(detail, selectNode)
     const merged = mergeHydrateFlow(flow.nodes, useCanvasStore.getState().nodes)
@@ -262,6 +277,8 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     stacks: typeof stacks
     key: string
   } | null>(null)
+  const deletePresence = useSoftValue(deleteConfirm)
+  const animatedDeleteConfirm = deletePresence.value
 
   const persistDesktopChanges = useCallback(async () => {
     if (!window.vibepaperDesktop) return
@@ -430,6 +447,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       setSavedVersion(created.version)
       if (!wasEditedAgain) setDirty(false)
     }
+    markNodeArrival(sid(created.id))
     return created
   }, [canvasId, desktopProjectId, flushDesktopEdits, setCanvas, setDirty])
 
@@ -1142,10 +1160,11 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       ...n,
       position: { x: 120 + (i % 4) * 330, y: 120 + Math.floor(i / 4) * 280 },
     }))
+    layoutMotion.animate(next)
     setNodes(next)
     setDirty(true)
     toastSuccess('已一键整理')
-  }, [nodes, setNodes, setDirty])
+  }, [nodes, setNodes, setDirty, layoutMotion.animate])
 
   const openAddMenu = useCallback(
     (x: number, y: number, connect?: { nodeId: string; direction: 'upstream' | 'downstream' }) => {
@@ -1304,7 +1323,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
   return (
     <div
-      className="flex h-screen w-screen overflow-hidden bg-[#f2f2f2]"
+      className="vp-canvas-motion flex h-screen w-screen overflow-hidden bg-[#f2f2f2]"
+      onPointerDownCapture={layoutMotion.cancel}
+      onWheelCapture={layoutMotion.cancel}
       onDrop={onDrop}
       onDragOver={(e) => e.preventDefault()}
     >
@@ -1339,7 +1360,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         <CanvasToolbar
           mode={mode}
           setMode={setMode}
-          onFitView={() => void fitView()}
+          onFitView={() => void fitView({ duration: canvasMotionDuration(CANVAS_MOTION.viewport) })}
           onAutoLayout={onAutoLayout}
           onAddNode={(t) => void addNode(t)}
           desktopMode={desktopMode}
@@ -1354,7 +1375,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       <div className="relative h-full w-full">
       {nodes.length === 0 && detail && <CanvasWelcome onCreate={(type) => void addNode(type)} />}
       <ReactFlow
-        nodes={[...stackBadges, ...nodes] as FlowNode[]}
+        nodes={[...stackBadges, ...layoutMotion.nodes] as FlowNode[]}
         edges={edges.map((e) => ({
           ...e,
           className: (() => {
@@ -1546,7 +1567,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         <CanvasGroupView
           groups={groups}
           frozenBounds={dragGroupBounds}
-          nodes={nodes}
+          nodes={layoutMotion.nodes}
           selectedGroupId={selectedGroupId}
           onSelectGroup={selectGroup}
           onMoveGroup={moveGroup}
@@ -1557,37 +1578,42 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       </ReactFlow>
       </div>
 
-      {readingNode && (
-        <div ref={readingDialogRef} className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-8 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="文本阅读" onClick={() => setReadingNodeId(null)} onDoubleClick={(event) => event.stopPropagation()}>
+      {readingPresence.value && (
+        <div ref={readingDialogRef} className="vp-soft-overlay fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-8 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="文本阅读"
+          data-open={readingPresence.visible} inert={!readingNode} aria-hidden={!readingNode}
+          onClick={() => setReadingNodeId(null)} onDoubleClick={(event) => event.stopPropagation()}>
           <button ref={readingCloseButtonRef} type="button" aria-label="关闭文本阅读" className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full bg-white/20 text-2xl text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white" onClick={() => setReadingNodeId(null)}>×</button>
           <div role="document" aria-label="文本内容" tabIndex={0} className="h-[80vh] w-[min(1000px,90vw)] overflow-auto rounded-2xl bg-white p-8 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-            <AgentMarkdown text={textNodeContent(readingNode.output?.text, readingNode.params)} className="select-text break-words" variant="document" />
+            <AgentMarkdown text={textNodeContent(readingPresence.value.output?.text, readingPresence.value.params)} className="select-text break-words" variant="document" />
           </div>
         </div>
       )}
-      {edgeMenu && (
-        <div className="fixed z-[150] rounded-xl border border-black/10 bg-white p-1 shadow-xl" style={{ left: edgeMenu.x, top: edgeMenu.y }}>
+      {animatedEdgeMenu && (
+        <div role="menu" className="vp-soft-popover fixed z-[150] rounded-xl border border-black/10 bg-white p-1 shadow-xl"
+          data-open={edgeMenuPresence.visible} inert={!edgeMenu} aria-hidden={!edgeMenu}
+          style={{ left: animatedEdgeMenu.x, top: animatedEdgeMenu.y }}>
           <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-black/5" onClick={() => {
-            const id = edgeMenu.id
+            const id = animatedEdgeMenu.id
             setEdgeMenu(null)
             void deleteEdgeById(id)
           }}><Trash2 size={18} />删除连线</button>
         </div>
       )}
-      {addMenu && (
+      {animatedAddMenu && (
         <div
-          className="fixed z-40 w-40 rounded-xl border border-black/10 bg-white p-1.5 shadow-xl"
+          role="menu" data-open={addMenuPresence.visible} inert={!addMenu} aria-hidden={!addMenu}
+          className="vp-soft-popover fixed z-40 w-40 rounded-xl border border-black/10 bg-white p-1.5 shadow-xl"
           style={{
-            left: Math.min(addMenu.x, window.innerWidth - 180),
-            top: Math.min(addMenu.y, window.innerHeight - 320),
+            left: Math.min(animatedAddMenu.x, window.innerWidth - 180),
+            top: Math.min(animatedAddMenu.y, window.innerHeight - 320),
           }}
         >
           <p className="px-2.5 py-1 text-[11px] font-bold text-[#999]">
-            {addMenu.direction === 'upstream' ? '新建上游' : addMenu.direction === 'downstream' ? '新建下游' : '新建节点'}
+            {animatedAddMenu.direction === 'upstream' ? '新建上游' : animatedAddMenu.direction === 'downstream' ? '新建下游' : '新建节点'}
           </p>
           <button
             type="button"
-            onClick={() => uploadAt(addMenu.flowX, addMenu.flowY)}
+            onClick={() => uploadAt(animatedAddMenu.flowX, animatedAddMenu.flowY)}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-[#444] hover:bg-black/[0.04]"
           >
             <Upload size={14} /> 上传
@@ -1600,10 +1626,10 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               onClick={() => {
                 void addNode(
                   t,
-                  addMenu.flowX,
-                  addMenu.flowY,
-                  addMenu.sourceNodeId
-                    ? { nodeId: addMenu.sourceNodeId, direction: addMenu.direction ?? 'downstream' }
+                  animatedAddMenu.flowX,
+                  animatedAddMenu.flowY,
+                  animatedAddMenu.sourceNodeId
+                    ? { nodeId: animatedAddMenu.sourceNodeId, direction: animatedAddMenu.direction ?? 'downstream' }
                     : undefined,
                 )
                 setAddMenu(null)
@@ -1626,17 +1652,18 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         </div>
       )}
 
-      {nodeMenu && (
+      {animatedNodeMenu && (
         <div
-          className="fixed z-40 w-44 overflow-hidden rounded-xl border border-black/10 bg-white py-1 shadow-xl"
+          role="menu" data-open={nodeMenuPresence.visible} inert={!nodeMenu} aria-hidden={!nodeMenu}
+          className="vp-soft-popover fixed z-40 w-44 overflow-hidden rounded-xl border border-black/10 bg-white py-1 shadow-xl"
           style={{
-            left: Math.min(nodeMenu.x, window.innerWidth - 190),
-            top: Math.min(nodeMenu.y, window.innerHeight - 160),
+            left: Math.min(animatedNodeMenu.x, window.innerWidth - 190),
+            top: Math.min(animatedNodeMenu.y, window.innerHeight - 160),
           }}
         >
           <button
             type="button"
-            onClick={() => copyNodes(nodeMenu.nodeIds)}
+            onClick={() => copyNodes(animatedNodeMenu.nodeIds)}
             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-semibold text-[#333] hover:bg-black/[0.05]"
           >
             <Copy size={15} className="text-[#666]" />
@@ -1645,7 +1672,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           </button>
           <button
             type="button"
-            onClick={() => void duplicateNodes(nodeMenu.nodeIds)}
+            onClick={() => void duplicateNodes(animatedNodeMenu.nodeIds)}
             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-semibold text-[#333] hover:bg-black/[0.05]"
           >
             <Files size={15} className="text-[#666]" />
@@ -1654,7 +1681,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           </button>
           <button
             type="button"
-            onClick={() => requestDeleteNodes(nodeMenu.nodeIds)}
+            onClick={() => requestDeleteNodes(animatedNodeMenu.nodeIds)}
             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-semibold text-[#333] hover:bg-black/[0.05]"
           >
             <Trash2 size={15} className="text-[#666]" />
@@ -1664,25 +1691,26 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         </div>
       )}
 
-      {deleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
+      {animatedDeleteConfirm && (
+        <div className="vp-soft-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4"
+          role="dialog" aria-modal="true" aria-label="确认删除节点" data-open={deletePresence.visible} inert={!deleteConfirm} aria-hidden={!deleteConfirm}>
           <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
             <p className="text-[16px] font-bold text-[#111]">确认删除节点？</p>
             <p className="mt-2 text-[13px] text-[#666]">
-              将删除 {deleteConfirm.nodeIds.length} 个节点及其关联连线。
+              将删除 {animatedDeleteConfirm.nodeIds.length} 个节点及其关联连线。
             </p>
-            {deleteConfirm.downstream.length > 0 && (
+            {animatedDeleteConfirm.downstream.length > 0 && (
               <div className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
                 <p className="font-bold">影响下游节点：</p>
                 <ul className="mt-1 list-disc pl-4">
-                  {deleteConfirm.downstream.slice(0, 8).map((d) => (
+                  {animatedDeleteConfirm.downstream.slice(0, 8).map((d) => (
                     <li key={d.id}>
                       {d.type} · {d.id.slice(-6)}
                     </li>
                   ))}
                 </ul>
-                {deleteConfirm.downstream.length > 8 && (
-                  <p className="mt-1">…等共 {deleteConfirm.downstream.length} 个</p>
+                {animatedDeleteConfirm.downstream.length > 8 && (
+                  <p className="mt-1">…等共 {animatedDeleteConfirm.downstream.length} 个</p>
                 )}
               </div>
             )}
@@ -1708,7 +1736,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       </div>
       {!desktopMode
         ? <AgentPanel />
-        : agentOpen && desktopProjectId && <AgentPanel desktopAdapter={desktopAgent} />}
+        : desktopProjectId && <AgentPanel desktopAdapter={desktopAgent} />}
       {desktopMode && desktopAgent.settingsDialog}
     </div>
   )

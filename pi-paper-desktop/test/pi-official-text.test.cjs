@@ -8,7 +8,7 @@ test('official text catalog resolves exact provider protocol and reasoning metad
   const { OFFICIAL_TEXT_MODELS } = await importSource('official-text-models.ts')
   const { resolveOfficialTextModel } = await importSource('official-text.ts')
   const { getOfficialProviderCatalog } = await importSource('catalog.ts')
-  assert.equal(OFFICIAL_TEXT_MODELS.length, 19)
+  assert.equal(OFFICIAL_TEXT_MODELS.length, 30)
   for (const entry of OFFICIAL_TEXT_MODELS) {
     const { model } = resolveOfficialTextModel({ providerId: entry.providerId, modelId: entry.apiModelId }, { apiKey: 'fixture-key' })
     assert.equal(model.api, entry.api)

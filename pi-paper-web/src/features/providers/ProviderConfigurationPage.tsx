@@ -719,10 +719,15 @@ function ModelDefaultParameters({ model, values, busy, onChange }: {
   const defaults = { ...model.defaults, ...values }
   const durations = getVideoDurationOptions(constraints, String(defaults.resolution ?? ''))
   if (model.modelType !== 'image' && model.modelType !== 'video') return null
+  const optionsForAspect = (field: 'sizesByAspectRatio' | 'resolutionsByAspectRatio', ratio: unknown) => {
+    const mapping = constraints[field]
+    return mapping && typeof mapping === 'object' && !Array.isArray(mapping)
+      ? (mapping as Record<string, unknown>)[String(ratio)] : undefined
+  }
   const lists = [
     ['ratio', '画幅', constraints.acceptedAspectRatios],
-    ['size', '图片分辨率', constraints.acceptedSizes],
-    ['resolution', '视频分辨率', constraints.acceptedResolutions],
+    ['size', '图片分辨率', optionsForAspect('sizesByAspectRatio', defaults.ratio) ?? constraints.acceptedSizes],
+    ['resolution', '视频分辨率', optionsForAspect('resolutionsByAspectRatio', defaults.ratio) ?? constraints.acceptedResolutions],
   ] as const
   return (
     <div className="provider-config-parameter-box">
@@ -734,6 +739,12 @@ function ModelDefaultParameters({ model, values, busy, onChange }: {
             <span>{label}</span>
             <select disabled={busy} value={String(defaults[key] ?? options[0])} onChange={(event) => {
               onChange(key, event.target.value)
+              if (key === 'ratio') {
+                for (const [parameter, field] of [['size', 'sizesByAspectRatio'], ['resolution', 'resolutionsByAspectRatio']] as const) {
+                  const allowed = optionsForAspect(field, event.target.value)
+                  if (Array.isArray(allowed) && allowed.length && !allowed.includes(defaults[parameter])) onChange(parameter, allowed[0])
+                }
+              }
               if (key === 'resolution') {
                 const allowed = getVideoDurationOptions(constraints, event.target.value)
                 if (allowed.length && !allowed.includes(Number(defaults.duration))) onChange('duration', allowed[0])

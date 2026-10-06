@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -20,6 +20,7 @@ import { sid } from '@/lib/ids'
 import { useAuthedMediaUrl } from '@/lib/media'
 import { useCanvasStore } from '../canvasStore'
 import { NodeEditorDialog, NodeFloatingToolbar } from './NodeEditorPanel'
+import { SoftCollapse, useAnimatedNodeGeometry, useNodeArrival } from '../canvasMotion'
 
 const typeMeta: Record<string, { label: string; icon: LucideIcon; color: string }> = {
   text: { label: '文本', icon: Type, color: '#6366f1' },
@@ -76,6 +77,9 @@ export function NodeShell({
   extraSelected?: React.ReactNode
 }) {
   const meta = typeMeta[node.type] ?? typeMeta.text
+  const shellRef = useRef<HTMLDivElement>(null)
+  useAnimatedNodeGeometry(sid(node.id), shellRef)
+  const arrivalClass = useNodeArrival(sid(node.id))
   const Icon = meta.icon
   const [fullscreen, setFullscreen] = useState(false)
   const authedMediaUrl = useAuthedMediaUrl(mediaUrl)
@@ -103,7 +107,7 @@ export function NodeShell({
       : selected && ['image', 'video', 'audio'].includes(node.type))
 
   return (
-    <div className="relative">
+    <div ref={shellRef} className={`relative ${arrivalClass}`}>
       {useNewEditor && (node.type === 'image' || node.type === 'video') && (
         <NodeFloatingToolbar
           node={node}
@@ -121,10 +125,10 @@ export function NodeShell({
         </span>
       </div>
       <div
-        className={`${wide || useNewEditor ? 'w-[400px]' : 'w-[300px]'} overflow-hidden rounded-[20px] bg-white shadow-[0_8px_28px_rgba(15,23,42,0.10)] ring-1 ${
+        className={`vp-node-shell overflow-hidden rounded-[20px] bg-white shadow-[0_8px_28px_rgba(15,23,42,0.10)] ring-1 ${
           selected || isEditing ? 'ring-[#111]/35' : 'ring-black/5'
         }`}
-        style={{ outline: node.status === 'running' ? `2px solid ${meta.color}` : undefined }}
+        style={{ width: wide || useNewEditor ? 400 : 300, outline: node.status === 'running' ? `2px solid ${meta.color}` : undefined }}
       >
         <Handle
           type="target"
@@ -145,15 +149,15 @@ export function NodeShell({
           {useNewEditor && node.type !== 'text' && (
             <div className="mb-2 max-h-[160px] overflow-hidden rounded-xl">{children}</div>
           )}
-          {useNewEditor && (
+          <SoftCollapse open={useNewEditor}>
             <NodeEditorDialog
               node={node}
               models={models}
               latest={latest}
               autoFocusPrompt={node.type === 'text'}
             />
-          )}
-          {selected && extraSelected}
+          </SoftCollapse>
+          <SoftCollapse open={selected && Boolean(extraSelected)}>{extraSelected}</SoftCollapse>
         </div>
         {!useNewEditor && (
           <div className="flex items-center gap-2 border-t border-black/6 bg-[#1a1a1a] px-2.5 py-2">

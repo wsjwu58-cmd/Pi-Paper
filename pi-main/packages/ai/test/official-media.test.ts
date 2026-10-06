@@ -48,6 +48,23 @@ describe("official provider catalog", () => {
 			route: "legacy-agnes",
 			apiModelId: "agnes-image-2.5-flash",
 			inputModes: ["text", "image"],
+			defaults: { size: "2K", ratio: "1:1", count: 1 },
+			constraints: {
+				acceptedSizes: ["1K", "2K", "3K", "4K"],
+				acceptedAspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"],
+				maximumOutputs: 4,
+			},
+		});
+		expect(byName("Agnes Video 2.5 Flash")).toMatchObject({
+			implemented: true,
+			route: "legacy-agnes",
+			defaults: { resolution: "720P", ratio: "16:9", duration: 5 },
+			constraints: {
+				acceptedResolutions: ["720P"],
+				acceptedAspectRatios: ["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"],
+				minimumDuration: 4,
+				maximumDuration: 12,
+			},
 		});
 		expect(byName("Seedance 2.5")).toMatchObject({
 			implemented: true,

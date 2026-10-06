@@ -28,6 +28,19 @@ test('per-model visual defaults persist across restart and reject unsupported fi
   assert.deepEqual((await providerSettings.resolve('openai', id, 'video')).model.defaults, defaults)
 })
 
+test('ratio-specific model defaults reject invalid combinations and persist exact supported dimensions', async (t) => {
+  const catalog = fixtureCatalog()
+  const model = catalog.models[0]
+  model.modelType = 'image'
+  model.defaults = { ratio: '1:1', size: '1280x1280' }
+  model.constraints = { acceptedAspectRatios: ['1:1', '3:2'], acceptedSizes: ['1280x1280', '1536x1024'], sizesByAspectRatio: { '1:1': ['1280x1280'], '3:2': ['1536x1024'] } }
+  const { providerSettings } = await setup(t, { catalog: () => catalog })
+  const input = config('openai', { credentials: { apiKey: API_KEY }, enabledModelIds: [model.id], modelDefaults: { [model.id]: { ratio: '3:2', size: '1536x1024' } } })
+  await providerSettings.save(input)
+  assert.deepEqual((await providerSettings.resolve('openai', model.id, 'image')).model.defaults, { ratio: '3:2', size: '1536x1024' })
+  await assert.rejects(providerSettings.save({ ...input, modelDefaults: { [model.id]: { ratio: '3:2', size: '1280x1280' } } }), (error) => error.code === 'PROVIDER_DEFAULT_INVALID')
+})
+
 test('Kling official AK/SK configuration is encrypted, usable without API Key, and never returned to Renderer', async (t) => {
   const { pathToFileURL } = require('node:url')
   const api = await import(pathToFileURL(path.join(__dirname, '../../pi-main/packages/ai/src/media/index.ts')).href)

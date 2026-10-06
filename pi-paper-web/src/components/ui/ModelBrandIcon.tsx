@@ -3,6 +3,7 @@ import { Image as ImageIcon, Settings2 } from 'lucide-react'
 import type { ModelInfo } from '@/lib/types'
 
 export type ModelBrand =
+  | 'zhipu'
   | 'agnes'
   | 'anthropic'
   | 'deepseek'
@@ -47,6 +48,7 @@ const BRAND_ICON_URL: Partial<Record<ModelBrand, string>> = {
 
 /** Locally bundled vendor marks used only by the desktop UI. */
 const DESKTOP_BRAND_ICON_URL: Partial<Record<ModelBrand, string>> = {
+  zhipu: '/provider-icons/zhipu.png',
   agnes: '/provider-icons/agnes.png',
   anthropic: '/provider-icons/anthropic.ico',
   deepseek: '/provider-icons/deepseek.ico',
@@ -69,6 +71,7 @@ const DESKTOP_BRAND_ICON_URL: Partial<Record<ModelBrand, string>> = {
 }
 
 const DESKTOP_PROVIDER_BRANDS: Record<string, ModelBrand> = {
+  zhipu: 'zhipu',
   agnes: 'agnes',
   anthropic: 'anthropic',
   deepseek: 'deepseek',
@@ -108,6 +111,7 @@ const DESKTOP_PROVIDER_LABEL_BRANDS: Record<string, ModelBrand> = {
 }
 
 const BRAND_META: Record<ModelBrand, { label: string; bg: string; fg: string }> = {
+  zhipu: { label: '智', bg: '#3859ff', fg: '#fff' },
   agnes: { label: 'A', bg: '#111827', fg: '#fff' },
   anthropic: { label: 'A', bg: '#d97757', fg: '#fff' },
   deepseek: { label: 'DS', bg: '#4d6bfe', fg: '#fff' },

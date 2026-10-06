@@ -45,6 +45,7 @@ test('catalog video defaults reach actual Pi adapters with persisted submission 
         } else {
           assert.ok(events.includes('submitted'), model.name)
           body = model.providerId === 'google' ? { done: true, response: { generateVideoResponse: { generatedSamples: [{ video: { uri: 'https://generativelanguage.googleapis.com/v1beta/files/fixture:download?alt=media' } }] } } }
+            : model.providerId === 'zhipu' ? { task_status: 'SUCCESS', video_result: [{ url: videoUrl }] }
             : model.providerId === 'pixverse' ? { ErrCode: 0, Resp: { status: 1, url: videoUrl } }
             : model.providerId === 'vidu' ? { state: 'success', creations: [{ url: videoUrl }] }
             : model.providerId === 'kling' ? { code: 0, data: { task_status: 'succeed', task_result: { videos: [{ url: videoUrl }] } } }
@@ -116,6 +117,7 @@ test('actual Pi image adapters consume catalog defaults and canvas metadata end 
         const body = JSON.parse(init.body)
         assert.equal(body.model, model.apiModelId, name)
         const response = model.providerId === 'google' ? { steps: [{ type: 'model_output', content: [{ type: 'image', data: png, mime_type: 'image/png' }] }] }
+          : model.providerId === 'zhipu' ? { data: [{ url: 'https://cdn.example/result.png' }] }
           : model.providerId === 'alibaba' ? { output: { choices: [{ message: { content: [{ image: 'https://cdn.example/result.png' }] } }] } }
           : { data: [{ b64_json: png }] }
         return new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } })
@@ -139,11 +141,11 @@ test('configured audio operations reach actual Pi adapters and persist MP3 resul
     let requests = 0
     const result = await runOfficialTask({ taskId, outputDirectory, providerId: model.providerId, apiModelId: model.apiModelId, modality: 'audio', operation: model.operation,
       prompt: model.operation === 'voice-change' ? '' : 'hello', apiKey: 'fixture-key', credentials: { apiKey: 'fixture-key', voiceId: 'voice-fixture', appId: 'fixture-app', accessToken: 'fixture-token' }, endpoint: model.apiBaseUrl,
-      parameters: { ...model.defaults, resKey: '2K', aspect: '1:1', style: '', camera: '', count: 1, referenceAudios: model.operation === 'voice-change' ? [`data:audio/mpeg;base64,${audio.toString('base64')}`] : [] },
+      parameters: { ...model.defaults, audioMode: model.operation === 'music' ? 'music' : 'speech', resKey: '2K', aspect: '1:1', style: '', camera: '', count: 1, referenceAudios: model.operation === 'voice-change' ? [`data:audio/mpeg;base64,${audio.toString('base64')}`] : [] },
     }, { api: { executeOfficialGeneration: (input, options) => api.executeOfficialGeneration(input, { ...options, fetch: async (_url, init) => {
       requests++
       if (model.operation === 'voice-change') assert.ok(init.body instanceof FormData)
-      else { const body = JSON.parse(init.body); assert.match(body.text ?? body.prompt ?? body.req_params?.text ?? body.request?.text, /hello/) }
+      else { const body = JSON.parse(init.body); assert.match(body.text ?? body.prompt ?? body.inputs?.[0]?.text ?? body.req_params?.text ?? body.request?.text, /hello/) }
       if (model.providerId === 'minimax') return new Response(JSON.stringify({ base_resp: { status_code: 0 }, data: { audio: audio.toString('hex') } }), { headers: { 'content-type': 'application/json' } })
       if (model.providerId === 'doubao-voice') return new Response(`data: ${JSON.stringify({ code: 0, data: audio.toString('base64') })}\n\ndata: ${JSON.stringify({ code: 20000000 })}\n\n`, { headers: { 'content-type': 'text/event-stream' } })
       if (model.providerId === 'doubao-voice-v1') return new Response(JSON.stringify({ code: 3000, data: audio.toString('base64') }), { headers: { 'content-type': 'application/json' } })

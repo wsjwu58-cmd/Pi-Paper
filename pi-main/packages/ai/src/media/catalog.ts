@@ -1,5 +1,6 @@
 import { OFFICIAL_MEDIA_MODELS } from "./official-media-models.ts";
 import { OFFICIAL_TEXT_MODELS } from "./official-text-models.ts";
+import { ZHIPU_MEDIA_MODELS } from "./official-zhipu-models.ts";
 import type { OfficialModality } from "./types.ts";
 
 export interface OfficialProviderCatalogProvider {
@@ -67,6 +68,16 @@ export interface OfficialProviderCatalogModel {
 const key = (label: string) => [{ name: "apiKey", label, required: true, secret: true }];
 
 const PROVIDERS: OfficialProviderCatalogProvider[] = [
+	{
+		id: "zhipu",
+		name: "智谱 AI",
+		baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+		providerType: "cloud",
+		modalities: ["text", "image", "video"],
+		credentialFields: key("智谱 API Key"),
+		connectionTest: { kind: "format-only" },
+		configurable: true,
+	},
 	{
 		id: "anthropic",
 		name: "Anthropic",
@@ -400,6 +411,27 @@ type Target = [
 ];
 
 const TARGETS: Target[] = [
+	["GLM-5.3", "智谱", "zhipu", "text"],
+	["GLM-5.3 Flash", "智谱", "zhipu", "text"],
+	["GLM-5.3 FlashX", "智谱", "zhipu", "text"],
+	["GLM-Image", "智谱", "zhipu", "image"],
+	["CogView 4", "智谱", "zhipu", "image"],
+	["CogView 4 250304", "智谱", "zhipu", "image"],
+	["CogView 3 Flash", "智谱", "zhipu", "image"],
+	["CogVideoX-3", "智谱", "zhipu", "video"],
+	["GPT-6.1 Sol", "OpenAI", "openai", "text"],
+	["Claude Sonnet 5.5", "Anthropic", "anthropic", "text"],
+	["Kimi K3", "Moonshot", "moonshot", "text"],
+	["Kimi K2.7 Code", "Moonshot", "moonshot", "text"],
+	["Kimi K2.7 Code Highspeed", "Moonshot", "moonshot", "text"],
+	["Qwen 3.8 Max", "Qwen", "alibaba", "text"],
+	["Qwen 3.8 Flash", "Qwen", "alibaba", "text"],
+	["MiniMax M3", "MiniMax", "minimax", "text"],
+	["MiniMax Music 3.0", "MiniMax", "minimax", "audio"],
+	["Grok Imagine Image 2.0", "xAI", "xai", "image"],
+	["Eleven v4", "ElevenLabs", "elevenlabs", "audio"],
+	["Eleven v4 Turbo", "ElevenLabs", "elevenlabs", "audio"],
+	["Eleven Music 2.5", "ElevenLabs", "elevenlabs", "audio"],
 	["Claude Fable 5.1", "Anthropic", "anthropic", "text"],
 	["Claude Haiku 4.5", "Anthropic", "anthropic", "text", "claude-haiku-4-5"],
 	["Claude Opus 5", "Anthropic", "anthropic", "text", "claude-opus-5"],
@@ -523,7 +555,23 @@ const MODELS: OfficialProviderCatalogModel[] = TARGETS.map(
 			toolCalling: modelType === "text" && providerId === "deepseek",
 			streaming: modelType === "text",
 			cancellation: false,
-			target: true,
+			target:
+				providerId !== "zhipu" &&
+				![
+					"GPT-6.1 Sol",
+					"Claude Sonnet 5.5",
+					"Kimi K3",
+					"Kimi K2.7 Code",
+					"Kimi K2.7 Code Highspeed",
+					"Qwen 3.8 Max",
+					"Qwen 3.8 Flash",
+					"MiniMax M3",
+					"MiniMax Music 3.0",
+					"Grok Imagine Image 2.0",
+					"Eleven v4",
+					"Eleven v4 Turbo",
+					"Eleven Music 2.5",
+				].includes(name),
 			metadataStatus: "unknown",
 			contextWindow: modelType === "text" ? 4096 : undefined,
 			maxTokens: modelType === "text" ? 1024 : undefined,
@@ -531,6 +579,27 @@ const MODELS: OfficialProviderCatalogModel[] = TARGETS.map(
 			brand,
 			...(route ? { route } : {}),
 			...(providerId === "volcengine-ark" ? { brandId: "volcengine" } : {}),
+			...(route === "legacy-agnes"
+				? modelType === "image"
+					? {
+							defaults: { size: "2K", ratio: "1:1", count: 1 },
+							constraints: {
+								acceptedSizes: ["1K", "2K", "3K", "4K"],
+								acceptedAspectRatios: ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"],
+								maximumOutputs: 4,
+							},
+						}
+					: {
+							defaults: { resolution: "720P", ratio: "16:9", duration: 5 },
+							constraints: {
+								acceptedResolutions: ["720P"],
+								acceptedAspectRatios: ["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"],
+								minimumDuration: 4,
+								maximumDuration: 12,
+								maximumReferences: 5,
+							},
+						}
+				: {}),
 			...(providerId === "volcengine-ark" && name === "Seedance 2.5"
 				? {
 						defaults: { resolution: "480p", ratio: "adaptive", duration: 15, generate_audio: true },
@@ -597,7 +666,7 @@ const MODELS: OfficialProviderCatalogModel[] = TARGETS.map(
 			Happyhorse: "阿里云官方品牌已核验；此旧型号的精确调用 ID 尚未核验，不能用 1.1 版本代替。",
 		};
 		if (unsupportedReasons[name]) model.unavailableReason = unsupportedReasons[name];
-		const media = OFFICIAL_MEDIA_MODELS[name];
+		const media = OFFICIAL_MEDIA_MODELS[name] ?? ZHIPU_MEDIA_MODELS[name];
 		if (media) {
 			Object.assign(model, media, {
 				implemented: true,
@@ -627,9 +696,9 @@ export function getOfficialProviderCatalog(): {
 }
 
 export const OFFICIAL_TARGET_COUNTS = Object.freeze({
-	total: MODELS.length,
-	text: MODELS.filter((model) => model.modelType === "text").length,
-	image: MODELS.filter((model) => model.modelType === "image").length,
-	video: MODELS.filter((model) => model.modelType === "video").length,
-	audio: MODELS.filter((model) => model.modelType === "audio").length,
+	total: MODELS.filter((model) => model.target).length,
+	text: MODELS.filter((model) => model.target && model.modelType === "text").length,
+	image: MODELS.filter((model) => model.target && model.modelType === "image").length,
+	video: MODELS.filter((model) => model.target && model.modelType === "video").length,
+	audio: MODELS.filter((model) => model.target && model.modelType === "audio").length,
 });

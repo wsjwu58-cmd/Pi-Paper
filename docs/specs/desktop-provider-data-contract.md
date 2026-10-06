@@ -2,6 +2,8 @@
 
 2026-10-03，Pi 二次开发路径。配置、任务检查点与输出由本地核心持久化，Pi 适配器只处理供应商协议。
 
+2026-10-06 扩展：`constraints.sizesByAspectRatio`、`resolutionsByAspectRatio` 是比例到合法尺寸／分辨率数组的映射。设置页、画布编辑器和本地设置校验共同应用该映射；切换比例时同步调整不匹配的尺寸。节点原 `params` 可保存音频界面模式 `audioMode:'speech'|'music'`；音乐模式保存 `lyrics_optimizer`、`is_instrumental` 和手工 `lyrics`，模式标签本身不发送供应商。Main 创建任务时先消除被画布显式参数替代的默认别名，Worker 再规范化 ratio/aspect、size/resolution、duration/seconds；同次请求的冲突值明确拒绝。提交后沿用参数快照和检查点，设置变更不改历史任务。此扩展使用现有可选参数，不变更项目 schemaVersion。
+
 | 数据 | 保存位置 | 字段/限制 |
 | --- | --- | --- |
 | 提供方设置 | userData/providers.json | schemaVersion=1；providers 按稳定 providerId 索引；baseUrl、enabledModelIds、defaultModelIds、modelDefaults、timeoutSeconds |

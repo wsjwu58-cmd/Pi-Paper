@@ -5,6 +5,7 @@ import { toolLabel } from './agentTypes'
 import { cn } from '@/lib/cn'
 import { useTypewriter } from './useTypewriter'
 import { StreamingAgentReply } from './AgentMarkdown'
+import { SoftCollapse } from './canvasMotion'
 
 const EDIT_TOOLS = new Set([
   'create_nodes',
@@ -159,9 +160,9 @@ function ToolRow({ step }: { step: ExecutionStep }) {
           <ChevronRight size={16} className="shrink-0 text-transparent" />
         )}
       </button>
-      {open && detail ? (
+      <SoftCollapse open={open && Boolean(detail)}>
         <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[#f7f7f8] pb-2.5 pl-[30px] pr-2 pt-2 text-[12px] leading-relaxed text-[#777]">{detail}</pre>
-      ) : null}
+      </SoftCollapse>
     </div>
   )
 }
@@ -243,18 +244,17 @@ export function AgentTurnTimeline({
       <div className="space-y-1">
         {timeline.map((s) => {
           if (s.kind === 'reasoning') {
-            if (!processOpen && !streaming) return null
             return (
+              <SoftCollapse key={s.id} open={processOpen || streaming}>
               <ReasoningBlock
-                key={s.id}
                 text={s.summary}
                 streaming={streaming && s.id === timeline.filter((x) => x.kind === 'reasoning').at(-1)?.id}
               />
+              </SoftCollapse>
             )
           }
           if (s.kind === 'plan' || s.kind === 'result') {
-            if (!processOpen && !streaming) return null
-            return <ToolRow key={s.id} step={s} />
+            return <SoftCollapse key={s.id} open={processOpen || streaming}><ToolRow step={s} /></SoftCollapse>
           }
           // speech：折叠过程时仍展示对白
           const isLast = s.id === lastSpeechId

@@ -20,6 +20,7 @@ import { GOOGLE_VEO_31_LITE_MODEL_ID, GOOGLE_VEO_31_MODEL_ID, generateGoogleVeoV
 import { generateViduVideo, VIDU_Q3_PRO_MODEL_ID } from "./official-video-vidu.ts";
 import { generateWanVideo } from "./official-video-wan.ts";
 import { generateXaiVideo } from "./official-video-xai.ts";
+import { generateZhipuVideo } from "./official-video-zhipu.ts";
 import type {
 	OfficialGenerationInput,
 	OfficialGenerationOptions,
@@ -82,6 +83,7 @@ export async function generateOfficialVideo(
 	input: OfficialGenerationInput,
 	options: OfficialGenerationOptions,
 ): Promise<OfficialGenerationResult> {
+	if (input.providerId === "zhipu") return generateZhipuVideo(input, options);
 	if (
 		input.providerId === "google" &&
 		[GOOGLE_VEO_31_MODEL_ID, GOOGLE_VEO_31_LITE_MODEL_ID].includes(

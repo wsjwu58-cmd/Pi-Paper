@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { SoftCollapse, useSoftChange, useSoftPresence, useSoftValue } from './canvasMotion'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Bot,
@@ -145,7 +146,9 @@ export function AgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesk
 function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopAdapter }) {
   const desktop = desktopAdapter !== undefined
   const storeOpen = useCanvasStore((s) => s.agentOpen)
-  const open = desktop || storeOpen
+  const open = storeOpen
+  const presence = useSoftPresence(open)
+  const panelContentRef = useRef<HTMLDivElement>(null)
   const setOpen = useCanvasStore((s) => s.setAgentOpen)
   const setAgentPanelWidth = useCanvasStore((s) => s.setAgentPanelWidth)
   const canvas = useCanvasStore((s) => s.canvas)
@@ -167,6 +170,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   const [confirmationClock, setConfirmationClock] = useState(0)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [tab, setTab] = useState<'chat' | 'pref' | 'skills' | 'usage' | 'history' | 'drama'>('chat')
+  useSoftChange(tab, panelContentRef)
   const [composerRefs, setComposerRefs] = useState<ComposerRef[]>([])
   const previousSelectedNodeIdsRef = useRef<Set<string>>(new Set())
   const chatScrollRef = useRef<HTMLDivElement>(null)
@@ -887,6 +891,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   // A session can contain a locally stale card while the Agent has already
   // planned its next action. The latest card is the only actionable one.
   const activeConfirmation = pendingConfirmations.at(-1)
+  const confirmationPresence = useSoftValue(activeConfirmation)
   const hasPendingConfirmation = pendingConfirmations.length > 0
 
   // Expiry is time based, so trigger one render when the nearest approval
@@ -1096,7 +1101,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
     }
   }
 
-  if (!open) {
+  if (!presence.present && !open) {
     return (
       <aside
         aria-hidden
@@ -1109,12 +1114,15 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   return (
     <aside
       aria-hidden={!open}
+      inert={!open}
+      data-open={presence.visible}
+      data-resizing={resizing}
       className={cn(
         'relative z-30 h-full flex-none bg-[var(--canvas-surface)] text-[var(--canvas-text)] shadow-xl shadow-black/20 backdrop-blur-md',
-        resizing ? 'duration-0' : 'transition-[width] duration-200 ease-out',
-        'overflow-visible border-l border-[var(--canvas-border)]',
+        'vp-agent-motion border-l border-[var(--canvas-border)]',
+        presence.settled && open ? 'overflow-visible' : 'overflow-hidden',
       )}
-      style={{ width }}
+      style={{ width: presence.visible ? width : 0, opacity: presence.visible ? 1 : 0 }}
     >
       <div
         role="separator"
@@ -1134,7 +1142,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
           className="pointer-events-none absolute left-1/2 top-0 h-full w-[3px] -translate-x-1/2 bg-transparent transition-colors group-hover:bg-[var(--canvas-border-strong)] group-active:bg-[var(--canvas-border-strong)]"
         />
       </div>
-      <div className="flex h-full flex-col" style={{ width }}>
+      <div ref={panelContentRef} className="flex h-full flex-col" style={{ width }}>
       {tab !== 'skills' && tab !== 'drama' && (
       <div className="flex items-center justify-between px-4 py-3.5">
         <div className="flex items-center gap-2.5">
@@ -1205,16 +1213,18 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
 
       {tab === 'chat' && (
         <div className="flex min-h-0 flex-1 flex-col bg-[var(--canvas-surface)]">
-          {activeConfirmation && (
+          <SoftCollapse open={Boolean(activeConfirmation)}>
+          {confirmationPresence.value && (
             <div className="shrink-0 border-y border-[var(--canvas-border)] bg-[var(--canvas-surface-muted)] px-3 py-2">
               <AgentConfirmationCard
-                confirmation={activeConfirmation}
+                confirmation={confirmationPresence.value}
                 queuedCount={pendingConfirmations.length - 1}
                 showEstimatedCost={!desktop}
-                onConfirm={(accept) => void confirmAction(activeConfirmation, accept)}
+                onConfirm={(accept) => activeConfirmation && void confirmAction(activeConfirmation, accept)}
               />
             </div>
           )}
+          </SoftCollapse>
           <div ref={chatScrollRef} className="relative min-h-0 flex-1 overflow-y-auto bg-transparent px-3.5 pb-8 pt-3.5">
             {composerRefs.some((ref) => ref.kind === 'node') && (
               <p className="mb-3 rounded-full bg-[#f2f2f2] px-3 py-1.5 text-[11px] font-semibold text-[#555]">

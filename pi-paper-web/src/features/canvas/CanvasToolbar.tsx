@@ -28,6 +28,7 @@ import { textNodeContent } from './nodes/textContent'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { cn } from '@/lib/cn'
 import { isDesktopRuntime } from './canvasPort'
+import { useSoftPresence } from './canvasMotion'
 
 const NODE_MENU = [
   { type: 'text', label: '文本', sub: 'Text', icon: Type },
@@ -59,6 +60,7 @@ export function CanvasToolbar({
 }) {
   const isDesktop = desktopMode || isDesktopRuntime()
   const [menuOpen, setMenuOpen] = useState(false)
+  const menuPresence = useSoftPresence(menuOpen)
   const fileRef = useRef<HTMLInputElement>(null)
   const setAssetOpen = useCanvasStore((s) => s.setAssetOpen)
   const canvas = useCanvasStore((s) => s.canvas)
@@ -314,8 +316,9 @@ export function CanvasToolbar({
         <ToolButton active={menuOpen} onClick={() => setMenuOpen((v) => !v)} title="添加节点">
           <Plus size={18} />
         </ToolButton>
-        {menuOpen && (
-          <div className="absolute left-[58px] top-0 z-50 w-[220px] rounded-[20px] border border-white/10 bg-[#1a1c24]/98 p-3 shadow-[0_24px_72px_rgba(0,0,0,0.35)] backdrop-blur-md">
+        {menuPresence.present && (
+          <div data-open={menuPresence.visible} aria-hidden={!menuOpen} inert={!menuOpen}
+            className="vp-soft-popover absolute left-[58px] top-0 z-50 w-[220px] rounded-[20px] border border-white/10 bg-[#1a1c24]/98 p-3 shadow-[0_24px_72px_rgba(0,0,0,0.35)] backdrop-blur-md">
             <p className="mb-2 px-1 text-[11px] font-bold tracking-wide text-[#8e929c]">添加节点</p>
             {NODE_MENU.map((t) => {
               const Icon = t.icon

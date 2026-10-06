@@ -1498,6 +1498,17 @@ async function createGenerationTaskInStore(input) {
   // Snapshot user defaults when the task is created, so later settings changes
   // cannot change an already submitted task's recovery parameters.
   const suppliedParameters = input.parameters ?? {}
+  // Explicit canvas/Agent aliases must replace the configured default as a
+  // group, otherwise e.g. resolution=4K can conflict with a default size=2K.
+  for (const aliases of [
+    ['ratio', 'aspect', 'aspectRatio', 'aspect_ratio'],
+    ['size', 'resolution', 'resKey'],
+    ...(input.modality === 'video' ? [['duration', 'seconds']] : []),
+  ]) {
+    if (aliases.some((alias) => suppliedParameters[alias] !== undefined)) {
+      for (const alias of aliases) if (suppliedParameters[alias] === undefined) delete modelDefaults[alias]
+    }
+  }
   const hasImageInput = Boolean(suppliedParameters.firstFrameUrl || suppliedParameters.imageUrl || suppliedParameters.referenceImages?.length || suppliedParameters.referenceUrls?.length)
   const hasDerivedAspect = modelConstraints.imageAspectRatio && hasImageInput
     || modelConstraints.firstLastFrameAspectRatio && suppliedParameters.firstFrameUrl && suppliedParameters.lastFrameUrl

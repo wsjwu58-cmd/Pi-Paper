@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { ChevronDown, SlidersHorizontal } from 'lucide-react'
 import type { ModelInfo } from '@/lib/types'
 import { ModelBrandIcon } from './ModelBrandIcon'
+import { useSoftPresence } from '@/features/canvas/canvasMotion'
 
 /** 带品牌图标的模型下拉，用于偏好 / 节点编辑器。 */
 export function ModelPicker({
@@ -31,6 +32,7 @@ export function ModelPicker({
   onConfigureModels?: () => void
 }) {
   const [open, setOpen] = useState(false)
+  const presence = useSoftPresence(open)
   const [activeBrand, setActiveBrand] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -120,11 +122,14 @@ export function ModelPicker({
           <span className={`shrink-0 text-[10px] ${dark ? 'text-white/50' : 'text-[#999]'}`}>▾</span>
         )}
       </button>
-      {open && createPortal(
+      {presence.present && createPortal(
         <div
           ref={menuRef}
+          data-open={presence.visible}
+          aria-hidden={!open}
+          inert={!open}
           style={menuPosition}
-          className="fixed z-[1000] overflow-auto rounded-xl border border-[var(--canvas-border)] bg-[var(--canvas-popover)] shadow-xl"
+          className="vp-soft-popover fixed z-[1000] overflow-auto rounded-xl border border-[var(--canvas-border)] bg-[var(--canvas-popover)] shadow-xl"
         >
           {onConfigureModels ? (
             <>

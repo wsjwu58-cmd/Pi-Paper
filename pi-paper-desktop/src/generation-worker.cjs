@@ -1235,16 +1235,40 @@ async function runOfficialTask(job, dependencies = {}) {
   assertTaskOutputTarget(job)
   const api = dependencies.api || require(path.join(__dirname, '..', 'dist', 'pi-official-media.cjs'))
   const params = { ...(job.parameters || {}) }
+  const ratioAliases = ['ratio', 'aspect', 'aspectRatio', 'aspect_ratio']
+  const ratios = ratioAliases.filter((field) => params[field] !== undefined).map((field) => params[field])
+  if (ratios.some((value) => typeof value !== 'string') || new Set(ratios.map((value) => value.trim())).size > 1) {
+    throw new WorkerFailure('CLOUD_INPUT_INVALID', '画幅参数不一致。')
+  }
+  for (const field of ratioAliases) delete params[field]
+  if (ratios.length) params.ratio = ratios[0].trim()
+  if (params.size === undefined && params.resolution === undefined && params.resKey !== undefined) {
+    if (job.modality === 'image') params.size = params.resKey
+    if (job.modality === 'video') params.resolution = params.resKey
+  }
+  if (job.modality === 'image') {
+    const sizes = [params.size, params.resolution].filter((value) => value !== undefined)
+    if (sizes.some((value) => typeof value !== 'string') || new Set(sizes.map((value) => value.trim().toLowerCase())).size > 1) {
+      throw new WorkerFailure('CLOUD_INPUT_INVALID', '分辨率参数不一致。')
+    }
+    if (sizes.length) {
+      const size = /^\d+(?:\.\d+)?k$/iu.test(sizes[0].trim()) ? sizes[0].trim().toUpperCase() : sizes[0].trim()
+      params.size = size
+      delete params.resolution
+    }
+  }
+  if (job.modality === 'video' && params.seconds !== undefined) {
+    if (params.duration !== undefined && Number(params.seconds) !== Number(params.duration)) {
+      throw new WorkerFailure('CLOUD_INPUT_INVALID', '时长参数不一致。')
+    }
+    params.duration ??= params.seconds
+    delete params.seconds
+  }
   const instructions = ['style', 'camera'].flatMap((field) => typeof params[field] === 'string' && params[field].trim()
     ? [`${field === 'style' ? 'Style' : 'Camera'}: ${params[field].trim()}`] : [])
-  for (const field of ['prompt', 'model', 'resKey', 'style', 'camera', 'referenceTexts', 'upstreamNodeIds',
+  for (const field of ['prompt', 'model', 'resKey', 'style', 'camera', 'audioMode', 'referenceTexts', 'upstreamNodeIds',
     'referenceImages', 'reference_images', 'referenceUrls', 'image', 'imageUrl', 'image_url', 'referenceUrl', 'sourceUrl',
     'firstFrameUrl', 'lastFrameUrl', 'maskUrl', 'referenceVideos', 'reference_videos', 'referenceAudios', 'reference_audios']) delete params[field]
-  if (params.aspect !== undefined) {
-    if (params.ratio !== undefined && params.ratio !== params.aspect) throw new WorkerFailure('CLOUD_INPUT_INVALID', '画幅参数不一致。')
-    params.ratio ??= params.aspect
-    delete params.aspect
-  }
   if (job.modality === 'video' && params.size !== undefined) {
     if (params.resolution !== undefined && String(params.resolution).toLowerCase() !== String(params.size).toLowerCase()) throw new WorkerFailure('CLOUD_INPUT_INVALID', '分辨率参数不一致。')
     params.resolution ??= params.size
