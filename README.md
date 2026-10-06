@@ -14,11 +14,27 @@ Pi-Paper is a single-user desktop creative workspace. Connect text, images, vide
 
 **Local project → Connected nodes → Generation → Editing → Composition → Export**
 
-[Desktop setup and usage](./pi-paper-desktop/README.md) · [Migration and validation status](./docs/specs/desktop-agent-functional-spec.md)
+[Download installers](#downloads) · [Desktop setup and usage](./pi-paper-desktop/README.md) · [Migration and validation status](./docs/specs/desktop-agent-functional-spec.md)
 
 </div>
 
 ---
+
+## Downloads
+
+Download the **v0.1.0 desktop prerelease** from [GitHub Releases](https://github.com/wsjwu58-cmd/Pi-Paper/releases/tag/v0.1.0), or use the direct installer links below.
+
+| Platform | Architecture / format | Download |
+| --- | --- | --- |
+| Windows | x64 installer | [Pi-Paper-0.1.0-win-x64.exe](https://github.com/wsjwu58-cmd/Pi-Paper/releases/download/v0.1.0/Pi-Paper-0.1.0-win-x64.exe) |
+| macOS | Apple Silicon (arm64), DMG | [Pi-Paper-0.1.0-mac-arm64.dmg](https://github.com/wsjwu58-cmd/Pi-Paper/releases/download/v0.1.0/Pi-Paper-0.1.0-mac-arm64.dmg) |
+| macOS | Intel (x64), DMG | [Pi-Paper-0.1.0-mac-x64.dmg](https://github.com/wsjwu58-cmd/Pi-Paper/releases/download/v0.1.0/Pi-Paper-0.1.0-mac-x64.dmg) |
+| Linux | x86_64, AppImage | [Pi-Paper-0.1.0-linux-x86_64.AppImage](https://github.com/wsjwu58-cmd/Pi-Paper/releases/download/v0.1.0/Pi-Paper-0.1.0-linux-x86_64.AppImage) |
+| Linux | Debian / Ubuntu amd64, DEB | [Pi-Paper-0.1.0-linux-amd64.deb](https://github.com/wsjwu58-cmd/Pi-Paper/releases/download/v0.1.0/Pi-Paper-0.1.0-linux-amd64.deb) |
+
+[SHA-256 checksums](https://github.com/wsjwu58-cmd/Pi-Paper/releases/download/v0.1.0/SHA256SUMS.txt) · [Build manifest](https://github.com/wsjwu58-cmd/Pi-Paper/releases/download/v0.1.0/build-manifest.json) · [All releases](https://github.com/wsjwu58-cmd/Pi-Paper/releases)
+
+This is a development prerelease. The Windows installer is unsigned, and the macOS packages are not notarized by Apple. See [desktop setup and usage](./pi-paper-desktop/README.md) for installation and first-run guidance.
 
 ## Branches
 
