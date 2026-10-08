@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
@@ -72,15 +73,15 @@ function createEventState(messages: AgentChatMsg[]): AgentEventState {
 
 function normalizeError(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : ''
-  if (message.includes('CLOUD_CREDENTIAL_MISSING')) return '当前 Agent 模型凭据不可用，请在模型设置中配置对应提供方。'
-  if (message.includes('MODEL_UNAVAILABLE')) return '当前 Agent 模型未配置或不支持工具调用，请选择一个已启用的文本模型。'
-  if (message.includes('AGENT_SESSION_MODEL_MISMATCH')) return '会话模型已变更，请重新选择会话后再发送。'
-  if (message.includes('SESSION_BUSY')) return '当前会话正在运行，完成或停止后再切换模型。'
-  if (message.includes('AGENT_CANVAS_CHANGED')) return '画布已更新，请重新发送后再确认。'
-  if (message.includes('AGENT_PROJECT_CHANGED')) return '当前本地项目已切换，请重新打开画布。'
-  if (message.includes('AGENT_RUN_ALREADY_PROCESSED')) return '这条消息已处理，请检查会话记录后再继续。'
-  if (message.includes('AGENT_MESSAGE_INVALID')) return '消息不能为空，且不能超过 20,000 个字符。'
-  return friendlyAgentErrorMessage(message || '本地 Agent 操作失败。')
+  if (message.includes('CLOUD_CREDENTIAL_MISSING')) return uiText("当前 Agent 模型凭据不可用，请在模型设置中配置对应提供方。")
+  if (message.includes('MODEL_UNAVAILABLE')) return uiText("当前 Agent 模型未配置或不支持工具调用，请选择一个已启用的文本模型。")
+  if (message.includes('AGENT_SESSION_MODEL_MISMATCH')) return uiText("会话模型已变更，请重新选择会话后再发送。")
+  if (message.includes('SESSION_BUSY')) return uiText("当前会话正在运行，完成或停止后再切换模型。")
+  if (message.includes('AGENT_CANVAS_CHANGED')) return uiText("画布已更新，请重新发送后再确认。")
+  if (message.includes('AGENT_PROJECT_CHANGED')) return uiText("当前本地项目已切换，请重新打开画布。")
+  if (message.includes('AGENT_RUN_ALREADY_PROCESSED')) return uiText("这条消息已处理，请检查会话记录后再继续。")
+  if (message.includes('AGENT_MESSAGE_INVALID')) return uiText("消息不能为空，且不能超过 20,000 个字符。")
+  return friendlyAgentErrorMessage(message || uiText("本地 Agent 操作失败。"))
 }
 
 export function useDesktopAgentController({
@@ -332,7 +333,7 @@ export function useDesktopAgentController({
     setCreating(true)
     setError('')
     try {
-      const created = await bridge.createAgentSession(projectId, '新对话')
+      const created = await bridge.createAgentSession(projectId, uiText("新对话"))
       if (selectedModelId && selectedModelAvailable) {
         await bridge.setAgentSessionModel(projectId, created.sessionId, selectedModelId)
       }
@@ -409,11 +410,11 @@ export function useDesktopAgentController({
   const onSelectAgentModel = useCallback(async (modelId: string) => {
     if (!bridge || !projectId) return
     if (!agentModelCatalog?.models.some((model) => model.id === modelId)) {
-      setError('此模型尚未配置、启用或不支持 Agent 工具调用。')
+      setError(uiText("此模型尚未配置、启用或不支持 Agent 工具调用。"))
       return
     }
     if (sendingRef.current) {
-      setError('当前会话正在运行，完成或停止后再切换模型。')
+      setError(uiText("当前会话正在运行，完成或停止后再切换模型。"))
       return
     }
     const sessionId = activeSessionRef.current
@@ -424,7 +425,7 @@ export function useDesktopAgentController({
     }
     const activeSession = sessions.find((session) => session.sessionId === sessionId)
     if (activeSession?.status === 'archived') {
-      setError('请先恢复此会话，再更换模型。')
+      setError(uiText("请先恢复此会话，再更换模型。"))
       return
     }
     setError('')
@@ -444,11 +445,11 @@ export function useDesktopAgentController({
     const content = draft.trim()
     if (!bridge || !projectId || !content || sendingRef.current) return false
     if (sessions.find((session) => session.sessionId === activeSessionRef.current)?.status === 'archived') {
-      setError('此会话已归档，请先恢复后继续发送。')
+      setError(uiText("此会话已归档，请先恢复后继续发送。"))
       return false
     }
     if (!selectedModelId || !selectedModelAvailable) {
-      setError('当前会话选择的 Agent 模型不可用，请配置其提供方或切换到可用模型。')
+      setError(uiText("当前会话选择的 Agent 模型不可用，请配置其提供方或切换到可用模型。"))
       return false
     }
     const hasPendingConfirmation = messages.some((message) => {
@@ -456,7 +457,7 @@ export function useDesktopAgentController({
       return isActionableConfirmation(confirmation)
     })
     if (hasPendingConfirmation) {
-      setError('请先处理上方待确认的操作，再继续发送消息。')
+      setError(uiText("请先处理上方待确认的操作，再继续发送消息。"))
       return false
     }
     setError('')
@@ -471,7 +472,7 @@ export function useDesktopAgentController({
       const currentCanvas = snapshot.canvas
       if (!currentCanvas || String(currentCanvas.canvas.id) !== canvasId) throw new Error('AGENT_PROJECT_CHANGED')
       if (!sessionId) {
-        const created = await bridge.createAgentSession(projectId, '新对话')
+        const created = await bridge.createAgentSession(projectId, uiText("新对话"))
         const binding = await bridge.setAgentSessionModel(projectId, created.sessionId, selectedModelId)
         if (binding.bindingId !== selectedModelId) throw new Error('AGENT_SESSION_MODEL_MISMATCH')
         sessionId = created.sessionId
@@ -479,7 +480,7 @@ export function useDesktopAgentController({
         setActiveSessionId(sessionId)
         setSessions((current) => [{
           sessionId: created.sessionId,
-          title: content.slice(0, 48) || '新对话',
+          title: content.slice(0, 48) || uiText("新对话"),
           agentModelId: selectedModelId,
           createdAt: created.createdAt,
           modifiedAt: created.createdAt,
@@ -489,7 +490,7 @@ export function useDesktopAgentController({
         const selectedNodeIds = [...new Set((input?.selectedNodeIds ?? []).slice(0, 20))]
         const selectedRefs: ComposerRef[] = selectedNodeIds.map((nodeId) => {
           const node = snapshot.nodes.find((candidate) => String(candidate.id) === nodeId || String(candidate.data.node.id) === nodeId)
-          return node ? refFromNode(node.data.node) : { id: nodeId, kind: 'node', title: '节点' }
+          return node ? refFromNode(node.data.node) : { id: nodeId, kind: 'node', title: uiText("节点") }
         })
         const nodeReferences = nodeReferencesForComposer(selectedRefs, snapshot.nodes)
         const started = await bridge.startAgentRun({
@@ -551,7 +552,7 @@ export function useDesktopAgentController({
     const sessionId = activeSessionRef.current
     if (!bridge || !projectId || !sessionId || confirmingActionRef.current) return
     if (!bridge.confirmAgentAction) {
-      setError('本地 Agent 生成确认接口尚未接入。')
+      setError(uiText("本地 Agent 生成确认接口尚未接入。"))
       return
     }
     confirmingActionRef.current = confirmation.actionId
@@ -587,7 +588,7 @@ export function useDesktopAgentController({
     const runId = activeRunIdRef.current
     if (!bridge || !projectId || !sessionId || !runId) return
     if (!bridge.cancelAgentRun) {
-      setError('本地 Agent 取消接口尚未接入。')
+      setError(uiText("本地 Agent 取消接口尚未接入。"))
       return
     }
     setError('')
@@ -644,7 +645,7 @@ export function useDesktopAgentController({
     creating,
     configured: selectedModelAvailable,
     modelLabel: selectedAgentModel?.displayName
-      ?? (selectedModelId ? `${selectedModelId}（当前不可用）` : '选择 Agent 模型'),
+      ?? (selectedModelId ? uiText("{0}（当前不可用）", { 0: selectedModelId }) : uiText("选择 Agent 模型")),
     modelOptions: agentModelOptions,
     selectedModelId,
     providerNames,
@@ -681,6 +682,7 @@ function DesktopAgentModelSettings({ configured, onSaved, onCleared, onOpenProvi
   onOpenProviderSettings: () => void
   onClose: () => void
 }) {
+  useUiLanguage()
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -693,7 +695,7 @@ function DesktopAgentModelSettings({ configured, onSaved, onCleared, onOpenProvi
     try {
       onSaved(await bridge.saveAgnesApiKey(apiKey.trim()))
       setApiKey('')
-      setMessage('Agnes API Key 已安全保存。')
+      setMessage(uiText("Agnes API Key 已安全保存。"))
     } catch (cause) {
       setError(normalizeError(cause))
     } finally {
@@ -708,7 +710,7 @@ function DesktopAgentModelSettings({ configured, onSaved, onCleared, onOpenProvi
     try {
       onCleared(await bridge.clearAgnesApiKey())
       setApiKey('')
-      setMessage('Agnes API Key 已从此设备移除。')
+      setMessage(uiText("Agnes API Key 已从此设备移除。"))
     } catch (cause) {
       setError(normalizeError(cause))
     } finally {
@@ -722,29 +724,28 @@ function DesktopAgentModelSettings({ configured, onSaved, onCleared, onOpenProvi
     <section className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="agent-model-settings-title">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 id="agent-model-settings-title" className="text-lg font-bold">模型与 API Key</h2>
-          <p className="mt-1 text-xs leading-5 text-[#777]">Agent 按会话保存文本模型选择；工具调用只会发送给已配置并启用的兼容模型。</p>
+          <h2 id="agent-model-settings-title" className="text-lg font-bold">{uiText("模型与 API Key")}</h2>
+          <p className="mt-1 text-xs leading-5 text-[#777]">{uiText("Agent 按会话保存文本模型选择；工具调用只会发送给已配置并启用的兼容模型。")}</p>
         </div>
-        <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">关闭</button>
+        <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">{uiText("关闭")}</button>
       </div>
       <section className="mt-5 rounded-xl border border-black/8 bg-[#fbfaff] p-4">
-        <h3 className="text-sm font-bold">Agnes 云端模型</h3>
-        <p className="mt-1 text-xs leading-5 text-[#666]">文本模型：agnes-2.5-flash</p>
-        <p className="mt-2 text-xs leading-5 text-amber-800">向 Agent 发送消息时，会发送当前消息、会话历史和画布只读摘要，由 Agnes 处理，可能产生供应商费用。不会上传图片、视频、素材字节或项目路径，也不会每次发送都弹确认。</p>
+        <h3 className="text-sm font-bold">{uiText("Agnes 云端模型")}</h3>
+        <p className="mt-1 text-xs leading-5 text-[#666]">{uiText("文本模型：agnes-2.5-flash")}</p>
+        <p className="mt-2 text-xs leading-5 text-amber-800">{uiText("向 Agent 发送消息时，会发送当前消息、会话历史和画布只读摘要，由 Agnes 处理，可能产生供应商费用。不会上传图片、视频、素材字节或项目路径，也不会每次发送都弹确认。")}</p>
         <label htmlFor="desktop-agent-agnes-api-key" className="mt-4 block text-xs font-semibold">Agnes API Key</label>
-        <input id="desktop-agent-agnes-api-key" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} maxLength={1024} placeholder={configured ? '已配置；输入新 Key 可替换' : '粘贴 API Key'} className="mt-2 h-10 w-full rounded-lg border border-black/12 bg-white px-3 text-sm outline-none focus:border-[#8a72e8]" />
+        <input id="desktop-agent-agnes-api-key" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} maxLength={1024} placeholder={configured ? uiText("已配置；输入新 Key 可替换") : uiText("粘贴 API Key")} className="mt-2 h-10 w-full rounded-lg border border-black/12 bg-white px-3 text-sm outline-none focus:border-[#8a72e8]" />
         <div className="mt-3 flex items-center justify-between gap-3">
-          <span className="text-xs text-[#777]">{configured ? '此设备已配置 Key' : '尚未配置 Key'}</span>
+          <span className="text-xs text-[#777]">{configured ? uiText("此设备已配置 Key") : uiText("尚未配置 Key")}</span>
           <div className="flex gap-2">
-            {configured && <button onClick={() => void clear()} disabled={busy} className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">移除 Key</button>}
-            <button onClick={() => void save()} disabled={busy || !apiKey.trim()} className="rounded-lg bg-[#6d55c9] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{busy ? '请稍候…' : '安全保存 Key'}</button>
+            {configured && <button onClick={() => void clear()} disabled={busy} className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">{uiText("移除 Key")}</button>}
+            <button onClick={() => void save()} disabled={busy || !apiKey.trim()} className="rounded-lg bg-[#6d55c9] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{busy ? uiText("请稍候…") : uiText("安全保存 Key")}</button>
           </div>
         </div>
         {(message || error) && <p role={error ? 'alert' : 'status'} className={`mt-3 text-xs ${error ? 'text-red-700' : 'text-[#666]'}`}>{error || message}</p>}
       </section>
       <button type="button" onClick={onOpenProviderSettings} className="mt-4 w-full rounded-xl border border-black/10 px-4 py-3 text-left text-xs font-semibold text-[#555] hover:bg-black/[0.03]">
-        配置其他官方模型提供方
-        <span className="mt-1 block font-normal text-[#888]">设置厂商 API 凭据、启用模型并选择画布默认模型。</span>
+        {uiText("配置其他官方模型提供方")}<span className="mt-1 block font-normal text-[#888]">{uiText("设置厂商 API 凭据、启用模型并选择画布默认模型。")}</span>
       </button>
     </section>
   </div>

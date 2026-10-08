@@ -1,9 +1,11 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { LayoutGrid, Clock, Compass, User, Building2, ShieldCheck, LogOut, Settings2 } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
 import { cn } from '@/lib/cn'
 import { isDesktopRuntime } from '@/features/canvas/canvasPort'
 import { ThemeToggle } from './ThemeToggle'
+import { LanguagePicker } from './LanguagePicker'
 
 const items = [
   { to: '/workspace', label: '画布管理', icon: LayoutGrid },
@@ -13,6 +15,7 @@ const items = [
 ]
 
 export function PillNav() {
+  useUiLanguage()
   const user = useAuth((s) => s.user)
   const logout = useAuth((s) => s.logout)
   const navigate = useNavigate()
@@ -20,9 +23,9 @@ export function PillNav() {
 
   if (isDesktopRuntime()) {
     const desktopItems = [
-      { to: '/workspace', label: '画布展示', icon: LayoutGrid },
-      { to: '/history', label: '历史记录', icon: Clock },
-      { to: '/settings/providers', label: 'API 配置', icon: Settings2 },
+      { to: '/workspace', label: uiText("画布展示"), icon: LayoutGrid },
+      { to: '/history', label: uiText("历史记录"), icon: Clock },
+      { to: '/settings/providers', label: uiText("API 配置"), icon: Settings2 },
     ]
     return (
       <nav className="mx-auto flex w-fit max-w-[calc(100vw-1.5rem)] items-center gap-1 rounded-full border border-black/[0.05] bg-white px-1.5 py-1.5 shadow-[0_8px_28px_rgba(15,23,42,0.08)]">
@@ -44,6 +47,7 @@ export function PillNav() {
           </NavLink>
         ))}
         <ThemeToggle />
+        <LanguagePicker />
       </nav>
     )
   }
@@ -64,7 +68,7 @@ export function PillNav() {
           }
         >
           <it.icon size={16} strokeWidth={2.2} />
-          <span>{it.label}</span>
+          <span>{uiText(it.label)}</span>
         </NavLink>
       ))}
       <NavLink
@@ -77,7 +81,7 @@ export function PillNav() {
               : 'text-[#888] hover:bg-black/[0.04] hover:text-[#111]',
           )
         }
-        title="企业中心"
+        title={uiText("企业中心")}
       >
         <Building2 size={15} strokeWidth={2.2} />
       </NavLink>
@@ -92,7 +96,7 @@ export function PillNav() {
                 : 'text-[#888] hover:bg-black/[0.04] hover:text-[#111]',
             )
           }
-          title="后台管理"
+          title={uiText("后台管理")}
         >
           <ShieldCheck size={15} strokeWidth={2.2} />
         </NavLink>
@@ -104,7 +108,7 @@ export function PillNav() {
           navigate('/login')
         }}
         className="ml-0.5 inline-flex h-10 w-10 items-center justify-center rounded-full text-[#888] hover:bg-red-50 hover:text-red-600"
-        title="退出登录"
+        title={uiText("退出登录")}
       >
         <LogOut size={16} />
       </button>

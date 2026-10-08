@@ -8,7 +8,7 @@ async function main() {
   if (!process.argv[2]) throw new Error('Usage: node scripts/smoke-package.cjs <packaged-app-directory>')
   const root = path.resolve(process.argv[2])
   for (const file of ['package.json', 'src/main.cjs', 'src/preload.cjs', 'src/local-core.cjs',
-    'src/generation-worker.cjs', 'dist/agent-worker.cjs', 'dist/pi-official-media.cjs',
+    'src/generation-worker.cjs', 'src/ui-language.cjs', 'src/ui-english.cjs', 'dist/agent-worker.cjs', 'dist/pi-official-media.cjs',
     'renderer/index.html', 'renderer/provider-documentation.json', 'assets/app-icon.png']) {
     await fs.access(path.join(root, file))
   }

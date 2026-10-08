@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 export type CropMode = 'single' | 'four' | 'nine'
 
 export type CropRect = {
@@ -70,7 +71,7 @@ export function splitCropIntoPixels(
   mode: CropMode,
 ): PixelCropRect[] {
   if (!Number.isInteger(imageWidth) || imageWidth < 1 || !Number.isInteger(imageHeight) || imageHeight < 1) {
-    throw new Error('图片尺寸无效。')
+    throw new Error(uiText("图片尺寸无效。"))
   }
   const rect = clampCropRect(selection)
   const left = clamp(Math.floor(rect.x * imageWidth), 0, imageWidth - 1)
@@ -82,7 +83,7 @@ export function splitCropIntoPixels(
   const cropWidth = right - left
   const cropHeight = bottom - top
   if (cropWidth < columns || cropHeight < rows) {
-    throw new Error(`裁剪区域太小，无法切成${columns * rows}张图片。`)
+    throw new Error(uiText("裁剪区域太小，无法切成{0}张图片。", { 0: columns * rows }))
   }
 
   const crops: PixelCropRect[] = []
@@ -126,7 +127,7 @@ export async function renderCropArtifacts(
     canvas.width = rect.width
     canvas.height = rect.height
     const context = canvas.getContext('2d')
-    if (!context) throw new Error('无法创建图片裁剪画布。')
+    if (!context) throw new Error(uiText("无法创建图片裁剪画布。"))
     context.drawImage(
       source,
       rect.x,
@@ -141,7 +142,7 @@ export async function renderCropArtifacts(
     const blob = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((result) => {
         if (result) resolve(result)
-        else reject(new Error('图片裁剪结果无法编码为 PNG。'))
+        else reject(new Error(uiText("图片裁剪结果无法编码为 PNG。")))
       }, 'image/png')
     })
     artifacts.push({ blob, rect })

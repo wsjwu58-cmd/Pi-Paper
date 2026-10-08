@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useSoftPresence } from '../canvasMotion'
@@ -67,6 +68,7 @@ export function MediaSpecificationPicker({
   onResolutionChange,
   onDurationChange,
 }: MediaSpecificationPickerProps) {
+  useUiLanguage()
   const anchorRef = useRef<HTMLButtonElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -79,7 +81,7 @@ export function MediaSpecificationPicker({
   const summary = [
     hasAspectOptions ? aspect : undefined,
     hasResolutionOptions ? resolutionOptions.find((option) => option.key === resolution)?.key ?? resolution : undefined,
-    mediaType === 'video' && durationCapability ? `${safeDuration}秒` : undefined,
+    mediaType === 'video' && durationCapability ? uiText("{0}秒", { 0: safeDuration }) : undefined,
   ].filter(Boolean).join(' · ')
 
   useLayoutEffect(() => {
@@ -123,28 +125,27 @@ export function MediaSpecificationPicker({
   const renderDurationControl = () => {
     if (mediaType !== 'video' || !durationCapability || duration === undefined) return null
     const label = durationCapability.kind === 'range'
-      ? `${durationCapability.minimum}秒 — ${durationCapability.maximum}秒`
+      ? uiText("{0}秒 — {1}秒", { 0: durationCapability.minimum, 1: durationCapability.maximum })
       : durationCapability.kind === 'discrete'
-        ? `${durationCapability.values[0]}秒 — ${durationCapability.values[durationCapability.values.length - 1]}秒`
-        : `${durationCapability.value}秒`
+        ? uiText("{0}秒 — {1}秒", { 0: durationCapability.values[0], 1: durationCapability.values[durationCapability.values.length - 1] })
+        : uiText("{0}秒", { 0: durationCapability.value })
     return (
-      <section className="vp-media-duration mt-5" aria-label="视频时长">
+      <section className="vp-media-duration mt-5" aria-label={uiText("视频时长")}>
         <div className="mb-2 flex items-center justify-between text-[12px] text-[#777]">
-          <span>时长</span>
+          <span>{uiText("时长")}</span>
           <span>{label}</span>
         </div>
         {durationCapability.kind === 'fixed' ? (
           <div className="vp-media-duration-fixed flex h-14 items-center justify-center rounded-full bg-[#f1f1f2] text-sm font-semibold text-[#333]">
-            {durationCapability.value}秒
-          </div>
+            {durationCapability.value}{uiText("秒")}</div>
         ) : (
           <div className="vp-media-duration-track flex h-14 items-center gap-3 rounded-full bg-[#f1f1f2] px-4">
             <span className="shrink-0 text-[12px] text-[#999]">
-              {durationCapability.kind === 'range' ? `${durationCapability.minimum}秒` : `${durationCapability.values[0]}秒`}
+              {durationCapability.kind === 'range' ? uiText("{0}秒", { 0: durationCapability.minimum }) : uiText("{0}秒", { 0: durationCapability.values[0] })}
             </span>
             {durationCapability.kind === 'discrete' ? (
               <input
-                aria-label="视频时长档位"
+                aria-label={uiText("视频时长档位")}
                 type="range"
                 min={0}
                 max={Math.max(0, durationCapability.values.length - 1)}
@@ -156,7 +157,7 @@ export function MediaSpecificationPicker({
               />
             ) : (
               <input
-                aria-label="视频时长"
+                aria-label={uiText("视频时长")}
                 type="range"
                 min={durationCapability.minimum}
                 max={durationCapability.maximum}
@@ -167,15 +168,14 @@ export function MediaSpecificationPicker({
               />
             )}
             <span className="shrink-0 text-[12px] text-[#999]">
-              {durationCapability.kind === 'range' ? `${durationCapability.maximum}秒` : `${durationCapability.values[durationCapability.values.length - 1]}秒`}
+              {durationCapability.kind === 'range' ? uiText("{0}秒", { 0: durationCapability.maximum }) : uiText("{0}秒", { 0: durationCapability.values[durationCapability.values.length - 1] })}
             </span>
             <output className="vp-media-duration-value min-w-14 rounded-full bg-white px-3 py-2 text-center text-[13px] font-semibold text-[#222] shadow-sm">
-              {safeDuration}秒
-            </output>
+              {safeDuration}{uiText("秒")}</output>
           </div>
         )}
         {!durationIsValid && (
-          <p className="mt-1.5 text-[11px] text-red-600" role="alert">当前时长不符合此模型的能力范围。</p>
+          <p className="mt-1.5 text-[11px] text-red-600" role="alert">{uiText("当前时长不符合此模型的能力范围。")}</p>
         )}
       </section>
     )
@@ -191,16 +191,16 @@ export function MediaSpecificationPicker({
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
         className={`vp-media-specification-trigger flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold transition-colors disabled:cursor-default disabled:opacity-50 ${dark ? 'text-white/90 hover:bg-white/10' : 'text-[#444] hover:bg-black/[0.05]'}`}
-        title="画幅、分辨率与时长"
+        title={uiText("画幅、分辨率与时长")}
       >
-        <span className="truncate">{summary || '规格'}</span>
+        <span className="truncate">{summary || uiText("规格")}</span>
         <span className="shrink-0 text-[10px] text-current/50">⌄</span>
       </button>
       {presence.present && createPortal(
         <div
           ref={popoverRef}
           role="dialog"
-          aria-label={mediaType === 'image' ? '图片生成规格' : '视频生成规格'}
+          aria-label={mediaType === 'image' ? uiText("图片生成规格") : uiText("视频生成规格")}
           className={`vp-soft-popover vp-editor-popover vp-media-specification-popover fixed z-[10050] max-h-[calc(100vh-24px)] w-[min(560px,calc(100vw-24px))] overflow-y-auto rounded-[22px] border border-black/[0.06] bg-white p-5 text-[#222] shadow-[0_18px_54px_rgba(15,23,42,0.20)] ${presence.visible ? '' : 'pointer-events-none'}`}
           style={{ left: position.left, ...(position.top !== undefined ? { top: position.top } : { bottom: position.bottom }) }}
           data-open={presence.visible}
@@ -209,8 +209,8 @@ export function MediaSpecificationPicker({
           onPointerDown={(event) => event.stopPropagation()}
         >
           {hasAspectOptions && (
-            <section aria-label="比例">
-              <p className="mb-2.5 text-[13px] text-[#777]">比例</p>
+            <section aria-label={uiText("比例")}>
+              <p className="mb-2.5 text-[13px] text-[#777]">{uiText("比例")}</p>
               <div className="vp-media-aspect-grid grid grid-cols-4 gap-1 rounded-[22px] bg-[#f1f1f2] p-1.5">
                 {aspectOptions.map((value) => {
                   const shape = ratioShape(value)
@@ -234,8 +234,8 @@ export function MediaSpecificationPicker({
             </section>
           )}
           {hasResolutionOptions && (
-            <section className={hasAspectOptions ? 'mt-5' : ''} aria-label="分辨率">
-              <p className="mb-2.5 text-[13px] text-[#777]">分辨率</p>
+            <section className={hasAspectOptions ? 'mt-5' : ''} aria-label={uiText("分辨率")}>
+              <p className="mb-2.5 text-[13px] text-[#777]">{uiText("分辨率")}</p>
               <div className="vp-media-resolution-segments grid min-h-[50px] rounded-full bg-[#f1f1f2] p-1" style={{ gridTemplateColumns: `repeat(${resolutionOptions.length}, minmax(0, 1fr))` }}>
                 {resolutionOptions.map(({ key, value }) => {
                   const selected = resolution === key
@@ -257,7 +257,7 @@ export function MediaSpecificationPicker({
           )}
           {renderDurationControl()}
           {!hasAspectOptions && !hasResolutionOptions && !durationCapability && (
-            <p className="text-[13px] text-[#777]">此模型目录没有声明可编辑的画面规格。</p>
+            <p className="text-[13px] text-[#777]">{uiText("此模型目录没有声明可编辑的画面规格。")}</p>
           )}
         </div>,
         document.body,

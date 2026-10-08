@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
@@ -53,6 +54,7 @@ const edgeTypes = { default: GenerationReferenceEdge }
 let nodeClipboard: NodePayload[] = []
 
 export function CanvasPage() {
+  useUiLanguage()
   const params = useParams()
   const id = params.id ?? params.canvasId
   const canvasId = sid(id)
@@ -69,6 +71,7 @@ export function CanvasPage() {
 }
 
 function CanvasPageInner({ canvasId }: { canvasId: string }) {
+  useUiLanguage()
   const nodes = useCanvasStore((s) => s.nodes)
   const layoutMotion = useLayoutMotion(nodes)
   const [dragGroupBounds, setDragGroupBounds] = useState<Record<string, CanvasGroupBounds>>({})
@@ -285,7 +288,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     while (true) {
       const snapshot = useCanvasStore.getState()
       if (!snapshot.dirty) return
-      if (!snapshot.canvas || !desktopProjectId) throw new Error('没有可保存的本地画布。')
+      if (!snapshot.canvas || !desktopProjectId) throw new Error(uiText("没有可保存的本地画布。"))
       if (desktopSaveInFlight.current) {
         await desktopSaveInFlight.current
         continue
@@ -575,7 +578,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       const selectedNodes = currentNodes.filter((node) => node.selected)
       const memberIds = canvasGroupMemberIds(selectedNodes, currentNodes)
       if (memberIds.length < 2) return
-      void createCanvasGroup(memberIds).catch((error) => toastError((error as Error).message || '编组失败'))
+      void createCanvasGroup(memberIds).catch((error) => toastError((error as Error).message || uiText("编组失败")))
     })
   }, [canvasId, mode])
 
@@ -598,7 +601,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       if (current.nodeIds.length > 1) {
         if (desktopMode) {
           const bridge = window.vibepaperDesktop
-          if (!bridge || !desktopProjectId) throw new Error('本地项目未就绪，无法排列编组。')
+          if (!bridge || !desktopProjectId) throw new Error(uiText("本地项目未就绪，无法排列编组。"))
           const result = await bridge.updateGroup({
             projectId: desktopProjectId,
             canvasId,
@@ -626,7 +629,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       skipNextSave.current = false
       selectGroup(sid(updated.id))
     } catch (error) {
-      toastError((error as Error).message || '编组排列失败')
+      toastError((error as Error).message || uiText("编组排列失败"))
     }
   }, [canvasId, desktopMode, desktopProjectId, selectGroup, setDirty, setGroups, setNodes])
 
@@ -638,7 +641,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       } else {
         if (desktopMode) {
           const bridge = window.vibepaperDesktop
-          if (!bridge || !desktopProjectId) throw new Error('本地项目未就绪，无法取消编组。')
+          if (!bridge || !desktopProjectId) throw new Error(uiText("本地项目未就绪，无法取消编组。"))
           await bridge.deleteGroup({ projectId: desktopProjectId, canvasId, groupId: sid(group.id) })
           if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
           const active = await bridge.getActiveProject()
@@ -649,36 +652,36 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         }
         removeCanvasGroupFromStore(group)
       }
-      toastSuccess('已取消编组')
+      toastSuccess(uiText("已取消编组"))
     } catch (error) {
-      toastError((error as Error).message || '取消编组失败')
+      toastError((error as Error).message || uiText("取消编组失败"))
     }
   }, [canvasId, desktopMode, desktopProjectId])
 
   const downloadGroup = useCallback(async (group: GroupPayload) => {
     try {
       if (desktopMode) {
-        if (!desktopProjectId) throw new Error('本地项目未就绪，无法下载编组结果。')
+        if (!desktopProjectId) throw new Error(uiText("本地项目未就绪，无法下载编组结果。"))
         const bridge = window.vibepaperDesktop as (NonNullable<typeof window.vibepaperDesktop> & {
           exportGroupOutputs?: (input: { projectId: string; canvasId: string; groupId: string }) => Promise<{
             status: 'saved' | 'cancelled'
             count?: number
           }>
         }) | undefined
-        if (!bridge?.exportGroupOutputs) throw new Error('桌面编组下载接口尚未就绪。')
+        if (!bridge?.exportGroupOutputs) throw new Error(uiText("桌面编组下载接口尚未就绪。"))
         const projectBeforeFlush = await bridge.getActiveProject()
         if (!projectBeforeFlush || projectBeforeFlush.projectId !== desktopProjectId || sid(projectBeforeFlush.canvasId) !== canvasId) {
-          throw new Error('当前项目或画布已更改，无法下载编组结果。')
+          throw new Error(uiText("当前项目或画布已更改，无法下载编组结果。"))
         }
         await flushCanvasPersistence(desktopProjectId, canvasId)
-        if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) throw new Error('画布已切换，无法下载编组结果。')
+        if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) throw new Error(uiText("画布已切换，无法下载编组结果。"))
         const currentProject = await bridge.getActiveProject()
         if (!currentProject || currentProject.projectId !== desktopProjectId || sid(currentProject.canvasId) !== canvasId) {
-          throw new Error('当前项目或画布已更改，无法下载编组结果。')
+          throw new Error(uiText("当前项目或画布已更改，无法下载编组结果。"))
         }
         const result = await bridge.exportGroupOutputs({ projectId: desktopProjectId, canvasId, groupId: sid(group.id) })
         if (result.status === 'cancelled') return
-        toastSuccess(`已保存 ${result.count ?? group.nodeIds.length} 个组内结果`)
+        toastSuccess(uiText("已保存 {0} 个组内结果", { 0: result.count ?? group.nodeIds.length }))
         return
       }
 
@@ -689,10 +692,10 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         const status = await downloadNodeOutput(candidate)
         if (status === 'saved') saved += 1
       }
-      if (saved === 0) toastError('组内没有可下载的输出内容')
-      else toastSuccess(`已触发下载 ${saved} 个组内结果`)
+      if (saved === 0) toastError(uiText("组内没有可下载的输出内容"))
+      else toastSuccess(uiText("已触发下载 {0} 个组内结果", { 0: saved }))
     } catch (error) {
-      toastError((error as Error).message || '编组下载失败')
+      toastError((error as Error).message || uiText("编组下载失败"))
     }
   }, [canvasId, desktopMode, desktopProjectId])
 
@@ -717,9 +720,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       try {
         if (window.vibepaperDesktop) {
           await flushDesktopEdits()
-          if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法建立连线。')
+          if (!desktopProjectId) throw new Error(uiText("没有已打开的本地项目，无法建立连线。"))
           const current = useCanvasStore.getState().canvas
-          if (!current) throw new Error('画布尚未加载完成。')
+          if (!current) throw new Error(uiText("画布尚未加载完成。"))
           const result = await window.vibepaperDesktop.connectEdge({
             projectId: desktopProjectId,
             canvasId,
@@ -748,7 +751,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           setCanvas({ ...latest, canvas: { ...latest.canvas, version: result.version } })
           setSavedVersion(result.version)
           if (!wasEditedAgain) setDirty(false)
-          toastSuccess('连线已建立')
+          toastSuccess(uiText("连线已建立"))
           return
         }
         const edge = await api<{ id: string | number }>(`/canvases/${canvasId}/edges`, {
@@ -769,9 +772,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             style: { stroke: '#93c5fd', strokeWidth: 1.5 },
           },
         ])
-        toastSuccess('连线已建立')
+        toastSuccess(uiText("连线已建立"))
       } catch (e) {
-        toastError(e instanceof ApiError ? e.message : '连线失败')
+        toastError(e instanceof ApiError ? e.message : uiText("连线失败"))
       }
     },
     [canvasId, desktopProjectId, edges, flushDesktopEdits, setCanvas, setDirty, setEdges],
@@ -793,9 +796,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       if (sid(current.canvas?.canvas.id) === canvasId) {
         setEdges(current.edges.filter((edge) => sid(edge.id) !== sid(edgeId)))
       }
-      toastSuccess('连线已删除')
+      toastSuccess(uiText("连线已删除"))
     } catch (error) {
-      toastError(error instanceof Error ? error.message : '无法删除连线。')
+      toastError(error instanceof Error ? error.message : uiText("无法删除连线。"))
       if (isDesktopRuntime()) void refetch()
     }
   }, [canvasId, desktopProjectId, persistDesktopChanges, refetch, setEdges])
@@ -826,9 +829,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     if (window.vibepaperDesktop) {
       try {
         await flushDesktopEdits()
-        if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法删除节点。')
+        if (!desktopProjectId) throw new Error(uiText("没有已打开的本地项目，无法删除节点。"))
         let version = useCanvasStore.getState().canvas?.canvas.version
-        if (version === undefined) throw new Error('画布尚未加载完成。')
+        if (version === undefined) throw new Error(uiText("画布尚未加载完成。"))
         let resultCanvas: DesktopCanvas | null = null
         for (const nodeId of ids) {
           const result = await window.vibepaperDesktop.deleteNode({
@@ -842,7 +845,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           resultCanvas = result.canvas
         }
         const project = await window.vibepaperDesktop.getActiveProject()
-        if (!project || !resultCanvas) throw new Error('本地删除成功，但无法读取更新后的画布。')
+        if (!project || !resultCanvas) throw new Error(uiText("本地删除成功，但无法读取更新后的画布。"))
         const next = desktopCanvasDetail(resultCanvas, project)
         setCanvas(next)
         const flow = buildFlow(next, selectNode)
@@ -852,7 +855,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         setStacks(next.stacks)
         setSavedVersion(next.canvas.version)
         if (!useCanvasStore.getState().dirty) setDirty(false)
-        toastSuccess(`已删除 ${ids.length} 个节点`)
+        toastSuccess(uiText("已删除 {0} 个节点", { 0: ids.length }))
       } catch (e) {
         toastError((e as Error).message)
         void refetch()
@@ -869,7 +872,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         toastError((e as Error).message)
       }
     }
-    toastSuccess(`已删除 ${ids.length} 个节点`)
+    toastSuccess(uiText("已删除 {0} 个节点", { 0: ids.length }))
   }, [canvasId, deleteConfirm, desktopProjectId, edges, flushDesktopEdits, models, nodes, refetch, selectNode, setCanvas, setDirty, setEdges, setGroups, setNodes, setStacks])
 
   const onNodesDelete = useCallback((_deleted: FlowNode[]) => {
@@ -912,7 +915,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         }
       }
       if (!window.vibepaperDesktop) setDirty(true)
-      toastSuccess(`已创建 ${selected.length} 个副本`)
+      toastSuccess(uiText("已创建 {0} 个副本", { 0: selected.length }))
       setNodeMenu(null)
     },
     [createNodeInCanvas, models, nodes, selectNode, setDirty, setNodes],
@@ -921,7 +924,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const copyNodes = useCallback(
     (ids: string[]) => {
       nodeClipboard = nodes.filter((n) => ids.includes(sid(n.id))).map((n) => ({ ...n.data.node, params: { ...n.data.node.params } }))
-      toastSuccess(`已复制 ${nodeClipboard.length} 个节点`)
+      toastSuccess(uiText("已复制 {0} 个节点", { 0: nodeClipboard.length }))
       setNodeMenu(null)
     },
     [nodes],
@@ -961,7 +964,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       }
     }
     if (!window.vibepaperDesktop) setDirty(true)
-    toastSuccess('已粘贴')
+    toastSuccess(uiText("已粘贴"))
   }, [createNodeInCanvas, models, selectNode, setDirty, setNodes])
 
   const onEdgesDelete = useCallback(
@@ -975,7 +978,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           saveTimer.current = null
         }
         void (async () => {
-          if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法删除连线。')
+          if (!desktopProjectId) throw new Error(uiText("没有已打开的本地项目，无法删除连线。"))
           const current = useCanvasStore.getState()
           if (snapshot?.dirtyBefore && current.canvas) {
             const saved = await saveCanvasPort({
@@ -999,7 +1002,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             await bridge.deleteEdge({ projectId: desktopProjectId, canvasId, edgeId: sid(edge.id) })
           }
         })().catch((error: unknown) => {
-          toastError(error instanceof Error ? error.message : '无法删除本地连线。')
+          toastError(error instanceof Error ? error.message : uiText("无法删除本地连线。"))
           void refetch()
         })
         return
@@ -1050,9 +1053,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           let edgeId: string
           let edgeData: Record<string, unknown> = { valid: true }
           if (window.vibepaperDesktop) {
-            if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法建立连线。')
+            if (!desktopProjectId) throw new Error(uiText("没有已打开的本地项目，无法建立连线。"))
             const current = useCanvasStore.getState().canvas
-            if (!current) throw new Error('画布尚未加载完成。')
+            if (!current) throw new Error(uiText("画布尚未加载完成。"))
             const result = await window.vibepaperDesktop.connectEdge({
               projectId: desktopProjectId,
               canvasId,
@@ -1084,7 +1087,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               data: edgeData,
             },
           ])
-          toastSuccess(connect.direction === 'downstream' ? '已创建下游节点并连线' : '已创建上游节点并连线')
+          toastSuccess(connect.direction === 'downstream' ? uiText("已创建下游节点并连线") : uiText("已创建上游节点并连线"))
         }
         if (!window.vibepaperDesktop) setDirty(true)
       } catch (e) {
@@ -1120,7 +1123,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         },
       ])
       if (!window.vibepaperDesktop) setDirty(true)
-      toastSuccess('素材已导入画布')
+      toastSuccess(uiText("素材已导入画布"))
     },
     [createNodeInCanvas, models, selectNode, setDirty, setNodes],
   )
@@ -1131,7 +1134,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       const point = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       if (e.dataTransfer.files?.length) {
         if (window.vibepaperDesktop) {
-          toastError('桌面版文件拖放导入尚未接入，请使用画布上传入口选择素材。')
+          toastError(uiText("桌面版文件拖放导入尚未接入，请使用画布上传入口选择素材。"))
           return
         }
         void (async () => {
@@ -1163,7 +1166,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     layoutMotion.animate(next)
     setNodes(next)
     setDirty(true)
-    toastSuccess('已一键整理')
+    toastSuccess(uiText("已一键整理"))
   }, [nodes, setNodes, setDirty, layoutMotion.animate])
 
   const openAddMenu = useCallback(
@@ -1195,12 +1198,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       pendingUploadPos.current = { x: flowX, y: flowY }
       if (window.vibepaperDesktop) {
         if (!desktopProjectId) {
-          toastError('没有已打开的本地项目，无法导入素材。')
+          toastError(uiText("没有已打开的本地项目，无法导入素材。"))
           return
         }
         void window.vibepaperDesktop.importLocalAsset(desktopProjectId)
           .then((asset) => asset && addAssetNode(desktopAssetView(asset), flowX, flowY))
-          .catch((error: unknown) => toastError(error instanceof Error ? error.message : '无法导入本地素材。'))
+          .catch((error: unknown) => toastError(error instanceof Error ? error.message : uiText("无法导入本地素材。")))
         setAddMenu(null)
         return
       }
@@ -1276,7 +1279,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               background: 'transparent',
               pointerEvents: 'none',
             },
-            data: { label: `堆叠拼图 · ${s.nodeIds.length} 张（双击展开）` },
+            data: { label: uiText("堆叠拼图 · {0} 张（双击展开）", { 0: s.nodeIds.length }) },
             zIndex: 5,
             draggable: false,
             selectable: false,
@@ -1291,16 +1294,16 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3 bg-[#f2f2f2]">
         <Spinner className="h-8 w-8" />
-        <p className="text-[13px] text-[#888]">正在打开画布…</p>
+        <p className="text-[13px] text-[#888]">{uiText("正在打开画布…")}</p>
       </div>
     )
   }
 
   if (isError || !detail) {
-    const msg = error instanceof Error ? error.message : '画布加载失败'
+    const msg = error instanceof Error ? error.message : uiText("画布加载失败")
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-4 bg-[#f2f2f2] px-6 text-center">
-        <p className="text-[18px] font-bold text-[#111]">无法打开画布</p>
+        <p className="text-[18px] font-bold text-[#111]">{uiText("无法打开画布")}</p>
         <p className="max-w-md text-[14px] text-[#666]">{msg}</p>
         <div className="flex gap-2">
           <button
@@ -1308,14 +1311,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             onClick={() => void refetch()}
             className="h-10 rounded-full bg-[#111] px-5 text-[14px] font-semibold text-white"
           >
-            重试
-          </button>
+            {uiText("重试")}</button>
           <Link
             to="/workspace"
             className="inline-flex h-10 items-center rounded-full border border-black/10 bg-white px-5 text-[14px] font-semibold text-[#333]"
           >
-            返回画布管理
-          </Link>
+            {uiText("返回画布管理")}</Link>
         </div>
       </div>
     )
@@ -1342,7 +1343,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           pendingUploadPos.current = null
           e.target.value = ''
           if (window.vibepaperDesktop) {
-            if (files.length) toastError('桌面版文件选择请使用本地图片导入入口。')
+            if (files.length) toastError(uiText("桌面版文件选择请使用本地图片导入入口。"))
             return
           }
           void (async () => {
@@ -1515,7 +1516,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               }
               setStacks(stacks.map((item) => sid(item.id) === sid(stack.id) ? { ...item, collapsed: false } : item))
               setDirty(true)
-              toastSuccess('堆叠已展开')
+              toastSuccess(uiText("堆叠已展开"))
               return
             }
             void api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(stack.id)}`, {
@@ -1542,7 +1543,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
                   setDirty(true)
                 }
                 setStacks(stacks.map((s) => (sid(s.id) === sid(stack.id) ? { ...s, collapsed: false } : s)))
-                toastSuccess('堆叠已展开')
+                toastSuccess(uiText("堆叠已展开"))
               })
               .catch((e) => toastError((e as Error).message))
           }
@@ -1579,11 +1580,11 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       </div>
 
       {readingPresence.value && (
-        <div ref={readingDialogRef} className="vp-soft-overlay fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-8 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="文本阅读"
+        <div ref={readingDialogRef} className="vp-soft-overlay fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-8 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={uiText("文本阅读")}
           data-open={readingPresence.visible} inert={!readingNode} aria-hidden={!readingNode}
           onClick={() => setReadingNodeId(null)} onDoubleClick={(event) => event.stopPropagation()}>
-          <button ref={readingCloseButtonRef} type="button" aria-label="关闭文本阅读" className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full bg-white/20 text-2xl text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white" onClick={() => setReadingNodeId(null)}>×</button>
-          <div role="document" aria-label="文本内容" tabIndex={0} className="h-[80vh] w-[min(1000px,90vw)] overflow-auto rounded-2xl bg-white p-8 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <button ref={readingCloseButtonRef} type="button" aria-label={uiText("关闭文本阅读")} className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full bg-white/20 text-2xl text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white" onClick={() => setReadingNodeId(null)}>×</button>
+          <div role="document" aria-label={uiText("文本内容")} tabIndex={0} className="h-[80vh] w-[min(1000px,90vw)] overflow-auto rounded-2xl bg-white p-8 shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <AgentMarkdown text={textNodeContent(readingPresence.value.output?.text, readingPresence.value.params)} className="select-text break-words" variant="document" />
           </div>
         </div>
@@ -1596,7 +1597,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             const id = animatedEdgeMenu.id
             setEdgeMenu(null)
             void deleteEdgeById(id)
-          }}><Trash2 size={18} />删除连线</button>
+          }}><Trash2 size={18} />{uiText("删除连线")}</button>
         </div>
       )}
       {animatedAddMenu && (
@@ -1609,15 +1610,14 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           }}
         >
           <p className="px-2.5 py-1 text-[11px] font-bold text-[#999]">
-            {animatedAddMenu.direction === 'upstream' ? '新建上游' : animatedAddMenu.direction === 'downstream' ? '新建下游' : '新建节点'}
+            {animatedAddMenu.direction === 'upstream' ? uiText("新建上游") : animatedAddMenu.direction === 'downstream' ? uiText("新建下游") : uiText("新建节点")}
           </p>
           <button
             type="button"
             onClick={() => uploadAt(animatedAddMenu.flowX, animatedAddMenu.flowY)}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-[#444] hover:bg-black/[0.04]"
           >
-            <Upload size={14} /> 上传
-          </button>
+            <Upload size={14} /> {uiText("上传")}</button>
           <div className="my-1 border-t border-black/6" />
           {['text', 'image', 'video', 'audio', 'compose', 'director'].map((t) => (
             <button
@@ -1637,16 +1637,16 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-[#444] hover:bg-black/[0.04]"
             >
               {t === 'text'
-                ? '文本'
+                ? uiText("文本")
                 : t === 'image'
-                  ? '图片'
+                  ? uiText("图片")
                   : t === 'video'
-                    ? '视频'
+                    ? uiText("视频")
                     : t === 'audio'
-                      ? '音频'
+                      ? uiText("音频")
                       : t === 'compose'
-                        ? '合成'
-                        : '导演台'}
+                        ? uiText("合成")
+                        : uiText("导演台")}
             </button>
           ))}
         </div>
@@ -1667,7 +1667,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-semibold text-[#333] hover:bg-black/[0.05]"
           >
             <Copy size={15} className="text-[#666]" />
-            <span className="flex-1 text-left">复制</span>
+            <span className="flex-1 text-left">{uiText("复制")}</span>
             <span className="text-[11px] font-medium text-[#aaa]">⌘C</span>
           </button>
           <button
@@ -1676,7 +1676,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-semibold text-[#333] hover:bg-black/[0.05]"
           >
             <Files size={15} className="text-[#666]" />
-            <span className="flex-1 text-left">副本</span>
+            <span className="flex-1 text-left">{uiText("副本")}</span>
             <span className="text-[11px] font-medium text-[#aaa]">⌘D</span>
           </button>
           <button
@@ -1685,7 +1685,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-semibold text-[#333] hover:bg-black/[0.05]"
           >
             <Trash2 size={15} className="text-[#666]" />
-            <span className="flex-1 text-left">删除</span>
+            <span className="flex-1 text-left">{uiText("删除")}</span>
             <span className="text-[11px] font-medium text-[#aaa]">⌫</span>
           </button>
         </div>
@@ -1693,15 +1693,14 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
       {animatedDeleteConfirm && (
         <div className="vp-soft-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4"
-          role="dialog" aria-modal="true" aria-label="确认删除节点" data-open={deletePresence.visible} inert={!deleteConfirm} aria-hidden={!deleteConfirm}>
+          role="dialog" aria-modal="true" aria-label={uiText("确认删除节点")} data-open={deletePresence.visible} inert={!deleteConfirm} aria-hidden={!deleteConfirm}>
           <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
-            <p className="text-[16px] font-bold text-[#111]">确认删除节点？</p>
+            <p className="text-[16px] font-bold text-[#111]">{uiText("确认删除节点？")}</p>
             <p className="mt-2 text-[13px] text-[#666]">
-              将删除 {animatedDeleteConfirm.nodeIds.length} 个节点及其关联连线。
-            </p>
+              {uiText("将删除 ")}{animatedDeleteConfirm.nodeIds.length} {uiText("个节点及其关联连线。")}</p>
             {animatedDeleteConfirm.downstream.length > 0 && (
               <div className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                <p className="font-bold">影响下游节点：</p>
+                <p className="font-bold">{uiText("影响下游节点：")}</p>
                 <ul className="mt-1 list-disc pl-4">
                   {animatedDeleteConfirm.downstream.slice(0, 8).map((d) => (
                     <li key={d.id}>
@@ -1710,7 +1709,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
                   ))}
                 </ul>
                 {animatedDeleteConfirm.downstream.length > 8 && (
-                  <p className="mt-1">…等共 {animatedDeleteConfirm.downstream.length} 个</p>
+                  <p className="mt-1">{uiText("…等共 ")}{animatedDeleteConfirm.downstream.length} {uiText("个")}</p>
                 )}
               </div>
             )}
@@ -1720,15 +1719,13 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
                 onClick={() => setDeleteConfirm(null)}
                 className="h-9 rounded-full px-4 text-[13px] font-semibold text-[#555] hover:bg-black/[0.04]"
               >
-                取消
-              </button>
+                {uiText("取消")}</button>
               <button
                 type="button"
                 onClick={() => void confirmDeleteNodes()}
                 className="h-9 rounded-full bg-[#111] px-4 text-[13px] font-bold text-white"
               >
-                确认删除
-              </button>
+                {uiText("确认删除")}</button>
             </div>
           </div>
         </div>

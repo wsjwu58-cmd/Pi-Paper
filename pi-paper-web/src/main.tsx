@@ -4,10 +4,11 @@ import './index.css'
 import App from './App'
 import { isDesktopRuntime } from '@/features/canvas/canvasPort'
 import { initializeTheme } from '@/lib/theme'
+import { initializeUiLanguage } from '@/lib/i18n'
 
 if (isDesktopRuntime()) {
-  document.title = 'Pi-Paper | 一张会创作的画布'
   initializeTheme()
+  await initializeUiLanguage()
 }
 
 createRoot(document.getElementById('root')!).render(

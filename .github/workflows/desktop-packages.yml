@@ -60,6 +60,21 @@ jobs:
         run: npm ci --prefix pi-paper-desktop
       - name: Build standalone desktop application
         run: npm run build:package --prefix pi-paper-desktop
+      - name: Verify language defaults and persistence
+        run: node --test pi-paper-desktop/test/ui-language.test.cjs
+      - name: Verify Linux packaged-resource interface language
+        if: matrix.platform == 'linux'
+        working-directory: pi-paper-desktop
+        run: |
+          xvfb-run -a node_modules/.bin/electron scripts/smoke-ui-language.cjs --app-dir=dist/app --no-sandbox
+          xvfb-run -a node_modules/.bin/electron scripts/smoke-ui-language.cjs --app-dir=dist/app --resume --no-sandbox
+      - name: Upload Linux language screenshots and reports
+        if: always() && matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pi-Paper-linux-language-evidence
+          if-no-files-found: warn
+          path: docs/verification/2026-10-08-ui-language/
       - name: Create installers
         working-directory: pi-paper-desktop
         run: npx electron-builder --config electron-builder.cjs --${{ matrix.platform }} --${{ matrix.arch }} --publish never

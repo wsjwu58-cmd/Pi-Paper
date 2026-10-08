@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import type { Edge, Node } from '@xyflow/react'
 import { canonicalCanvasEdges } from './canvasEdges'
 import { api, uploadAsset } from '@/lib/api'
@@ -57,11 +58,11 @@ export async function saveDirectorCapturePort(
   const bridge = window.vibepaperDesktop
   if (bridge) {
     if (canvasId == null || !bridge.saveDirectorCapture) {
-      throw new Error('桌面导演台照片保存服务尚未就绪。')
+      throw new Error(uiText("桌面导演台照片保存服务尚未就绪。"))
     }
     const project = await bridge.getActiveProject()
     if (!project || project.canvasId !== sid(canvasId)) {
-      throw new Error('当前项目或画布已更改，无法保存导演台照片。')
+      throw new Error(uiText("当前项目或画布已更改，无法保存导演台照片。"))
     }
     const saved = await bridge.saveDirectorCapture({
       projectId: project.projectId,
@@ -69,14 +70,14 @@ export async function saveDirectorCapturePort(
       nodeId: sid(nodeId),
       pngBytes: new Uint8Array(await blob.arrayBuffer()),
     })
-    if (!saved?.url) throw new Error('桌面本地项目未保存导演台照片。')
+    if (!saved?.url) throw new Error(uiText("桌面本地项目未保存导演台照片。"))
     window.dispatchEvent(new Event('vp-assets-updated'))
     return saved
   }
 
   const file = new File([blob], `director-capture-${Date.now()}.png`, { type: 'image/png' })
   const saved = await uploadAsset(file, 'image', canvasId, nodeId) as { url?: string }
-  if (!saved.url) throw new Error('上传失败')
+  if (!saved.url) throw new Error(uiText("上传失败"))
   window.dispatchEvent(new Event('vp-assets-updated'))
   return { url: saved.url }
 }
@@ -230,11 +231,11 @@ function desktopFlowEdge(edge: Edge): Edge {
 export async function loadCanvasPort(canvasId: string): Promise<CanvasPortSnapshot> {
   const bridge = window.vibepaperDesktop
   if (!isDesktopRuntime()) return { detail: await api<CanvasDetail>(`/canvases/${canvasId}`) }
-  if (!bridge) throw new Error('桌面本地桥接不可用，已阻止调用旧 Web 服务。请重新启动桌面应用。')
+  if (!bridge) throw new Error(uiText("桌面本地桥接不可用，已阻止调用旧 Web 服务。请重新启动桌面应用。"))
 
   const project = await bridge.getActiveProject()
-  if (!project) throw new Error('没有已打开的本地项目，请先从画布展示选择项目。')
-  if (project.canvasId !== canvasId) throw new Error('当前本地项目与请求的画布不匹配，请从画布展示重新选择。')
+  if (!project) throw new Error(uiText("没有已打开的本地项目，请先从画布展示选择项目。"))
+  if (project.canvasId !== canvasId) throw new Error(uiText("当前本地项目与请求的画布不匹配，请从画布展示重新选择。"))
   const canvas = await bridge.loadCanvas(project.projectId, project.canvasId)
   return { detail: detailFromDesktopCanvas(canvas, project), projectId: project.projectId }
 }
@@ -250,7 +251,7 @@ export async function saveCanvasPort(input: {
   stacks: StackPayload[]
 }): Promise<{ version: number; staleNodeIds: string[] }> {
   const bridge = window.vibepaperDesktop
-  if (!bridge) throw new Error('本地画布保存接口不可用。')
+  if (!bridge) throw new Error(uiText("本地画布保存接口不可用。"))
   return bridge.saveCanvas({
     ...input,
     idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
@@ -276,8 +277,8 @@ export async function deleteCanvasEdgePort(input: {
 }): Promise<void> {
   if (isDesktopRuntime()) {
     const bridge = window.vibepaperDesktop
-    if (!bridge) throw new Error('桌面本地连线服务尚未就绪。')
-    if (!input.projectId) throw new Error('没有已打开的本地项目，无法删除连线。')
+    if (!bridge) throw new Error(uiText("桌面本地连线服务尚未就绪。"))
+    if (!input.projectId) throw new Error(uiText("没有已打开的本地项目，无法删除连线。"))
     await bridge.deleteEdge({
       projectId: input.projectId,
       canvasId: sid(input.canvasId),
@@ -306,8 +307,8 @@ export async function createCanvasNodePort(input: {
     })
     return { id: sid(created.id), type: created.type }
   }
-  if (!bridge) throw new Error('桌面本地桥接不可用，已阻止调用旧 Web 服务。请重新启动桌面应用。')
-  if (!input.projectId || input.expectedVersion === undefined) throw new Error('本地画布身份或版本缺失。')
+  if (!bridge) throw new Error(uiText("桌面本地桥接不可用，已阻止调用旧 Web 服务。请重新启动桌面应用。"))
+  if (!input.projectId || input.expectedVersion === undefined) throw new Error(uiText("本地画布身份或版本缺失。"))
   const created = await bridge.createNode({
     projectId: input.projectId,
     canvasId: input.canvasId,

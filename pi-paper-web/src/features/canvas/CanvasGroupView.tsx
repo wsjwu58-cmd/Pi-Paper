@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useEffect, useMemo, useRef } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { ArrowDown, ArrowRight, Download, Move, Ungroup } from 'lucide-react'
@@ -30,6 +31,7 @@ export function CanvasGroupView({
   onUngroup,
   onDownloadGroup,
 }: CanvasGroupViewProps) {
+  useUiLanguage()
   const { zoom } = useViewport()
   const frames = useMemo(
     () => groups.map((group) => ({ group, bounds: frozenBounds?.[sid(group.id)] ?? getCanvasGroupBounds(group, nodes) }))
@@ -75,6 +77,7 @@ function GroupFrame({
   onUngroup,
   onDownloadGroup,
 }: GroupFrameProps) {
+  useUiLanguage()
   const dragAbort = useRef<AbortController | null>(null)
   const id = sid(group.id)
 
@@ -112,7 +115,7 @@ function GroupFrame({
     <>
       <div
         data-canvas-group-view={id}
-        aria-label={`${group.name}编组范围`}
+        aria-label={uiText("{0}编组范围", { 0: group.name })}
         className="absolute rounded-[18px] border-2 border-dashed transition-colors"
         style={{
           left: bounds.x,
@@ -136,19 +139,19 @@ function GroupFrame({
           {group.name}
         </span>
         <div className="h-4 w-px bg-black/10" />
-        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title="移动整个编组" aria-label="移动整个编组" onPointerDown={beginMove} onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title={uiText("移动整个编组")} aria-label={uiText("移动整个编组")} onPointerDown={beginMove} onClick={(event) => event.stopPropagation()}>
           <Move size={14} />
         </button>
-        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title="水平排列" aria-label="水平排列" onClick={(event) => { stop(event); onArrangeGroup(group, 'horizontal') }}>
+        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title={uiText("水平排列")} aria-label={uiText("水平排列")} onClick={(event) => { stop(event); onArrangeGroup(group, 'horizontal') }}>
           <ArrowRight size={14} />
         </button>
-        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title="垂直排列" aria-label="垂直排列" onClick={(event) => { stop(event); onArrangeGroup(group, 'vertical') }}>
+        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title={uiText("垂直排列")} aria-label={uiText("垂直排列")} onClick={(event) => { stop(event); onArrangeGroup(group, 'vertical') }}>
           <ArrowDown size={14} />
         </button>
-        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title="取消编组" aria-label="取消编组" onClick={(event) => { stop(event); onUngroup(group) }}>
+        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title={uiText("取消编组")} aria-label={uiText("取消编组")} onClick={(event) => { stop(event); onUngroup(group) }}>
           <Ungroup size={14} />
         </button>
-        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title="下载组内结果" aria-label="下载组内结果" onClick={(event) => { stop(event); onDownloadGroup(group) }}>
+        <button type="button" className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full text-[#555] hover:bg-black/5" title={uiText("下载组内结果")} aria-label={uiText("下载组内结果")} onClick={(event) => { stop(event); onDownloadGroup(group) }}>
         <Download size={14} />
         </button>
       </div>

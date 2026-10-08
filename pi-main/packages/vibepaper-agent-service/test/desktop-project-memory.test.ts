@@ -1,14 +1,16 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
-import { DesktopProjectMemory } from "../src/desktop/project-memory.ts";
-import { openDesktopAgentStores } from "../src/desktop/agent-stores.ts";
 import { SessionRunService } from "../src/application/session-run-service.ts";
+import { openDesktopAgentStores } from "../src/desktop/agent-stores.ts";
+import { DesktopProjectMemory } from "../src/desktop/project-memory.ts";
 import { createDramaAgent } from "../src/pi/drama-agent.ts";
-const { createLocalProjectStore } = createRequire(import.meta.url)("../../../../pi-paper-desktop/src/project-store.cjs");
+
+const { createLocalProjectStore } = createRequire(import.meta.url)(
+	"../../../../pi-paper-desktop/src/project-store.cjs",
+);
 
 let temporaryRoot: string;
 
@@ -27,12 +29,22 @@ describe("desktop project memory", () => {
 	it("exposes memory tools through the original desktop Agent while keeping Web and read-only profiles bounded", async () => {
 		const memory = await createMemory("profile-tools", "project-profile");
 		const tools = memory.createTools("请记住这个项目的偏好");
-		const options = { profile: "canvas-general" as const, streamFn: (() => undefined) as never, desktopMemoryTools: tools };
-		expect(createDramaAgent(undefined, options).state.tools.map((tool) => tool.name)).not.toContain("remember_project_preference");
-		expect(createDramaAgent(undefined, { ...options, desktopMode: true }).state.tools.map((tool) => tool.name))
-			.toContain("remember_project_preference");
-		expect(createDramaAgent(undefined, { ...options, desktopMode: true, profile: "audit-readonly" }).state.tools.map((tool) => tool.name))
-			.toEqual(["read_project_memory"]);
+		const options = {
+			profile: "canvas-general" as const,
+			streamFn: (() => undefined) as never,
+			desktopMemoryTools: tools,
+		};
+		expect(createDramaAgent(undefined, options).state.tools.map((tool) => tool.name)).not.toContain(
+			"remember_project_preference",
+		);
+		expect(
+			createDramaAgent(undefined, { ...options, desktopMode: true }).state.tools.map((tool) => tool.name),
+		).toContain("remember_project_preference");
+		expect(
+			createDramaAgent(undefined, { ...options, desktopMode: true, profile: "audit-readonly" }).state.tools.map(
+				(tool) => tool.name,
+			),
+		).toEqual(["read_project_memory"]);
 	});
 
 	afterEach(async () => {
@@ -46,7 +58,10 @@ describe("desktop project memory", () => {
 			const opened = await core.createProject(temporaryRoot, "Memory Backup");
 			agent = await openDesktopAgentStores(opened.directory);
 			const session = await agent.sessions.createSession("记忆恢复");
-			await new SessionRunService(agent.control).startRun({ sessionId: session.id, idempotencyKey: "interrupted-before-backup" });
+			await new SessionRunService(agent.control).startRun({
+				sessionId: session.id,
+				idempotencyKey: "interrupted-before-backup",
+			});
 			const memory = new DesktopProjectMemory(opened.directory, opened.project.projectId);
 			await memory.initialize();
 			const saved = await memory.write("这个项目使用暖色绘本风格", "请记住这个项目偏好");
@@ -57,9 +72,13 @@ describe("desktop project memory", () => {
 			expect(restored.project.projectId).not.toBe(opened.project.projectId);
 			const restoredMemory = new DesktopProjectMemory(restored.directory, restored.project.projectId);
 			await restoredMemory.initialize();
-			expect(await restoredMemory.list()).toEqual([expect.objectContaining({
-				id: saved.id, content: saved.content, userId: restored.project.projectId,
-			})]);
+			expect(await restoredMemory.list()).toEqual([
+				expect.objectContaining({
+					id: saved.id,
+					content: saved.content,
+					userId: restored.project.projectId,
+				}),
+			]);
 			expect(await memory.list()).toEqual([expect.objectContaining({ userId: opened.project.projectId })]);
 			agent = await openDesktopAgentStores(restored.directory);
 			expect((await agent.sessions.listSessions()).map((item) => item.id)).toContain(session.id);
@@ -111,14 +130,18 @@ describe("desktop project memory", () => {
 		expect(exported.map((entry) => entry.record.id)).toEqual([projectPreference.id, globalPreference.id]);
 
 		const secondDirectory = await createProject("global-memory-b", "project-global-b");
-		const reopened = new DesktopProjectMemory(secondDirectory, "project-global-b", { userDataDirectory: temporaryRoot });
+		const reopened = new DesktopProjectMemory(secondDirectory, "project-global-b", {
+			userDataDirectory: temporaryRoot,
+		});
 		await reopened.initialize();
 		expect(await reopened.listManaged("project")).toEqual([]);
-		expect(await reopened.listManaged("global")).toEqual([expect.objectContaining({
-			id: globalPreference.id,
-			userId: "vibepaper-local-user-v1",
-			content: "默认优先使用暖色调",
-		})]);
+		expect(await reopened.listManaged("global")).toEqual([
+			expect.objectContaining({
+				id: globalPreference.id,
+				userId: "vibepaper-local-user-v1",
+				content: "默认优先使用暖色调",
+			}),
+		]);
 
 		await reopened.editManaged(globalPreference.id, "全局默认优先使用暖色绘本风格", "global");
 		expect((await first.listManaged("global"))[0]?.content).toBe("全局默认优先使用暖色绘本风格");
@@ -173,9 +196,9 @@ describe("desktop project memory", () => {
 		expect(await first.read("乙")).toEqual([]);
 		expect(await second.read("甲")).toEqual([]);
 
-		await expect(new DesktopProjectMemory(join(temporaryRoot, "isolation-a"), "project-b").initialize()).rejects.toThrow(
-			"PERMISSION_DENIED",
-		);
+		await expect(
+			new DesktopProjectMemory(join(temporaryRoot, "isolation-a"), "project-b").initialize(),
+		).rejects.toThrow("PERMISSION_DENIED");
 	});
 
 	it("rejects sensitive key and credential patterns", async () => {

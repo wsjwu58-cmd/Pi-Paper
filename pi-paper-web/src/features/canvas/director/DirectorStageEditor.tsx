@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -40,6 +41,7 @@ import {
 } from './types'
 
 function CatalogIcon({ name, size = 18 }: { name: string; size?: number }) {
+  useUiLanguage()
   const props = { size, strokeWidth: 1.6 as const }
   switch (name) {
     case 'person':
@@ -96,6 +98,7 @@ function SliderRow({
   display?: string
   onChange: (v: number) => void
 }) {
+  useUiLanguage()
   return (
     <label className="flex items-center gap-2.5 text-[12px] text-[#555]">
       <span className="w-8 shrink-0 font-semibold text-[#333]">{label}</span>
@@ -122,17 +125,18 @@ function CatalogButton({
   onAdd: (item: CatalogItem) => void
   active?: boolean
 }) {
+  useUiLanguage()
   return (
     <button
       type="button"
-      title={item.label}
+      title={uiText(item.label)}
       onClick={() => onAdd(item)}
       className={`flex h-[52px] w-[52px] flex-col items-center justify-center gap-0.5 rounded-xl text-[#444] transition hover:bg-black/[0.05] ${
         active ? 'bg-black/[0.06] ring-1 ring-black/10' : 'bg-[#f6f6f8]'
       }`}
     >
       <CatalogIcon name={item.icon} size={18} />
-      <span className="text-[10px] font-semibold leading-none">{item.label}</span>
+      <span className="text-[10px] font-semibold leading-none">{uiText(item.label)}</span>
     </button>
   )
 }
@@ -152,6 +156,7 @@ export function DirectorStageEditor({
   onClose: () => void
   onSave: (state: DirectorSceneState, latestUrl: string | null) => void
 }) {
+  useUiLanguage()
   const [objects, setObjects] = useState<DirectorObject[]>(initial.objects)
   const [camera, setCamera] = useState<DirectorCamera>(initial.camera ?? DEFAULT_CAMERA)
   const [captures, setCaptures] = useState<string[]>(initial.captures ?? [])
@@ -235,14 +240,14 @@ export function DirectorStageEditor({
     setCapturing(true)
     try {
       const blob = await viewportRef.current?.capturePng()
-      if (!blob) throw new Error('截图失败')
+      if (!blob) throw new Error(uiText("截图失败"))
       const asset = await saveDirectorCapturePort(blob, canvasId, nodeId)
       setCaptures((prev) => [...prev, asset.url].slice(-12))
       setDirty(false)
-      toastSuccess('拍照完成')
+      toastSuccess(uiText("拍照完成"))
       return asset.url
     } catch (e) {
-      toastError((e as Error).message || '拍照失败')
+      toastError((e as Error).message || uiText("拍照失败"))
       return null
     } finally {
       setCapturing(false)
@@ -268,12 +273,12 @@ export function DirectorStageEditor({
   return createPortal(
     <div className="fixed inset-0 z-[80] flex flex-col bg-[#f3f3f6]/92 backdrop-blur-[2px]">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-black/6 bg-white/90 px-4">
-        <div className="text-[14px] font-bold text-[#222]">导演台</div>
+        <div className="text-[14px] font-bold text-[#222]">{uiText("导演台")}</div>
         <button
           type="button"
           onClick={() => void handleClose()}
           className="flex h-8 w-8 items-center justify-center rounded-full bg-black/[0.05] text-[#555] hover:bg-black/10"
-          title="关闭"
+          title={uiText("关闭")}
         >
           <X size={16} />
         </button>
@@ -291,9 +296,9 @@ export function DirectorStageEditor({
 
         {/* 左侧：添加模型 */}
         <aside className="absolute left-4 top-4 z-10 w-[200px] rounded-2xl bg-white/95 p-3 shadow-[0_12px_40px_rgba(15,23,42,0.12)] ring-1 ring-black/6 backdrop-blur">
-          <p className="mb-2 text-[12px] font-bold text-[#333]">点击添加模型</p>
+          <p className="mb-2 text-[12px] font-bold text-[#333]">{uiText("点击添加模型")}</p>
 
-          <p className="mb-1.5 text-[11px] font-semibold text-[#888]">人物模型</p>
+          <p className="mb-1.5 text-[11px] font-semibold text-[#888]">{uiText("人物模型")}</p>
           <div className="mb-3 flex flex-wrap gap-1.5">
             <CatalogButton item={CHARACTER_ENTRY} onAdd={addFromCatalog} active={posePicker} />
           </div>
@@ -313,14 +318,14 @@ export function DirectorStageEditor({
             </div>
           )}
 
-          <p className="mb-1.5 text-[11px] font-semibold text-[#888]">场景模型</p>
+          <p className="mb-1.5 text-[11px] font-semibold text-[#888]">{uiText("场景模型")}</p>
           <div className="mb-3 flex flex-wrap gap-1.5">
             {PROP_CATALOG.map((item) => (
               <CatalogButton key={item.kind} item={item} onAdd={addFromCatalog} />
             ))}
           </div>
 
-          <p className="mb-1.5 text-[11px] font-semibold text-[#888]">基础模型</p>
+          <p className="mb-1.5 text-[11px] font-semibold text-[#888]">{uiText("基础模型")}</p>
           <div className="flex flex-wrap gap-1.5">
             {PRIMITIVE_CATALOG.map((item) => (
               <CatalogButton key={item.kind} item={item} onAdd={addFromCatalog} />
@@ -342,7 +347,7 @@ export function DirectorStageEditor({
                   value={selected.color}
                   onChange={(e) => patchSelected({ color: e.target.value })}
                   className="h-7 w-7 cursor-pointer rounded border-0 bg-transparent"
-                  title="颜色"
+                  title={uiText("颜色")}
                 />
               )}
             </div>
@@ -381,7 +386,7 @@ export function DirectorStageEditor({
                 }
               />
               <SliderRow
-                label="旋转"
+                label={uiText("旋转")}
                 value={selected.rotation}
                 min={-180}
                 max={180}
@@ -390,7 +395,7 @@ export function DirectorStageEditor({
                 onChange={(v) => patchSelected({ rotation: v })}
               />
               <SliderRow
-                label="缩放"
+                label={uiText("缩放")}
                 value={selected.scale}
                 min={0.3}
                 max={3}
@@ -400,7 +405,7 @@ export function DirectorStageEditor({
               />
               {selected.category === 'character' && (
                 <label className="flex items-center gap-2 text-[12px] text-[#555]">
-                  <span className="w-8 shrink-0 font-semibold text-[#333]">姿势</span>
+                  <span className="w-8 shrink-0 font-semibold text-[#333]">{uiText("姿势")}</span>
                   <select
                     className="h-8 flex-1 rounded-lg border border-black/8 bg-[#f6f6f8] px-2 text-[11px] font-semibold"
                     value={selected.kind}
@@ -413,7 +418,7 @@ export function DirectorStageEditor({
                   >
                     {CHARACTER_POSES.map((p) => (
                       <option key={p} value={p}>
-                        {p}
+                        {uiText(p)}
                       </option>
                     ))}
                   </select>
@@ -425,8 +430,7 @@ export function DirectorStageEditor({
               onClick={removeSelected}
               className="mt-4 w-full rounded-xl bg-[#111] py-2.5 text-[13px] font-bold text-white hover:bg-black"
             >
-              删除模型
-            </button>
+              {uiText("删除模型")}</button>
           </aside>
         )}
 
@@ -438,7 +442,7 @@ export function DirectorStageEditor({
                 <div
                   className="h-8 w-5 rounded-sm bg-[#e85d6c]"
                   style={{ transform: `rotate(${selected.rotation}deg)` }}
-                  title="角色朝向"
+                  title={uiText("角色朝向")}
                 />
               </div>
             )}
@@ -453,7 +457,7 @@ export function DirectorStageEditor({
 
           <div className="pointer-events-auto flex items-end gap-3">
             <div className="w-[200px] rounded-2xl bg-white/95 p-3 shadow ring-1 ring-black/6">
-              <p className="mb-2 text-[11px] font-bold text-[#555]">机位</p>
+              <p className="mb-2 text-[11px] font-bold text-[#555]">{uiText("机位")}</p>
               <div className="space-y-2">
                 <SliderRow
                   label="Yaw"
@@ -478,7 +482,7 @@ export function DirectorStageEditor({
                   }}
                 />
                 <SliderRow
-                  label="距"
+                  label={uiText("距")}
                   value={camera.distance}
                   min={3}
                   max={20}
@@ -498,7 +502,7 @@ export function DirectorStageEditor({
               className="flex h-12 items-center gap-2 rounded-2xl bg-[#111] px-5 text-[14px] font-bold text-white shadow-lg hover:bg-black disabled:opacity-60"
             >
               <Camera size={18} />
-              {capturing ? '拍照中…' : '拍照'}
+              {capturing ? uiText("拍照中…") : uiText("拍照")}
             </button>
           </div>
         </div>
@@ -509,6 +513,7 @@ export function DirectorStageEditor({
 }
 
 function CaptureThumb({ url, active }: { url: string; active?: boolean }) {
+  useUiLanguage()
   const src = useAuthedMediaUrl(url)
   return (
     <div

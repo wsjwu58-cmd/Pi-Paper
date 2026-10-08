@@ -46,6 +46,12 @@ const { exportNodeOutput } = require('./node-export.cjs')
 const { registerCanvasMediaIpc } = require('./canvas-media.cjs')
 const { createProviderSettings } = require('./provider-settings.cjs')
 const { isOfficialDocumentationUrl } = require('./official-documentation.cjs')
+const { createUiLanguageSettings } = require('./ui-language.cjs')
+const uiEnglish = require('./ui-english.cjs')
+let uiLanguageSettings = null
+function uiText(source) {
+  return uiLanguageSettings?.get().language === 'en' ? uiEnglish[source] || source : source
+}
 
 // Keep the existing settings, credentials and Chromium profile after rebranding.
 app.setPath('userData', path.join(app.getPath('appData'), 'VibePaper'))
@@ -258,7 +264,7 @@ function startLocalCore() {
     }
     pending.clear()
     if (mainWindow && !quittingAfterCoreClose) {
-      void dialog.showErrorBox('本地核心已停止', '本地项目服务意外退出。请重新启动 Pi-Paper 后继续。')
+      void dialog.showErrorBox(uiText("本地核心已停止"), uiText("本地项目服务意外退出。请重新启动 Pi-Paper 后继续。"))
       app.quit()
     }
   })
@@ -1601,6 +1607,14 @@ function localAssetImportName(sourcePath) {
 }
 
 function registerProjectIpc() {
+  ipcMain.handle('desktop:ui-language:get', (event) => {
+    assertTrustedSender(event)
+    return uiLanguageSettings.get()
+  })
+  ipcMain.handle('desktop:ui-language:set', async (event, preference) => {
+    assertTrustedSender(event)
+    return uiLanguageSettings.set(preference)
+  })
   registerCanvasMediaIpc(ipcMain, {
     assertTrustedSender,
     assertActive: async (projectId, canvasId) => {
@@ -1616,7 +1630,7 @@ function registerProjectIpc() {
     resolveAsset: (assetId) => localCore.request('asset:resolve', { assetId }),
     importImage: (sourcePath, projectId) => localCore.request('asset:import', { sourcePath, projectId, assetKind: 'image' }, 5 * 60 * 1000),
     renameAsset: (projectId, assetId, name) => localCore.request('asset:rename', { projectId, assetId, name }),
-    showDirectoryDialog: () => dialog.showOpenDialog(mainWindow, { title: '选择编组下载位置', properties: ['openDirectory', 'createDirectory'] }),
+    showDirectoryDialog: () => dialog.showOpenDialog(mainWindow, { title: uiText("选择编组下载位置"), properties: ['openDirectory', 'createDirectory'] }),
   })
   for (const [channel, method] of Object.entries({
     get: 'snapshot', save: 'save', clear: 'clear', test: 'test',
@@ -1643,7 +1657,10 @@ function registerProjectIpc() {
       readTextTask: (projectId, taskId) => localCore.request('task:read-output', { projectId, taskId }),
       resolveTask: (projectId, taskId, outputIndex) => localCore.request('task:resolve-output-preview', { projectId, taskId, outputIndex }),
       resolveAsset: (assetId) => localCore.request('asset:resolve', { assetId }),
-      showSaveDialog: (options) => dialog.showSaveDialog(mainWindow, options),
+      showSaveDialog: (options) => dialog.showSaveDialog(mainWindow, { ...options,
+        title: uiText(options.title),
+        filters: options.filters?.map((filter) => ({ ...filter, name: uiText(filter.name) })),
+      }),
     })
   })
   ipcMain.handle('desktop:project:get-active', (event) => {
@@ -1684,7 +1701,7 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:create', async (event, name) => {
     assertTrustedSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '选择新项目的保存位置',
+      title: uiText("选择新项目的保存位置"),
       properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1737,7 +1754,7 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:open', async (event) => {
     assertTrustedSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '打开 Pi-Paper 本地项目',
+      title: uiText("打开 Pi-Paper 本地项目"),
       properties: ['openDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1749,7 +1766,7 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:backup', async (event, projectId) => {
     assertTrustedSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '选择项目备份保存位置',
+      title: uiText("选择项目备份保存位置"),
       properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1759,8 +1776,8 @@ function registerProjectIpc() {
     }))
     await dialog.showMessageBox(mainWindow, {
       type: 'info',
-      title: '项目备份完成',
-      message: '本地项目备份已创建，包含支持的 Agent 会话与记忆文件。',
+      title: uiText("项目备份完成"),
+      message: uiText("本地项目备份已创建，包含支持的 Agent 会话与记忆文件。"),
       detail: backup.directory,
     })
     return { name: backup.name }
@@ -1768,12 +1785,12 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:restore-backup', async (event) => {
     assertTrustedSender(event)
     const sourceResult = await dialog.showOpenDialog(mainWindow, {
-      title: '选择要恢复的 Pi-Paper 项目备份',
+      title: uiText("选择要恢复的 Pi-Paper 项目备份"),
       properties: ['openDirectory'],
     })
     if (sourceResult.canceled || sourceResult.filePaths.length === 0) return null
     const destinationResult = await dialog.showOpenDialog(mainWindow, {
-      title: '选择恢复副本的保存位置',
+      title: uiText("选择恢复副本的保存位置"),
       properties: ['openDirectory', 'createDirectory'],
     })
     if (destinationResult.canceled || destinationResult.filePaths.length === 0) return null
@@ -1786,8 +1803,8 @@ function registerProjectIpc() {
     void scheduleTaskPump(restored.project.projectId)
     await dialog.showMessageBox(mainWindow, {
       type: 'info',
-      title: '备份恢复完成',
-      message: '已创建并打开恢复副本。',
+      title: uiText("备份恢复完成"),
+      message: uiText("已创建并打开恢复副本。"),
       detail: `${restored.project.name}\n${restored.directory}`,
     })
     return restored.project
@@ -1796,7 +1813,7 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '导入本地图片素材',
+      title: uiText("导入本地图片素材"),
       properties: ['openFile'],
       filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
     })
@@ -1808,7 +1825,7 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '导入本地素材',
+      title: uiText("导入本地素材"),
       properties: ['openFile'],
       filters: [{ name: '图片、视频、音频和文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'] }],
     })
@@ -1820,7 +1837,7 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '批量导入本地素材',
+      title: uiText("批量导入本地素材"),
       properties: ['openFile', 'multiSelections'],
       filters: [{ name: '图片、视频、音频和文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'] }],
     })
@@ -1914,7 +1931,7 @@ function registerProjectIpc() {
     assertAssetId(assetId)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '替换本地图片素材',
+      title: uiText("替换本地图片素材"),
       properties: ['openFile'],
       filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
     })
@@ -1931,7 +1948,7 @@ function registerProjectIpc() {
     assertAssetId(assetId)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '替换本地音频素材',
+      title: uiText("替换本地音频素材"),
       properties: ['openFile'],
       filters: [{ name: 'WAV、MP3、OGG 和 M4A 音频', extensions: ['wav', 'mp3', 'ogg', 'm4a'] }],
     })
@@ -1948,7 +1965,7 @@ function registerProjectIpc() {
     assertAssetId(assetId)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '替换本地素材',
+      title: uiText("替换本地素材"),
       properties: ['openFile'],
       filters: [{ name: '图片、视频、音频和文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'] }],
     })
@@ -2210,7 +2227,7 @@ function registerProjectIpc() {
       throw new Error('画布导入请求无效或超过本地画布数据上限。')
     }
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '选择导入画布的新项目保存位置',
+      title: uiText("选择导入画布的新项目保存位置"),
       properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -2899,7 +2916,7 @@ function registerAgentIpc() {
     assertTrustedSender(event)
     const worker = await getAgentWorker(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '导入本地 Markdown Skill',
+      title: uiText("导入本地 Markdown Skill"),
       properties: ['openFile'],
       filters: [{ name: 'Markdown Skill', extensions: ['md', 'markdown'] }],
     })
@@ -3122,6 +3139,10 @@ if (hasSingleInstanceLock) {
     recentProjectFile = path.join(app.getPath('userData'), 'recent-project.json')
     recentProjectsFile = path.join(app.getPath('userData'), 'recent-projects.json')
     desktopSettingsFile = path.join(app.getPath('userData'), 'settings.json')
+    uiLanguageSettings = createUiLanguageSettings({
+      file: path.join(app.getPath('userData'), 'ui-settings.json'), locale: app.getLocale(),
+    })
+    await uiLanguageSettings.load()
     agnesCredentialFile = path.join(app.getPath('userData'), 'credentials', 'agnes-api-key.bin')
     arkCredentialFile = path.join(app.getPath('userData'), 'credentials', 'ark-api-key.bin')
     providerSettings = createProviderSettings({
@@ -3161,7 +3182,7 @@ if (hasSingleInstanceLock) {
     })
   }).catch((error) => {
     const message = error instanceof Error ? error.message : '桌面应用启动失败。'
-    void dialog.showErrorBox('Pi-Paper 启动失败', message)
+    void dialog.showErrorBox(uiText("Pi-Paper 启动失败"), message)
     app.quit()
   })
 

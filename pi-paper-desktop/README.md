@@ -10,6 +10,12 @@ Pi-Paper 的单用户桌面版：使用 Electron 运行原 `pi-paper-web` 页面
 
 需要通过浏览器访问时，按 [Docker/noVNC 文档](../docker/README.md) 运行同一套 Linux Electron 桌面。容器数据位于 Docker 主机，项目选择 `/projects`；用户目录、系统凭据库和项目分别使用持久卷。此可选路径不会把普通桌面启动改为依赖 Docker。
 
+## 界面语言
+
+桌面版支持中文和 English。首次启动跟随系统：中文区域默认中文，其余区域默认英文；Linux 按 `LC_ALL`、`LC_MESSAGES`、`LANG` 的顺序读取消息区域设置，无环境值时读取 Electron 区域设置。可在画布展示、画布顶部或模型配置页选择「跟随系统 / 中文 / English」，立即切换并在重启后保留。应用内原生对话框标题也随选择切换。
+
+语言偏好独立保存于系统用户数据目录的 `ui-settings.json`，不覆盖模型设置。项目名、节点内容、提示词、Skill 和 Agent 实际回复保留原文，切换语言不会修改项目数据。原 Web 路径继续使用中文。实现与截图见 [界面语言验收记录](../docs/verification/2026-10-08-ui-language/README.md)。更新源码后需要重新构建安装包；已有发行二进制不会自动获得此功能。
+
 ## 快速启动
 
 ### 环境与依赖

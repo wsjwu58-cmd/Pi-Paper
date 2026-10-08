@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useRef, type ReactNode } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { LucideIcon } from 'lucide-react'
@@ -58,6 +59,7 @@ export function SplitNodeLayout({
   /** Inline crop controls extend the selected image frame and need to remain visible. */
   cropEditing?: boolean
 }) {
+  useUiLanguage()
   const nodeId = sid(node.id)
   const badge = statusBadge(node.status)
   const ringCls = selected ? 'ring-[#111]/35' : 'ring-black/5'
@@ -85,8 +87,8 @@ export function SplitNodeLayout({
       <SoftCollapse open={expanded} className="w-full">
         <div className="mb-1.5 flex items-center justify-center gap-1.5 text-[11px] font-semibold text-[#8e8e93]">
           <Icon size={12} />
-          <span>{label}</span>
-          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badge.cls}`}>{badge.text}</span>
+          <span>{uiText(label)}</span>
+          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badge.cls}`}>{uiText(badge.text)}</span>
         </div>
       </SoftCollapse>
 
@@ -114,7 +116,7 @@ export function SplitNodeLayout({
               <div className={mediaFrame ? 'absolute right-2 top-2 z-10' : 'mb-1.5 flex justify-end'}>
                 <label
                   className={`nodrag nowheel flex h-6 w-6 items-center justify-center rounded-lg bg-[#f0f0f2] ring-1 ring-black/6 ${topUpload.unavailableReason ? 'cursor-not-allowed text-[#b0b0b8]' : 'cursor-pointer text-[#888] hover:bg-[#e8e8ec]'}`}
-                  title={topUpload.unavailableReason || '上传素材'}
+                  title={topUpload.unavailableReason || uiText("上传素材")}
                   aria-disabled={Boolean(topUpload.unavailableReason)}
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
@@ -157,8 +159,7 @@ export function SplitNodeLayout({
                 <GenerationProgress {...generationProgress} status={progressStatus} />
               ) : showLegacyBusy ? (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/60 text-[12px] font-bold text-[#555]">
-                  生成中…
-                </div>
+                  {uiText("生成中…")}</div>
               ) : null}
             </div>
           </div>

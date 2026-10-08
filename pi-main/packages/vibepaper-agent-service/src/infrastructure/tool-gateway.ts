@@ -732,8 +732,7 @@ export function resolveCatalogGenerationModel(catalog: readonly unknown[], reque
 	const modality = legacyModelModality(normalized);
 	if (modality) {
 		const modalityMatches = models.filter((item) => item.modelType === modality);
-		if (modalityMatches.length === 1 && typeof modalityMatches[0]?.name === "string")
-			return modalityMatches[0].name;
+		if (modalityMatches.length === 1 && typeof modalityMatches[0]?.name === "string") return modalityMatches[0].name;
 	}
 	return requested;
 }

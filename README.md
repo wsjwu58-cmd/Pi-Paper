@@ -36,6 +36,10 @@ Download the **v0.1.0 desktop prerelease** from [GitHub Releases](https://github
 
 This is a development prerelease. The Windows installer is unsigned, and the macOS packages are not notarized by Apple. See [desktop setup and usage](./pi-paper-desktop/README.md) for installation and first-run guidance.
 
+## Interface language
+
+Pi-Paper supports English and Chinese. On first launch, Chinese system locales use Chinese; all other locales use English. On Linux, message locale resolution follows `LC_ALL > LC_MESSAGES > LANG`, then the Electron locale. Select **System / 中文 / English** in the workspace, canvas toolbar, or model settings to override the default. Your choice persists across restarts; project names and user content keep their original language.
+
 ## Branches
 
 | Branch | Purpose |

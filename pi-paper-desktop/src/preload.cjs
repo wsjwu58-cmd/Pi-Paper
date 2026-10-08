@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('vibepaperDesktop', {
+  getUiLanguage: () => ipcRenderer.invoke('desktop:ui-language:get'),
+  setUiLanguage: (preference) => ipcRenderer.invoke('desktop:ui-language:set', preference),
   getActiveProject: () => ipcRenderer.invoke('desktop:project:get-active'),
   listRecentProjects: () => ipcRenderer.invoke('desktop:project:list-recent'),
   openRecentProject: (projectId) => ipcRenderer.invoke('desktop:project:open-recent', projectId),

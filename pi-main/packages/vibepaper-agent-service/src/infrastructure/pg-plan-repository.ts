@@ -2,15 +2,10 @@ import type { QueryResultRow } from "pg";
 import { CanvasDependencyCompiler } from "../application/canvas-dependency-compiler.ts";
 import type { CompiledPlan } from "../application/plan-compiler.ts";
 import { PlanCompileError, PlanCompiler } from "../application/plan-compiler.ts";
-import {
-	claimPlanStep,
-	completePlanStep,
-	failPlanStep,
-	releaseExpiredLeases,
-} from "../application/plan-step-state.ts";
+import { claimPlanStep, completePlanStep, failPlanStep, releaseExpiredLeases } from "../application/plan-step-state.ts";
+import type { TerminalStatus } from "../application/task-terminal-service.ts";
 import type { AgentPlan, PlanStep } from "../domain/agent-plan.ts";
 import type { AgentProfile } from "../domain/tool-manifest.ts";
-import type { TerminalStatus } from "../application/task-terminal-service.ts";
 import { nextId } from "./ids.ts";
 import type { MigrationDatabase } from "./migrations.ts";
 
@@ -196,13 +191,13 @@ export class PgPlanRepository {
 			const next =
 				input.status === "succeeded"
 					? completePlanStep(current, step.id, {
-						idempotencyKey: step.idempotencyKey,
-						outputRef: input.outputRef ?? `task-result://${input.taskId}`,
-					})
+							idempotencyKey: step.idempotencyKey,
+							outputRef: input.outputRef ?? `task-result://${input.taskId}`,
+						})
 					: failPlanStep(current, step.id, {
-						idempotencyKey: step.idempotencyKey,
-						errorCode: input.errorCode ?? input.status.toUpperCase(),
-					});
+							idempotencyKey: step.idempotencyKey,
+							errorCode: input.errorCode ?? input.status.toUpperCase(),
+						});
 			const updated = await client.query<{ id: string }>(
 				`UPDATE agent_plans SET version = $1, status = $2, plan_json = $3::jsonb, updated_at = now()
 				 WHERE id = $4 AND version = $5 RETURNING id`,
@@ -214,11 +209,7 @@ export class PgPlanRepository {
 		});
 	}
 
-	private async mutate(
-		planId: string,
-		ownerId: string,
-		apply: (plan: AgentPlan) => AgentPlan,
-	): Promise<AgentPlan> {
+	private async mutate(planId: string, ownerId: string, apply: (plan: AgentPlan) => AgentPlan): Promise<AgentPlan> {
 		return await this.database.transaction(async (client) => {
 			const result = await client.query<PlanRow>(
 				`SELECT plan.id, plan.session_id, plan.version, plan.canvas_version, plan.status, plan.plan_json

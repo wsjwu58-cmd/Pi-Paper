@@ -6,6 +6,7 @@
 
 | 数据 | 保存位置 | 字段/限制 |
 | --- | --- | --- |
+| 界面语言偏好 | userData/ui-settings.json | schemaVersion=1；language 为 system、zh 或 en；与提供方设置和凭据独立保存；原子替换写入 |
 | 提供方设置 | userData/providers.json | schemaVersion=1；providers 按稳定 providerId 索引；baseUrl、enabledModelIds、defaultModelIds、modelDefaults、timeoutSeconds |
 | 官方凭据 | userData/credentials/provider-{id}.bin | safeStorage 加密；只在受控进程解密；Renderer 不回读；Linux basic_text 不可用 |
 | 提供方描述 | Pi 静态目录，经 IPC 返回 | id、name、providerType、官方 baseUrl、allowedHosts、credentialFields、configured、connectionTest.kind；字段 secret/required 独立声明 |
@@ -15,6 +16,8 @@
 | 输出 | 项目 generated/{taskId}/ | 文本或最多4个索引媒体文件；原子保存、MIME/签名与大小校验；主输出及全部输出路径沿用 TaskStore 字段 |
 
 IPC `getProviderConfiguration()` 返回公开 `{providers,models}`；`saveProviderConfiguration(input)` 接受 providerId、baseUrl、credentials、enabledModelIds、defaultModelIds、modelDefaults、timeoutSeconds；credentials 只用于写入，响应不包含秘密。空白 Key 保留已有秘密。`clearProviderConfiguration(providerId)` 移除配置和凭据；兼容清除旧 Agnes/Ark Key。
+
+2026-10-08 界面语言 IPC：`getUiLanguage()` 与 `setUiLanguage('system'|'zh'|'en')` 返回 `{preference,language,systemLanguage}`；后两项仅为 `zh|en`。Main 验证可信 Renderer 来源并拒绝未知语言值，保存成功后才更新语言状态。缺失、损坏或未知版本的偏好文件回退到系统；系统为中文时解析为 `zh`，其余为 `en`。Linux 使用 `LC_ALL > LC_MESSAGES > LANG > Electron locale`，其他平台读取 Electron locale。该偏好不是项目数据，不包含模型配置、凭据或用户正文。
 
 `modelDefaults` 按稳定模型绑定 ID 索引，允许保存目录声明的 ratio、size、resolution、duration、generate_audio 子集，按该型号的枚举、时长上下界和音频开关能力校验；离散时长使用 acceptedDurations，分辨率与时长联动使用 durationByResolution。未知字段（包括任何凭据）拒绝写入。公开模型 defaults 合并用户覆盖后交给原画布编辑器，新节点及切换模型沿用这些值，已有节点显式参数保持优先；手工及Agent任务创建时快照默认参数和本次覆盖，防止设置变化影响已提交任务恢复。旧 schemaVersion=1 配置无此字段时等价于空对象，可无损读取。
 

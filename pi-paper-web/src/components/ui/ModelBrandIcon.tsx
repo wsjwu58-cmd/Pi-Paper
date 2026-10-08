@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useState } from 'react'
 import { Image as ImageIcon, Settings2 } from 'lucide-react'
 import type { ModelInfo } from '@/lib/types'
@@ -251,6 +252,7 @@ export function ModelBrandIcon({
   desktop?: boolean
   symbol?: 'image' | 'settings'
 }) {
+  useUiLanguage()
   const brand = resolveModelBrand(model)
   const meta = BRAND_META[brand]
   const font = Math.max(8, Math.round(size * 0.42))
@@ -259,6 +261,7 @@ export function ModelBrandIcon({
   const title = typeof model === 'string' ? model : model.displayName || model.name
 
   if (desktop) {
+  useUiLanguage()
     const desktopBrand = resolveDesktopModelBrand(model)
     const desktopIconUrl = preferImage ? DESKTOP_BRAND_ICON_URL[desktopBrand] : null
     if (desktopIconUrl && !imgFailed) {
@@ -266,7 +269,7 @@ export function ModelBrandIcon({
         <span
           className={`vp-brand-mark inline-flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-black/10 bg-white p-0.5 ${className}`}
           style={{ width: size, height: size }}
-          title={title}
+          title={uiText(title)}
           aria-hidden
         >
           <img
@@ -284,7 +287,7 @@ export function ModelBrandIcon({
       <span
         className={`inline-flex shrink-0 items-center justify-center rounded-md bg-[#f0eef8] text-[#6d55c9] ${className}`}
         style={{ width: size, height: size }}
-        title={title}
+        title={uiText(title)}
         aria-hidden
       >
         <SymbolIcon size={Math.max(12, Math.round(size * 0.58))} strokeWidth={1.8} />
@@ -297,7 +300,7 @@ export function ModelBrandIcon({
       <span
         className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded ${className}`}
         style={{ width: size, height: size }}
-        title={title}
+        title={uiText(title)}
         aria-hidden
       >
         <img
@@ -322,10 +325,10 @@ export function ModelBrandIcon({
         color: meta.fg,
         fontSize: font,
       }}
-      title={title}
+      title={uiText(title)}
       aria-hidden
     >
-      {useBean ? <BeanIcon size={size} /> : meta.label}
+      {useBean ? <BeanIcon size={size} /> : uiText(meta.label)}
     </span>
   )
 }

@@ -63,12 +63,6 @@ MiniMax 音乐官方 API 对新账户有限制，设置中明确提示权限条�
 
 ![Agnes 视频规格](agnes-video-specifications.png)
 
-## GitHub 推送集成验证
-
-在独立工作区将本轮提交接到远程最新分支，保留远程已完成的 pi-paper-web／pi-paper-desktop 目录重命名。本机共享工作目录、其他任务的改动与运行中的桌面应用均保持原样。
-
-补齐已有离线模型元数据后，独立工作区的 Pi `npm run check` 完整通过（Biome、依赖版本、相对导入、shrinkwrap、安装锁、TypeScript、浏览器打包检查）。检查器自动格式化的 47 个其他基线文件恢复原样，不纳入本轮提交。合并后的 Pi 指定协议测试 87 项、桌面指定测试 35 项、Web 参数测试 8 项，共 130 项通过；前端完整 TypeScript 和生产构建通过，原有 bundle／导入方式警告仍存在。
-
 ## 桌面亮暗模式
 
 在原 CanvasTopBar、PillNav 和 API 配置页顶栏加入可用键盘操作的太阳／月亮按钮。统一 html 主题变量，使 body 中的规格／模型选择等 Portal 与节点、Agent、画布展示、历史记录、API 配置同步切换。默认浅色，在本机 localStorage 保存 `vibepaper:appearance`；入口在第一次 React 渲染前应用已保存的偏好。存储不可用时仍允许本次会话切换。Web 旧账户偏好路径保持原样。

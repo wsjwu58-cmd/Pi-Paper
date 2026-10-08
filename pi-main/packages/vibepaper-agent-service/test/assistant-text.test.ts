@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { dedupeRepeatedSegments, removeRepeatedOpening, updateAssistantText } from "../src/application/assistant-text.ts";
+import {
+	dedupeRepeatedSegments,
+	removeRepeatedOpening,
+	updateAssistantText,
+} from "../src/application/assistant-text.ts";
 
 describe("assistant text streaming", () => {
 	it("extends a normal streamed reply", () => {
 		const first = "你好！我是小P，陪你一起创作。今天想从哪里开始？";
 		const extended = "你好！我是小P，陪你一起创作。今天想从哪里开始？我们可以先做一张图。";
 
-		expect(updateAssistantText(first, extended)).toEqual({ next: extended, delta: "我们可以先做一张图。", replace: false });
+		expect(updateAssistantText(first, extended)).toEqual({
+			next: extended,
+			delta: "我们可以先做一张图。",
+			replace: false,
+		});
 	});
 
 	it("replaces a non-continuous reply that restarts with the same opening", () => {
@@ -19,14 +27,18 @@ describe("assistant text streaming", () => {
 
 	it("keeps the later complete copy from a persisted duplicated reply", () => {
 		const opening = "你好！我是小P，陪你一起创作。今天想从哪里开始？";
-		expect(removeRepeatedOpening(`${opening} 可以先聊聊灵感。\n\n${opening} 先做一张图。\n\n${opening} 我们可以先做一张图。`)).toBe(`${opening} 我们可以先做一张图。`);
+		expect(
+			removeRepeatedOpening(
+				`${opening} 可以先聊聊灵感。\n\n${opening} 先做一张图。\n\n${opening} 我们可以先做一张图。`,
+			),
+		).toBe(`${opening} 我们可以先做一张图。`);
 	});
 
 	it("removes repeated progress segments even when the opening appears once", () => {
 		const created = "10个关键帧节点已创建！";
 		const submit = "现在一次性提交生成所有画面 ";
-		expect(dedupeRepeatedSegments(`好的！${created}${submit}🎨${created}${submit}🎨${created}${submit}🎨${created}`)).toBe(
-			`好的！${created}${submit.trimEnd()}`,
-		);
+		expect(
+			dedupeRepeatedSegments(`好的！${created}${submit}🎨${created}${submit}🎨${created}${submit}🎨${created}`),
+		).toBe(`好的！${created}${submit.trimEnd()}`);
 	});
 });

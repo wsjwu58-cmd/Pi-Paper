@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 type CanvasVersionEnvelope = {
   canvas?: { version?: unknown }
   version?: unknown
@@ -6,7 +7,7 @@ type CanvasVersionEnvelope = {
 export function resolveAgentCanvasVersion(remote: CanvasVersionEnvelope, fallback?: unknown): number {
   const candidate = remote.canvas?.version ?? remote.version ?? fallback
   if (typeof candidate !== 'number' || !Number.isInteger(candidate) || candidate < 0) {
-    throw new Error('无法获取当前画布版本，请刷新后重试')
+    throw new Error(uiText("无法获取当前画布版本，请刷新后重试"))
   }
   return candidate
 }
@@ -14,7 +15,7 @@ export function resolveAgentCanvasVersion(remote: CanvasVersionEnvelope, fallbac
 export function resolveBoundConfirmationCanvasVersion(boundVersion: unknown): number {
 
 	if (typeof boundVersion !== 'number' || !Number.isInteger(boundVersion) || boundVersion < 0) {
-		throw new Error('确认信息缺少有效的画布版本，请刷新后重试确认')
+		throw new Error(uiText("确认信息缺少有效的画布版本，请刷新后重试确认"))
 	}
 	return boundVersion
 }
@@ -23,6 +24,6 @@ export function resolveConfirmationCanvasVersion(remote: CanvasVersionEnvelope, 
   try {
     return resolveAgentCanvasVersion(remote, fallback)
   } catch {
-    throw new Error('无法获取当前画布版本，请刷新后重试确认')
+    throw new Error(uiText("无法获取当前画布版本，请刷新后重试确认"))
   }
 }

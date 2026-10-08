@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import type { DesktopNodeOutputSource } from '@/desktop/desktop-bridge'
 import { sid } from '@/lib/ids'
@@ -26,7 +27,7 @@ function supportedNodeType(value: string): DownloadNodeType {
   if (['text', 'image', 'video', 'audio', 'compose', 'director'].includes(value)) {
     return value as DownloadNodeType
   }
-  throw new Error('此节点类型没有可下载的结果。')
+  throw new Error(uiText("此节点类型没有可下载的结果。"))
 }
 
 function safeFileBaseName(value: unknown, fallback: string): string {
@@ -46,7 +47,7 @@ function suggestedName(node: NodePayload, type: DownloadNodeType): string {
 function desktopSource(mediaUrl?: string, textContent?: string): DesktopNodeOutputSource {
   if (textContent !== undefined) return { kind: 'text', content: textContent }
   const url = mediaUrl?.split('#', 1)[0]
-  if (!url) throw new Error('节点当前没有可下载的结果。')
+  if (!url) throw new Error(uiText("节点当前没有可下载的结果。"))
   const taskMatch = TASK_OUTPUT_URL.exec(url)
   if (taskMatch) {
     return {
@@ -57,7 +58,7 @@ function desktopSource(mediaUrl?: string, textContent?: string): DesktopNodeOutp
   }
   const assetMatch = ASSET_URL.exec(url)
   if (assetMatch) return { kind: 'asset', assetId: assetMatch[1] }
-  throw new Error('只有已保存在当前项目中的结果或素材可以下载。')
+  throw new Error(uiText("只有已保存在当前项目中的结果或素材可以下载。"))
 }
 
 function startBrowserDownload(node: NodePayload, type: DownloadNodeType, mediaUrl?: string, textContent?: string) {
@@ -73,7 +74,7 @@ function startBrowserDownload(node: NodePayload, type: DownloadNodeType, mediaUr
     URL.revokeObjectURL(url)
     return
   }
-  if (!mediaUrl) throw new Error('节点当前没有可下载的结果。')
+  if (!mediaUrl) throw new Error(uiText("节点当前没有可下载的结果。"))
   const anchor = document.createElement('a')
   anchor.href = mediaUrl
   anchor.target = '_blank'
@@ -88,31 +89,31 @@ export async function downloadNodeOutput(request: NodeDownloadRequest): Promise<
     const type = supportedNodeType(node.type)
     if (isDesktopRuntime()) {
       const bridge = window.vibepaperDesktop
-      if (!bridge?.exportNodeOutput) throw new Error('桌面本地下载接口尚未就绪。')
+      if (!bridge?.exportNodeOutput) throw new Error(uiText("桌面本地下载接口尚未就绪。"))
       const beforeFlush = useCanvasStore.getState()
       const canvasId = sid(beforeFlush.canvas?.canvas.id)
       const nodeId = sid(node.id)
       const nodeBeforeFlush = beforeFlush.nodes.find((item) => sid(item.id) === nodeId)?.data.node
       if (!canvasId || !nodeBeforeFlush || nodeBeforeFlush.type !== node.type) {
-        throw new Error('当前画布或节点已更改，无法下载节点结果。')
+        throw new Error(uiText("当前画布或节点已更改，无法下载节点结果。"))
       }
       const projectBeforeFlush = await bridge.getActiveProject()
-      if (!projectBeforeFlush) throw new Error('没有打开的本地项目，无法下载节点结果。')
+      if (!projectBeforeFlush) throw new Error(uiText("没有打开的本地项目，无法下载节点结果。"))
       if (sid(projectBeforeFlush.canvasId) !== canvasId) {
-        throw new Error('当前项目或画布已更改，无法下载节点结果。')
+        throw new Error(uiText("当前项目或画布已更改，无法下载节点结果。"))
       }
       await flushCanvasPersistence(projectBeforeFlush.projectId, canvasId)
       const project = await bridge.getActiveProject()
       if (!project || project.projectId !== projectBeforeFlush.projectId) {
-        throw new Error('当前项目已更改，无法下载节点结果。')
+        throw new Error(uiText("当前项目已更改，无法下载节点结果。"))
       }
       const snapshot = useCanvasStore.getState()
       const currentCanvasId = sid(snapshot.canvas?.canvas.id)
       const currentNode = snapshot.nodes.find((item) => sid(item.id) === nodeId)?.data.node
       if (currentCanvasId !== canvasId || canvasId !== sid(project.canvasId) || !currentNode) {
-        throw new Error('当前项目或画布已更改，无法下载节点结果。')
+        throw new Error(uiText("当前项目或画布已更改，无法下载节点结果。"))
       }
-      if (currentNode.type !== type) throw new Error('节点类型已更改，无法下载当前结果。')
+      if (currentNode.type !== type) throw new Error(uiText("节点类型已更改，无法下载当前结果。"))
       const result = await bridge.exportNodeOutput({
         projectId: project.projectId,
         canvasId,
@@ -122,16 +123,16 @@ export async function downloadNodeOutput(request: NodeDownloadRequest): Promise<
         suggestedName: suggestedName(currentNode, type),
       })
       if (result?.status === 'cancelled') return 'cancelled'
-      if (result?.status !== 'saved') throw new Error('本地下载未能完成。')
-      toastSuccess('已保存到本地')
+      if (result?.status !== 'saved') throw new Error(uiText("本地下载未能完成。"))
+      toastSuccess(uiText("已保存到本地"))
       return 'saved'
     }
 
     startBrowserDownload(node, type, mediaUrl, textContent)
-    toastSuccess(textContent === undefined ? '已打开下载内容' : '已开始下载')
+    toastSuccess(textContent === undefined ? uiText("已打开下载内容") : uiText("已开始下载"))
     return 'saved'
   } catch (cause) {
-    toastError(cause instanceof Error ? cause.message : '下载节点结果失败。')
+    toastError(cause instanceof Error ? cause.message : uiText("下载节点结果失败。"))
     return 'failed'
   }
 }

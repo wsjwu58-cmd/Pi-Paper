@@ -19,7 +19,7 @@ describe("daily memory", () => {
 	});
 
 	it("extracts transient instructions without promoting them to long-term memory", () => {
-		expect(extractDailyMemory("这次：先完成关键帧，再生成视频。"),).toBe("先完成关键帧，再生成视频");
+		expect(extractDailyMemory("这次：先完成关键帧，再生成视频。")).toBe("先完成关键帧，再生成视频");
 		expect(extractDailyMemory("默认使用 9:16 画幅")).toBeUndefined();
 	});
 });

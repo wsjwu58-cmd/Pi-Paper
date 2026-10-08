@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import type { AgentChatMsg, AgentConfirmation, ExecutionStep } from './agentTypes'
 import { stepFromThinking, toolLabel } from './agentTypes'
 import { normalizeConfirmationExpiry } from './confirmationState'
@@ -58,29 +59,29 @@ export function isAgentEventEnvelope(value: unknown): value is AgentEventEnvelop
 export function friendlyAgentErrorMessage(value: unknown): string {
   const message = typeof value === 'string' ? value.trim() : ''
   const knownErrors: Record<string, string> = {
-    AGENT_MODEL_TIMEOUT: '模型响应超时，请稍后重试。',
-    AGENT_MODEL_OUTPUT_LIMIT: '模型回复达到输出上限，自动续跑仍未完成。已完成的画布操作已保留，请发送“继续”从当前进度接着执行。',
-    AGENT_MODEL_CONNECTION_FAILED: '模型连接中断，本轮已停止。已完成的画布操作已保留，请检查网络后发送“继续”。',
-    AGENT_CONTEXT_SUMMARY_FAILED: '会话压缩失败，本轮已停止。已完成的画布操作已保留，请稍后重试。',
-    AGENT_CONTEXT_WINDOW_EXCEEDED: '当前请求超出模型上下文容量，请减少本轮引用或拆分创作要求。',
-    MODEL_TIMEOUT: '模型响应超时，请稍后重试。',
-    MODEL_UNAVAILABLE: '模型服务暂时不可用，请检查服务配置后重试。',
-    AGENT_MODEL_REQUEST_FAILED: '模型请求未完成，本轮已停止。已完成的画布操作已保留，可发送“继续”接着执行。',
-    CLOUD_CREDENTIAL_MISSING: '请先配置 Agnes API Key。',
-    AGENT_SESSION_WRITE_FAILED: 'Agent 会话未能保存到本地项目，请检查磁盘空间后重试。',
-    AGENT_RUN_RESULT_MISSING: 'Agent 未能恢复本轮回复，请重新发送。',
-    AGENT_RUN_ALREADY_PROCESSED: '这条消息已处理，请检查会话记录后再继续。',
-    SESSION_BUSY: '此会话有任务正在运行，请等待当前任务完成。',
-    CONFIRMATION_REQUIRED: '请先处理当前待确认的操作。',
+    AGENT_MODEL_TIMEOUT: uiText("模型响应超时，请稍后重试。"),
+    AGENT_MODEL_OUTPUT_LIMIT: uiText("模型回复达到输出上限，自动续跑仍未完成。已完成的画布操作已保留，请发送“继续”从当前进度接着执行。"),
+    AGENT_MODEL_CONNECTION_FAILED: uiText("模型连接中断，本轮已停止。已完成的画布操作已保留，请检查网络后发送“继续”。"),
+    AGENT_CONTEXT_SUMMARY_FAILED: uiText("会话压缩失败，本轮已停止。已完成的画布操作已保留，请稍后重试。"),
+    AGENT_CONTEXT_WINDOW_EXCEEDED: uiText("当前请求超出模型上下文容量，请减少本轮引用或拆分创作要求。"),
+    MODEL_TIMEOUT: uiText("模型响应超时，请稍后重试。"),
+    MODEL_UNAVAILABLE: uiText("模型服务暂时不可用，请检查服务配置后重试。"),
+    AGENT_MODEL_REQUEST_FAILED: uiText("模型请求未完成，本轮已停止。已完成的画布操作已保留，可发送“继续”接着执行。"),
+    CLOUD_CREDENTIAL_MISSING: uiText("请先配置 Agnes API Key。"),
+    AGENT_SESSION_WRITE_FAILED: uiText("Agent 会话未能保存到本地项目，请检查磁盘空间后重试。"),
+    AGENT_RUN_RESULT_MISSING: uiText("Agent 未能恢复本轮回复，请重新发送。"),
+    AGENT_RUN_ALREADY_PROCESSED: uiText("这条消息已处理，请检查会话记录后再继续。"),
+    SESSION_BUSY: uiText("此会话有任务正在运行，请等待当前任务完成。"),
+    CONFIRMATION_REQUIRED: uiText("请先处理当前待确认的操作。"),
   }
   const knownError = Object.prototype.hasOwnProperty.call(knownErrors, message) ? knownErrors[message] : undefined
   if (knownError) return knownError
   if (/do_request_failed|failed to reach upstream|agnesai_error|upstream|^500\s*:/i.test(message)) {
-    return '模型服务暂时不可用，请稍后重试。'
+    return uiText("模型服务暂时不可用，请稍后重试。")
   }
-  if (/timeout|timed out|超时/i.test(message)) return '模型响应超时，请稍后重试。'
-  if (/^[A-Z][A-Z0-9_]{1,79}$/u.test(message)) return 'Agent 执行失败，请稍后重试。'
-  return message || '模型调用失败，请稍后重试。'
+  if (/timeout|timed out|超时/i.test(message)) return uiText("模型响应超时，请稍后重试。")
+  if (/^[A-Z][A-Z0-9_]{1,79}$/u.test(message)) return uiText("Agent 执行失败，请稍后重试。")
+  return message || uiText("模型调用失败，请稍后重试。")
 }
 
 export function reduceAgentEvent(
@@ -205,7 +206,7 @@ export function reduceAgentEvent(
       kind: event.type === 'tool_completed' ? 'result' : 'plan',
       tool,
       label: toolLabel(tool),
-      summary: retry ? `重试中（第 ${numberValue(event.data.attempt) ?? 2}/${numberValue(event.data.maxAttempts) ?? 3} 次）` : toolLabel(tool),
+      summary: retry ? uiText("重试中（第 {0}/{1} 次）", { 0: numberValue(event.data.attempt) ?? 2, 1: numberValue(event.data.maxAttempts) ?? 3 }) : toolLabel(tool),
       ok: event.type === 'tool_completed' ? event.data.ok !== false : undefined,
       detail,
       rawDetail: detail,
@@ -227,7 +228,7 @@ export function reduceAgentEvent(
         affectedGroupCount: numberValue(event.data.affectedGroupCount),
         affectedStackCount: numberValue(event.data.affectedStackCount),
         tool: typeof event.data.tool === 'string' ? event.data.tool : undefined,
-        summary: typeof event.data.summary === 'string' ? event.data.summary : '待确认操作',
+        summary: typeof event.data.summary === 'string' ? event.data.summary : uiText("待确认操作"),
         confirmReason: typeof event.data.confirmReason === 'string' ? event.data.confirmReason : undefined,
         estimatedCost: numberValue(event.data.estimatedCost),
         estimatedTotalCost: numberValue(event.data.estimatedTotalCost),
@@ -634,7 +635,7 @@ function upsertRunSpeech(steps: ExecutionStep[], text: string, event: AgentEvent
   return [...steps, {
     id: `speech-${event.eventSeq}-${event.eventId}`,
     kind: 'speech',
-    label: '回复',
+    label: uiText("回复"),
     summary,
   }]
 }
@@ -677,7 +678,7 @@ function printablePayload(value: unknown): string | undefined {
   if (safe === undefined) return undefined
   const text = typeof safe === 'string' ? safe : JSON.stringify(safe, null, 2) ?? ''
   if (!text || text === '{}' || text === '[]') return undefined
-  return text.length > 6000 ? `${text.slice(0, 6000)}\n…（已截断）` : text
+  return text.length > 6000 ? uiText("{0} …（已截断）", { 0: text.slice(0, 6000) }) : text
 }
 
 function redactPayload(value: unknown, key?: string): unknown {
@@ -709,6 +710,6 @@ function redactPayload(value: unknown, key?: string): unknown {
 }
 
 function isSafeActivitySummary(value: string): boolean {
-  const operation = '(?:读取画布摘要|读取选中节点(?:（\\d+ 个）)?|读取节点详情|读取模型目录|搜索素材|查询生成任务状态|执行渲染审校|创建节点(?:（\\d+ 个）)?|连接节点(?:（\\d+ 个）)?|整理节点布局(?:（\\d+ 个）)?|更新节点配置|准备生成任务|准备批量生成(?:（\\d+ 项）)?|加载 Skill|执行本地操作)'
+  const operation = "(?:读取画布摘要|读取选中节点(?:（\\d+ 个）)?|读取节点详情|读取模型目录|搜索素材|查询生成任务状态|执行渲染审校|创建节点(?:（\\d+ 个）)?|连接节点(?:（\\d+ 个）)?|整理节点布局(?:（\\d+ 个）)?|更新节点配置|准备生成任务|准备批量生成(?:（\\d+ 项）)?|加载 Skill|执行本地操作)"
   return new RegExp(`^(?:(?:正在|已)${operation}|操作未完成(?:（[A-Z][A-Z0-9_]{1,47}）)?|工具正在重试)$`, 'u').test(value)
 }

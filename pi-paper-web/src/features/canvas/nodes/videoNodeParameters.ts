@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import type { ModelInfo } from '@/lib/types'
 import type { MediaDurationCapability } from './MediaSpecificationPicker'
 
@@ -54,15 +55,15 @@ export function getVideoDurationCapability(
 
 export function normalizeRemoteMediaReferenceUrl(value: string) {
   const source = typeof value === 'string' ? value.trim() : ''
-  if (!source || source.length > 4096) throw new Error('参考地址不能为空，且不能超过 4096 个字符。')
+  if (!source || source.length > 4096) throw new Error(uiText("参考地址不能为空，且不能超过 4096 个字符。"))
   let url: URL
   try {
     url = new URL(source)
   } catch {
-    throw new Error('参考地址无效，请输入 HTTPS 地址。')
+    throw new Error(uiText("参考地址无效，请输入 HTTPS 地址。"))
   }
   if (url.protocol !== 'https:' || url.username || url.password) {
-    throw new Error('请使用不含账号密码的 HTTPS 媒体地址。')
+    throw new Error(uiText("请使用不含账号密码的 HTTPS 媒体地址。"))
   }
   return url.toString()
 }

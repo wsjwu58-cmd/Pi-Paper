@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, type MutableRefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -9,6 +10,7 @@ export interface DirectorCaptureApi {
 }
 
 function CameraRig({ camera }: { camera: DirectorCamera }) {
+  useUiLanguage()
   const { camera: cam } = useThree()
   useFrame(() => {
     const yaw = (camera.yaw * Math.PI) / 180
@@ -25,6 +27,7 @@ function CameraRig({ camera }: { camera: DirectorCamera }) {
 }
 
 function GridFloor() {
+  useUiLanguage()
   const grid = useMemo(() => {
     const g = new THREE.GridHelper(20, 40, '#d4d4d8', '#ebebef')
     g.position.y = 0
@@ -39,6 +42,7 @@ function GridFloor() {
 }
 
 function CaptureBridge({ apiRef }: { apiRef: MutableRefObject<DirectorCaptureApi | null> }) {
+  useUiLanguage()
   const { gl, scene, camera } = useThree()
   useEffect(() => {
     apiRef.current = {
@@ -49,7 +53,7 @@ function CaptureBridge({ apiRef }: { apiRef: MutableRefObject<DirectorCaptureApi
             gl.domElement.toBlob(
               (blob) => {
                 if (blob) resolve(blob)
-                else reject(new Error('截图失败'))
+                else reject(new Error(uiText("截图失败")))
               },
               'image/png',
               1,
@@ -79,6 +83,7 @@ function SceneContent({
   camera: DirectorCamera
   apiRef: MutableRefObject<DirectorCaptureApi | null>
 }) {
+  useUiLanguage()
   return (
     <>
       <color attach="background" args={['#ffffff']} />
@@ -130,11 +135,12 @@ export const DirectorViewport = forwardRef<
     className?: string
   }
 >(function DirectorViewport({ objects, camera, selectedId, onSelect, className }, ref) {
+  useUiLanguage()
   const apiRef = useRef<DirectorCaptureApi | null>(null)
 
   useImperativeHandle(ref, () => ({
     capturePng: async () => {
-      if (!apiRef.current) throw new Error('场景未就绪')
+      if (!apiRef.current) throw new Error(uiText("场景未就绪"))
       return apiRef.current.capturePng()
     },
   }))

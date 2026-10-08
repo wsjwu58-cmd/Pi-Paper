@@ -131,6 +131,7 @@ export async function reconcileDesktopAgentTasks(
 		result.continuationClaims = await requestDesktopTaskContinuations(stores, {
 			projectId: stores.projectId,
 			apiKey: options.apiKey,
+			...(options.sessionId ? { sessionId: options.sessionId } : {}),
 		});
 	}
 	return result;
@@ -138,10 +139,15 @@ export async function reconcileDesktopAgentTasks(
 
 export async function requestDesktopTaskContinuations(
 	stores: Pick<DesktopAgentStores, "projectId" | "control">,
-	input: { projectId: string; apiKey: string },
+	input: { projectId: string; apiKey: string; sessionId?: string },
 ): Promise<DesktopTaskContinuationClaimResult[]> {
 	if (input.projectId !== stores.projectId) throw new Error("AGENT_PROJECT_CHANGED");
-	const pending = stores.control.listPendingTaskContinuations(input.projectId);
+	if (input.sessionId !== undefined && (typeof input.sessionId !== "string" || !input.sessionId.trim())) {
+		throw new Error("SESSION_ID_INVALID");
+	}
+	const pending = stores.control
+		.listPendingTaskContinuations(input.projectId)
+		.filter((request) => input.sessionId === undefined || request.sessionId === input.sessionId);
 	const results: DesktopTaskContinuationClaimResult[] = [];
 	for (const request of pending) {
 		results.push(

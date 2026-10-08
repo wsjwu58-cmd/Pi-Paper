@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import {
   MousePointer2,
   Hand,
@@ -58,6 +59,7 @@ export function CanvasToolbar({
   desktopMode?: boolean
   projectId?: string
 }) {
+  useUiLanguage()
   const isDesktop = desktopMode || isDesktopRuntime()
   const [menuOpen, setMenuOpen] = useState(false)
   const menuPresence = useSoftPresence(menuOpen)
@@ -78,9 +80,9 @@ export function CanvasToolbar({
 
   const onUpload = async (file: File) => {
     try {
-      if (isDesktop) throw new Error('桌面版请使用“导入图片”从本机导入素材。')
+      if (isDesktop) throw new Error(uiText("桌面版请使用“导入图片”从本机导入素材。"))
       await uploadAsset(file, undefined, canvas?.canvas.id)
-      toastSuccess('上传成功')
+      toastSuccess(uiText("上传成功"))
       window.dispatchEvent(new Event('vp-assets-updated'))
     } catch (e) {
       toastError((e as Error).message)
@@ -90,13 +92,13 @@ export function CanvasToolbar({
   const importLocalImage = async () => {
     const bridge = window.vibepaperDesktop
     if (!bridge || !projectId) {
-      toastError('本地项目未就绪，无法导入图片。')
+      toastError(uiText("本地项目未就绪，无法导入图片。"))
       return
     }
     try {
       const imported = await bridge.importImage(projectId)
       if (!imported) return
-      toastSuccess('图片已导入本地素材库')
+      toastSuccess(uiText("图片已导入本地素材库"))
       window.dispatchEvent(new Event('vp-assets-updated'))
     } catch (e) {
       toastError((e as Error).message)
@@ -108,7 +110,7 @@ export function CanvasToolbar({
     try {
       const group = await createCanvasGroup(selected.map((node) => sid(node.id)), { color: '#8b5cf6' })
       if (!group) return
-      toastSuccess('已编组')
+      toastSuccess(uiText("已编组"))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -123,7 +125,7 @@ export function CanvasToolbar({
         : isDesktop
           ? await (async () => {
               const bridge = window.vibepaperDesktop
-              if (!bridge || !projectId) throw new Error('本地项目未就绪，无法更新编组。')
+              if (!bridge || !projectId) throw new Error(uiText("本地项目未就绪，无法更新编组。"))
               return bridge.updateGroup({ projectId, canvasId: sid(canvas.canvas.id), groupId: sid(activeGroup.id), ...patch })
             })()
           : await api<{ id: string | number; name: string; color: string; layout: string; nodeIds: Array<string | number> }>(
@@ -167,7 +169,7 @@ export function CanvasToolbar({
         setDirty(true)
         window.dispatchEvent(new Event('vp-canvas-group-snapshot'))
       }
-      toastSuccess('编组已更新')
+      toastSuccess(uiText("编组已更新"))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -180,7 +182,7 @@ export function CanvasToolbar({
         removeCanvasGroupFromStore(activeGroup, true)
       } else if (isDesktop) {
         const bridge = window.vibepaperDesktop
-        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法取消编组。')
+        if (!bridge || !projectId) throw new Error(uiText("本地项目未就绪，无法取消编组。"))
         const canvasId = sid(canvas.canvas.id)
         await bridge.deleteGroup({ projectId, canvasId, groupId: sid(activeGroup.id) })
         if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
@@ -195,7 +197,7 @@ export function CanvasToolbar({
         removeCanvasGroupFromStore(activeGroup)
       }
       if (sid(useCanvasStore.getState().canvas?.canvas.id) !== sid(canvas.canvas.id)) return
-      toastSuccess('已取消编组')
+      toastSuccess(uiText("已取消编组"))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -207,7 +209,7 @@ export function CanvasToolbar({
       const s = isDesktop
         ? await (async () => {
             const bridge = window.vibepaperDesktop
-            if (!bridge || !projectId) throw new Error('本地项目未就绪，无法堆叠。')
+            if (!bridge || !projectId) throw new Error(uiText("本地项目未就绪，无法堆叠。"))
             return bridge.addStack({ projectId, canvasId: sid(canvas.canvas.id), nodeIds: selected.map((n) => sid(n.id)) })
           })()
         : await api<{ id: string | number; nodeIds: Array<string | number> }>(
@@ -230,7 +232,7 @@ export function CanvasToolbar({
         )
         setDirty(true)
       }
-      toastSuccess('已堆叠')
+      toastSuccess(uiText("已堆叠"))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -241,7 +243,7 @@ export function CanvasToolbar({
     try {
       if (isDesktop) {
         const bridge = window.vibepaperDesktop
-        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法展开堆叠。')
+        if (!bridge || !projectId) throw new Error(uiText("本地项目未就绪，无法展开堆叠。"))
         await bridge.updateStack({ projectId, canvasId: sid(canvas.canvas.id), stackId: sid(activeStack.id), collapsed: false })
       } else {
         await api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(activeStack.id)}`, {
@@ -262,7 +264,7 @@ export function CanvasToolbar({
         setDirty(true)
       }
       setStacks(stacks.map((s) => (sid(s.id) === sid(activeStack.id) ? { ...s, collapsed: false } : s)))
-      toastSuccess('堆叠已展开')
+      toastSuccess(uiText("堆叠已展开"))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -273,13 +275,13 @@ export function CanvasToolbar({
     try {
       if (isDesktop) {
         const bridge = window.vibepaperDesktop
-        if (!bridge || !projectId) throw new Error('本地项目未就绪，无法取消堆叠。')
+        if (!bridge || !projectId) throw new Error(uiText("本地项目未就绪，无法取消堆叠。"))
         await bridge.deleteStack({ projectId, canvasId: sid(canvas.canvas.id), stackId: sid(activeStack.id) })
       } else {
         await api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(activeStack.id)}`, { method: 'DELETE' })
       }
       setStacks(stacks.filter((s) => sid(s.id) !== sid(activeStack.id)))
-      toastSuccess('已取消堆叠')
+      toastSuccess(uiText("已取消堆叠"))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -297,29 +299,29 @@ export function CanvasToolbar({
       }
     }
     if (saved === 0) {
-      toastError('选中节点暂无可下载的输出内容')
+      toastError(uiText("选中节点暂无可下载的输出内容"))
     }
   }
 
   return (
     <div className="flex flex-col gap-1 rounded-[24px] border border-white/10 bg-[#1a1c24]/95 px-2 py-3 shadow-[0_16px_48px_rgba(0,0,0,0.28)] backdrop-blur-md">
-      <ToolButton active={mode === 'select'} onClick={() => setMode('select')} title="选择模式">
+      <ToolButton active={mode === 'select'} onClick={() => setMode('select')} title={uiText("选择模式")}>
         <MousePointer2 size={17} />
       </ToolButton>
-      <ToolButton active={mode === 'pan'} onClick={() => setMode('pan')} title="抓手模式">
+      <ToolButton active={mode === 'pan'} onClick={() => setMode('pan')} title={uiText("抓手模式")}>
         <Hand size={17} />
       </ToolButton>
 
       <div className="mx-2 my-1 h-px bg-white/10" />
 
       <div className="relative">
-        <ToolButton active={menuOpen} onClick={() => setMenuOpen((v) => !v)} title="添加节点">
+        <ToolButton active={menuOpen} onClick={() => setMenuOpen((v) => !v)} title={uiText("添加节点")}>
           <Plus size={18} />
         </ToolButton>
         {menuPresence.present && (
           <div data-open={menuPresence.visible} aria-hidden={!menuOpen} inert={!menuOpen}
             className="vp-soft-popover absolute left-[58px] top-0 z-50 w-[220px] rounded-[20px] border border-white/10 bg-[#1a1c24]/98 p-3 shadow-[0_24px_72px_rgba(0,0,0,0.35)] backdrop-blur-md">
-            <p className="mb-2 px-1 text-[11px] font-bold tracking-wide text-[#8e929c]">添加节点</p>
+            <p className="mb-2 px-1 text-[11px] font-bold tracking-wide text-[#8e929c]">{uiText("添加节点")}</p>
             {NODE_MENU.map((t) => {
               const Icon = t.icon
               return (
@@ -335,7 +337,7 @@ export function CanvasToolbar({
                     <Icon size={17} strokeWidth={1.6} />
                   </span>
                   <div>
-                    <p className="text-[14px] font-semibold text-white">{t.label}</p>
+                    <p className="text-[14px] font-semibold text-white">{uiText(t.label)}</p>
                     <p className="text-[11px] text-[#8e929c]">{t.sub}</p>
                   </div>
                 </button>
@@ -345,14 +347,14 @@ export function CanvasToolbar({
             <button
               onClick={() => (isDesktop ? void importLocalImage() : fileRef.current?.click())}
               className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-left transition hover:bg-white/8"
-              title={isDesktop ? '桌面本地仅支持导入图片' : '上传素材'}
+              title={isDesktop ? uiText("桌面本地仅支持导入图片") : uiText("上传素材")}
             >
               <span className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-[#2d303a] text-white/90">
                 <Upload size={17} strokeWidth={1.6} />
               </span>
               <div>
-                <p className="text-[14px] font-semibold text-white">{isDesktop ? '导入图片' : '上传'}</p>
-                <p className="text-[11px] text-[#8e929c]">{isDesktop ? '本地素材' : 'Upload'}</p>
+                <p className="text-[14px] font-semibold text-white">{isDesktop ? uiText("导入图片") : uiText("上传")}</p>
+                <p className="text-[11px] text-[#8e929c]">{isDesktop ? uiText("本地素材") : 'Upload'}</p>
               </div>
             </button>
           </div>
@@ -368,29 +370,29 @@ export function CanvasToolbar({
         onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
       />
 
-      <ToolButton onClick={() => setAssetOpen(true)} title="素材库">
+      <ToolButton onClick={() => setAssetOpen(true)} title={uiText("素材库")}>
         <Library size={17} />
       </ToolButton>
 
       <div className="mx-2 my-1 h-px bg-white/10" />
 
-      <ToolButton onClick={onFitView} title="聚焦视图">
+      <ToolButton onClick={onFitView} title={uiText("聚焦视图")}>
         <Focus size={17} />
       </ToolButton>
-      <ToolButton onClick={onAutoLayout} title="网格整理">
+      <ToolButton onClick={onAutoLayout} title={uiText("网格整理")}>
         <Grid2x2 size={17} />
       </ToolButton>
 
       {selected.length >= 2 && (
         <>
           <div className="mx-2 my-1 h-px bg-white/10" />
-          <ToolButton onClick={groupSelected} title="编组">
+          <ToolButton onClick={groupSelected} title={uiText("编组")}>
             <Boxes size={17} />
           </ToolButton>
-          <ToolButton onClick={stackSelected} title="堆叠">
+          <ToolButton onClick={stackSelected} title={uiText("堆叠")}>
             <Layers size={17} />
           </ToolButton>
-          <ToolButton onClick={downloadSelected} title="下载选中内容">
+          <ToolButton onClick={downloadSelected} title={uiText("下载选中内容")}>
             <Download size={17} />
           </ToolButton>
         </>
@@ -399,10 +401,10 @@ export function CanvasToolbar({
       {activeGroup && (
         <>
           <div className="mx-2 my-1 h-px bg-white/10" />
-          <ToolButton onClick={() => void updateGroup({ layout: 'grid' })} title="网格排列">
+          <ToolButton onClick={() => void updateGroup({ layout: 'grid' })} title={uiText("网格排列")}>
             <LayoutGrid size={17} />
           </ToolButton>
-          <ToolButton onClick={() => void updateGroup({ layout: 'horizontal' })} title="水平排列">
+          <ToolButton onClick={() => void updateGroup({ layout: 'horizontal' })} title={uiText("水平排列")}>
             <Boxes size={17} />
           </ToolButton>
           <ToolButton
@@ -410,11 +412,11 @@ export function CanvasToolbar({
               const next = GROUP_COLORS[(GROUP_COLORS.indexOf(activeGroup.color) + 1) % GROUP_COLORS.length]
               void updateGroup({ color: next })
             }}
-            title="编组颜色"
+            title={uiText("编组颜色")}
           >
             <Palette size={17} />
           </ToolButton>
-          <ToolButton onClick={() => void ungroup()} title="取消编组">
+          <ToolButton onClick={() => void ungroup()} title={uiText("取消编组")}>
             <Ungroup size={17} />
           </ToolButton>
         </>
@@ -423,10 +425,10 @@ export function CanvasToolbar({
       {activeStack && (
         <>
           <div className="mx-2 my-1 h-px bg-white/10" />
-          <ToolButton onClick={() => void expandStack()} title="展开堆叠">
+          <ToolButton onClick={() => void expandStack()} title={uiText("展开堆叠")}>
             <Layers size={17} />
           </ToolButton>
-          <ToolButton onClick={() => void unstack()} title="取消堆叠">
+          <ToolButton onClick={() => void unstack()} title={uiText("取消堆叠")}>
             <Ungroup size={17} />
           </ToolButton>
         </>
@@ -446,6 +448,7 @@ function ToolButton({
   onClick: () => void
   children: React.ReactNode
 }) {
+  useUiLanguage()
   return (
     <button
       onClick={onClick}

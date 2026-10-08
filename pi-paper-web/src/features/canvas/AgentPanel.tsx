@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SoftCollapse, useSoftChange, useSoftPresence, useSoftValue } from './canvasMotion'
 import { useQueryClient } from '@tanstack/react-query'
@@ -80,11 +81,12 @@ function resolvePreferredTextModel(name?: string | null) {
 interface Suggestion extends AgentSuggestion {}
 
 export function AgentLauncher({ onOpen }: { onOpen: () => void }) {
+  useUiLanguage()
   return (
-    <span className="absolute bottom-4 right-4 z-20 inline-flex" title="打开对话">
+    <span className="absolute bottom-4 right-4 z-20 inline-flex" title={uiText("打开对话")}>
       <button
         type="button"
-        aria-label="打开对话"
+        aria-label={uiText("打开对话")}
         onClick={onOpen}
         className="group/agent-launcher relative z-0 inline-flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-zinc-300/50 bg-white p-1 text-xs text-zinc-950 shadow-[0_4px_12px_rgb(0_0_0_/_0.05)] transition-all duration-300 hover:border-zinc-400 hover:bg-white"
       >
@@ -140,10 +142,12 @@ export interface AgentPanelDesktopAdapter {
 }
 
 export function AgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopAdapter } = {}) {
+  useUiLanguage()
   return <WebAgentPanel desktopAdapter={desktopAdapter} />
 }
 
 function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopAdapter }) {
+  useUiLanguage()
   const desktop = desktopAdapter !== undefined
   const storeOpen = useCanvasStore((s) => s.agentOpen)
   const open = storeOpen
@@ -160,7 +164,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   const [textModels, setTextModels] = useState<ModelInfo[]>([])
   const [agentModel, setAgentModel] = useState(resolvePreferredTextModel(preferences?.defaultTextModel))
   const [sessionId, setSessionId] = useState<string | number | null>(null)
-  const [sessionTitle, setSessionTitle] = useState('新对话')
+  const [sessionTitle, setSessionTitle] = useState(uiText("新对话"))
   const [messages, setMessages] = useState<AgentChatMsg[]>([])
   const [input, setInput] = useState('')
   const [selectedSkill, setSelectedSkill] = useState<SkillView | null>(null)
@@ -214,7 +218,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   const desktopSession = desktopAdapter?.sessions.find((item) => item.sessionId === desktopAdapter.activeSessionId)
   const desktopSessionArchived = desktopSession?.status === 'archived'
   const panelSessionTitle = desktop
-    ? desktopSession?.title || '新对话'
+    ? desktopSession?.title || uiText("新对话")
     : sessionTitle
   const panelSkills = desktop ? desktopAdapter?.skills ?? [] : skillOptions
   const panelSkillsLoading = desktop ? desktopAdapter?.skillsLoading ?? false : skillPickerLoading
@@ -319,7 +323,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
     agentEventStateRef.current = {
       messages: [], seenEventIds: new Set(), runStatus: 'running', messageIdByRun: new Map(), persistedAssistantRunIds: new Set(),
     }
-    setSessionTitle('新对话')
+    setSessionTitle(uiText("新对话"))
     setMessages([])
     setSuggestions([])
     setComposerRefs([])
@@ -336,7 +340,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
   const activateEmptySession = (id: string | number, title?: string) => {
     activeSessionIdRef.current = id
     setSessionId(id)
-    setSessionTitle(title || '新对话')
+    setSessionTitle(title || uiText("新对话"))
     setMessages([])
     setSuggestions([])
     setComposerRefs([])
@@ -461,7 +465,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
     if (epoch !== sessionEpochRef.current) return false
     activeSessionIdRef.current = id
     setSessionId(id)
-    setSessionTitle(title || `对话 #${id}`)
+    setSessionTitle(title || uiText("对话 #{0}", { 0: id }))
     const loadedMessages = res.items
       .map((m) => ({ ...m, type: m.type || 'text', meta: (m.meta as AgentChatMsg['meta']) ?? {} }))
       .filter(isChatVisibleMessage)
@@ -497,7 +501,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
 
   const ensureSession = async (forceNew = false) => {
     if (!canvas?.canvas.id) {
-      throw new Error('画布尚未加载，请稍后再试')
+      throw new Error(uiText("画布尚未加载，请稍后再试"))
     }
     if (!forceNew && sessionId) return sessionId
 
@@ -514,7 +518,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
         const latest = list.items?.[0]
         if (latest?.sessionId != null) {
           const loaded = await loadSessionQuiet(latest.sessionId, latest.title, epoch)
-          if (!loaded) throw new DOMException('会话已切换', 'AbortError')
+          if (!loaded) throw new DOMException(uiText("会话已切换"), 'AbortError')
           return latest.sessionId
         }
       } catch {
@@ -526,10 +530,10 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
       method: 'POST',
       body: JSON.stringify({
         canvasId: String(canvas.canvas.id),
-        title: '新对话',
+        title: uiText("新对话"),
       }),
     })
-    if (epoch !== sessionEpochRef.current) throw new DOMException('会话已切换', 'AbortError')
+    if (epoch !== sessionEpochRef.current) throw new DOMException(uiText("会话已切换"), 'AbortError')
     activateEmptySession(s.sessionId, s.title)
     return s.sessionId
   }
@@ -653,7 +657,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
       const loaded = await loadSessionQuiet(id, title, epoch)
       if (!loaded) return
       setTab('chat')
-      toastSuccess('已切换会话')
+      toastSuccess(uiText("已切换会话"))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -678,7 +682,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
           }),
         })
       }
-      toastSuccess(`已添加 ${items.length} 个节点到画布`)
+      toastSuccess(uiText("已添加 {0} 个节点到画布", { 0: items.length }))
       notifyCanvasChanged()
     } catch (e) {
       toastError((e as Error).message)
@@ -705,7 +709,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
       if (raw == null || raw === '') continue
       const id = String(raw)
       const hit = storeNodes.find((n) => String(n.data.node.id) === id || String(n.id) === id)
-      add.push(hit ? refFromNode(hit.data.node) : { id, kind: 'node', title: '节点' })
+      add.push(hit ? refFromNode(hit.data.node) : { id, kind: 'node', title: uiText("节点") })
     }
     if (add.length) setComposerRefs((prev) => upsertRefs(prev, add))
   }
@@ -817,14 +821,14 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
       )
       patchConfirmation(confirmation.actionId, accept ? 'accepted' : 'rejected')
       for (const event of result.events ?? []) processStreamEvent(event)
-      if (accept) toastSuccess(result.taskId ? '已确认，生成任务已提交' : '已确认，Agent 正在继续执行')
+      if (accept) toastSuccess(result.taskId ? uiText("已确认，生成任务已提交") : uiText("已确认，Agent 正在继续执行"))
     } catch (error) {
       if (!accept && error instanceof ApiError && error.code === 'CONFIRMATION_REQUIRED') {
         // The approval was already consumed, removed, or expired. It cannot
         // become actionable again, so dismiss the stale local card instead of
         // restoring it to pending and locking the composer.
         patchConfirmation(confirmation.actionId, 'rejected')
-        toastSuccess('过期确认已移除')
+        toastSuccess(uiText("过期确认已移除"))
         return
       }
       if (
@@ -853,18 +857,18 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
           notifyCanvasChanged()
           toastError(
             error.code === 'VERSION_CONFLICT'
-              ? '画布已更新，过期确认已取消；请基于当前画布重新发送生成请求'
-              : '确认已失效，已刷新为最新待确认项',
+              ? uiText("画布已更新，过期确认已取消；请基于当前画布重新发送生成请求")
+              : uiText("确认已失效，已刷新为最新待确认项"),
           )
           return
         } catch (cancelError) {
           patchConfirmation(confirmation.actionId, 'pending')
-          toastError((cancelError as Error).message || '画布版本已变化，请先取消过期确认后重新发送')
+          toastError((cancelError as Error).message || uiText("画布版本已变化，请先取消过期确认后重新发送"))
           return
         }
       }
       patchConfirmation(confirmation.actionId, 'pending')
-      toastError((error as Error).message || '确认操作失败')
+      toastError((error as Error).message || uiText("确认操作失败"))
     } finally {
       if (confirmingActionRef.current === confirmation.actionId) confirmingActionRef.current = null
     }
@@ -915,7 +919,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
       const content = panelDraft.trim()
       if (!content || panelBusy || desktopSessionArchived || desktopAdapter?.creating) return
       if (hasPendingConfirmation) {
-        toastError('请先在确认卡片中确认或取消当前高风险操作')
+        toastError(uiText("请先在确认卡片中确认或取消当前高风险操作"))
         return
       }
       const selectedNodeIds = [...new Set(composerRefs.filter((ref) => ref.kind === 'node').map((ref) => ref.id))]
@@ -935,7 +939,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
     const content = input.trim()
     if (!content || busy) return
     if (hasPendingConfirmation) {
-      toastError('请先在确认卡片中确认或取消当前高风险操作')
+      toastError(uiText("请先在确认卡片中确认或取消当前高风险操作"))
       return
     }
     setBusy(true)
@@ -956,7 +960,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
         )
         requestCanvasVersion = resolveAgentCanvasVersion(latestCanvas, requestCanvasVersion)
       } catch (e) {
-        toastError((e as Error).message || '无法读取当前画布版本，请刷新后重试')
+        toastError((e as Error).message || uiText("无法读取当前画布版本，请刷新后重试"))
         setBusy(false)
         return
       }
@@ -1019,7 +1023,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
         confirmationRehydrate = loadSessionQuiet(sid, undefined, sendSessionEpoch, true)
           .then(() => undefined)
           .catch((error) => {
-            toastError((error as Error).message || '确认状态刷新失败')
+            toastError((error as Error).message || uiText("确认状态刷新失败"))
           })
       }
     }
@@ -1044,9 +1048,9 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
       if (!res.ok) {
         if (res.status === 409) {
           await loadSessionQuiet(sid, undefined, sendSessionEpoch, true).catch(() => undefined)
-          throw new Error('当前会话有待确认操作，请先处理确认卡片')
+          throw new Error(uiText("当前会话有待确认操作，请先处理确认卡片"))
         }
-        throw new Error(`Agent 请求失败 (${res.status})`)
+        throw new Error(uiText("Agent 请求失败 ({0})", { 0: res.status }))
       }
       setComposerRefs((prev) => consumeSentNodeRefs(prev, new Set(sentNodeIds)))
       const reader = res.body?.getReader()
@@ -1165,40 +1169,40 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                   void desktopAdapter?.onNewSession()
                 } else {
                   void ensureSession(true)
-                    .then(() => toastSuccess('已创建新对话'))
+                    .then(() => toastSuccess(uiText("已创建新对话")))
                     .catch((e) => {
                       if ((e as Error).name !== 'AbortError') toastError((e as Error).message)
                     })
                 }
               }}
               disabled={desktop && desktopAdapter?.creating}
-              title="新对话"
+              title={uiText("新对话")}
               className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04] disabled:opacity-50"
             >
               <SquarePlus size={16} />
             </button>
           ) : (
-            <NavIcon tab="chat" current={tab} set={setTab} icon={Bot} label="对话" />
+            <NavIcon tab="chat" current={tab} set={setTab} icon={Bot} label={uiText("对话")} />
           )}
           <NavIcon tab="skills" current={tab} set={setTab} icon={BookOpen} label="Skills" />
-          <NavIcon tab="drama" current={tab} set={setTab} icon={Clapperboard} label="短剧资产" />
-          <NavIcon tab="history" current={tab} set={setTab} icon={History} label="历史" />
-          <NavIcon tab="usage" current={tab} set={setTab} icon={BarChart3} label="用量" />
+          <NavIcon tab="drama" current={tab} set={setTab} icon={Clapperboard} label={uiText("短剧资产")} />
+          <NavIcon tab="history" current={tab} set={setTab} icon={History} label={uiText("历史")} />
+          <NavIcon tab="usage" current={tab} set={setTab} icon={BarChart3} label={uiText("用量")} />
           {desktop ? (
             <>
-              <NavIcon tab="pref" current={tab} set={setTab} icon={Brain} label="记忆" />
+              <NavIcon tab="pref" current={tab} set={setTab} icon={Brain} label={uiText("记忆")} />
               <button
                 type="button"
                 onClick={openConfiguration}
-                title="模型设置"
-                aria-label="模型设置"
+                title={uiText("模型设置")}
+                aria-label={uiText("模型设置")}
                 className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04]"
               >
                 <Settings2 size={16} />
               </button>
             </>
           ) : (
-            <NavIcon tab="pref" current={tab} set={setTab} icon={Settings2} label="偏好" />
+            <NavIcon tab="pref" current={tab} set={setTab} icon={Settings2} label={uiText("偏好")} />
           )}
           <button
             type="button"
@@ -1228,8 +1232,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
           <div ref={chatScrollRef} className="relative min-h-0 flex-1 overflow-y-auto bg-transparent px-3.5 pb-8 pt-3.5">
             {composerRefs.some((ref) => ref.kind === 'node') && (
               <p className="mb-3 rounded-full bg-[#f2f2f2] px-3 py-1.5 text-[11px] font-semibold text-[#555]">
-                已加入 {composerRefs.filter((ref) => ref.kind === 'node').length} 个参考节点，将随下一条消息发送
-              </p>
+                {uiText("已加入 ")}{composerRefs.filter((ref) => ref.kind === 'node').length} {uiText("个参考节点，将随下一条消息发送")}</p>
             )}
 
             {(desktop ? panelMessages.length === 0 && !panelBusy : messages.length === 0) && (
@@ -1272,7 +1275,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                       />
                       {m.meta?.runStatus === 'failed' && (
                         <p role="alert" className="mt-2 rounded-md bg-red-50 px-2 py-1.5 text-[12px] leading-5 text-red-700">
-                          运行中断：{friendlyAgentErrorMessage(m.meta.errorCode)}
+                          {uiText("运行中断：")}{friendlyAgentErrorMessage(m.meta.errorCode)}
                         </p>
                       )}
                       {m.meta?.nextActions && m.meta.nextActions.length > 0 && (
@@ -1299,26 +1302,24 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
             {suggestions.length > 0 && (
               <div className="mb-3 space-y-2">
                 <div className="flex items-center justify-between">
-                  <p className="text-[12px] font-bold text-[#333]">建议卡片</p>
+                  <p className="text-[12px] font-bold text-[#333]">{uiText("建议卡片")}</p>
                   <button
                     type="button"
                     onClick={() => void addSuggestionsToCanvas(suggestions)}
                     className="text-[11px] font-bold text-[#111] underline underline-offset-2"
                   >
-                    全部添加到画布
-                  </button>
+                    {uiText("全部添加到画布")}</button>
                 </div>
                 {suggestions.map((s, idx) => (
                   <div key={`${s.title ?? 's'}-${idx}`} className="rounded-[16px] border border-black/8 bg-white p-3">
-                    <p className="text-[12px] font-bold text-[#111]">{s.title || `建议 ${idx + 1}`}</p>
+                    <p className="text-[12px] font-bold text-[#111]">{s.title || uiText("建议 {0}", { 0: idx + 1 })}</p>
                     <p className="mt-1 text-[12px] leading-relaxed text-[#555]">{s.content || s.prompt || ''}</p>
                     <button
                       type="button"
                       onClick={() => void addSuggestionsToCanvas([s])}
                       className="mt-2 text-[11px] font-bold text-[#111] underline underline-offset-2"
                     >
-                      添加到画布
-                    </button>
+                      {uiText("添加到画布")}</button>
                   </div>
                 ))}
               </div>
@@ -1327,8 +1328,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
             {panelBusy && (
               <p role="status" className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-[#888]">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-                正在工作
-              </p>
+                {uiText("正在工作")}</p>
             )}
             <div ref={bottomRef} />
           </div>
@@ -1376,8 +1376,8 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                   rows={3}
                   placeholder={
                     hasPendingConfirmation
-                      ? '可先编辑下一步需求；请先处理上方待确认操作'
-                      : '描述创意或需求，@ 引用参考，/ 选择 Skill'
+                      ? uiText("可先编辑下一步需求；请先处理上方待确认操作")
+                      : uiText("描述创意或需求，@ 引用参考，/ 选择 Skill")
                   }
                   disabled={panelBusy || desktopSessionArchived}
                   className="block min-h-[72px] w-full resize-none bg-transparent px-3 pb-12 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60"
@@ -1387,8 +1387,8 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                     <div className="flex min-w-0 items-center gap-0.5">
                       <button
                         type="button"
-                        aria-label="添加 Skill"
-                        title="添加 Skill"
+                        aria-label={uiText("添加 Skill")}
+                        title={uiText("添加 Skill")}
                         onClick={() => setTab('skills')}
                         className="relative flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--canvas-muted)] transition-colors hover:bg-[var(--canvas-hover)] hover:text-[var(--canvas-text)]"
                       >
@@ -1396,8 +1396,8 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                       </button>
                       <button
                         type="button"
-                        aria-label="生成偏好"
-                        title="生成偏好"
+                        aria-label={uiText("生成偏好")}
+                        title={uiText("生成偏好")}
                         onClick={openConfiguration}
                         className="relative flex size-8 items-center justify-center rounded-lg text-[var(--canvas-muted)] transition-colors hover:bg-[var(--canvas-hover)] hover:text-[var(--canvas-text)]"
                       >
@@ -1422,9 +1422,9 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                           type="button"
                           onClick={openConfiguration}
                           className="max-w-[140px] truncate rounded-lg px-2 py-1 text-[11px] font-semibold text-[#555] hover:bg-[var(--canvas-hover)]"
-                          title={desktopAdapter?.modelLabel || '配置模型'}
+                          title={desktopAdapter?.modelLabel || uiText("配置模型")}
                         >
-                          {desktopAdapter?.modelLabel || '配置模型'}
+                          {desktopAdapter?.modelLabel || uiText("配置模型")}
                         </button>
                       )
                     ) : (
@@ -1453,8 +1453,8 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                     <button
                       type="button"
                       onClick={stop}
-                      title="停止"
-                      aria-label="停止"
+                      title={uiText("停止")}
+                      aria-label={uiText("停止")}
                       className="inline-flex size-7 items-center justify-center rounded-lg bg-[var(--canvas-active)] text-[var(--canvas-active-text)] transition-colors"
                     >
                       <Square size={12} strokeWidth={2.5} />
@@ -1463,7 +1463,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
                     <button
                       type="submit"
                       disabled={!panelDraft.trim() || hasPendingConfirmation || (desktop && (!desktopAdapter?.configured || desktopAdapter?.creating || desktopSessionArchived))}
-                      aria-label="发送"
+                      aria-label={uiText("发送")}
                       className={cn(
                         'inline-flex size-7 items-center justify-center rounded-lg transition-colors',
                         panelDraft.trim() && !hasPendingConfirmation && (!desktop || desktopAdapter?.configured)
@@ -1486,7 +1486,7 @@ function WebAgentPanel({ desktopAdapter }: { desktopAdapter?: AgentPanelDesktopA
         <p role="alert" className="mx-3 mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{desktopAdapter.error}</p>
       )}
       {desktop && desktopSessionArchived && tab === 'chat' && (
-        <p role="status" className="mx-3 mb-2 rounded-lg bg-[var(--canvas-surface-muted)] px-3 py-2 text-xs text-[var(--canvas-text-muted)]">此会话已归档。可在历史中恢复后继续发送。</p>
+        <p role="status" className="mx-3 mb-2 rounded-lg bg-[var(--canvas-surface-muted)] px-3 py-2 text-xs text-[var(--canvas-text-muted)]">{uiText("此会话已归档。可在历史中恢复后继续发送。")}</p>
       )}
       {tab === 'skills' && (
         <SkillsPanel
@@ -1546,39 +1546,40 @@ export function AgentConfirmationCard({
   showEstimatedCost?: boolean
   onConfirm: (accept: boolean) => void
 }) {
+  useUiLanguage()
   const pending = confirmation.status === 'pending'
   const submitting = confirmation.status === 'submitting'
   const total = confirmation.estimatedTotalCost ?? confirmation.estimatedCost ?? 0
   const deleting = confirmation.kind === 'canvas_delete'
-  const summary = deleting ? '确认删除所列节点及关联连线' : confirmation.tool ? `确认${toolLabel(confirmation.tool)}` : confirmation.summary
-  const statusText = submitting ? '正在提交确认…' : deleting ? '待确认删除' : '待确认生成'
+  const summary = deleting ? uiText("确认删除所列节点及关联连线") : confirmation.tool ? uiText("确认{0}", { 0: toolLabel(confirmation.tool) }) : confirmation.summary
+  const statusText = submitting ? uiText("正在提交确认…") : deleting ? uiText("待确认删除") : uiText("待确认生成")
 
   return (
     <section className="rounded-lg border border-[var(--canvas-border-strong)] bg-[var(--canvas-surface)] px-2.5 py-2 text-[11px] text-[var(--canvas-text)] shadow-sm">
       <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-[var(--canvas-text-muted)]" />
         <div className="min-w-0 flex-1">
-          <p className="font-semibold">{statusText}{queuedCount > 0 ? `，还有 ${queuedCount} 项排队` : ''}</p>
+          <p className="font-semibold">{statusText}{queuedCount > 0 ? uiText("，还有 {0} 项排队", { 0: queuedCount }) : ''}</p>
           <p className="mt-0.5 truncate text-[var(--canvas-text-muted)]">{summary}</p>
           {showEstimatedCost && !deleting
-            ? <p className="mt-0.5 text-[var(--canvas-text-muted)]">预计 {total} 点{confirmation.affectedNodeCount ? ` · ${confirmation.affectedNodeCount} 个节点` : ''}</p>
+            ? <p className="mt-0.5 text-[var(--canvas-text-muted)]">{uiText("预计 ")}{total} {uiText("点")}{confirmation.affectedNodeCount ? uiText("· {0} 个节点", { 0: confirmation.affectedNodeCount }) : ''}</p>
             : confirmation.affectedNodeCount
-              ? <p className="mt-0.5 text-[var(--canvas-text-muted)]">涉及 {confirmation.affectedNodeCount} 个节点</p>
+              ? <p className="mt-0.5 text-[var(--canvas-text-muted)]">{uiText("涉及 ")}{confirmation.affectedNodeCount} {uiText("个节点")}</p>
               : null}
           {deleting && (
             <div className="mt-1.5 rounded-md bg-[var(--canvas-surface-muted)] px-2 py-1.5">
               <p className="break-words">{confirmation.nodeLabels?.join('、')}</p>
-              <p className="mt-0.5">将移除 {confirmation.connectedEdgeCount ?? 0} 条连线，影响 {confirmation.downstreamNodeCount ?? 0} 个下游节点。</p>
-              <p className="mt-0.5">涉及 {confirmation.affectedGroupCount ?? 0} 个分组、{confirmation.affectedStackCount ?? 0} 个堆叠。</p>
+              <p className="mt-0.5">{uiText("将移除 ")}{confirmation.connectedEdgeCount ?? 0} {uiText("条连线，影响 ")}{confirmation.downstreamNodeCount ?? 0} {uiText("个下游节点。")}</p>
+              <p className="mt-0.5">{uiText("涉及 ")}{confirmation.affectedGroupCount ?? 0} {uiText("个分组、")}{confirmation.affectedStackCount ?? 0} {uiText("个堆叠。")}</p>
             </div>
           )}
           {!showEstimatedCost && confirmation.generationItems && confirmation.generationItems.length > 0 && (
             <div className="mt-1.5 max-h-32 space-y-1 overflow-y-auto pr-1">
               {confirmation.generationItems.map((item, index) => (
                 <div key={`${item.target}-${index}`} className="rounded-md bg-[var(--canvas-surface-muted)] px-2 py-1.5">
-                  <p className="truncate font-medium">目标：{item.target} · 模型：{item.model}</p>
-                  <p className="mt-0.5 line-clamp-2 break-words">输入：{item.input}</p>
-                  <p className="mt-0.5">覆盖现有输出：{item.overwrite ? '是' : '否'}</p>
+                  <p className="truncate font-medium">{uiText("目标：")}{item.target} {uiText("· 模型：")}{item.model}</p>
+                  <p className="mt-0.5 line-clamp-2 break-words">{uiText("输入：")}{item.input}</p>
+                  <p className="mt-0.5">{uiText("覆盖现有输出：")}{item.overwrite ? uiText("是") : uiText("否")}</p>
                 </div>
               ))}
             </div>
@@ -1592,16 +1593,14 @@ export function AgentConfirmationCard({
             onClick={() => onConfirm(false)}
             className="rounded-md border border-[var(--canvas-border)] px-2 py-1 font-medium text-[var(--canvas-text-muted)] transition hover:bg-[var(--canvas-hover)] disabled:cursor-wait disabled:opacity-60"
           >
-            取消
-          </button>
+            {uiText("取消")}</button>
           <button
             type="button"
             disabled={submitting}
             onClick={() => onConfirm(true)}
             className="rounded-md bg-[var(--canvas-active)] px-2 py-1 font-medium text-[var(--canvas-active-text)] transition hover:opacity-90 disabled:cursor-wait disabled:opacity-60"
           >
-            确认执行
-          </button>
+            {uiText("确认执行")}</button>
           </div>
         ) : null}
       </div>
@@ -1622,11 +1621,12 @@ function NavIcon({
   icon: React.ComponentType<{ size?: number }>
   label: string
 }) {
+  useUiLanguage()
   return (
     <button
       type="button"
       onClick={() => set(tab)}
-      title={label}
+      title={uiText(label)}
       className={cn(
         'rounded-full p-2 transition',
         current === tab ? 'bg-black/8 text-[#111]' : 'text-[#888] hover:bg-black/[0.04]',
@@ -1638,11 +1638,13 @@ function NavIcon({
 }
 
 function PreferencesTab({ desktop = false, sessionId }: { desktop?: boolean; sessionId: string | number | null }) {
+  useUiLanguage()
   if (desktop) return <DesktopMemoryPreferences sessionId={sessionId} />
   return <WebPreferencesTab />
 }
 
 function WebPreferencesTab() {
+  useUiLanguage()
   const preferences = useAuth((s) => s.preferences)
   const updatePreferences = useAuth((s) => s.updatePreferences)
   const [models, setModels] = useState<ModelInfo[]>([])
@@ -1674,19 +1676,18 @@ function WebPreferencesTab() {
 
   return (
     <div className="flex-1 space-y-3 overflow-auto p-4">
-      <p className="text-[13px] font-bold text-[#111]">偏好设置</p>
+      <p className="text-[13px] font-bold text-[#111]">{uiText("偏好设置")}</p>
       <p className="text-[11px] leading-relaxed text-[#888]">
-        Agent 对话默认走 DeepSeek；下方为节点生成默认模型。
-      </p>
+        {uiText("Agent 对话默认走 DeepSeek；下方为节点生成默认模型。")}</p>
       {(
         [
-          ['text', '文本模型'],
-          ['image', '图片模型'],
-          ['video', '视频模型'],
+          ['text', uiText("文本模型")],
+          ['image', uiText("图片模型")],
+          ['video', uiText("视频模型")],
         ] as const
       ).map(([key, label]) => (
         <div key={key}>
-          <p className="mb-1 text-[12px] font-bold text-[#555]">{label}</p>
+          <p className="mb-1 text-[12px] font-bold text-[#555]">{uiText(label)}</p>
           <ModelPicker
             models={
               options(key).length
@@ -1699,8 +1700,7 @@ function WebPreferencesTab() {
         </div>
       ))}
       <label className="block text-[12px] font-bold text-[#555]">
-        默认分辨率
-        <select
+        {uiText("默认分辨率")}<select
           className="mt-1 h-10 w-full rounded-lg border border-black/10 bg-white px-2 text-[13px]"
           value={pref.resolution}
           onChange={(e) => setPref({ ...pref, resolution: e.target.value })}
@@ -1720,16 +1720,16 @@ function WebPreferencesTab() {
             defaultVideoModel: pref.video,
             defaultResolution: pref.resolution,
           })
-            .then(() => toastSuccess('偏好已保存'))
+            .then(() => toastSuccess(uiText("偏好已保存")))
             .catch((e) => toastError((e as Error).message))
             .finally(() => setSaving(false))
         }}
         className="h-10 w-full rounded-full bg-[#111] text-[13px] font-bold text-white disabled:opacity-50"
       >
-        {saving ? '保存中…' : '保存偏好'}
+        {saving ? uiText("保存中…") : uiText("保存偏好")}
       </button>
       <div className="rounded-[18px] bg-[#f7f7f7] p-3">
-        <p className="mb-2 text-[12px] font-bold text-[#555]">长期记忆</p>
+        <p className="mb-2 text-[12px] font-bold text-[#555]">{uiText("长期记忆")}</p>
         <Memories />
       </div>
     </div>
@@ -1737,6 +1737,7 @@ function WebPreferencesTab() {
 }
 
 function Memories() {
+  useUiLanguage()
   const [items, setItems] = useState<MemoryView[]>([])
   useEffect(() => {
     void api<{ items: MemoryView[] }>('/memories')
@@ -1745,7 +1746,7 @@ function Memories() {
   }, [])
   return (
     <div className="space-y-1.5">
-      {items.length === 0 && <p className="text-[12px] text-[#999]">暂无长期记忆</p>}
+      {items.length === 0 && <p className="text-[12px] text-[#999]">{uiText("暂无长期记忆")}</p>}
       {items.map((m) => (
         <div key={m.id} className="flex items-center gap-2 rounded-lg bg-white px-2 py-1.5 text-[12px]">
           <span className="flex-1 text-[#555]">{m.content}</span>
@@ -1783,6 +1784,7 @@ const DESKTOP_MEMORY_SCOPE_LABELS: Record<DesktopMemoryScope, string> = {
 }
 
 function DesktopMemoryPreferences({ sessionId }: { sessionId: string | number | null }) {
+  useUiLanguage()
   const [scope, setScope] = useState<DesktopMemoryScope>('project')
   const [items, setItems] = useState<MemoryView[]>([])
   const [candidates, setCandidates] = useState<DesktopMemoryCandidateView[]>([])
@@ -1806,7 +1808,7 @@ function DesktopMemoryPreferences({ sessionId }: { sessionId: string | number | 
       setItems(result.items)
       setCandidates(pending.items)
     } catch (cause) {
-      setError((cause as Error).message || '记忆读取失败。')
+      setError((cause as Error).message || uiText("记忆读取失败。"))
     } finally {
       setLoading(false)
     }
@@ -1822,7 +1824,7 @@ function DesktopMemoryPreferences({ sessionId }: { sessionId: string | number | 
       })
       setDraft('')
       await refresh()
-      toastSuccess('记忆已保存')
+      toastSuccess(uiText("记忆已保存"))
     } catch (cause) { toastError((cause as Error).message) }
   }
 
@@ -1836,7 +1838,7 @@ function DesktopMemoryPreferences({ sessionId }: { sessionId: string | number | 
       setEditingId(null)
       setEditingDraft('')
       await refresh()
-      toastSuccess('记忆已更新')
+      toastSuccess(uiText("记忆已更新"))
     } catch (cause) { toastError((cause as Error).message) }
   }
 
@@ -1851,7 +1853,7 @@ function DesktopMemoryPreferences({ sessionId }: { sessionId: string | number | 
     try {
       await api(`/memory-candidates/${encodeURIComponent(candidate.id)}/${action}`, { method: 'POST' })
       await refresh()
-      toastSuccess(action === 'accept' ? '已保存这项记忆' : '已忽略这项候选')
+      toastSuccess(action === 'accept' ? uiText("已保存这项记忆") : uiText("已忽略这项候选"))
     } catch (cause) { toastError((cause as Error).message) }
   }
 
@@ -1864,61 +1866,60 @@ function DesktopMemoryPreferences({ sessionId }: { sessionId: string | number | 
       anchor.download = `vibepaper-memory-${new Date().toISOString().slice(0, 10)}.json`
       anchor.click()
       URL.revokeObjectURL(objectUrl)
-      toastSuccess('记忆已导出')
+      toastSuccess(uiText("记忆已导出"))
     } catch (cause) { toastError((cause as Error).message) }
   }
 
   return (
     <div className="flex-1 space-y-3 overflow-auto p-4">
-      <p className="text-[13px] font-bold text-[#111]">记忆管理</p>
+      <p className="text-[13px] font-bold text-[#111]">{uiText("记忆管理")}</p>
       <div className="rounded-[18px] bg-[#f7f7f7] p-3">
         <div className="mb-2 flex items-center gap-2">
-          <p className="min-w-0 flex-1 text-[12px] font-bold text-[#555]">Agent 记忆</p>
-          <button type="button" onClick={() => void refresh()} disabled={loading} className="rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-[11px] text-[#555] disabled:opacity-50">刷新</button>
-          <button type="button" onClick={() => void exportMemories()} className="rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-[11px] text-[#555]">导出</button>
+          <p className="min-w-0 flex-1 text-[12px] font-bold text-[#555]">{uiText("Agent 记忆")}</p>
+          <button type="button" onClick={() => void refresh()} disabled={loading} className="rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-[11px] text-[#555] disabled:opacity-50">{uiText("刷新")}</button>
+          <button type="button" onClick={() => void exportMemories()} className="rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-[11px] text-[#555]">{uiText("导出")}</button>
         </div>
-        <p className="mb-2 text-[11px] leading-relaxed text-[#888]">项目记忆随项目备份；全局偏好保存在本机用户数据中。候选内容只有经你确认后才会保存。</p>
+        <p className="mb-2 text-[11px] leading-relaxed text-[#888]">{uiText("项目记忆随项目备份；全局偏好保存在本机用户数据中。候选内容只有经你确认后才会保存。")}</p>
         <label className="mb-2 block text-[11px] font-semibold text-[#555]">
-          范围
-          <select aria-label="记忆范围" className="mt-1 h-9 w-full rounded-lg border border-black/10 bg-white px-2 text-[12px] font-normal" value={scope} onChange={(event) => setScope(event.target.value as DesktopMemoryScope)}>
-            {Object.entries(DESKTOP_MEMORY_SCOPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          {uiText("范围")}<select aria-label={uiText("记忆范围")} className="mt-1 h-9 w-full rounded-lg border border-black/10 bg-white px-2 text-[12px] font-normal" value={scope} onChange={(event) => setScope(event.target.value as DesktopMemoryScope)}>
+            {Object.entries(DESKTOP_MEMORY_SCOPE_LABELS).map(([value, label]) => <option key={value} value={value}>{uiText(label)}</option>)}
           </select>
         </label>
-        {scope === 'session' && !sessionId && <p className="mb-2 text-[11px] text-amber-700">请先选择一个 Agent 会话。</p>}
-        <textarea aria-label="新记忆内容" value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={2_000} rows={2} placeholder={`添加${DESKTOP_MEMORY_SCOPE_LABELS[scope]}`} className="w-full resize-y rounded-lg border border-black/10 bg-white px-2.5 py-2 text-[12px] outline-none focus:border-black/30" />
-        <button type="button" disabled={!draft.trim() || loading || (scope === 'session' && !sessionId)} onClick={() => void createMemory()} className="mt-2 h-8 rounded-full bg-[#111] px-3 text-[11px] font-semibold text-white disabled:opacity-40">保存记忆</button>
+        {scope === 'session' && !sessionId && <p className="mb-2 text-[11px] text-amber-700">{uiText("请先选择一个 Agent 会话。")}</p>}
+        <textarea aria-label={uiText("新记忆内容")} value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={2_000} rows={2} placeholder={uiText("添加{0}", { 0: uiText(DESKTOP_MEMORY_SCOPE_LABELS[scope]) })} className="w-full resize-y rounded-lg border border-black/10 bg-white px-2.5 py-2 text-[12px] outline-none focus:border-black/30" />
+        <button type="button" disabled={!draft.trim() || loading || (scope === 'session' && !sessionId)} onClick={() => void createMemory()} className="mt-2 h-8 rounded-full bg-[#111] px-3 text-[11px] font-semibold text-white disabled:opacity-40">{uiText("保存记忆")}</button>
         {error && <p role="alert" className="mt-2 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] text-red-700">{error}</p>}
-        {loading && <p className="mt-2 text-[11px] text-[#999]">正在读取…</p>}
-        {!loading && items.length === 0 && <p className="mt-2 text-[12px] text-[#999]">暂无{DESKTOP_MEMORY_SCOPE_LABELS[scope]}</p>}
+        {loading && <p className="mt-2 text-[11px] text-[#999]">{uiText("正在读取…")}</p>}
+        {!loading && items.length === 0 && <p className="mt-2 text-[12px] text-[#999]">{uiText("暂无")}{uiText(DESKTOP_MEMORY_SCOPE_LABELS[scope])}</p>}
         <div className="mt-2 space-y-1.5">
           {items.map((memory) => (
             <div key={memory.id} className="rounded-lg bg-white px-2.5 py-2 text-[12px]">
               {editingId === memory.id ? (
                 <div>
-                  <textarea aria-label="编辑记忆内容" value={editingDraft} onChange={(event) => setEditingDraft(event.target.value)} maxLength={2_000} rows={2} className="w-full resize-y rounded-md border border-black/10 px-2 py-1.5 text-[12px] outline-none focus:border-black/30" />
+                  <textarea aria-label={uiText("编辑记忆内容")} value={editingDraft} onChange={(event) => setEditingDraft(event.target.value)} maxLength={2_000} rows={2} className="w-full resize-y rounded-md border border-black/10 px-2 py-1.5 text-[12px] outline-none focus:border-black/30" />
                   <div className="mt-2 flex justify-end gap-3">
-                    <button type="button" onClick={() => setEditingId(null)} className="text-[#777]">取消</button>
-                    <button type="button" disabled={!editingDraft.trim()} onClick={() => void editMemory(memory)} className="font-semibold text-[#111] disabled:opacity-40">保存</button>
+                    <button type="button" onClick={() => setEditingId(null)} className="text-[#777]">{uiText("取消")}</button>
+                    <button type="button" disabled={!editingDraft.trim()} onClick={() => void editMemory(memory)} className="font-semibold text-[#111] disabled:opacity-40">{uiText("保存")}</button>
                   </div>
                 </div>
               ) : <div className="flex items-start gap-2">
                 <span className="flex-1 whitespace-pre-wrap text-[#555]">{memory.content}</span>
-                <button type="button" aria-label="编辑记忆" onClick={() => { setEditingId(memory.id); setEditingDraft(memory.content) }} className="shrink-0 text-[#888] hover:text-[#111]">编辑</button>
-                <button type="button" aria-label="删除记忆" onClick={() => void deleteMemory(memory)} className="shrink-0 text-red-400 hover:text-red-600"><X size={12} /></button>
+                <button type="button" aria-label={uiText("编辑记忆")} onClick={() => { setEditingId(memory.id); setEditingDraft(memory.content) }} className="shrink-0 text-[#888] hover:text-[#111]">{uiText("编辑")}</button>
+                <button type="button" aria-label={uiText("删除记忆")} onClick={() => void deleteMemory(memory)} className="shrink-0 text-red-400 hover:text-red-600"><X size={12} /></button>
               </div>}
             </div>
           ))}
         </div>
         {candidates.length > 0 && <div className="mt-3 space-y-2 border-t border-black/5 pt-3">
-          <p className="text-[11px] font-semibold text-[#555]">待确认的记忆候选</p>
+          <p className="text-[11px] font-semibold text-[#555]">{uiText("待确认的记忆候选")}</p>
           {candidates.map((candidate) => (
             <div key={candidate.id} className="rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-2">
               <p className="text-[12px] leading-relaxed text-[#555]">{candidate.content}</p>
               <div className="mt-2 flex items-center justify-between gap-2">
-                <span className="text-[10px] text-[#888]">{DESKTOP_MEMORY_SCOPE_LABELS[candidate.scope] ?? candidate.scope}</span>
+                <span className="text-[10px] text-[#888]">{uiText(DESKTOP_MEMORY_SCOPE_LABELS[candidate.scope] ?? candidate.scope)}</span>
                 <div className="flex gap-3 text-[11px]">
-                  <button type="button" onClick={() => void reviewCandidate(candidate, 'reject')} className="text-[#777] hover:text-[#111]">忽略</button>
-                  <button type="button" onClick={() => void reviewCandidate(candidate, 'accept')} className="font-semibold text-[#111]">保存</button>
+                  <button type="button" onClick={() => void reviewCandidate(candidate, 'reject')} className="text-[#777] hover:text-[#111]">{uiText("忽略")}</button>
+                  <button type="button" onClick={() => void reviewCandidate(candidate, 'accept')} className="font-semibold text-[#111]">{uiText("保存")}</button>
                 </div>
               </div>
             </div>
@@ -1930,6 +1931,7 @@ function DesktopMemoryPreferences({ sessionId }: { sessionId: string | number | 
 }
 
 function UsageTab({ sessionId, desktop = false }: { sessionId: string | number | null; desktop?: boolean }) {
+  useUiLanguage()
   const [usage, setUsage] = useState<{
     tokenTotal: number
     pointsUsed?: number
@@ -1955,28 +1957,28 @@ function UsageTab({ sessionId, desktop = false }: { sessionId: string | number |
     setUsageError('')
     void api(`/agent/sessions/${sessionId}/usage`)
       .then((u) => { if (active) setUsage(u as typeof usage) })
-      .catch((error: unknown) => { if (active) setUsageError(error instanceof Error ? error.message : '读取用量失败') })
+      .catch((error: unknown) => { if (active) setUsageError(error instanceof Error ? error.message : uiText("读取用量失败")) })
       .finally(() => { if (active) setUsageLoading(false) })
     return () => { active = false }
   }, [sessionId])
   if (desktop) {
     return (
       <div className="flex-1 space-y-3 overflow-auto p-4">
-        <p className="text-[13px] font-bold text-[#111]">当前对话用量</p>
-        {!sessionId && <p className="text-[12px] text-[#888]">发送一条消息后显示本地用量统计。</p>}
-        {sessionId && usageLoading && <p className="text-[12px] text-[#888]">正在读取本地用量…</p>}
+        <p className="text-[13px] font-bold text-[#111]">{uiText("当前对话用量")}</p>
+        {!sessionId && <p className="text-[12px] text-[#888]">{uiText("发送一条消息后显示本地用量统计。")}</p>}
+        {sessionId && usageLoading && <p className="text-[12px] text-[#888]">{uiText("正在读取本地用量…")}</p>}
         {sessionId && usageError && <p role="alert" className="text-[12px] text-red-600">{usageError}</p>}
         {!usageLoading && !usageError && usage && <>
           <div className="grid grid-cols-2 gap-2">
-            <UsageMetric value={usage.tokenTotal} label="Token 总量" />
-            <UsageMetric value={usage.modelCallCount ?? 0} label="模型调用" />
-            <UsageMetric value={usage.toolCallCount ?? 0} label="工具调用" />
-            <UsageMetric value={(usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)} label="缓存 Token" />
+            <UsageMetric value={usage.tokenTotal} label={uiText("Token 总量")} />
+            <UsageMetric value={usage.modelCallCount ?? 0} label={uiText("模型调用")} />
+            <UsageMetric value={usage.toolCallCount ?? 0} label={uiText("工具调用")} />
+            <UsageMetric value={(usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)} label={uiText("缓存 Token")} />
           </div>
           <div>
-            <p className="mb-1 text-[12px] font-bold text-[#555]">各模型 Token 用量</p>
+            <p className="mb-1 text-[12px] font-bold text-[#555]">{uiText("各模型 Token 用量")}</p>
             {Object.entries(usage.modelUsage).length === 0
-              ? <p className="text-[12px] text-[#888]">暂无模型调用记录。</p>
+              ? <p className="text-[12px] text-[#888]">{uiText("暂无模型调用记录。")}</p>
               : Object.entries(usage.modelUsage).map(([model, tokens]) => (
                 <div key={model} className="flex items-center justify-between rounded-lg bg-[#f7f7f7] px-2 py-1.5 text-[12px]">
                   <span className="font-semibold text-[#555]">{model}</span>
@@ -1990,19 +1992,19 @@ function UsageTab({ sessionId, desktop = false }: { sessionId: string | number |
   }
   return (
     <div className="flex-1 space-y-3 overflow-auto p-4">
-      <p className="text-[13px] font-bold text-[#111]">当前对话用量</p>
+      <p className="text-[13px] font-bold text-[#111]">{uiText("当前对话用量")}</p>
       <div className="grid grid-cols-2 gap-2">
         <div className="rounded-[18px] bg-[#f7f7f7] p-3 text-center">
           <p className="text-[22px] font-black text-[#111]">{usage?.tokenTotal ?? 0}</p>
-          <p className="text-[11px] text-[#999]">Token 总量</p>
+          <p className="text-[11px] text-[#999]">{uiText("Token 总量")}</p>
         </div>
         <div className="rounded-[18px] bg-[#f7f7f7] p-3 text-center">
           <p className="text-[22px] font-black text-[#111]">{usage?.pointsUsed ?? 0}</p>
-          <p className="text-[11px] text-[#999]">点数消耗</p>
+          <p className="text-[11px] text-[#999]">{uiText("点数消耗")}</p>
         </div>
       </div>
       <div>
-        <p className="mb-1 text-[12px] font-bold text-[#555]">各模型消耗</p>
+        <p className="mb-1 text-[12px] font-bold text-[#555]">{uiText("各模型消耗")}</p>
         {Object.entries(usage?.modelUsage ?? {}).map(([m, t]) => (
           <div key={m} className="flex items-center justify-between rounded-lg bg-[#f7f7f7] px-2 py-1.5 text-[12px]">
             <span className="font-semibold text-[#555]">{m}</span>
@@ -2035,6 +2037,7 @@ export function AgentHistorySessionItem({
   onCopy?: () => Promise<void>
   onDelete?: () => Promise<void>
 }) {
+  useUiLanguage()
   const managed = Boolean(onRename || onArchive || onRestore || onCopy || onDelete)
   const [renaming, setRenaming] = useState(false)
   const [titleDraft, setTitleDraft] = useState(session.title)
@@ -2067,7 +2070,7 @@ export function AgentHistorySessionItem({
         }`}
       >
         <p className="font-bold text-[#333]">{session.title}</p>
-        <p className="text-[#999]">{active ? '当前会话' : '历史会话'}</p>
+        <p className="text-[#999]">{active ? uiText("当前会话") : uiText("历史会话")}</p>
       </button>
     )
   }
@@ -2077,17 +2080,17 @@ export function AgentHistorySessionItem({
       <div className="flex items-start gap-2">
         <button type="button" disabled={busy} onClick={onOpen} className="min-w-0 flex-1 text-left disabled:opacity-50">
           <p className="truncate font-bold text-[#333]">{session.title}</p>
-          <p className="text-[#999]">{active ? '当前会话' : session.status === 'archived' ? '已归档' : '历史会话'}</p>
+          <p className="text-[#999]">{active ? uiText("当前会话") : session.status === 'archived' ? uiText("已归档") : uiText("历史会话")}</p>
         </button>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
           {onRename && !renaming && (
-            <button type="button" disabled={busy} onClick={() => setRenaming(true)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">重命名</button>
+            <button type="button" disabled={busy} onClick={() => setRenaming(true)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">{uiText("重命名")}</button>
           )}
           {session.status === 'archived'
-            ? onRestore && <button type="button" disabled={busy} onClick={() => void runAction(onRestore)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">恢复</button>
-            : onArchive && <button type="button" disabled={busy} onClick={() => void runAction(onArchive)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">归档</button>}
-          {onCopy && <button type="button" disabled={busy} onClick={() => void runAction(onCopy)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">复制</button>}
-          {onDelete && !confirmingDelete && <button type="button" disabled={busy} onClick={() => setConfirmingDelete(true)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#8b3030] disabled:opacity-50">删除</button>}
+            ? onRestore && <button type="button" disabled={busy} onClick={() => void runAction(onRestore)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">{uiText("恢复")}</button>
+            : onArchive && <button type="button" disabled={busy} onClick={() => void runAction(onArchive)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">{uiText("归档")}</button>}
+          {onCopy && <button type="button" disabled={busy} onClick={() => void runAction(onCopy)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#555] disabled:opacity-50">{uiText("复制")}</button>}
+          {onDelete && !confirmingDelete && <button type="button" disabled={busy} onClick={() => setConfirmingDelete(true)} className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#8b3030] disabled:opacity-50">{uiText("删除")}</button>}
         </div>
       </div>
       {renaming && (
@@ -2099,17 +2102,17 @@ export function AgentHistorySessionItem({
             if (title) void runAction(onRename ? () => onRename(title) : undefined)
           }}
         >
-          <input autoFocus maxLength={120} value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-black/10 bg-white px-2 py-1 outline-none focus:border-black/30" aria-label="会话标题" />
-          <button type="submit" disabled={busy || !titleDraft.trim()} className="rounded-lg bg-[#111] px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50">保存</button>
-          <button type="button" disabled={busy} onClick={() => setRenaming(false)} className="rounded-lg bg-white px-2 py-1 text-[10px] text-[#555]">取消</button>
+          <input autoFocus maxLength={120} value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-black/10 bg-white px-2 py-1 outline-none focus:border-black/30" aria-label={uiText("会话标题")} />
+          <button type="submit" disabled={busy || !titleDraft.trim()} className="rounded-lg bg-[#111] px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50">{uiText("保存")}</button>
+          <button type="button" disabled={busy} onClick={() => setRenaming(false)} className="rounded-lg bg-white px-2 py-1 text-[10px] text-[#555]">{uiText("取消")}</button>
         </form>
       )}
       {confirmingDelete && (
-        <div role="alertdialog" aria-label="确认删除会话" className="mt-2 rounded-lg bg-white px-2 py-2">
-          <p className="text-[11px] text-[#555]">删除后会话将从历史中移除，无法恢复。</p>
+        <div role="alertdialog" aria-label={uiText("确认删除会话")} className="mt-2 rounded-lg bg-white px-2 py-2">
+          <p className="text-[11px] text-[#555]">{uiText("删除后会话将从历史中移除，无法恢复。")}</p>
           <div className="mt-1.5 flex justify-end gap-1.5">
-            <button type="button" disabled={busy} onClick={() => setConfirmingDelete(false)} className="rounded-lg px-2 py-1 text-[10px] text-[#555]">取消</button>
-            <button type="button" disabled={busy} onClick={() => void runAction(onDelete)} className="rounded-lg bg-[#8b3030] px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50">确认删除</button>
+            <button type="button" disabled={busy} onClick={() => setConfirmingDelete(false)} className="rounded-lg px-2 py-1 text-[10px] text-[#555]">{uiText("取消")}</button>
+            <button type="button" disabled={busy} onClick={() => void runAction(onDelete)} className="rounded-lg bg-[#8b3030] px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50">{uiText("确认删除")}</button>
           </div>
         </div>
       )}
@@ -2142,6 +2145,7 @@ function HistoryTab({
   onCopySession?: (sessionId: string) => Promise<void>
   onDeleteSession?: (sessionId: string) => Promise<void>
 }) {
+  useUiLanguage()
   const [sessions, setSessions] = useState<HistorySession[]>([])
   const [fragments, setFragments] = useState<Array<{ id: string | number; title: string; canvasId?: string | null; createdAt?: string }>>([])
   const reload = () => {
@@ -2163,9 +2167,9 @@ function HistoryTab({
     try {
       await api(`/agent/sessions/${sessionId}/fragments`, {
         method: 'POST',
-        body: JSON.stringify({ title: '片段 ' + new Date().toLocaleTimeString() }),
+        body: JSON.stringify({ title: uiText("片段") + new Date().toLocaleTimeString() }),
       })
-      toastSuccess('会话片段已保存，可跨画布复用')
+      toastSuccess(uiText("会话片段已保存，可跨画布复用"))
       reload()
     } catch (e) {
       toastError((e as Error).message)
@@ -2177,7 +2181,7 @@ function HistoryTab({
         method: 'POST',
         body: JSON.stringify({ canvasId }),
       })
-      toastSuccess('片段已导入当前画布')
+      toastSuccess(uiText("片段已导入当前画布"))
       onImported(result.sessionId)
     } catch (e) {
       toastError((e as Error).message)
@@ -2192,10 +2196,9 @@ function HistoryTab({
           onClick={() => void saveFragment()}
           className="flex h-9 w-full items-center justify-center gap-1 rounded-full bg-[#111] text-[12px] font-bold text-white disabled:opacity-40"
         >
-          <Plus size={13} /> 保存当前会话片段
-        </button>
-        <p className="text-[12px] font-bold text-[#555]">本地对话历史</p>
-        {!desktopSessions?.length && <p className="py-8 text-center text-[12px] text-[#888]">此项目还没有 Agent 会话。</p>}
+          <Plus size={13} /> {uiText("保存当前会话片段")}</button>
+        <p className="text-[12px] font-bold text-[#555]">{uiText("本地对话历史")}</p>
+        {!desktopSessions?.length && <p className="py-8 text-center text-[12px] text-[#888]">{uiText("此项目还没有 Agent 会话。")}</p>}
         {desktopSessions?.map((session) => (
           <AgentHistorySessionItem
             key={session.sessionId}
@@ -2214,8 +2217,8 @@ function HistoryTab({
             onDelete={onDeleteSession ? () => onDeleteSession(session.sessionId) : undefined}
           />
         ))}
-        <p className="text-[12px] font-bold text-[#555]">可复用片段</p>
-        {!fragments.length && <p className="py-3 text-center text-[12px] text-[#888]">暂无可复用片段。</p>}
+        <p className="text-[12px] font-bold text-[#555]">{uiText("可复用片段")}</p>
+        {!fragments.length && <p className="py-3 text-center text-[12px] text-[#888]">{uiText("暂无可复用片段。")}</p>}
         {fragments.map((fragment) => (
           <div key={fragment.id} className="flex items-center gap-2 rounded-[16px] bg-[#f7f7f7] px-2.5 py-2 text-[12px]">
             <span className="flex-1 font-semibold text-[#555]">{fragment.title}</span>
@@ -2224,8 +2227,7 @@ function HistoryTab({
               onClick={() => void importFragment(fragment.id)}
               className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-[#111] shadow-sm"
             >
-              导入
-            </button>
+              {uiText("导入")}</button>
           </div>
         ))}
       </div>
@@ -2237,9 +2239,8 @@ function HistoryTab({
         onClick={() => void saveFragment()}
         className="flex h-9 w-full items-center justify-center gap-1 rounded-full bg-[#111] text-[12px] font-bold text-white"
       >
-        <Plus size={13} /> 保存当前会话片段
-      </button>
-      <p className="text-[12px] font-bold text-[#555]">对话历史</p>
+        <Plus size={13} /> {uiText("保存当前会话片段")}</button>
+      <p className="text-[12px] font-bold text-[#555]">{uiText("对话历史")}</p>
       {sessions.map((s) => (
         <AgentHistorySessionItem
           key={s.sessionId}
@@ -2248,7 +2249,7 @@ function HistoryTab({
           onOpen={() => onOpenSession(s.sessionId, s.title)}
         />
       ))}
-      <p className="text-[12px] font-bold text-[#555]">可复用片段</p>
+      <p className="text-[12px] font-bold text-[#555]">{uiText("可复用片段")}</p>
       {fragments.map((f) => (
         <div key={f.id} className="flex items-center gap-2 rounded-[16px] bg-[#f7f7f7] px-2.5 py-2 text-[12px]">
           <span className="flex-1 font-semibold text-[#555]">{f.title}</span>
@@ -2257,8 +2258,7 @@ function HistoryTab({
             onClick={() => void importFragment(f.id)}
             className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-[#111] shadow-sm"
           >
-            导入
-          </button>
+            {uiText("导入")}</button>
         </div>
       ))}
     </div>
@@ -2266,10 +2266,11 @@ function HistoryTab({
 }
 
 function UsageMetric({ value, label }: { value: number; label: string }) {
+  useUiLanguage()
   return (
     <div className="rounded-[18px] bg-[#f7f7f7] p-3 text-center">
       <p className="text-[22px] font-black text-[#111]">{value.toLocaleString()}</p>
-      <p className="text-[11px] text-[#999]">{label}</p>
+      <p className="text-[11px] text-[#999]">{uiText(label)}</p>
     </div>
   )
 }

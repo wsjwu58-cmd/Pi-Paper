@@ -1,8 +1,16 @@
 # VibePaper 桌面迁移 UI 与交互保真清单
 
+## 2026-10-08 桌面界面语言
+
+按 [AppImage PR 的语言要求](https://github.com/AppImage/appimage.github.io/pull/9800#issuecomment-6046397629)，桌面首次启动在中文系统区域使用中文，在其余区域使用英文。Linux 消息区域优先级为 `LC_ALL > LC_MESSAGES > LANG > Electron locale`；Windows/macOS 读取 Electron 系统区域。原 `PillNav`、`CanvasTopBar`、配置页顶部提供「跟随系统 / 中文 / English」，通过受限 IPC 保存用户偏好，Renderer 首次挂载前解析语言，避免先显示中文。
+
+翻译接入原 Workspace、History、Canvas、节点编辑器、Agent、素材、Skill、记忆、导演台及模型配置组件；仅转换界面标签、提示与预置快捷建议，保留原组件与交互。日期按界面语言格式化，Main 负责应用原生对话框标题和说明。项目名、用户内容、Agent/供应商回复、模型绑定、节点操作枚举、导演台类别及提示词规则不因语言切换改变。原 Web 路径仍使用中文，不显示桌面语言选择器。
+
+Windows 隔离 Electron 验证非中文区域默认英文、手动切换、跟随系统、重启保留偏好、原生对话框及中文用户数据保真；Linux 区域优先级由单元测试覆盖。截图、命令及验收边界见 [验证记录](../verification/2026-10-08-ui-language/README.md)。本条不代表 Linux/macOS 安装包或全部桌面迁移能力已验收。
+
 ## 2026-10-04 桌面品牌与应用图标
 
-按用户授权，桌面应用显示名称改为 `Pi-Paper`，窗口标题、桌面配置页品牌和系统对话框同步更新；图标使用用户提供的猫与节点画布图片。原 Web 名称保持不变。更名不改变现有 `VibePaper` 用户数据目录、项目格式、IPC 名称和 Windows 应用标识，继续读取现有设置、凭据与历史记录。PNG、ICO、ICNS 资源位于 `vibepaper-desktop/assets`；目前尚无安装包构建配置，不能据此宣称可执行文件或安装包图标已验收。
+按用户授权，桌面应用显示名称改为 `Pi-Paper`，窗口标题、桌面配置页品牌和系统对话框同步更新；图标使用用户提供的猫与节点画布图片。原 Web 名称保持不变。更名不改变现有 `VibePaper` 用户数据目录、项目格式、IPC 名称和 Windows 应用标识，继续读取现有设置、凭据与历史记录。PNG、ICO、ICNS 资源位于 `pi-paper-desktop/assets`；目前尚无安装包构建配置，不能据此宣称可执行文件或安装包图标已验收。
 
 ## 2026-10-03 自定义配置入口与用户指定布局
 

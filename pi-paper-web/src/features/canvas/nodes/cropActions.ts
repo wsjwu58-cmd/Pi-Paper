@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import { sid } from '@/lib/ids'
 import type { NodePayload } from '@/lib/types'
 import { createCanvasGroup, useCanvasStore, nodeMediaUrl, type FlowNode } from '../canvasStore'
@@ -22,13 +23,13 @@ export async function saveCropArtifactsAsNodes(
   artifacts: CropArtifact[],
 ): Promise<number> {
   const bridge = window.vibepaperDesktop
-  if (!bridge?.saveCanvasImage) throw new Error('桌面本地图片保存服务尚未就绪。')
-  if (artifacts.length !== cropGridSize(mode) ** 2) throw new Error('裁剪结果数量与所选模式不匹配。')
+  if (!bridge?.saveCanvasImage) throw new Error(uiText("桌面本地图片保存服务尚未就绪。"))
+  if (artifacts.length !== cropGridSize(mode) ** 2) throw new Error(uiText("裁剪结果数量与所选模式不匹配。"))
 
   const active = await bridge.getActiveProject()
   const initial = useCanvasStore.getState()
   const canvasId = initial.canvas?.canvas.id == null ? '' : sid(initial.canvas.canvas.id)
-  if (!active || !canvasId || active.canvasId !== canvasId) throw new Error('当前画布已切换，请重新打开裁剪。')
+  if (!active || !canvasId || active.canvasId !== canvasId) throw new Error(uiText("当前画布已切换，请重新打开裁剪。"))
   const projectId = active.projectId
   await flushCanvasPersistence(projectId, canvasId)
   await assertCropSourceCurrent(source, projectId, canvasId)
@@ -40,7 +41,7 @@ export async function saveCropArtifactsAsNodes(
   try {
     for (let index = 0; index < count; index++) {
       await assertCropSourceCurrent(source, projectId, canvasId)
-      const name = count === 1 ? `${basename}-裁剪.png` : `${basename}-${modeName}-${String(index + 1).padStart(2, '0')}.png`
+      const name = count === 1 ? uiText("{0}-裁剪.png", { 0: basename }) : `${basename}-${modeName}-${String(index + 1).padStart(2, '0')}.png`
       const saved = await bridge.saveCanvasImage({
         projectId,
         canvasId,
@@ -48,7 +49,7 @@ export async function saveCropArtifactsAsNodes(
         pngBytes: new Uint8Array(await artifacts[index].blob.arrayBuffer()),
         name,
       })
-      if (!saved?.assetId || !saved.url) throw new Error(`第 ${index + 1} 张裁剪图片未保存到本地素材。`)
+      if (!saved?.assetId || !saved.url) throw new Error(uiText("第 {0} 张裁剪图片未保存到本地素材。", { 0: index + 1 }))
       savedAssets.push({ assetId: saved.assetId, url: saved.url, name, artifact: artifacts[index] })
     }
   } catch (error) {
@@ -60,7 +61,7 @@ export async function saveCropArtifactsAsNodes(
   const previewWidth = count === 1 ? 280 : 120
   const columns = cropGridSize(mode)
   const currentSource = findCurrentSource(source.nodeId)
-  if (!currentSource) throw new Error('源图片节点已不存在，裁剪产物已保存在本地素材库。')
+  if (!currentSource) throw new Error(uiText("源图片节点已不存在，裁剪产物已保存在本地素材库。"))
   const baseX = currentSource.position.x
   const measuredHeight = Number((currentSource as FlowNode & { measured?: { height?: number } }).measured?.height ?? currentSource.height)
   const baseY = currentSource.position.y + Math.max(Number.isFinite(measuredHeight) ? measuredHeight : 240, 240) + 36
@@ -80,7 +81,7 @@ export async function saveCropArtifactsAsNodes(
       await assertCropSourceCurrent(source, projectId, canvasId)
       const live = useCanvasStore.getState()
       const canvas = live.canvas
-      if (!canvas || sid(canvas.canvas.id) !== canvasId) throw new Error('画布已切换，已停止创建后续裁剪节点。')
+      if (!canvas || sid(canvas.canvas.id) !== canvasId) throw new Error(uiText("画布已切换，已停止创建后续裁剪节点。"))
       const row = asset.artifact.rect.row
       const column = asset.artifact.rect.column
       const x = baseX + column * (previewWidth + 24)
@@ -109,11 +110,11 @@ export async function saveCropArtifactsAsNodes(
         params,
       })
       const id = sid(created.node.id)
-      if (!id || created.node.type !== 'image') throw new Error('本地画布没有返回有效的图片节点。')
+      if (!id || created.node.type !== 'image') throw new Error(uiText("本地画布没有返回有效的图片节点。"))
       createdNodeIds.push(id)
       const latest = useCanvasStore.getState()
       if (!latest.canvas || sid(latest.canvas.canvas.id) !== canvasId) {
-        throw new Error('画布已切换，裁剪节点已保存在原画布；请返回原画布查看。')
+        throw new Error(uiText("画布已切换，裁剪节点已保存在原画布；请返回原画布查看。"))
       }
       latest.setCanvas({
         ...latest.canvas,
@@ -179,7 +180,7 @@ export async function saveCropArtifactsAsNodes(
   }
 
   if (createdNodeIds.length > 0 && canGroup) {
-    const groupName = mode === 'single' ? '裁剪图片' : `${modeName}裁剪`
+    const groupName = mode === 'single' ? uiText("裁剪图片") : uiText("{0}裁剪", { 0: modeName })
     try {
       const group = await createCanvasGroup(createdNodeIds, {
         allowSingle: true,
@@ -187,16 +188,16 @@ export async function saveCropArtifactsAsNodes(
         color: '#111111',
         layout: 'free',
       })
-      if (!group) throw new Error('自动编组没有完成。')
+      if (!group) throw new Error(uiText("自动编组没有完成。"))
     } catch (error) {
       creationError = creationError
-        ? new Error(`${messageOf(creationError)}；自动编组失败：${messageOf(error)}`)
-        : new Error(`裁剪图片节点已创建，但自动编组失败：${messageOf(error)}`)
+        ? new Error(uiText("{0}；自动编组失败：{1}", { 0: messageOf(creationError), 1: messageOf(error) }))
+        : new Error(uiText("裁剪图片节点已创建，但自动编组失败：{0}", { 0: messageOf(error) }))
     }
   }
 
   if (creationError) {
-    throw new Error(`已创建 ${createdNodeIds.length}/${count} 个图片节点。${messageOf(creationError)}`)
+    throw new Error(uiText("已创建 {0}/{1} 个图片节点。{2}", { 0: createdNodeIds.length, 1: count, 2: messageOf(creationError) }))
   }
   const completed = useCanvasStore.getState()
   completed.setNodes(completed.nodes.map((node) => ({
@@ -215,25 +216,25 @@ function findCurrentSource(nodeId: string): FlowNode | null {
 async function assertCropSourceCurrent(source: CropSourceSnapshot, projectId: string, canvasId: string): Promise<void> {
   const state = useCanvasStore.getState()
   const activeCanvas = state.canvas?.canvas
-  if (!activeCanvas || sid(activeCanvas.id) !== canvasId) throw new Error('画布已切换，已停止发布裁剪结果。')
+  if (!activeCanvas || sid(activeCanvas.id) !== canvasId) throw new Error(uiText("画布已切换，已停止发布裁剪结果。"))
   const node = state.nodes.find((item) => sid(item.id) === source.nodeId)?.data.node
-  if (!node || node.type !== 'image') throw new Error('源图片节点已不存在，已停止发布裁剪结果。')
+  if (!node || node.type !== 'image') throw new Error(uiText("源图片节点已不存在，已停止发布裁剪结果。"))
   if (source.outputId != null && sid(node.currentOutputId) !== sid(source.outputId)) {
-    throw new Error('源图片结果已变化，已停止发布裁剪结果。')
+    throw new Error(uiText("源图片结果已变化，已停止发布裁剪结果。"))
   }
   if (source.assetId != null && sid(node.params.assetId) !== sid(source.assetId)) {
-    throw new Error('源图片素材已变化，已停止发布裁剪结果。')
+    throw new Error(uiText("源图片素材已变化，已停止发布裁剪结果。"))
   }
   if (source.sourceNodeMediaUrl != null && nodeMediaUrl(node) !== source.sourceNodeMediaUrl) {
-    throw new Error('源图片已变化，已停止发布裁剪结果。')
+    throw new Error(uiText("源图片已变化，已停止发布裁剪结果。"))
   }
   if (source.outputId == null) {
     const currentUrl = resolveMediaUrl(nodeMediaUrl(node))
-    if (currentUrl !== resolveMediaUrl(source.mediaUrl)) throw new Error('源图片已变化，已停止发布裁剪结果。')
+    if (currentUrl !== resolveMediaUrl(source.mediaUrl)) throw new Error(uiText("源图片已变化，已停止发布裁剪结果。"))
   }
   const active = await window.vibepaperDesktop?.getActiveProject()
   if (!active || active.projectId !== projectId || active.canvasId !== canvasId) {
-    throw new Error('项目或画布已切换，已停止发布裁剪结果。')
+    throw new Error(uiText("项目或画布已切换，已停止发布裁剪结果。"))
   }
 }
 
@@ -286,7 +287,7 @@ async function refreshPersistedCropNodes(
 
 function safeBaseName(value?: string): string {
   const withoutExtension = String(value || '图片').replace(/\.[^.]+$/u, '')
-  return withoutExtension.replace(/[\\/:*?"<>|\u0000-\u001f]/gu, '_').trim().slice(0, 100) || '图片'
+  return withoutExtension.replace(/[\\/:*?"<>|\u0000-\u001f]/gu, '_').trim().slice(0, 100) || uiText("图片")
 }
 
 function messageOf(error: unknown): string {

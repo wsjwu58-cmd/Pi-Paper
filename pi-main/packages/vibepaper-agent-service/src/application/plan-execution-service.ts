@@ -87,8 +87,12 @@ export class PlanExecutionService {
 		const outcomes: ExecutionOutcome[] = [];
 		for (const partition of compiled.executionPartitions.filter((candidate) => candidate.effect === "read")) {
 			const partitionOutcomes = await Promise.all(
-				partition.stepIds.map(async (stepId) =>
-					await this.readGate.run(input.ownerId, async () => await this.executeOne(compiled.plan, stepId, input)),
+				partition.stepIds.map(
+					async (stepId) =>
+						await this.readGate.run(
+							input.ownerId,
+							async () => await this.executeOne(compiled.plan, stepId, input),
+						),
 				),
 			);
 			outcomes.push(...partitionOutcomes);

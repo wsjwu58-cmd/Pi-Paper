@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { LoaderCircle, Puzzle } from 'lucide-react'
 import type { SkillView } from '@/lib/types'
 
@@ -10,18 +11,18 @@ export function SkillCommandPicker({
   loading?: boolean
   onSelect: (skill: SkillView) => void
 }) {
+  useUiLanguage()
   return (
     <div
       role="listbox"
-      aria-label="选择 Skill"
+      aria-label={uiText("选择 Skill")}
       className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-30 max-h-72 overflow-y-auto rounded-2xl border border-black/10 bg-white p-1.5 shadow-[0_16px_40px_rgba(15,23,42,0.16)]"
     >
       {loading && (
         <div className="flex items-center gap-2 px-3 py-3 text-[12px] text-[#888]">
-          <LoaderCircle size={14} className="animate-spin" /> 加载 Skill…
-        </div>
+          <LoaderCircle size={14} className="animate-spin" /> {uiText("加载 Skill…")}</div>
       )}
-      {!loading && items.length === 0 && <p className="px-3 py-3 text-[12px] text-[#888]">没有匹配的 Skill</p>}
+      {!loading && items.length === 0 && <p className="px-3 py-3 text-[12px] text-[#888]">{uiText("没有匹配的 Skill")}</p>}
       {!loading &&
         items.map((skill) => (
           <button

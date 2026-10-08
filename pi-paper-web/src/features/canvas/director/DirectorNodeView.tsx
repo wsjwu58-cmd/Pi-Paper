@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { memo, useMemo, useState } from 'react'
 import { Clapperboard, Layers } from 'lucide-react'
 import type { NodeProps } from '@xyflow/react'
@@ -33,7 +34,7 @@ function parseScene(params: Record<string, unknown> | undefined): DirectorSceneS
         id: String(m.id ?? `legacy-${i}`),
         category: 'character' as const,
         kind: (m.pose as DirectorObject['kind']) || '站立',
-        name: String(m.name ?? `人物 ${String(i + 1).padStart(2, '0')}`),
+        name: String(m.name ?? uiText("人物 {0}", { 0: String(i + 1).padStart(2, '0') })),
         position: [Number(pos2[0]) / 10, 0, Number(pos2[1]) / 10] as [number, number, number],
         rotation: 0,
         scale: Number(m.size ?? 1),
@@ -65,6 +66,7 @@ function localCaptureAssetId(url: string | null): string | undefined {
 }
 
 export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<FlowNode>) {
+  useUiLanguage()
   const nodeId = sid(props.id)
   const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useCanvasStore((s) => s.nodes.find((n) => sid(n.id) === nodeId)?.data.node)
@@ -150,7 +152,7 @@ export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<
               ) : (
                 <div className="flex flex-col items-center gap-1.5 text-[#b0b0b8]">
                   <Layers size={22} strokeWidth={1.5} />
-                  <span className="text-[10px] font-semibold">构图参考</span>
+                  <span className="text-[10px] font-semibold">{uiText("构图参考")}</span>
                 </div>
               )}
             </div>
@@ -173,8 +175,8 @@ export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<
         {selected && (
           <div className="mt-1.5 flex items-center justify-center gap-1 text-[11px] font-semibold text-[#8e8e93]">
             <Layers size={12} />
-            <span>导演台</span>
-            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badge.cls}`}>{badge.text}</span>
+            <span>{uiText("导演台")}</span>
+            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badge.cls}`}>{uiText(badge.text)}</span>
           </div>
         )}
       </div>
@@ -192,13 +194,12 @@ export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<
               className="nodrag nowheel mx-auto flex h-11 w-full max-w-[150px] items-center justify-center gap-2 rounded-full bg-[#1a1a2e] text-[13px] font-bold text-white hover:bg-black"
             >
               <Clapperboard size={16} />
-              编辑
-            </button>
+              {uiText("编辑")}</button>
           </div>
           <p className="mt-2 text-center text-[10px] font-semibold text-[#aaa]">
             {scene.objects.length > 0
-              ? `${scene.objects.length} 个模型 · 双击预览也可编辑`
-              : '点击编辑搭建构图场景'}
+              ? uiText("{0} 个模型 · 双击预览也可编辑", { 0: scene.objects.length })
+              : uiText("点击编辑搭建构图场景")}
           </p>
         </div>
       )}

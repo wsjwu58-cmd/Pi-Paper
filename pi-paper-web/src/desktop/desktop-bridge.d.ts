@@ -866,6 +866,8 @@ export interface DesktopArkModelCatalog {
 }
 
 export interface DesktopBridge {
+  getUiLanguage(): Promise<{ preference: 'system' | 'zh' | 'en'; language: 'zh' | 'en'; systemLanguage: 'zh' | 'en' }>
+  setUiLanguage(preference: 'system' | 'zh' | 'en'): Promise<{ preference: 'system' | 'zh' | 'en'; language: 'zh' | 'en'; systemLanguage: 'zh' | 'en' }>
   getAgentModelCatalog(): Promise<DesktopAgentModelCatalog>
   setAgentSessionModel(projectId: string, sessionId: string, modelId: string): Promise<{ bindingId: string }>
   getProviderConfiguration(): Promise<DesktopProviderConfiguration>

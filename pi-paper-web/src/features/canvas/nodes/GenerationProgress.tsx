@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AudioLines, Clapperboard, Image as ImageIcon, Type, Video } from 'lucide-react'
 import type { GenerationModality, GenerationProgressInput } from './generation-progress'
@@ -12,6 +13,7 @@ const modalityMeta: Record<GenerationModality, { label: string; Icon: typeof Ima
 }
 
 export function GenerationProgress({ status, modality, startedAt, references = [] }: GenerationProgressInput) {
+  useUiLanguage()
   const rootRef = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -22,8 +24,8 @@ export function GenerationProgress({ status, modality, startedAt, references = [
   }, [now, startedAt])
   const previews = references.filter((reference) => Boolean(reference.src)).slice(0, 4)
   const stateLabel = status === 'queued'
-    ? startedAt ? '排队中' : '提交中'
-    : startedAt ? '生成中' : '读取任务状态'
+    ? startedAt ? uiText("排队中") : uiText("提交中")
+    : startedAt ? uiText("生成中") : uiText("读取任务状态")
 
   useEffect(() => {
     const element = rootRef.current
@@ -49,7 +51,7 @@ export function GenerationProgress({ status, modality, startedAt, references = [
       ref={rootRef}
       className={`vp-generation-progress vp-generation-progress--${status} vp-generation-progress--references-${Math.min(previews.length, 4)}${visible ? ' vp-generation-progress--visible' : ''}`}
       role="status"
-      aria-label={`${meta.label}，${stateLabel}${elapsed ? `，已用时 ${elapsed}` : ''}`}
+      aria-label={uiText("{0}，{1}{2}", { 0: uiText(meta.label), 1: stateLabel, 2: elapsed ? uiText("，已用时 {0}", { 0: elapsed }) : '' })}
       data-has-reference={previews.length > 0 ? 'true' : 'false'}
     >
       <div className="vp-generation-progress__media" aria-hidden="true">
@@ -81,13 +83,13 @@ export function GenerationProgress({ status, modality, startedAt, references = [
         <div className="vp-generation-progress__icon" aria-hidden="true">
           <meta.Icon size={19} strokeWidth={1.8} />
         </div>
-        <span className="vp-generation-progress__modality">{meta.label}</span>
+        <span className="vp-generation-progress__modality">{uiText(meta.label)}</span>
       </div>
       <span className="vp-generation-progress__state">
         {stateLabel}
       </span>
       <span className="vp-generation-progress__elapsed">
-        {elapsed ? `已用时 ${elapsed}` : ''}
+        {elapsed ? uiText("已用时 {0}", { 0: elapsed }) : ''}
       </span>
     </div>
   )

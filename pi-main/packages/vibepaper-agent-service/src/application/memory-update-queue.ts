@@ -1,5 +1,4 @@
-import type { ProposeMemoryCandidateInput } from "./memory-service.ts";
-import { MemoryCandidateService } from "./memory-service.ts";
+import type { MemoryCandidateService, ProposeMemoryCandidateInput } from "./memory-service.ts";
 
 export type MemoryUpdateJob = ProposeMemoryCandidateInput & { persist?: boolean };
 

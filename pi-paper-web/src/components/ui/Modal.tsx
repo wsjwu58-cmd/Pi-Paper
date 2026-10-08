@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { X } from 'lucide-react'
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
@@ -22,6 +23,7 @@ export function Modal({
   hideHeader?: boolean
   className?: string
 }) {
+  useUiLanguage()
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -50,7 +52,7 @@ export function Modal({
         {!hideHeader ? (
           <div className="mb-5 flex items-center justify-between">
             {title ? <h2 className="text-[20px] font-bold text-[#111]">{title}</h2> : <span />}
-            <button onClick={onClose} className="rounded-full p-2 text-[#666] hover:bg-black/5" aria-label="关闭">
+            <button onClick={onClose} className="rounded-full p-2 text-[#666] hover:bg-black/5" aria-label={uiText("关闭")}>
               <X size={18} />
             </button>
           </div>
@@ -58,7 +60,7 @@ export function Modal({
           <button
             onClick={onClose}
             className="absolute right-5 top-5 z-10 rounded-full p-2 text-[#666] hover:bg-black/5"
-            aria-label="关闭"
+            aria-label={uiText("关闭")}
           >
             <X size={18} />
           </button>
@@ -85,6 +87,7 @@ export function ConfirmDialog({
   message: string
   danger?: boolean
 }) {
+  useUiLanguage()
   return (
     <Modal open={open} onClose={onClose} title={title}>
       <p className="mb-5 whitespace-pre-line text-[14px] text-[#555]">{message}</p>
@@ -93,8 +96,7 @@ export function ConfirmDialog({
           onClick={onClose}
           className="h-10 rounded-[16px] border border-black/10 px-4 text-[14px] font-semibold hover:bg-black/[0.03]"
         >
-          取消
-        </button>
+          {uiText("取消")}</button>
         <button
           onClick={() => {
             onConfirm()
@@ -104,8 +106,7 @@ export function ConfirmDialog({
             danger ? 'bg-red-600 hover:bg-red-700' : 'bg-[#111]'
           }`}
         >
-          确认
-        </button>
+          {uiText("确认")}</button>
       </div>
     </Modal>
   )

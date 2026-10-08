@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -151,9 +152,9 @@ export function useUpstreamRefs(nodeId: string): UpstreamRef[] {
         id: `up-${sid(e.id) || sourceId}`,
         sourceNodeId: sourceId,
         kind,
-        label: kind === 'text' ? '文本' : kind === 'video' ? '视频' : kind === 'audio' ? '音频' : '图片',
+        label: kind === 'text' ? uiText("文本") : kind === 'video' ? uiText("视频") : kind === 'audio' ? uiText("音频") : uiText("图片"),
         url,
-        text: kind === 'text' ? text || '上游文本' : text,
+        text: kind === 'text' ? text || uiText("上游文本") : text,
       })
     }
     return refs
@@ -175,6 +176,7 @@ function RefThumb({
   label?: string
   onRemove?: () => void
 }) {
+  useUiLanguage()
   const src = useAuthedMediaUrl(url)
   return (
     <div className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-[#f0f0f2] ring-1 ring-black/8">
@@ -197,7 +199,7 @@ function RefThumb({
             onRemove()
           }}
           className="absolute right-0.5 top-0.5 rounded-full bg-black/70 p-0.5 text-white opacity-100 hover:bg-black"
-          title="移除参考"
+          title={uiText("移除参考")}
         >
           <X size={10} />
         </button>
@@ -224,6 +226,7 @@ export function NodeFloatingToolbar({
   onFullscreen?: () => void
   onCropModeSelect?: (mode: CropMode) => void
 }) {
+  useUiLanguage()
   const desktopMode = isDesktopRuntime()
   const [busy, setBusy] = useState(false)
   const [downloadBusy, setDownloadBusy] = useState(false)
@@ -234,7 +237,7 @@ export function NodeFloatingToolbar({
     staleTime: 5_000,
     queryFn: async () => {
       const bridge = window.vibepaperDesktop
-      if (!bridge) throw new Error('桌面模型配置接口尚未接入。')
+      if (!bridge) throw new Error(uiText("桌面模型配置接口尚未接入。"))
       return bridge.getProviderConfiguration()
     },
   })
@@ -254,7 +257,7 @@ export function NodeFloatingToolbar({
       || node.type === 'video' && ['剪辑', '提帧', '超分'].includes(op)
     )
     if (desktopMode && !localPostprocess && !['扩图', '超分'].includes(op)) {
-      toastError('桌面本地暂不支持此媒体操作。')
+      toastError(uiText("桌面本地暂不支持此媒体操作。"))
       return
     }
     setBusy(true)
@@ -264,12 +267,12 @@ export function NodeFloatingToolbar({
       let desktopOptions: { providerType: 'local' | 'cloud'; providerId?: string; modelId?: string } | undefined
       if (localPostprocess) {
         if (!mediaUrl?.startsWith('vibe://')) {
-          throw new Error('本地后处理需要当前项目中的素材或已完成任务结果。')
+          throw new Error(uiText("本地后处理需要当前项目中的素材或已完成任务结果。"))
         }
         model = DESKTOP_MEDIA_TOOL_MODEL_ID
       } else if (desktopMode) {
         const bridge = window.vibepaperDesktop
-        if (!bridge) throw new Error('桌面本地模型接口不可用。')
+        if (!bridge) throw new Error(uiText("桌面本地模型接口不可用。"))
         const modality = node.type === 'video' ? 'video' : 'image'
         const configuration = desktopProviderConfiguration ?? await bridge.getProviderConfiguration()
         const available = toAvailableDesktopModels(configuration, modality)
@@ -277,7 +280,7 @@ export function NodeFloatingToolbar({
           ? node.params.model
           : defaultDesktopModelId(configuration, modality)
         const selected = available.find((candidate) => candidate.id === preferredId)
-        if (!selected) throw new Error(`请先在模型配置中启用已适配的${modality === 'video' ? '视频' : '图片'}模型。`)
+        if (!selected) throw new Error(uiText("请先在模型配置中启用已适配的{0}模型。", { 0: modality === 'video' ? '视频' : '图片' }))
         model = selected.id
         desktopOptions = {
           providerType: 'cloud',
@@ -287,7 +290,7 @@ export function NodeFloatingToolbar({
       } else {
         desktopOptions = undefined
       }
-      if (!model) throw new Error('无可用模型')
+      if (!model) throw new Error(uiText("无可用模型"))
       if (localPostprocess) desktopOptions = { providerType: 'local' }
       await submitNodeTask(
         node.id,
@@ -296,7 +299,7 @@ export function NodeFloatingToolbar({
         desktopMode ? 0 : 8,
         desktopOptions,
       )
-      toastSuccess(`${op}已提交`)
+      toastSuccess(uiText("{0}已提交", { 0: op }))
       setMenu(null)
     } catch (e) {
       toastError((e as Error).message)
@@ -316,7 +319,7 @@ export function NodeFloatingToolbar({
       if (onDownload) await onDownload()
       else await downloadNodeOutput({ node, mediaUrl })
     } catch (cause) {
-      toastError(cause instanceof Error ? cause.message : '下载节点结果失败。')
+      toastError(cause instanceof Error ? cause.message : uiText("下载节点结果失败。"))
     } finally {
       setDownloadBusy(false)
     }
@@ -329,36 +332,36 @@ export function NodeFloatingToolbar({
     >
       {node.type === 'image' && (
         <>
-          <ToolIcon title={desktopMode ? '桌面本地裁剪' : '裁剪'} disabled={busy || desktopMode && !mediaUrl} active={menu === 'crop'} onClick={() => setMenu(menu === 'crop' ? null : 'crop')}>
+          <ToolIcon title={desktopMode ? uiText("桌面本地裁剪") : '裁剪'} disabled={busy || desktopMode && !mediaUrl} active={menu === 'crop'} onClick={() => setMenu(menu === 'crop' ? null : 'crop')}>
             <Crop size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地扩图' : '扩图'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('扩图')}>
+          <ToolIcon title={desktopMode ? uiText("桌面本地扩图") : '扩图'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('扩图')}>
             <Expand size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地超分' : '超分'} disabled={busy} active={menu === 'upscale'} onClick={() => setMenu(menu === 'upscale' ? null : 'upscale')}>
+          <ToolIcon title={desktopMode ? uiText("桌面本地超分") : '超分'} disabled={busy} active={menu === 'upscale'} onClick={() => setMenu(menu === 'upscale' ? null : 'upscale')}>
             <Scan size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地三视图' : '三视图'} disabled={busy || desktopMode && !mediaUrl} active={menu === 'three'} onClick={() => setMenu(menu === 'three' ? null : 'three')}>
+          <ToolIcon title={desktopMode ? uiText("桌面本地三视图") : '三视图'} disabled={busy || desktopMode && !mediaUrl} active={menu === 'three'} onClick={() => setMenu(menu === 'three' ? null : 'three')}>
             <Ratio size={15} />
           </ToolIcon>
         </>
       )}
       {node.type === 'video' && (
         <>
-          <ToolIcon title={desktopMode ? '桌面本地剪辑' : '剪辑'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('剪辑', { start: 0, end: 5 })}>
+          <ToolIcon title={desktopMode ? uiText("桌面本地剪辑") : '剪辑'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('剪辑', { start: 0, end: 5 })}>
             <Crop size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地提帧' : '提帧'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('提帧', { frameAt: 1 })}>
+          <ToolIcon title={desktopMode ? uiText("桌面本地提帧") : '提帧'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('提帧', { frameAt: 1 })}>
             <Film size={15} />
           </ToolIcon>
-          <ToolIcon title={desktopMode ? '桌面本地视频超分' : '超分'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('超分', { resolution: '1920x1080' })}>
+          <ToolIcon title={desktopMode ? uiText("桌面本地视频超分") : '超分'} disabled={busy || desktopMode && !mediaUrl} onClick={() => void runOp('超分', { resolution: '1920x1080' })}>
             <Expand size={15} />
           </ToolIcon>
           <ToolIcon
-            title={desktopMode ? '桌面本地未接入：Seedance 认证' : 'Seedance 认证'}
+            title={desktopMode ? uiText("桌面本地未接入：Seedance 认证") : uiText("Seedance 认证")}
             disabled={desktopMode}
             onClick={() => {
-              toastSuccess('已提交 Seedance 认证申请')
+              toastSuccess(uiText("已提交 Seedance 认证申请"))
             }}
           >
             <Check size={15} />
@@ -367,22 +370,22 @@ export function NodeFloatingToolbar({
       )}
       <div className="mx-1 h-5 w-px bg-black/10" />
       {supportsDownload && (
-        <ToolIcon title={downloadBusy ? '保存中…' : '下载'} disabled={downloadBusy} onClick={() => void download()}>
+        <ToolIcon title={downloadBusy ? uiText("保存中…") : uiText("下载")} disabled={downloadBusy} onClick={() => void download()}>
           <Download size={15} />
         </ToolIcon>
       )}
       {onSaveToLibrary && !desktopMode && (
-        <ToolIcon title="存入素材库" onClick={onSaveToLibrary}>
+        <ToolIcon title={uiText(" 存入素材库")} onClick={onSaveToLibrary}>
           <Library size={15} />
         </ToolIcon>
       )}
       {desktopMode && (node.type === 'image' || node.type === 'video') && (
-        <ToolIcon title="桌面本地未接入：保存生成结果到素材库" disabled onClick={() => undefined}>
+        <ToolIcon title={uiText("桌面本地未接入：保存生成结果到素材库")} disabled onClick={() => undefined}>
           <Library size={15} />
         </ToolIcon>
       )}
       {onFullscreen && mediaUrl && (
-        <ToolIcon title="全屏" onClick={onFullscreen}>
+        <ToolIcon title={uiText("全屏")} onClick={onFullscreen}>
           <Maximize2 size={15} />
         </ToolIcon>
       )}
@@ -390,9 +393,9 @@ export function NodeFloatingToolbar({
       {menu === 'crop' && (
         <PopMenu>
           {[
-            ['single', '单图裁剪'],
-            ['four', '四宫格裁剪'],
-            ['nine', '九宫格裁剪'],
+            ['single', uiText("单图裁剪")],
+            ['four', uiText("四宫格裁剪")],
+            ['nine', uiText("九宫格裁剪")],
           ].map(([id, label]) => (
             <button
               key={id}
@@ -407,7 +410,7 @@ export function NodeFloatingToolbar({
                 void runOp('裁剪', { cropMode: id === 'four' ? '四宫格' : id === 'nine' ? '九宫格' : id })
               }}
             >
-              {label}
+              {uiText(label)}
             </button>
           ))}
         </PopMenu>
@@ -430,7 +433,7 @@ export function NodeFloatingToolbar({
         <PopMenu>
           {['人物', '场景', '产品'].map((c) => (
             <button
-              key={c}
+              key={uiText(c)}
               type="button"
               className="w-full rounded-lg px-2 py-1.5 text-left text-[12px] font-semibold text-[#444] hover:bg-black/[0.04]"
               onClick={() =>
@@ -463,6 +466,7 @@ function ToolIcon({
   active?: boolean
   disabled?: boolean
 }) {
+  useUiLanguage()
   return (
     <button
       type="button"
@@ -479,6 +483,7 @@ function ToolIcon({
 }
 
 function PopMenu({ children }: { children: React.ReactNode }) {
+  useUiLanguage()
   return (
     <div className="absolute left-0 top-full z-40 mt-1 w-36 rounded-xl border border-black/8 bg-white p-1 shadow-xl">
       {children}
@@ -498,6 +503,7 @@ function SplitFooterSelect({
   onChange: (value: string) => void
   className?: string
 }) {
+  useUiLanguage()
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const current = options.find((o) => o.value === value)?.label ?? value
@@ -518,7 +524,7 @@ function SplitFooterSelect({
         onClick={() => setOpen((v) => !v)}
         className="flex h-8 max-w-[170px] items-center gap-1 rounded-lg bg-white/10 px-2.5 text-[11px] font-bold text-white/90 hover:bg-white/15"
       >
-        <span className="truncate">{current || '选择模型'}</span>
+        <span className="truncate">{current || uiText("选择模型")}</span>
         <span className="shrink-0 text-[10px] text-white/50">▾</span>
       </button>
       {open && (
@@ -535,7 +541,7 @@ function SplitFooterSelect({
                 setOpen(false)
               }}
             >
-              {o.label}
+              {uiText(o.label)}
             </button>
           ))}
         </div>
@@ -550,13 +556,14 @@ function DesktopTextReferencePrompt({ onCancel, onSubmit }: {
   onCancel: () => void
   onSubmit: (text: string) => void
 }) {
+  useUiLanguage()
   const [text, setText] = useState('')
   return createPortal(
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/30" onMouseDown={onCancel}>
       <form
         role="dialog"
         aria-modal="true"
-        aria-label="输入参考文本"
+        aria-label={uiText("输入参考文本")}
         className="w-[min(420px,calc(100vw-32px))] rounded-xl border border-black/10 bg-white p-5 shadow-2xl"
         onMouseDown={(event) => event.stopPropagation()}
         onKeyDown={(event) => { if (event.key === 'Escape') onCancel() }}
@@ -565,7 +572,7 @@ function DesktopTextReferencePrompt({ onCancel, onSubmit }: {
           if (text.trim()) onSubmit(text)
         }}
       >
-        <label htmlFor="desktop-reference-text" className="mb-3 block text-sm font-semibold text-[#222]">输入参考文本</label>
+        <label htmlFor="desktop-reference-text" className="mb-3 block text-sm font-semibold text-[#222]">{uiText("输入参考文本")}</label>
         <textarea
           id="desktop-reference-text"
           autoFocus
@@ -574,8 +581,8 @@ function DesktopTextReferencePrompt({ onCancel, onSubmit }: {
           className="min-h-24 w-full resize-y rounded-lg border border-black/15 p-2 text-sm outline-none focus:border-[#7c6ce7]"
         />
         <div className="mt-4 flex justify-end gap-2">
-          <button type="button" onClick={onCancel} className="rounded-lg px-3 py-1.5 text-sm text-[#555] hover:bg-black/5">取消</button>
-          <button type="submit" disabled={!text.trim()} className="rounded-lg bg-[#111] px-3 py-1.5 text-sm text-white disabled:opacity-40">确定</button>
+          <button type="button" onClick={onCancel} className="rounded-lg px-3 py-1.5 text-sm text-[#555] hover:bg-black/5">{uiText("取消")}</button>
+          <button type="submit" disabled={!text.trim()} className="rounded-lg bg-[#111] px-3 py-1.5 text-sm text-white disabled:opacity-40">{uiText("确定")}</button>
         </div>
       </form>
     </div>,
@@ -588,14 +595,15 @@ function DesktopMediaUrlReferencePrompt({ kind, onCancel, onSubmit }: {
   onCancel: () => void
   onSubmit: (url: string) => void
 }) {
+  useUiLanguage()
   const [url, setUrl] = useState('')
-  const mediaName = kind === 'video' ? '视频' : '音频'
+  const mediaName = kind === 'video' ? uiText("视频") : uiText("音频")
   return createPortal(
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/30" onMouseDown={onCancel}>
       <form
         role="dialog"
         aria-modal="true"
-        aria-label={`添加 HTTPS ${mediaName}参考`}
+        aria-label={uiText("添加 HTTPS {0}参考", { 0: mediaName })}
         className="w-[min(460px,calc(100vw-32px))] rounded-xl border border-black/10 bg-white p-5 shadow-2xl"
         onMouseDown={(event) => event.stopPropagation()}
         onKeyDown={(event) => { if (event.key === 'Escape') onCancel() }}
@@ -605,8 +613,7 @@ function DesktopMediaUrlReferencePrompt({ kind, onCancel, onSubmit }: {
         }}
       >
         <label htmlFor={`desktop-reference-${kind}-url`} className="mb-2 block text-sm font-semibold text-[#222]">
-          输入模型可访问的 HTTPS {mediaName}地址
-        </label>
+          {uiText("输入模型可访问的 HTTPS ")}{mediaName}{uiText("地址")}</label>
         <input
           id={`desktop-reference-${kind}-url`}
           type="url"
@@ -618,10 +625,10 @@ function DesktopMediaUrlReferencePrompt({ kind, onCancel, onSubmit }: {
           placeholder="https://example.com/media"
           className="h-10 w-full rounded-lg border border-black/15 px-3 text-sm outline-none focus:border-[#7c6ce7]"
         />
-        <p className="mt-2 text-xs leading-5 text-[#777]">火山方舟会根据此地址读取参考媒体；请使用无需本机登录、可由供应商访问的公网链接。</p>
+        <p className="mt-2 text-xs leading-5 text-[#777]">{uiText("火山方舟会根据此地址读取参考媒体；请使用无需本机登录、可由供应商访问的公网链接。")}</p>
         <div className="mt-4 flex justify-end gap-2">
-          <button type="button" onClick={onCancel} className="rounded-lg px-3 py-1.5 text-sm text-[#555] hover:bg-black/5">取消</button>
-          <button type="submit" disabled={!url.trim()} className="rounded-lg bg-[#111] px-3 py-1.5 text-sm text-white disabled:opacity-40">添加参考</button>
+          <button type="button" onClick={onCancel} className="rounded-lg px-3 py-1.5 text-sm text-[#555] hover:bg-black/5">{uiText("取消")}</button>
+          <button type="submit" disabled={!url.trim()} className="rounded-lg bg-[#111] px-3 py-1.5 text-sm text-white disabled:opacity-40">{uiText("添加参考")}</button>
         </div>
       </form>
     </div>,
@@ -644,6 +651,7 @@ function PortalChoiceSelect<T extends string>({
   dark?: boolean
   disabled?: boolean
 }) {
+  useUiLanguage()
   const anchorRef = useRef<HTMLButtonElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -690,14 +698,14 @@ function PortalChoiceSelect<T extends string>({
         onClick={toggle}
         className={`flex h-8 max-w-[190px] items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold disabled:opacity-50 ${dark ? 'text-white/90 hover:bg-white/10' : 'text-[#444] hover:bg-black/[0.05]'}`}
       >
-        <span className="truncate">{selected?.label ?? label}</span>
+        <span className="truncate">{uiText(selected?.label ?? label)}</span>
         <ChevronDown size={12} className="shrink-0 opacity-60" />
       </button>
       {presence.present && createPortal(
         <div
           ref={popoverRef}
           role="dialog"
-          aria-label={label}
+          aria-label={uiText(label)}
           aria-hidden={!open}
           inert={!open}
           data-open={presence.visible}
@@ -713,7 +721,7 @@ function PortalChoiceSelect<T extends string>({
               onClick={() => { onChange(option.value); setOpen(false) }}
               className={`block w-full rounded-lg px-3 py-2 text-left text-[12px] ${option.value === value ? 'bg-black/[0.06] font-semibold text-[#111]' : 'text-[#555] hover:bg-black/[0.04]'}`}
             >
-              {option.label}
+              {uiText(option.label)}
             </button>
           ))}
         </div>,
@@ -800,6 +808,7 @@ export function NodeEditorDialog({
   /** default：参考/提示词分框；split：合并在同一底栏卡片（双框节点布局） */
   layout?: 'default' | 'text' | 'split'
 }) {
+  useUiLanguage()
   const navigate = useNavigate()
   const nodeId = sid(node.id)
   const desktopMode = Boolean(window.vibepaperDesktop)
@@ -864,7 +873,7 @@ export function NodeEditorDialog({
           basePrice: null as unknown as number,
         })
       }
-      providerNames.local = '本地模型'
+      providerNames.local = uiText("本地模型")
       return { models: available, localAudio, configuration, providerNames }
     },
   })
@@ -1220,20 +1229,20 @@ export function NodeEditorDialog({
       if (isDesktopRuntime()) {
         const voiceChange = node.type === 'audio' && selectedDesktopModel?.operation === 'voice-change'
         if (!['image', 'video'].includes(node.type) && !voiceChange) {
-          throw new Error('当前模型不支持上传媒体参考。')
+          throw new Error(uiText("当前模型不支持上传媒体参考。"))
         }
         const bridge = window.vibepaperDesktop
-        if (!bridge) throw new Error('桌面本地素材接口不可用。')
+        if (!bridge) throw new Error(uiText("桌面本地素材接口不可用。"))
         const project = await bridge.getActiveProject()
         const canvasId = useCanvasStore.getState().canvas?.canvas.id
         if (!project || (canvasId && project.canvasId !== sid(canvasId))) {
-          throw new Error('没有匹配的本地项目，无法添加节点参考。')
+          throw new Error(uiText("没有匹配的本地项目，无法添加节点参考。"))
         }
         const asset = await bridge.importLocalAsset(project.projectId)
         if (!asset) return
         const kind = asset.assetType
         if (kind === 'text' || node.type === 'image' && kind !== 'image' || voiceChange && kind !== 'audio') {
-          throw new Error(voiceChange ? '变声模型需要音频参考。' : '图片节点仅接受图片参考；视频节点可选择图片、视频或音频参考。')
+          throw new Error(voiceChange ? uiText("变声模型需要音频参考。") : uiText("图片节点仅接受图片参考；视频节点可选择图片、视频或音频参考。"))
         }
         setLocalRefs((prev) => [
           ...prev,
@@ -1241,7 +1250,7 @@ export function NodeEditorDialog({
             id: `local-${asset.assetId}`,
             sourceNodeId: '',
             kind,
-            label: asset.name || (kind === 'video' ? '视频参考' : kind === 'audio' ? '音频参考' : '图片参考'),
+            label: asset.name || (kind === 'video' ? uiText("视频参考") : kind === 'audio' ? uiText("音频参考") : uiText("图片参考")),
             url: `vibe://app/assets/${asset.assetId}`,
             local: true,
           },
@@ -1265,12 +1274,12 @@ export function NodeEditorDialog({
           id: `local-${sid(asset.id ?? crypto.randomUUID())}`,
           sourceNodeId: '',
           kind,
-          label: asset.name || '上传',
+          label: asset.name || uiText("上传"),
           url: asset.url,
           local: true,
         },
       ])
-      toastSuccess('参考已添加')
+      toastSuccess(uiText("参考已添加"))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -1278,7 +1287,7 @@ export function NodeEditorDialog({
 
   const doSubmit = async () => {
     if (desktopMode && (desktopCatalogError || !selectedModel)) {
-      setErr(desktopCatalogError instanceof Error ? desktopCatalogError.message : '所选模型已不可用，请重新选择或配置模型。')
+      setErr(desktopCatalogError instanceof Error ? desktopCatalogError.message : uiText("所选模型已不可用，请重新选择或配置模型。"))
       return
     }
     setBusy(true)
@@ -1293,20 +1302,20 @@ export function NodeEditorDialog({
           ? `${refTexts.join('\n')}\n\n${trimmedPrompt}`
           : trimmedPrompt || refTexts.join('\n')
       if (!effectivePrompt.trim() && !(desktopMode && selectedDesktopModel?.operation === 'voice-change' && refsForUi.some((ref) => ref.kind === 'audio' && ref.url))) {
-        setErr('请填写提示词或添加参考')
+        setErr(uiText("请填写提示词或添加参考"))
         setBusy(false)
         return
       }
       const resolutionParameters = resolveNodeResolution(node.type, selectedModel, selectedResKey, desktopMode, effectiveAspect)
       const outputCount = (isSplitLayout && node.type === 'text') || (desktopMode && node.type === 'image') ? count : 1
-      if (desktopMode && node.type === 'image' && outputCount > maximumOutputs) throw new Error(`所选模型最多生成 ${maximumOutputs} 张图片，请调整数量。`)
+      if (desktopMode && node.type === 'image' && outputCount > maximumOutputs) throw new Error(uiText("所选模型最多生成 {0} 张图片，请调整数量。", { 0: maximumOutputs }))
       if (desktopMode) {
         const mediaRefs = refsForUi.filter((ref) => Boolean(ref.url) && ['image', 'video', 'audio'].includes(ref.kind))
         const unsupportedRef = mediaRefs.find((ref) => !selectedDesktopModel?.inputModes.includes(ref.kind))
-        if (unsupportedRef) throw new Error(`所选模型尚未适配${unsupportedRef.kind === 'image' ? '图片' : unsupportedRef.kind === 'video' ? '视频' : '音频'}参考输入。`)
+        if (unsupportedRef) throw new Error(uiText("所选模型尚未适配{0}参考输入。", { 0: unsupportedRef.kind === 'image' ? '图片' : unsupportedRef.kind === 'video' ? '视频' : '音频' }))
         if (selectedDesktopModel?.providerId === 'volcengine-ark'
           && mediaRefs.some((ref) => (ref.kind === 'video' || ref.kind === 'audio') && ref.url?.startsWith('vibe://'))) {
-          throw new Error('火山方舟需要可访问的 HTTPS 视频/音频地址；本地参考尚无供应商上传链，未发送本地文件。')
+          throw new Error(uiText("火山方舟需要可访问的 HTTPS 视频/音频地址；本地参考尚无供应商上传链，未发送本地文件。"))
         }
       }
       const audioParams = desktopMode && node.type === 'audio' && !isMusicModel
@@ -1361,7 +1370,7 @@ export function NodeEditorDialog({
           ...audioParams,
         },
       })
-      toastSuccess('生成任务已提交')
+      toastSuccess(uiText("生成任务已提交"))
     } catch (e) {
       const message = (e as Error).message
       setErr(message)
@@ -1374,15 +1383,15 @@ export function NodeEditorDialog({
   }
 
   const isSplitLayout = layout === 'text' || layout === 'split'
-  const refTitle = node.type === 'video' ? '首尾帧' : '参考'
+  const refTitle = node.type === 'video' ? uiText("首尾帧") : uiText("参考")
   const promptPlaceholder =
     node.type === 'video'
-      ? '描述你要生成的视频内容…'
+      ? uiText("描述你要生成的视频内容…")
       : node.type === 'text'
-        ? '旧句未歇纸上，新意已在心间'
+        ? uiText("旧句未歇纸上，新意已在心间")
         : node.type === 'audio'
-          ? desktopMode ? audioMode === 'speech' ? '输入需要朗读的文字…' : '描述曲风、情绪、乐器与场景，例如：夏日公路旅行的轻快华语流行，木吉他与明亮鼓点' : '描述你要生成的音频内容…'
-          : '墨痕未落纸上，山水已在眼前'
+          ? desktopMode ? audioMode === 'speech' ? uiText("输入需要朗读的文字…") : uiText("描述曲风、情绪、乐器与场景，例如：夏日公路旅行的轻快华语流行，木吉他与明亮鼓点") : uiText("描述你要生成的音频内容…")
+          : uiText("墨痕未落纸上，山水已在眼前")
 
   const addTextReference = (text: string) => {
     if (!text.trim()) return
@@ -1392,7 +1401,7 @@ export function NodeEditorDialog({
         id: `local-text-${crypto.randomUUID()}`,
         sourceNodeId: '',
         kind: 'text',
-        label: '文本',
+        label: uiText("文本"),
         text,
         local: true,
       },
@@ -1404,14 +1413,14 @@ export function NodeEditorDialog({
     try {
       normalizedUrl = normalizeRemoteMediaReferenceUrl(value)
     } catch (error) {
-      toastError(error instanceof Error ? error.message : '参考地址无效。')
+      toastError(error instanceof Error ? error.message : uiText("参考地址无效。"))
       return
     }
     setLocalRefs((prev) => [...prev, {
       id: `remote-${kind}-${crypto.randomUUID()}`,
       sourceNodeId: '',
       kind,
-      label: `${kind === 'video' ? '视频' : '音频'} HTTPS 参考`,
+      label: uiText("{0} HTTPS 参考", { 0: kind === 'video' ? '视频' : '音频' }),
       url: normalizedUrl,
       local: true,
     }])
@@ -1443,14 +1452,14 @@ export function NodeEditorDialog({
         <label
           title={desktopMode
             ? node.type === 'image'
-              ? '添加本地图片参考；云端生成会向所选模型供应商发送参考图片。'
+              ? uiText("添加本地图片参考；云端生成会向所选模型供应商发送参考图片。")
               : node.type === 'video'
-                ? '视频节点可选本地图片、视频或音频；当前只有本地图片可直接发送，视频和音频需使用 Ark 可访问的 HTTPS 地址。'
+                ? uiText("视频节点可选本地图片、视频或音频；当前只有本地图片可直接发送，视频和音频需使用 Ark 可访问的 HTTPS 地址。")
                 : selectedDesktopModel?.operation === 'voice-change'
-                  ? '添加本地参考音频；变声生成会向 ElevenLabs 发送该音频。'
-                  : '当前模型不支持上传媒体参考。'
-            : '上传参考媒体'}
-          aria-label="添加参考媒体"
+                  ? uiText("添加本地参考音频；变声生成会向 ElevenLabs 发送该音频。")
+                  : uiText("当前模型不支持上传媒体参考。")
+            : uiText("上传参考媒体")}
+          aria-label={uiText("添加参考媒体")}
           role={desktopMode ? 'button' : undefined}
           tabIndex={desktopMode ? 0 : undefined}
           onClick={desktopMode ? (event) => { event.preventDefault(); void onUploadRef() } : undefined}
@@ -1476,26 +1485,24 @@ export function NodeEditorDialog({
         </label>
         {desktopMode && node.type === 'video' && (
           <>
-            <button type="button" title="添加 Ark 可访问的 HTTPS 视频参考" onClick={() => setDesktopReferencePromptOpen('video-url')}
+            <button type="button" title={uiText("添加 Ark 可访问的 HTTPS 视频参考")} onClick={() => setDesktopReferencePromptOpen('video-url')}
               className="flex h-14 w-14 flex-col items-center justify-center gap-1 rounded-xl bg-[#f0f0f2] text-[9px] font-semibold text-[#777] ring-1 ring-black/6 hover:bg-[#e8e8ec]">
-              <Link2 size={15} />视频 URL
-            </button>
-            <button type="button" title="添加 Ark 可访问的 HTTPS 音频参考" onClick={() => setDesktopReferencePromptOpen('audio-url')}
+              <Link2 size={15} />{uiText("视频 URL")}</button>
+            <button type="button" title={uiText("添加 Ark 可访问的 HTTPS 音频参考")} onClick={() => setDesktopReferencePromptOpen('audio-url')}
               className="flex h-14 w-14 flex-col items-center justify-center gap-1 rounded-xl bg-[#f0f0f2] text-[9px] font-semibold text-[#777] ring-1 ring-black/6 hover:bg-[#e8e8ec]">
-              <Link2 size={15} />音频 URL
-            </button>
+              <Link2 size={15} />{uiText("音频 URL")}</button>
           </>
         )}
         {node.type !== 'video' && (
           <button
             type="button"
-            title="添加文本参考"
+            title={uiText("添加文本参考")}
             onClick={() => {
               if (desktopMode) {
                 setDesktopReferencePromptOpen('text')
                 return
               }
-              const t = window.prompt('输入参考文本')
+              const t = window.prompt(uiText("输入参考文本"))
               if (!t) return
               addTextReference(t)
             }}
@@ -1515,17 +1522,16 @@ export function NodeEditorDialog({
               <RefThumb
                 url={firstFrame.url}
                 kind={firstFrame.kind}
-                label="首帧"
+                label={uiText("首帧")}
                 onRemove={() => removeRef(firstFrame as LocalRef)}
               />
             ) : (
               <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-dashed border-black/15 text-[10px] font-bold text-[#bbb]">
-                首帧
-              </div>
+                {uiText("首帧")}</div>
             )}
             <button
               type="button"
-              title="交换首尾帧"
+              title={uiText("交换首尾帧")}
               onClick={() => setFrameOrder((v) => (v === 'asc' ? 'swap' : 'asc'))}
               className="flex h-8 w-8 items-center justify-center rounded-full bg-black/[0.05] text-[#555]"
             >
@@ -1535,13 +1541,12 @@ export function NodeEditorDialog({
               <RefThumb
                 url={lastFrame.url}
                 kind={lastFrame.kind}
-                label="尾帧"
+                label={uiText("尾帧")}
                 onRemove={() => removeRef(lastFrame as LocalRef)}
               />
             ) : (
               <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-dashed border-black/15 text-[10px] font-bold text-[#bbb]">
-                尾帧
-              </div>
+                {uiText("尾帧")}</div>
             )}
             {refsForUi
               .filter((r) => desktopMode
@@ -1571,7 +1576,7 @@ export function NodeEditorDialog({
           ))
         )}
         {refsForUi.length === 0 && node.type !== 'video' && (
-          <span className="text-[11px] text-[#aaa]">连接上游节点后自动出现在此</span>
+          <span className="text-[11px] text-[#aaa]">{uiText("连接上游节点后自动出现在此")}</span>
         )}
       </div>
     </>
@@ -1597,20 +1602,19 @@ export function NodeEditorDialog({
     : 'h-8 rounded-lg bg-black/[0.04] px-2 text-[11px] font-bold text-[#555] outline-none'
   const configureModels = () => navigate('/settings/providers', { state: { returnTo: window.location.pathname } })
   const audioTabs = desktopMode && node.type === 'audio' && (
-    <div className="flex items-center gap-2" role="tablist" aria-label="音频创作模式">
-      {([{ value: 'speech', label: '文字转语音', Icon: FileText }, { value: 'music', label: '音乐生成', Icon: Music2 }] as const).map(({ value, label, Icon }) => (
+    <div className="flex items-center gap-2" role="tablist" aria-label={uiText("音频创作模式")}>
+      {([{ value: 'speech', label: uiText("文字转语音"), Icon: FileText }, { value: 'music', label: uiText("音乐生成"), Icon: Music2 }] as const).map(({ value, label, Icon }) => (
         <button key={value} type="button" role="tab" aria-selected={audioMode === value}
           onClick={() => chooseDesktopAudioMode(value)}
           className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] ${audioMode === value ? 'bg-[#111] text-white' : 'text-[#777] hover:bg-black/[0.04]'}`}>
-          <Icon size={15} />{label}
+          <Icon size={15} />{uiText(label)}
         </button>
       ))}
     </div>
   )
   const lyricsField = isMusicModel && lyricsMode === 'manual' && (
-    <label className="flex flex-col gap-1.5 text-[12px] text-[#777]">歌词
-      <textarea aria-label="歌词" value={lyrics} onChange={(event) => changeLyrics(event.target.value)}
-        placeholder="输入歌词，可用 [Verse]、[Chorus] 标记段落…"
+    <label className="flex flex-col gap-1.5 text-[12px] text-[#777]">{uiText("歌词")}<textarea aria-label={uiText("歌词")} value={lyrics} onChange={(event) => changeLyrics(event.target.value)}
+        placeholder={uiText("输入歌词，可用 [Verse]、[Chorus] 标记段落…")}
         className="min-h-[100px] w-full resize-none rounded-xl border border-black/10 bg-[#fafafa] px-3.5 py-3 text-[13px] text-[#222] outline-none" />
     </label>
   )
@@ -1633,39 +1637,37 @@ export function NodeEditorDialog({
       {!desktopMode && (node.type === 'image' || node.type === 'video') && (
         <>
           {isSplitLayout ? <SplitFooterSelect value={effectiveAspect} options={effectiveAspectOptions.map((value) => ({ value, label: value }))} onChange={changeAspect} />
-            : <select className={splitCtrl} aria-label="比例" value={effectiveAspect} onChange={(event) => changeAspect(event.target.value)}>{effectiveAspectOptions.map((value) => <option key={value}>{value}</option>)}</select>}
+            : <select className={splitCtrl} aria-label={uiText("比例")} value={effectiveAspect} onChange={(event) => changeAspect(event.target.value)}>{effectiveAspectOptions.map((value) => <option key={value}>{value}</option>)}</select>}
           {isSplitLayout ? <SplitFooterSelect value={selectedResKey} options={resolutionKeys.map((value) => ({ value, label: value }))} onChange={setResKey} />
-            : <select className={splitCtrl} aria-label="分辨率" value={selectedResKey} onChange={(event) => setResKey(event.target.value)}>{resolutionKeys.map((value) => <option key={value}>{value}</option>)}</select>}
+            : <select className={splitCtrl} aria-label={uiText("分辨率")} value={selectedResKey} onChange={(event) => setResKey(event.target.value)}>{resolutionKeys.map((value) => <option key={value}>{value}</option>)}</select>}
         </>
       )}
       {(node.type === 'image' || node.type === 'video') && !isSplitLayout && (
-        <select className={`${splitCtrl} max-w-[100px]`} aria-label="风格" value={STYLE_PRESETS.includes(style) ? style : style ? '__custom__' : ''}
-          onChange={(event) => setStyle(event.target.value === '__custom__' ? style || '自定义' : event.target.value)}>
-          <option value="">风格</option>{STYLE_PRESETS.map((value) => <option key={value} value={value}>{value}</option>)}
+        <select className={`${splitCtrl} max-w-[100px]`} aria-label={uiText("风格")} value={STYLE_PRESETS.includes(style) ? style : style ? '__custom__' : ''}
+          onChange={(event) => setStyle(event.target.value === '__custom__' ? style || uiText("自定义") : event.target.value)}>
+          <option value="">{uiText("风格")}</option>{STYLE_PRESETS.map((value) => <option key={value} value={value}>{uiText(value)}</option>)}
         </select>
       )}
       {node.type === 'video' && !isSplitLayout && (
-        <select className={splitCtrl} aria-label="运镜" value={camera} onChange={(event) => setCamera(event.target.value)}>
-          <option value="">运镜</option>{['推近', '拉远', '左移', '右移', '环绕', '升降'].map((value) => <option key={value} value={value}>{value}</option>)}
+        <select className={splitCtrl} aria-label={uiText("运镜")} value={camera} onChange={(event) => setCamera(event.target.value)}>
+          <option value="">{uiText("运镜")}</option>{['推近', '拉远', '左移', '右移', '环绕', '升降'].map((value) => <option key={value} value={value}>{uiText(value)}</option>)}
         </select>
       )}
       {desktopMode && node.type === 'video' && supportsAudioOption && (
         <label className="flex items-center gap-1 text-[11px] text-[#777]">
           <input type="checkbox" checked={generateAudio} onChange={(event) => {
             setGenerateAudio(event.target.checked); persistNodeParams({ generate_audio: event.target.checked })
-          }} />音频
-        </label>
+          }} />{uiText("音频")}</label>
       )}
       {desktopMode && node.type === 'audio' && audioMode === 'speech' && (
-        voiceOptions.length ? <PortalChoiceSelect value={voiceId || voiceOptions[0].id} label="音色"
+        voiceOptions.length ? <PortalChoiceSelect value={voiceId || voiceOptions[0].id} label={uiText("音色")}
           options={voiceOptions.map(({ id, label }) => ({ value: id, label }))} onChange={changeVoice} />
           : selectedDesktopModel?.providerId !== 'local-sapi-tts' && <button type="button" onClick={configureModels}
-              title="使用此模型在提供方设置中配置的音色" className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-[#777] hover:bg-black/[0.04]">
-              <Settings2 size={13} />音色设置
-            </button>
+              title={uiText("使用此模型在提供方设置中配置的音色")} className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-[#777] hover:bg-black/[0.04]">
+              <Settings2 size={13} />{uiText("音色设置")}</button>
       )}
-      {isMusicModel && <PortalChoiceSelect<MusicLyricsMode> value={lyricsMode} label="歌词模式" onChange={changeLyricsMode}
-        options={[{ value: 'auto', label: '自动写词' }, { value: 'manual', label: '自定义歌词' }, { value: 'instrumental', label: '纯音乐' }]} />}
+      {isMusicModel && <PortalChoiceSelect<MusicLyricsMode> value={lyricsMode} label={uiText("歌词模式")} onChange={changeLyricsMode}
+        options={[{ value: 'auto', label: uiText("自动写词") }, { value: 'manual', label: uiText("自定义歌词") }, { value: 'instrumental', label: uiText("纯音乐") }]} />}
       <div className="ml-auto flex items-center gap-1.5">
         {isSplitLayout && (node.type === 'text' || desktopMode && node.type === 'image') && (
           <div className={`flex shrink-0 overflow-hidden rounded-full p-0.5 ${darkFooter ? 'bg-white/10' : 'bg-[#f0f0f2]'}`}>
@@ -1680,11 +1682,11 @@ export function NodeEditorDialog({
         {latest?.status === 'succeeded' && <Check size={14} className="text-emerald-600" />}
         {(err || desktopMode && (desktopCatalogError || model && !selectedModel)) && (
           <span role="alert" title={err} className={`max-w-[170px] text-[10px] font-semibold ${darkFooter ? 'text-red-300' : 'text-red-600'}`}>
-            {err || (desktopCatalogError instanceof Error ? desktopCatalogError.message : '所选模型已不可用，请重新选择或配置模型。')}
+            {err || (desktopCatalogError instanceof Error ? desktopCatalogError.message : uiText("所选模型已不可用，请重新选择或配置模型。"))}
           </span>
         )}
         <button type="button" disabled={busy || !(model || preferred) || !typeModels.length || desktopMode && (!selectedModel || Boolean(desktopCatalogError))}
-          onClick={() => void doSubmit()} title="生成"
+          onClick={() => void doSubmit()} title={uiText("生成")}
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl hover:opacity-90 disabled:opacity-40 ${darkFooter ? 'bg-white/20 text-white' : 'bg-[#111] text-white'}`}>
           {busy ? <Loader2 size={16} className="animate-spin" /> : <span className="text-[20px] leading-none">→</span>}
         </button>
@@ -1699,7 +1701,7 @@ export function NodeEditorDialog({
           <div className="flex flex-col gap-3 p-4">
             {audioTabs}
             {!(desktopMode && node.type === 'audio') && refSection}
-            {isMusicModel && <p className="text-[12px] text-[#777]">描述曲风</p>}
+            {isMusicModel && <p className="text-[12px] text-[#777]">{uiText("描述曲风")}</p>}
             {promptField}
             {lyricsField}
           </div>
@@ -1719,7 +1721,7 @@ export function NodeEditorDialog({
 
         {/* 提示词框：与参考区视觉上分离 */}
         <div className="rounded-xl border border-black/10 bg-white p-2.5">
-          <p className="mb-1.5 text-[12px] font-bold text-[#333]">提示词</p>
+          <p className="mb-1.5 text-[12px] font-bold text-[#333]">{uiText("提示词")}</p>
           {promptField}
         </div>
 

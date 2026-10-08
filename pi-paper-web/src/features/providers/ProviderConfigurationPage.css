@@ -269,6 +269,11 @@ html[data-theme='dark'] .provider-config-page .provider-config-result {
   color: #1c8056;
 }
 
+:root:lang(en) .provider-config-provider-count {
+  max-width: 112px;
+  font-size: 12px;
+}
+
 .provider-config-status-dot {
   width: 7px;
   height: 7px;

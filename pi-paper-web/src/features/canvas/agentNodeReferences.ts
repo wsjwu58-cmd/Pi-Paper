@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import type { NodePayload } from '@/lib/types'
 import type { AgentNodeReference } from './agentTypes'
 import type { FlowNode } from './canvasStore'
@@ -16,7 +17,7 @@ export type ComposerRef = {
 
 export function refFromNode(node: NodePayload): ComposerRef {
   const params = node.params || {}
-  const title = boundedString(params.title, MAX_LABEL_LENGTH) || node.creativeType || node.type || '节点'
+  const title = boundedString(params.title, MAX_LABEL_LENGTH) || node.creativeType || node.type || uiText("节点")
   return { id: String(node.id), kind: 'node', nodeType: node.type, title }
 }
 
@@ -77,7 +78,7 @@ export function nodeReferenceFromNode(node: NodePayload): AgentNodeReference {
   const output = node.output || {}
   const creativeType = boundedString(node.creativeType, MAX_LABEL_LENGTH)
   const nodeType = boundedString(node.type, MAX_LABEL_LENGTH) || 'unknown'
-  const title = boundedString(params.title, MAX_LABEL_LENGTH) || creativeType || nodeType || '节点'
+  const title = boundedString(params.title, MAX_LABEL_LENGTH) || creativeType || nodeType || uiText("节点")
   const status = boundedString(node.status, MAX_LABEL_LENGTH) || 'ready'
   const previewUrl = firstBoundedString(
     [output.url, params.lastOutputUrl, params.url, params.thumbnailUrl, params.imageUrl],
@@ -105,7 +106,7 @@ function fallbackReference(ref: ComposerRef): AgentNodeReference {
   return {
     nodeId: ref.id,
     nodeType: ref.nodeType || 'unknown',
-    title: ref.title || '节点',
+    title: ref.title || uiText("节点"),
     status: 'ready',
   }
 }

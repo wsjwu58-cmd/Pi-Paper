@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import { sid } from '@/lib/ids'
 
 type FlushCanvas = () => Promise<void>
@@ -25,10 +26,10 @@ export function registerCanvasPersistence(
 export async function flushCanvasPersistence(projectId: string, canvasId: string): Promise<void> {
   const registration = activeRegistration
   if (!registration || registration.projectId !== projectId || registration.canvasId !== sid(canvasId)) {
-    throw new Error('画布保存服务尚未就绪，无法导出当前节点。')
+    throw new Error(uiText("画布保存服务尚未就绪，无法导出当前节点。"))
   }
   await registration.flush()
   if (activeRegistration !== registration) {
-    throw new Error('画布已切换，无法导出当前节点。')
+    throw new Error(uiText("画布已切换，无法导出当前节点。"))
   }
 }

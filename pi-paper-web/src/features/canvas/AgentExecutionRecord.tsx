@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useEffect, useState } from 'react'
 import { Brain, Check, ChevronDown, ChevronRight, X } from 'lucide-react'
 import type { ExecutionStep } from './agentTypes'
@@ -50,8 +51,8 @@ export function buildTimeline(steps: ExecutionStep[]): ExecutionStep[] {
           id: block[block.length - 1].id,
           kind: done || fail ? 'result' : 'plan',
           tool: 'create_nodes',
-          label: '编辑画布',
-          summary: '编辑画布',
+          label: uiText("编辑画布"),
+          summary: uiText("编辑画布"),
           ok: fail ? false : done ? true : undefined,
           detail,
           reasoning: detail,
@@ -88,13 +89,13 @@ function ReasoningBlock({
   text: string
   streaming?: boolean
 }) {
+  useUiLanguage()
   const { text: shown, catchingUp } = useTypewriter(text, !!streaming, 18)
   return (
     <div className="py-1">
       <p className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium text-[#888]">
         <Brain size={14} className="text-[#999]" strokeWidth={1.75} />
-        推理过程
-      </p>
+        {uiText("推理过程")}</p>
       <div className="max-h-[140px] overflow-y-auto rounded-[8px] bg-[#f7f7f8] px-3 py-2.5">
         <p className="whitespace-pre-wrap text-[13px] leading-[1.65] text-[#777]">
           {shown}
@@ -111,6 +112,7 @@ function ReasoningBlock({
 }
 
 function ToolRow({ step }: { step: ExecutionStep }) {
+  useUiLanguage()
   const [open, setOpen] = useState(false)
   const isDone = step.kind === 'result' && step.ok !== false
   const isFail = step.kind === 'result' && step.ok === false
@@ -149,7 +151,7 @@ function ToolRow({ step }: { step: ExecutionStep }) {
             <Check size={11} strokeWidth={3} />
           )}
         </span>
-        <span className="min-w-0 flex-1 text-[14px] font-medium text-[#333]">{step.label}</span>
+        <span className="min-w-0 flex-1 text-[14px] font-medium text-[#333]">{uiText(step.label)}</span>
         {canExpand ? (
           open ? (
             <ChevronDown size={16} className="shrink-0 text-[#bbb]" />
@@ -183,6 +185,7 @@ export function AgentTurnTimeline({
   streamComplete?: boolean
   onRevealDone?: () => void
 }) {
+  useUiLanguage()
   const base = buildTimeline(steps)
   const hasSpeech = base.some((s) => s.kind === 'speech')
   const timeline =
@@ -192,7 +195,7 @@ export function AgentTurnTimeline({
           {
             id: 'speech-fallback',
             kind: 'speech' as const,
-            label: '回复',
+            label: uiText("回复"),
             summary: content.trim(),
           },
         ]
@@ -210,10 +213,10 @@ export function AgentTurnTimeline({
 
   const title =
     streaming && timeline.some((s) => s.kind === 'reasoning')
-      ? '执行记录 · 推理中…'
+      ? uiText("执行记录 · 推理中…")
       : toolCount > 0
-        ? `执行记录 · 执行了 ${toolCount} 项操作`
-        : '执行记录'
+        ? uiText("执行记录 · 执行了 {0} 项操作", { 0: toolCount })
+        : uiText("执行记录")
 
   const speechItems = timeline.filter((s) => s.kind === 'speech')
   const lastSpeechId = speechItems[speechItems.length - 1]?.id
@@ -283,6 +286,7 @@ export function AgentExecutionRecord({
   defaultOpen?: boolean
   streaming?: boolean
 }) {
+  useUiLanguage()
   return <AgentTurnTimeline steps={steps} streaming={streaming} />
 }
 
@@ -293,11 +297,12 @@ export function AgentNextActions({
   actions: string[]
   onPick: (text: string) => void
 }) {
+  useUiLanguage()
   if (actions.length === 0) return null
   const shown = actions.slice(0, 4)
   return (
     <div className="mt-3">
-      <p className="mb-1.5 text-[13px] font-semibold text-[#666]">下一步</p>
+      <p className="mb-1.5 text-[13px] font-semibold text-[#666]">{uiText("下一步")}</p>
       <div className="flex flex-col gap-1.5">
         {shown.map((a) => (
           <button
@@ -324,22 +329,23 @@ export function AgentTaskBadge({
   errorCode?: string
   errorMessage?: string
 }) {
+  useUiLanguage()
   if (!status || status === 'succeeded') return null
   const terminalLabels: Record<string, string> = {
-    failed: '生成失败',
-    cancelled: '任务已取消',
-    expired: '任务已过期',
-    settlement_error: '任务状态更新失败',
-    interrupted: '任务已中断',
+    failed: uiText("生成失败"),
+    cancelled: uiText("任务已取消"),
+    expired: uiText("任务已过期"),
+    settlement_error: uiText("任务状态更新失败"),
+    interrupted: uiText("任务已中断"),
   }
   const terminalLabel = terminalLabels[status]
   if (terminalLabel) {
     const detail = errorMessage?.trim() || (status === 'failed'
       ? errorCode === 'TASK_OUTPUT_UNAVAILABLE'
-        ? '本地任务结果无法读取或校验。'
+        ? uiText("本地任务结果无法读取或校验。")
         : errorCode?.includes('TIMEOUT')
-          ? '模型响应超时，请检查模型连接后重试。'
-          : '请检查模型配置或网络后重试。'
+          ? uiText("模型响应超时，请检查模型连接后重试。")
+          : uiText("请检查模型配置或网络后重试。")
       : undefined)
     if (!detail) return null
     return (
@@ -349,7 +355,7 @@ export function AgentTaskBadge({
     )
   }
   const label =
-    status === 'running' ? '生成中…' : status === 'queued' ? '排队中…' : `任务 ${status}`
+    status === 'running' ? uiText("生成中…") : status === 'queued' ? uiText("排队中…") : uiText("任务 {0}", { 0: status })
   return (
     <p className="mt-2 flex items-center gap-1.5 text-[13px] font-medium text-[#888]">
       <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />

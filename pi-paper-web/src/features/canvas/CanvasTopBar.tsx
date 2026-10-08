@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import {
   Bot,
   Check,
@@ -25,8 +26,10 @@ import { Modal } from '@/components/ui/Modal'
 import { cn } from '@/lib/cn'
 import { PublicationDialog } from './PublicationDialog'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
+import { LanguagePicker } from '@/components/ui/LanguagePicker'
 
 export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean }) {
+  useUiLanguage()
   const nav = useNavigate()
   const canvas = useCanvasStore((s) => s.canvas)
   const saving = useCanvasStore((s) => s.saving)
@@ -75,7 +78,7 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
         ? await (async () => {
             const bridge = window.vibepaperDesktop
             const project = await bridge?.getActiveProject()
-            if (!bridge || !project) throw new Error('请先打开本地项目，再导出画布。')
+            if (!bridge || !project) throw new Error(uiText("请先打开本地项目，再导出画布。"))
             return bridge.exportCanvas(project.projectId, sid(canvas.canvas.id))
           })()
         : await api<Record<string, unknown>>(
@@ -90,7 +93,7 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
       a.click()
       const objectUrl = a.href
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000)
-      if (desktopMode) toastSuccess('画布已导出')
+      if (desktopMode) toastSuccess(uiText("画布已导出"))
     } catch (e) {
       toastError((e as Error).message)
     }
@@ -101,7 +104,7 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
     reader.onload = () => {
       void api('/canvases/import', { method: 'POST', body: String(reader.result) })
         .then((c) => {
-          toastSuccess('导入成功')
+          toastSuccess(uiText("导入成功"))
           nav(`/canvas/${sid((c as { canvas: { id: string | number } }).canvas.id)}`)
         })
         .catch((e) => toastError((e as Error).message))
@@ -116,7 +119,7 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
         `/canvases/${sid(canvas.canvas.id)}/share`,
         { method: 'POST', body: JSON.stringify({ visibility }) },
       )
-      toastSuccess(`共享状态：${visibility}`)
+      toastSuccess(uiText("共享状态：{0}", { 0: visibility }))
       if (visibility === 'link' || visibility === 'public') {
         void navigator.clipboard?.writeText(
           `${location.origin}/canvas/shared/${d.canvas.shareToken}`,
@@ -133,20 +136,21 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
       <>
         <div className="pointer-events-auto absolute left-4 top-4 z-30">
           <div className="flex h-11 items-center gap-2 rounded-[18px] bg-[#1a1a1b] px-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.18)]">
-            <button type="button" onClick={() => nav('/workspace')} className="rounded-full p-2.5 text-white/70 hover:bg-white/10 hover:text-white" title="返回画布展示">
+            <button type="button" onClick={() => nav('/workspace')} className="rounded-full p-2.5 text-white/70 hover:bg-white/10 hover:text-white" title={uiText("返回画布展示")}>
               <Undo2 size={16} />
             </button>
             <div className="min-w-0 pr-2">
-              <p className="max-w-48 truncate text-[14px] font-bold text-white">{canvas?.canvas.name ?? '加载中…'}</p>
-              <p className="text-[11px] text-white/50">{saving ? '保存中…' : dirty ? '有未保存修改' : <span className="inline-flex items-center gap-1 text-emerald-400"><Check size={11} /> 已保存到本地</span>}</p>
+              <p className="max-w-48 truncate text-[14px] font-bold text-white">{canvas?.canvas.name ?? uiText("加载中…")}</p>
+              <p className="text-[11px] text-white/50">{saving ? uiText("保存中…") : dirty ? uiText("有未保存修改") : <span className="inline-flex items-center gap-1 text-emerald-400"><Check size={11} /> {uiText("已保存到本地")}</span>}</p>
             </div>
           </div>
         </div>
         <div className="pointer-events-auto absolute right-4 top-4 z-30 flex h-11 items-center gap-1 rounded-[18px] border border-black/6 bg-white/95 px-1.5 shadow-[0_12px_40px_rgba(15,23,42,0.10)] backdrop-blur">
           <TopIconButton title="Agent" active={agentOpen} onClick={() => setAgentOpen(!agentOpen)}><Bot size={17} /></TopIconButton>
-          <TopIconButton title="素材库" active={assetOpen} onClick={() => setAssetOpen(!assetOpen)}><Library size={17} /></TopIconButton>
-          <TopIconButton title="导出画布" onClick={() => void onExport()}><Download size={17} /></TopIconButton>
+          <TopIconButton title={uiText("素材库")} active={assetOpen} onClick={() => setAssetOpen(!assetOpen)}><Library size={17} /></TopIconButton>
+          <TopIconButton title={uiText("导出画布")} onClick={() => void onExport()}><Download size={17} /></TopIconButton>
           <ThemeToggle />
+          <LanguagePicker />
         </div>
       </>
     )
@@ -161,23 +165,22 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
             type="button"
             onClick={() => nav('/workspace')}
             className="rounded-full p-2.5 text-white/70 hover:bg-white/10 hover:text-white"
-            title="返回管理空间"
+            title={uiText("返回管理空间")}
           >
             <Undo2 size={16} />
           </button>
           <div className="min-w-0 pr-2">
             <p className="max-w-48 truncate text-[14px] font-bold text-white">
-              {canvas?.canvas.name ?? '加载中…'}
+              {canvas?.canvas.name ?? uiText("加载中…")}
             </p>
             <p className="text-[11px] text-white/50">
               {saving ? (
-                '保存中…'
+                uiText("保存中…")
               ) : dirty ? (
-                '有未保存修改'
+                uiText("有未保存修改")
               ) : (
                 <span className="inline-flex items-center gap-1 text-emerald-400">
-                  <Check size={11} /> 已同步
-                </span>
+                  <Check size={11} /> {uiText("已同步")}</span>
               )}
             </p>
           </div>
@@ -202,11 +205,10 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
             </div>
             <div className="hidden text-left sm:block">
               <p className="text-[13px] font-bold leading-tight text-[#111]">
-                {user?.nickname ?? '账户'}
+                {user?.nickname ?? uiText("账户")}
               </p>
               <p className="text-[11px] font-semibold text-[#666]">
-                {account?.availablePoints ?? 0} 点
-              </p>
+                {account?.availablePoints ?? 0} {uiText("点")}</p>
             </div>
             <ChevronDown size={13} className="text-[#999]" />
           </button>
@@ -221,14 +223,14 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
             <Bot size={17} />
           </TopIconButton>
           <TopIconButton
-            title="素材库"
+            title={uiText("素材库")}
             active={assetOpen}
             onClick={() => setAssetOpen(!assetOpen)}
           >
             <Library size={17} />
           </TopIconButton>
 
-          <TopIconButton title="分享与发布" onClick={() => setShareOpen(true)}>
+          <TopIconButton title={uiText("分享与发布")} onClick={() => setShareOpen(true)}>
             <Share2 size={17} />
           </TopIconButton>
 
@@ -237,15 +239,15 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
               <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[#f3f4f6]">
                 <Share2 size={24} className="text-[#111]" />
               </div>
-              <h2 className="text-[22px] font-bold text-[#111827]">分享画布</h2>
-              <p className="mb-6 text-[14px] text-[#6b7280]">选择共享方式，让他人查看或协作你的创作</p>
+              <h2 className="text-[22px] font-bold text-[#111827]">{uiText("分享画布")}</h2>
+              <p className="mb-6 text-[14px] text-[#6b7280]">{uiText("选择共享方式，让他人查看或协作你的创作")}</p>
 
               <div className="w-full space-y-3">
                 {(
                   [
-                    ['private', '私密', '仅自己可见'],
-                    ['link', '仅链接', '任何获得链接的人可查看'],
-                    ['public', '公开', '在创意广场展示'],
+                    ['private', uiText("私密"), uiText("仅自己可见")],
+                    ['link', uiText("仅链接"), uiText("任何获得链接的人可查看")],
+                    ['public', uiText("公开"), uiText("在创意广场展示")],
                   ] as const
                 ).map(([v, title, desc]) => (
                   <button
@@ -284,8 +286,7 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
                   }}
                   className="mt-2 flex w-full items-center justify-center gap-2 rounded-[20px] bg-[#111] py-3 text-[14px] font-bold text-white"
                 >
-                  <Share2 size={16} /> 分享到创意广场
-                </button>
+                  <Share2 size={16} /> {uiText("分享到创意广场")}</button>
               </div>
             </div>
           </Modal>
@@ -307,27 +308,26 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
             className="hidden"
             onChange={(e) => e.target.files?.[0] && onImport(e.target.files[0])}
           />
-          <TopIconButton title="导出画布" onClick={() => void onExport()}>
+          <TopIconButton title={uiText("导出画布")} onClick={() => void onExport()}>
             <Download size={17} />
           </TopIconButton>
-          <TopIconButton title="导入画布" onClick={() => fileRef.current?.click()}>
+          <TopIconButton title={uiText("导入画布")} onClick={() => fileRef.current?.click()}>
             <Upload size={17} />
           </TopIconButton>
-          <TopIconButton title="帮助" onClick={() => toastSuccess('帮助文档即将上线')}>
+          <TopIconButton title={uiText("帮助")} onClick={() => toastSuccess(uiText("帮助文档即将上线"))}>
             <HelpCircle size={17} />
           </TopIconButton>
 
           {accountOpen ? (
             <div className="absolute right-0 top-12 z-40 w-56 overflow-hidden rounded-[18px] border border-black/8 bg-white py-1.5 shadow-xl">
               <p className="px-3.5 pb-1 pt-1.5 text-[11px] font-bold tracking-wide text-[#999]">
-                账户与权益
-              </p>
+                {uiText("账户与权益")}</p>
               {(
                 [
-                  ['subscription', '订阅菜单', CreditCard],
-                  ['rewards', '奖励中心', Gift],
-                  ['invites', '邀请中心', Users],
-                  ['announcements', '公告', Megaphone],
+                  ['subscription', uiText("订阅菜单"), CreditCard],
+                  ['rewards', uiText("奖励中心"), Gift],
+                  ['invites', uiText("邀请中心"), Users],
+                  ['announcements', uiText("公告"), Megaphone],
                 ] as const
               ).map(([key, label, Icon]) => (
                 <button
@@ -352,8 +352,7 @@ export function CanvasTopBar({ desktopMode = false }: { desktopMode?: boolean })
                 }}
                 className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-[14px] font-semibold text-[#333] hover:bg-black/[0.04]"
               >
-                个人中心
-              </button>
+                {uiText("个人中心")}</button>
             </div>
           ) : null}
         </div>
@@ -373,6 +372,7 @@ function TopIconButton({
   onClick: () => void
   children: React.ReactNode
 }) {
+  useUiLanguage()
   return (
     <button
       type="button"
