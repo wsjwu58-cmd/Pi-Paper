@@ -1,0 +1,18 @@
+{
+  "caseId": "canvas-general-001",
+  "profile": "canvas-general",
+  "goal": "先写一段产品文案，再用上一段文案生成一张竖版产品图",
+  "turns": [
+    {"turnId": "turn-1", "content": "为雨夜玻璃瓶写一段不超过80字的产品文案", "confirmation": "none", "canvasDomain": "general"},
+    {"turnId": "turn-2", "content": "把上一段文案作为权威内容，生成一张 2K、9:16 的产品图", "confirmation": "manual", "canvasDomain": "general"}
+  ],
+  "assertions": [
+    {"type": "confirmation", "required": true},
+    {"type": "task", "terminal": true},
+    {"type": "node", "nodeType": "text"},
+    {"type": "node", "nodeType": "image"},
+    {"type": "media", "kind": "image"}
+  ],
+  "browserCheckpoints": [{"turnId": "turn-2", "name": "image-node-created"}],
+  "tags": ["text", "image", "img2img", "generate"]
+}

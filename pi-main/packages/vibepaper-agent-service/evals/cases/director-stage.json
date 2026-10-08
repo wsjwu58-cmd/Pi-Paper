@@ -1,0 +1,15 @@
+{
+  "caseId":"director-stage-001",
+  "profile":"vertical-short-drama",
+  "goal":"从自然语言配置导演台，捕获构图并把结果作为后续参考",
+  "turns":[
+    {"turnId":"turn-1","content":"在导演台搭一个雨巷对峙：女主站左侧，男主靠右墙，路灯在两人之间，机位略低角度","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-2","content":"把男主移动到离墙更近的位置并提高机位，捕获当前构图参考；不要删除女主和路灯","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-3","content":"用刚才捕获的构图生成一张9:16关键帧，再为该关键帧创建视频节点","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-4","content":"重新打开刚才的构图参考，确认女主、男主和路灯都还在正确位置，并保留原捕获结果","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-5","content":"在不删除现有构图的前提下再捕获一个略高机位版本，供后续镜头选择","confirmation":"manual","canvasDomain":"short-drama"}
+  ],
+  "assertions":[{"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"director"},{"type":"node","nodeType":"image"},{"type":"node","nodeType":"video"},{"type":"media","kind":"director"},{"type":"media","kind":"image"},{"type":"event","eventType":"tool_completed"}],
+  "browserCheckpoints":[{"turnId":"turn-1","name":"director-stage-open"},{"turnId":"turn-2","name":"director-capture"},{"turnId":"turn-3","name":"director-reference-edge"}],
+  "tags":["director","image","video","keyframe","generate"]
+}

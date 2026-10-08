@@ -1,0 +1,16 @@
+{
+  "caseId":"vertical-short-drama-full-episode-001",
+  "profile":"vertical-short-drama",
+  "goal":"完成约60秒、9:16、15个4秒镜头的完整短剧单集，不以三镜预览冒充成片",
+  "turns":[
+    {"turnId":"turn-1","content":"为雨夜悬疑故事建立故事圣经：主角、对手、世界规则、伏笔和集尾反转；先不要生成镜头","confirmation":"none","canvasDomain":"short-drama"},
+    {"turnId":"turn-2","content":"基于故事圣经建立至少两名角色的固定外观、服装、声线和批准参考包，再写本集完整对白","confirmation":"none","canvasDomain":"short-drama"},
+    {"turnId":"turn-3","content":"把本集拆成15个每个4秒的ShotSpec，逐镜写动作、机位、对白、字幕和视频提示词；保持9:16","confirmation":"none","canvasDomain":"short-drama"},
+    {"turnId":"turn-4","content":"逐镜生成关键帧并送审；未通过的镜头先修复，不要提交对应视频，通过后再生成全部15段视频和逐镜配音字幕","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-5","content":"按shotNo从1到15合成最终约60秒竖屏成片，并整理从故事圣经到最终Compose的左到右依赖图；只有完整成片才算完成","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-6","content":"播放并检查最终成片，确认15个镜头、逐镜对白音频、字幕和左到右依赖关系都真实存在；少于15镜或缺任一轨道都算失败","confirmation":"none","canvasDomain":"short-drama"}
+  ],
+  "assertions":[{"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"text"},{"type":"node","nodeType":"image"},{"type":"node","nodeType":"video"},{"type":"node","nodeType":"audio"},{"type":"node","nodeType":"compose"},{"type":"media","kind":"video"},{"type":"media","kind":"compose"},{"type":"lineage","operation":"keyframe"},{"type":"lineage","operation":"compose_videos"},{"type":"event","eventType":"task_status"}],
+  "browserCheckpoints":[{"turnId":"turn-2","name":"approved-reference-packs"},{"turnId":"turn-3","name":"15-shot-plan"},{"turnId":"turn-5","name":"full-episode-compose"}],
+  "tags":["text","image","video","audio","compose","keyframe","compose_videos","generate","vertical-short-drama","full-episode"]
+}

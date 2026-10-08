@@ -1,0 +1,169 @@
+@import 'tailwindcss';
+@import '@xyflow/react/dist/style.css';
+@import './theme.css';
+
+@theme {
+  --color-vp-bg: #f5f5f7;
+  --color-vp-ink: #111111;
+  --color-vp-ink-2: #111111b3;
+  --color-vp-ink-3: #11111180;
+  --color-vp-paper: #ffffff;
+  --color-vp-line: #1111111a;
+  --color-vp-line-strong: #1111112e;
+  --color-vp-success: #15803d;
+  --color-vp-success-bg: #dcfce7;
+  --color-vp-link: #2563eb;
+  --color-vp-heatmap: #4ade80;
+  --color-vp-canvas: #f5f5f7;
+  --font-sans: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --shadow-vp-sm: 0 4px 12px #0f172a0f;
+  --shadow-vp-md: 0 12px 30px #0f172a1a;
+  --shadow-vp-lg: 0 24px 72px #0f172a24;
+  --radius-vp-sm: 8px;
+  --radius-vp-md: 16px;
+  --radius-vp-lg: 20px;
+  --radius-vp-xl: 24px;
+  --radius-vp-pill: 999px;
+}
+
+:root {
+  --bg-primary: #f5f5f7;
+  --text-primary: #111;
+  --text-secondary: #111111a8;
+  --border-color: #11111114;
+  --shadow-sm: 0 4px 12px #0f172a0f;
+  --shadow-md: 0 12px 30px #0f172a1a;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+  --content-max: 1280px;
+  --content-pad: clamp(24px, 4vw, 56px);
+  --heatmap-cell-size: 10px;
+  --heatmap-column-gap: 3px;
+  --heatmap-row-gap: 3px;
+  /* Agent 面板 — 与 web 参考 UI 对齐 */
+  --canvas-surface: #fffffff2;
+  --canvas-surface-muted: #0f172a0f;
+  --canvas-border: #0f172a14;
+  --canvas-border-strong: #0f172a29;
+  --canvas-text: #1f2937;
+  --canvas-text-strong: #0f172a;
+  --canvas-muted: #64748b;
+  --canvas-muted-soft: #94a3b8;
+  --canvas-popover: #fffffff5;
+  --canvas-hover: #0f172a0f;
+  --canvas-active: #0f172a;
+  --canvas-active-text: #fff;
+  --canvas-background: #f2f2f2;
+  --canvas-grid: #c8c8c8;
+  --canvas-selected-edge: #111111;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+}
+
+html {
+  background: var(--bg-primary);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: auto;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+a {
+  text-decoration: none;
+}
+
+img,
+video,
+canvas {
+  max-width: 100%;
+  display: block;
+}
+
+svg {
+  max-width: none;
+  display: block;
+  flex-shrink: 0;
+}
+
+/* Dot grid canvas background - light blueprint feel */
+.vp-dot-grid {
+  background-color: #f5f5f7;
+  background-image: radial-gradient(#d1d1d1 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.vp-hub-shell {
+  min-height: 100vh;
+  background: #f5f5f7;
+  overflow-y: auto;
+}
+
+.vp-content {
+  width: 100%;
+  margin-inline: 0;
+  padding-inline: 24px;
+}
+
+.vp-content-wide {
+  width: 100%;
+  padding-inline: 24px;
+}
+
+/* Ensure active nav / buttons keep intended text color over global styles */
+a.text-white,
+a[class*='text-white'] {
+  color: #fff;
+}
+
+/* React Flow overrides */
+.react-flow__attribution {
+  display: none;
+}
+
+.react-flow__edge-path {
+  stroke: #93c5fd;
+  stroke-width: 1.5;
+}
+
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #fff;
+  background: #93c5fd;
+}
+
+.react-flow__node {
+  font-family: var(--font-sans);
+}

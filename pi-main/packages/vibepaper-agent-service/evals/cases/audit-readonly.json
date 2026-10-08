@@ -1,0 +1,16 @@
+{
+  "caseId": "audit-readonly-001",
+  "profile": "audit-readonly",
+  "goal": "只读审校连续性问题，不修改画布",
+  "turns": [
+    {"turnId": "turn-1", "content": "审校当前选中的视频节点，列出角色一致性和字幕问题", "confirmation": "none", "entrypoint": "audit"},
+    {"turnId": "turn-2", "content": "根据审校结果给出修复建议，但不要创建、删除或修改任何节点", "confirmation": "none", "entrypoint": "audit"}
+  ],
+  "assertions": [
+    {"type": "event", "eventType": "tool_completed"},
+    {"type": "node", "nodeType": "video"}
+  ],
+  "browserCheckpoints": [{"turnId": "turn-2", "name": "readonly-report"}],
+  "tags": ["audit", "readonly"],
+  "fixtureNodes": [{"type":"video","params":{"prompt":"夜雨中玻璃瓶特写，角色穿深色风衣，画面底部有中文字幕占位"},"creativeType":"clip","modelRef":"agnes-video-2.5-flash"}]
+}

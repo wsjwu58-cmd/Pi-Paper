@@ -1,0 +1,359 @@
+import { useEffect, useState } from 'react'
+import { Brain, Check, ChevronDown, ChevronRight, X } from 'lucide-react'
+import type { ExecutionStep } from './agentTypes'
+import { toolLabel } from './agentTypes'
+import { cn } from '@/lib/cn'
+import { useTypewriter } from './useTypewriter'
+import { StreamingAgentReply } from './AgentMarkdown'
+import { SoftCollapse } from './canvasMotion'
+
+const EDIT_TOOLS = new Set([
+  'create_nodes',
+  'connect_nodes',
+  'layout_nodes',
+  'update_node_config',
+  'delete_nodes',
+])
+
+/**
+ * 保留时间线顺序：推理 / 工具 / 对白交错。
+ * 连续编辑类工具合并为一条「编辑画布」。
+ */
+export function buildTimeline(steps: ExecutionStep[]): ExecutionStep[] {
+  const shown: ExecutionStep[] = []
+
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i]
+    if (s.kind === 'reasoning' || s.kind === 'speech') {
+      if (s.summary?.trim()) shown.push(s)
+      continue
+    }
+    if (s.kind === 'plan' || s.kind === 'result') {
+      if (s.tool && EDIT_TOOLS.has(s.tool)) {
+        const block = [s]
+        let j = i + 1
+        while (
+          j < steps.length &&
+          (steps[j].kind === 'plan' || steps[j].kind === 'result') &&
+          steps[j].tool &&
+          EDIT_TOOLS.has(steps[j].tool as string)
+        ) {
+          block.push(steps[j])
+          j += 1
+        }
+        const done = block.some((b) => b.kind === 'result' && b.ok)
+        const fail = block.some((b) => b.kind === 'result' && b.ok === false)
+        const detail =
+          block.map((b) => b.reasoning || b.detail || b.summary).find((t) => t && t !== '编辑画布') ||
+          undefined
+        shown.push({
+          id: block[block.length - 1].id,
+          kind: done || fail ? 'result' : 'plan',
+          tool: 'create_nodes',
+          label: '编辑画布',
+          summary: '编辑画布',
+          ok: fail ? false : done ? true : undefined,
+          detail,
+          reasoning: detail,
+        })
+        i = j - 1
+        continue
+      }
+
+      if (s.kind === 'plan') {
+        const laterResult = steps.slice(i + 1).find((x) => x.kind === 'result' && x.tool === s.tool)
+        if (laterResult) continue
+        shown.push({
+          ...s,
+          label: toolLabel(s.tool),
+          summary: toolLabel(s.tool),
+        })
+        continue
+      }
+
+      shown.push({
+        ...s,
+        label: toolLabel(s.tool),
+        summary: toolLabel(s.tool),
+      })
+    }
+  }
+  return shown
+}
+
+function ReasoningBlock({
+  text,
+  streaming,
+}: {
+  text: string
+  streaming?: boolean
+}) {
+  const { text: shown, catchingUp } = useTypewriter(text, !!streaming, 18)
+  return (
+    <div className="py-1">
+      <p className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium text-[#888]">
+        <Brain size={14} className="text-[#999]" strokeWidth={1.75} />
+        推理过程
+      </p>
+      <div className="max-h-[140px] overflow-y-auto rounded-[8px] bg-[#f7f7f8] px-3 py-2.5">
+        <p className="whitespace-pre-wrap text-[13px] leading-[1.65] text-[#777]">
+          {shown}
+          {(streaming || catchingUp) && (
+            <span
+              aria-hidden
+              className="ml-0.5 inline-block h-[12px] w-[6px] translate-y-[1px] animate-pulse rounded-[1px] bg-[#bbb]"
+            />
+          )}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function ToolRow({ step }: { step: ExecutionStep }) {
+  const [open, setOpen] = useState(false)
+  const isDone = step.kind === 'result' && step.ok !== false
+  const isFail = step.kind === 'result' && step.ok === false
+  const isPending = step.kind === 'plan'
+  const detail = (step.rawDetail || step.detail || step.reasoning || '').trim()
+  const canExpand = Boolean(detail) && detail !== step.label
+
+  return (
+    <div className="border-t border-black/[0.06]">
+      <button
+        type="button"
+        disabled={!canExpand}
+        onClick={() => canExpand && setOpen((v) => !v)}
+        className={cn(
+          'flex w-full items-center gap-2.5 py-2.5 text-left',
+          canExpand ? 'cursor-pointer' : 'cursor-default',
+        )}
+      >
+        <span
+          className={cn(
+            'flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full',
+            isFail
+              ? 'bg-red-500 text-white'
+              : isDone
+                ? 'bg-emerald-500 text-white'
+                : isPending
+                  ? 'bg-amber-400/90 text-white'
+                  : 'bg-emerald-500 text-white',
+          )}
+        >
+          {isFail ? (
+            <X size={11} strokeWidth={3} />
+          ) : isPending ? (
+            <span className="h-1.5 w-1.5 rounded-full bg-white" />
+          ) : (
+            <Check size={11} strokeWidth={3} />
+          )}
+        </span>
+        <span className="min-w-0 flex-1 text-[14px] font-medium text-[#333]">{step.label}</span>
+        {canExpand ? (
+          open ? (
+            <ChevronDown size={16} className="shrink-0 text-[#bbb]" />
+          ) : (
+            <ChevronRight size={16} className="shrink-0 text-[#bbb]" />
+          )
+        ) : (
+          <ChevronRight size={16} className="shrink-0 text-transparent" />
+        )}
+      </button>
+      <SoftCollapse open={open && Boolean(detail)}>
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[#f7f7f8] pb-2.5 pl-[30px] pr-2 pt-2 text-[12px] leading-relaxed text-[#777]">{detail}</pre>
+      </SoftCollapse>
+    </div>
+  )
+}
+
+export function AgentTurnTimeline({
+  steps,
+  content,
+  streaming = false,
+  animateSpeech = false,
+  streamComplete = false,
+  onRevealDone,
+}: {
+  steps: ExecutionStep[]
+  /** 兜底正文：若时间线尚无 speech 则追加 */
+  content?: string
+  streaming?: boolean
+  animateSpeech?: boolean
+  streamComplete?: boolean
+  onRevealDone?: () => void
+}) {
+  const base = buildTimeline(steps)
+  const hasSpeech = base.some((s) => s.kind === 'speech')
+  const timeline =
+    !hasSpeech && content?.trim()
+      ? [
+          ...base,
+          {
+            id: 'speech-fallback',
+            kind: 'speech' as const,
+            label: '回复',
+            summary: content.trim(),
+          },
+        ]
+      : base
+
+  const toolCount = timeline.filter((s) => s.kind === 'plan' || s.kind === 'result').length
+  const hasProcess = timeline.some((s) => s.kind !== 'speech')
+  const [processOpen, setProcessOpen] = useState(true)
+
+  useEffect(() => {
+    if (streaming) setProcessOpen(true)
+  }, [streaming])
+
+  if (timeline.length === 0) return null
+
+  const title =
+    streaming && timeline.some((s) => s.kind === 'reasoning')
+      ? '执行记录 · 推理中…'
+      : toolCount > 0
+        ? `执行记录 · 执行了 ${toolCount} 项操作`
+        : '执行记录'
+
+  const speechItems = timeline.filter((s) => s.kind === 'speech')
+  const lastSpeechId = speechItems[speechItems.length - 1]?.id
+
+  return (
+    <div className="w-full min-w-0">
+      {hasProcess && (
+        <button
+          type="button"
+          onClick={() => setProcessOpen((v) => !v)}
+          className="mb-1 flex w-full items-center gap-2 rounded-[10px] bg-[#f5f5f6] px-3 py-2 text-left text-[13px] font-medium text-[#666]"
+        >
+          <span
+            className={cn(
+              'h-1.5 w-1.5 shrink-0 rounded-full',
+              streaming ? 'animate-pulse bg-amber-400' : 'bg-[#c8c8c8]',
+            )}
+          />
+          <span className="flex-1">{title}</span>
+          {processOpen ? (
+            <ChevronDown size={15} className="text-[#aaa]" />
+          ) : (
+            <ChevronRight size={15} className="text-[#aaa]" />
+          )}
+        </button>
+      )}
+
+      <div className="space-y-1">
+        {timeline.map((s) => {
+          if (s.kind === 'reasoning') {
+            return (
+              <SoftCollapse key={s.id} open={processOpen || streaming}>
+              <ReasoningBlock
+                text={s.summary}
+                streaming={streaming && s.id === timeline.filter((x) => x.kind === 'reasoning').at(-1)?.id}
+              />
+              </SoftCollapse>
+            )
+          }
+          if (s.kind === 'plan' || s.kind === 'result') {
+            return <SoftCollapse key={s.id} open={processOpen || streaming}><ToolRow step={s} /></SoftCollapse>
+          }
+          // speech：折叠过程时仍展示对白
+          const isLast = s.id === lastSpeechId
+          return (
+            <div key={s.id} className="py-1.5">
+              <StreamingAgentReply
+                text={s.summary}
+                animate={animateSpeech && isLast}
+                streamComplete={streamComplete && isLast}
+                onRevealDone={isLast ? onRevealDone : undefined}
+              />
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** @deprecated 兼容旧引用名 */
+export function AgentExecutionRecord({
+  steps,
+  streaming = false,
+}: {
+  steps: ExecutionStep[]
+  defaultOpen?: boolean
+  streaming?: boolean
+}) {
+  return <AgentTurnTimeline steps={steps} streaming={streaming} />
+}
+
+export function AgentNextActions({
+  actions,
+  onPick,
+}: {
+  actions: string[]
+  onPick: (text: string) => void
+}) {
+  if (actions.length === 0) return null
+  const shown = actions.slice(0, 4)
+  return (
+    <div className="mt-3">
+      <p className="mb-1.5 text-[13px] font-semibold text-[#666]">下一步</p>
+      <div className="flex flex-col gap-1.5">
+        {shown.map((a) => (
+          <button
+            key={a}
+            type="button"
+            onClick={() => onPick(a)}
+            className="rounded-[10px] border border-black/8 bg-white px-3 py-2 text-left text-[14px] text-[#333] transition hover:border-black/16 hover:bg-[#fafafa]"
+          >
+            {a}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function AgentTaskBadge({
+  status,
+  errorCode,
+  errorMessage,
+}: {
+  status?: string
+  taskId?: string
+  errorCode?: string
+  errorMessage?: string
+}) {
+  if (!status || status === 'succeeded') return null
+  const terminalLabels: Record<string, string> = {
+    failed: '生成失败',
+    cancelled: '任务已取消',
+    expired: '任务已过期',
+    settlement_error: '任务状态更新失败',
+    interrupted: '任务已中断',
+  }
+  const terminalLabel = terminalLabels[status]
+  if (terminalLabel) {
+    const detail = errorMessage?.trim() || (status === 'failed'
+      ? errorCode === 'TASK_OUTPUT_UNAVAILABLE'
+        ? '本地任务结果无法读取或校验。'
+        : errorCode?.includes('TIMEOUT')
+          ? '模型响应超时，请检查模型连接后重试。'
+          : '请检查模型配置或网络后重试。'
+      : undefined)
+    if (!detail) return null
+    return (
+      <p role="alert" className="mt-2 rounded-md bg-red-50 px-2 py-1.5 text-[12px] leading-5 text-red-700">
+        {terminalLabel}：{detail}
+      </p>
+    )
+  }
+  const label =
+    status === 'running' ? '生成中…' : status === 'queued' ? '排队中…' : `任务 ${status}`
+  return (
+    <p className="mt-2 flex items-center gap-1.5 text-[13px] font-medium text-[#888]">
+      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+      {label}
+    </p>
+  )
+}

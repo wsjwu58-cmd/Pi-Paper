@@ -1,0 +1,14 @@
+{
+  "caseId":"skills-portrait-poster-ui-001","profile":"canvas-general","goal":"验证人像、海报、纸刊和界面设计 Skill 的输出约束",
+  "skillIds":["vital-portrait","minimal-poster","film-poster","cinematic-still","cinematic-triptych","real-scene-paper","interface-design"],
+  "skillBoundaryIds":["vital-portrait","minimal-poster","film-poster","cinematic-still","cinematic-triptych","real-scene-paper","interface-design"],
+  "turns":[
+    {"turnId":"turn-1","content":"把这张生活照升级为有生命感的人像，严格保持身份；如果参考图不可用要明确拒绝身份保持","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-2","content":"做一张3:5极简海报和一张9:16原创电影海报，分别保留留白与可读标题，不使用真实片商、奖项或虚假署名","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-3","content":"把一个小故事拆成三张独立21:9电影感图片，再做一张纸张印刷场景图；不要输出内置三联拼图","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-4","content":"设计一个可读的登录界面图，所有按钮和层级必须清楚；如果文字不可读，不要宣称界面设计完成","confirmation":"manual","canvasDomain":"general"}
+  ],
+  "assertions":[{"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"image"},{"type":"media","kind":"image"}],
+  "browserCheckpoints":[{"turnId":"turn-2","name":"poster-outputs"},{"turnId":"turn-4","name":"ui-output"}],
+  "tags":["image","generate","skill-contract","portrait","poster","ui"]
+}

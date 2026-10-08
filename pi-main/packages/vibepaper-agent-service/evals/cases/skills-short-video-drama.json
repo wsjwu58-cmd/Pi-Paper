@@ -1,0 +1,14 @@
+{
+  "caseId":"skills-short-video-drama-001","profile":"vertical-short-drama","goal":"验证短剧相关 Skill 的自然语言触发、边界和生产合同",
+  "skillIds":["vertical-episode","short-video-script","shot-storyboard","dialogue-polish","longform-adaptation","continuity-audit","character-consistency","story-bible"],
+  "skillBoundaryIds":["vertical-episode","short-video-script","shot-storyboard","dialogue-polish","longform-adaptation","continuity-audit","character-consistency","story-bible"],
+  "turns":[
+    {"turnId":"turn-1","content":"把我提供的雨夜故事压缩成约60秒短剧：先给钩子、冲突升级、反转和集尾断点，再输出可拍摄对白","confirmation":"none","canvasDomain":"short-drama"},
+    {"turnId":"turn-2","content":"上一版没有明确集尾钩子，请只修复钩子和对白节奏，不改变人物关系与事实；然后给出15镜头制作清单","confirmation":"none","canvasDomain":"short-drama"},
+    {"turnId":"turn-3","content":"跨集审校角色伤势、服装和伏笔，只输出问题证据和最小修复建议，不要写入或生成任何节点","confirmation":"none","entrypoint":"audit","canvasDomain":"short-drama"},
+    {"turnId":"turn-4","content":"确认方案后，按关键帧优先为所有镜头创建图像和视频节点","confirmation":"manual","canvasDomain":"short-drama"}
+  ],
+  "assertions":[{"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"text"},{"type":"node","nodeType":"image"},{"type":"node","nodeType":"video"},{"type":"media","kind":"video"},{"type":"event","eventType":"tool_completed"}],
+  "browserCheckpoints":[{"turnId":"turn-3","name":"audit-readonly"},{"turnId":"turn-4","name":"skill-production"}],
+  "tags":["text","image","video","generate","skill-contract","short-drama"]
+}

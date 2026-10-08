@@ -1,0 +1,751 @@
+import { createHash } from "node:crypto";
+import type { CanvasCommand, CanvasCommandGateway } from "../application/canvas-command-service.ts";
+import type { AuditInput } from "../domain/continuity-rules.ts";
+import { ToolGatewayError } from "../infrastructure/tool-gateway.ts";
+import type { ReadToolsGateway } from "../tools/read-tools.ts";
+import type { DesktopAgentControlStore } from "./control-store.ts";
+
+const DESKTOP_GENERATION_MODALITIES = ["text", "image", "video", "audio", "compose"] as const;
+type DesktopGenerationModality = (typeof DESKTOP_GENERATION_MODALITIES)[number];
+
+type DesktopModelDirectoryEntry = {
+	name: string;
+	modelType: DesktopGenerationModality;
+	providerId: string;
+	providerType: "local" | "cloud";
+	enabled: boolean;
+	modalities: readonly DesktopGenerationModality[];
+	[key: string]: unknown;
+};
+
+function isDesktopGenerationModality(value: unknown): value is DesktopGenerationModality {
+	return typeof value === "string" && DESKTOP_GENERATION_MODALITIES.includes(value as DesktopGenerationModality);
+}
+
+function isDesktopModelDirectoryEntry(value: unknown): value is DesktopModelDirectoryEntry {
+	if (!isRecord(value)) return false;
+	return (
+		typeof value.name === "string" &&
+		value.name.length > 0 &&
+		isDesktopGenerationModality(value.modelType) &&
+		typeof value.providerId === "string" &&
+		value.providerId.length > 0 &&
+		(value.providerType === "local" || value.providerType === "cloud") &&
+		typeof value.enabled === "boolean" &&
+		Array.isArray(value.modalities) &&
+		value.modalities.length > 0 &&
+		value.modalities.every(isDesktopGenerationModality) &&
+		value.modalities.includes(value.modelType)
+	);
+}
+
+function modelSummary(model: DesktopModelDirectoryEntry) {
+	return { name: model.name, modelType: model.modelType, modalities: [...model.modalities] };
+}
+
+function modelNamesForMessage(models: readonly DesktopModelDirectoryEntry[]): string {
+	return models.length > 0
+		? models.map((model) => `${JSON.stringify(model.name)} (${model.modelType})`).join(", ")
+		: "无已启用模型";
+}
+
+function requireEnabledDesktopModel(
+	models: readonly DesktopModelDirectoryEntry[],
+	requestedModel: string,
+): DesktopModelDirectoryEntry {
+	const selected = models.find((model) => model.name === requestedModel);
+	if (!selected) {
+		const available = models.filter((model) => model.enabled).map(modelSummary);
+		throw new ToolGatewayError(
+			"MODEL_NOT_FOUND",
+			`未找到精确模型标识 ${JSON.stringify(requestedModel.slice(0, 256))}。请从 list_models 返回的 name 中选择；当前可用模型：${modelNamesForMessage(models.filter((model) => model.enabled))}`,
+			{ requestedModel: requestedModel.slice(0, 256), availableModels: available },
+			400,
+		);
+	}
+	if (!selected.enabled) {
+		const reason = stringValue(selected.unavailableReason)
+			?.replace(/[\r\n\t]+/gu, " ")
+			.slice(0, 300);
+		throw new ToolGatewayError(
+			"MODEL_DISABLED",
+			`模型 ${JSON.stringify(selected.name)} 当前未启用${reason ? `：${reason}` : "；请检查提供方凭据或本地模型状态"}。`,
+			{ model: modelSummary(selected), unavailableReason: reason ?? null },
+			400,
+		);
+	}
+	return selected;
+}
+
+function assertDesktopModelSupportsTarget(
+	model: DesktopModelDirectoryEntry,
+	node: Record<string, unknown>,
+	models: readonly DesktopModelDirectoryEntry[],
+): void {
+	const targetType = stringValue(node.type) ?? "unknown";
+	if (model.modelType === targetType && model.modalities.includes(model.modelType)) return;
+	const compatibleModels = models.filter(
+		(candidate) =>
+			candidate.enabled &&
+			candidate.modelType === targetType &&
+			candidate.modalities.includes(targetType as DesktopGenerationModality),
+	);
+	const available = compatibleModels.map(modelSummary);
+	throw new ToolGatewayError(
+		"MODEL_MODALITY_MISMATCH",
+		`所选模型 ${JSON.stringify(model.name)} 的生成类型是 ${model.modelType}，支持能力为 ${JSON.stringify(model.modalities)}；目标节点类型是 ${targetType}。可用于该目标的模型：${modelNamesForMessage(compatibleModels)}`,
+		{ model: modelSummary(model), targetType, availableModels: available },
+		400,
+	);
+}
+
+export interface DesktopLocalToolClient {
+	request(method: string, payload: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
+}
+
+/**
+ * Adapts the original Agent read and CanvasCommand contracts to the desktop's
+ * narrow Main → Local Core RPC surface. Tool schemas and orchestration remain
+ * owned by runtime-tools.ts; this class only translates domain commands.
+ */
+export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandGateway {
+	private readonly client: DesktopLocalToolClient;
+	private readonly projectId: string;
+	private runScope?: { control: DesktopAgentControlStore; sessionId: string; runId: string };
+
+	constructor(client: DesktopLocalToolClient, projectId: string) {
+		this.client = client;
+		this.projectId = projectId;
+	}
+
+	attachRun(scope: { control: DesktopAgentControlStore; sessionId: string; runId: string }): void {
+		this.runScope = scope;
+	}
+
+	async getCanvasSummary(_userId: string, canvasId: string): Promise<Record<string, unknown>> {
+		return projectCanvas(await this.loadCanvas(canvasId));
+	}
+
+	async getSelectedNodes(_userId: string, canvasId: string, nodeIds: readonly string[]): Promise<readonly unknown[]> {
+		const canvas = projectCanvas(await this.loadCanvas(canvasId));
+		const selected = new Set(nodeIds);
+		return records(canvas.nodes).filter((node) => selected.has(stringValue(node.id) ?? ""));
+	}
+
+	async getNodeDetail(_userId: string, canvasId: string, nodeId: string): Promise<Record<string, unknown>> {
+		const canvas = projectCanvas(await this.loadCanvas(canvasId));
+		const node = records(canvas.nodes).find((candidate) => candidate.id === nodeId);
+		if (!node) throw gatewayError("NOT_FOUND", "节点不存在", 404);
+		return node;
+	}
+
+	async listModels(): Promise<readonly DesktopModelDirectoryEntry[]> {
+		const response = await this.call("agent:core:list-models", { projectId: this.projectId });
+		if (!Array.isArray(response)) throw gatewayError("INVALID_RESPONSE", "模型目录响应无效");
+		const entries = response.map((entry) => (isRecord(entry) ? stripPrivateFields(entry) : entry));
+		const models = entries.filter(isDesktopModelDirectoryEntry);
+		if (models.length !== entries.length)
+			throw gatewayError("INVALID_RESPONSE", "模型目录条目缺少有效的 name、modelType、modalities 或提供方信息");
+		return models;
+	}
+
+	async requestRenderAudit(
+		userId: string,
+		canvasId: string,
+		canvasVersion: number,
+		input: AuditInput & { targetNodeId: string },
+	): Promise<Record<string, unknown>> {
+		if (userId !== this.projectId) throw gatewayError("PERMISSION_DENIED", "当前项目已更改", 403);
+		if (!canvasId || !Number.isSafeInteger(canvasVersion) || canvasVersion < 0)
+			throw gatewayError("INVALID_INPUT", "审校请求范围无效", 400);
+		const canvas = await this.loadCanvas(canvasId);
+		if (!canvas.nodes.some((node) => node.id === input.targetNodeId))
+			throw gatewayError("NOT_FOUND", "审校目标不存在", 404);
+		const response = await this.call("agent:core:create-render-review", {
+			projectId: this.projectId,
+			canvasId,
+			canvasVersion,
+			targetNodeId: input.targetNodeId,
+			shotDurationSeconds: input.shotDurationSeconds,
+			expectedDurationSeconds: input.expectedDurationSeconds,
+			characterConsistent: input.characterConsistent,
+			audioDurationMs: input.audioDurationMs,
+			videoDurationMs: input.videoDurationMs,
+			previousCamera: input.previousCamera,
+			currentCamera: input.currentCamera,
+		});
+		return projectRenderAudit(response);
+	}
+
+	async resolveGenerationModel(_userId: string, requestedModel: string): Promise<string> {
+		const models = await this.listModels();
+		return requireEnabledDesktopModel(models, requestedModel).name;
+	}
+
+	async resolveGenerationModelForTarget(
+		userId: string,
+		requestedModel: string,
+		canvasId: string,
+		targetNodeId: string,
+	): Promise<string> {
+		if (userId !== this.projectId) throw gatewayError("PERMISSION_DENIED", "当前项目已更改", 403);
+		const models = await this.listModels();
+		const model = requireEnabledDesktopModel(models, requestedModel);
+		const node = await this.getNodeDetail(userId, canvasId, targetNodeId);
+		assertDesktopModelSupportsTarget(model, node, models);
+		return model.name;
+	}
+
+	async createGenerationTask(input: {
+		userId: string;
+		canvasId: string;
+		canvasVersion: number;
+		nodeId: string;
+		modelType: string;
+		modelParams: Record<string, unknown>;
+		idempotencyKey: string;
+	}): Promise<Record<string, unknown>> {
+		if (input.userId !== this.projectId) throw gatewayError("PERMISSION_DENIED", "当前项目已更改", 403);
+		const models = await this.listModels();
+		const model = requireEnabledDesktopModel(models, input.modelType);
+		const node = await this.getNodeDetail(input.userId, input.canvasId, input.nodeId);
+		assertDesktopModelSupportsTarget(model, node, models);
+		const modality = model.modelType;
+		const providerType = model.providerType;
+		const providerId = model.providerId;
+		const modelId = model.name;
+		const prompt = stringValue(input.modelParams.prompt)?.trim() ?? "";
+		if (modality !== "compose" && !prompt) {
+			throw new ToolGatewayError("INVALID_INPUT", "模型、生成类型或提示词无效", {}, 400);
+		}
+		const parameters = Object.fromEntries(Object.entries(input.modelParams).filter(([key]) => key !== "prompt"));
+		const response = await this.call("agent:core:create-generation-task", {
+			projectId: this.projectId,
+			canvasId: input.canvasId,
+			canvasVersion: input.canvasVersion,
+			nodeId: input.nodeId,
+			modality,
+			providerType,
+			providerId,
+			modelId,
+			idempotencyKey: input.idempotencyKey,
+			prompt,
+			parameters,
+		});
+		if (!isRecord(response) || typeof response.taskId !== "string" || typeof response.status !== "string")
+			throw gatewayError("INVALID_RESPONSE", "本地任务存储未返回有效任务");
+		return { taskId: response.taskId, status: response.status, modality, nodeId: input.nodeId };
+	}
+
+	async searchAssets(_userId: string, query: string): Promise<readonly unknown[]> {
+		const response = await this.call("agent:core:list-assets", { projectId: this.projectId });
+		if (!Array.isArray(response)) throw gatewayError("INVALID_RESPONSE", "素材目录响应无效");
+		const needle = query.trim().toLocaleLowerCase();
+		return response
+			.filter(
+				(asset) =>
+					isRecord(asset) &&
+					[asset.name, asset.mimeType].some(
+						(value) => typeof value === "string" && value.toLocaleLowerCase().includes(needle),
+					),
+			)
+			.map((asset) => (isRecord(asset) ? stripPrivateFields(asset) : asset));
+	}
+
+	async checkTaskStatus(_userId: string, taskId: string): Promise<Record<string, unknown>> {
+		const activeCanvas = await this.loadCanvas(undefined);
+		const task = await this.call("agent:core:get-task", { projectId: this.projectId, taskId });
+		if (
+			!isRecord(task) ||
+			task.taskId !== taskId ||
+			task.canvasId !== activeCanvas.canvasId ||
+			!activeCanvas.nodes.some((node) => node.id === task.nodeId)
+		) {
+			throw gatewayError("NOT_FOUND", "任务不存在", 404);
+		}
+		return projectTask(task);
+	}
+
+	async execute(command: CanvasCommand): Promise<Record<string, unknown>> {
+		if (command.userId !== this.projectId) throw gatewayError("PERMISSION_DENIED", "当前项目已更改", 403);
+		if (command.operation === "create_nodes") return this.createNodes(command);
+		if (command.operation === "connect_nodes") return this.connectNodes(command);
+		if (command.operation === "update_node_config") return this.updateNodeConfig(command);
+		if (command.operation === "layout_nodes") return this.layoutNodes(command);
+		if (command.operation === "delete_nodes") {
+			const nodeIds = strings(command.payload.nodeIds);
+			if (nodeIds.length < 1 || nodeIds.length > 20 || new Set(nodeIds).size !== nodeIds.length)
+				throw gatewayError("INVALID_INPUT", "删除需要 1 至 20 个不同节点", 400);
+			const response = await this.call("agent:core:delete-nodes", {
+				projectId: this.projectId,
+				canvasId: command.canvasId,
+				expectedVersion: command.expectedVersion,
+				idempotencyKey: command.idempotencyKey,
+				nodeIds,
+			});
+			if (!isRecord(response) || !Number.isSafeInteger(response.canvasVersion))
+				throw gatewayError("INVALID_RESPONSE", "本地画布未返回有效的删除结果");
+			return response;
+		}
+		throw gatewayError("PERMISSION_DENIED", "该画布操作尚未开放", 403);
+	}
+
+	private async createNodes(command: CanvasCommand): Promise<Record<string, unknown>> {
+		const canvas = await this.loadCanvas(command.canvasId);
+		const nodes = records(command.payload.nodes);
+		if (nodes.length < 1 || nodes.length > 20)
+			throw gatewayError("BATCH_LIMIT_EXCEEDED", "单次最多创建 20 个节点", 400);
+		const createdNodes: Record<string, unknown>[] = [];
+		let version = command.expectedVersion;
+		for (const [index, node] of nodes.entries()) {
+			const response = await this.call("agent:core:create-node", {
+				projectId: this.projectId,
+				canvasId: command.canvasId,
+				expectedVersion: version,
+				idempotencyKey: childKey(command.idempotencyKey, `node:${index}`),
+				type: node.type,
+				creativeType: node.creativeType,
+				prompt: node.prompt,
+				params: isRecord(node.params) ? node.params : {},
+				x: typeof node.x === "number" ? node.x : 220 + (canvas.nodes.length + index) * 360,
+				y: typeof node.y === "number" ? node.y : 180,
+			});
+			if (!isRecord(response) || !isRecord(response.node) || !Number.isSafeInteger(response.version)) {
+				throw gatewayError("INVALID_RESPONSE", "本地画布未返回有效的节点结果");
+			}
+			const projected = projectNode(response.node);
+			createdNodes.push({ id: projected.id, data: projected, type: projected.type });
+			version = response.version as number;
+		}
+		return { operation: command.operation, createdNodes, canvasVersion: version };
+	}
+
+	private async connectNodes(command: CanvasCommand): Promise<Record<string, unknown>> {
+		const nodeIds = strings(command.payload.nodeIds);
+		if (nodeIds.length < 2 || nodeIds.length > 20)
+			throw gatewayError("INVALID_INPUT", "连线需要 2 至 20 个节点", 400);
+		let version = command.expectedVersion;
+		const edges: Record<string, unknown>[] = [];
+		for (let index = 0; index < nodeIds.length - 1; index += 1) {
+			const response = await this.call("agent:core:connect-edge", {
+				projectId: this.projectId,
+				canvasId: command.canvasId,
+				expectedVersion: version,
+				idempotencyKey: childKey(command.idempotencyKey, `edge:${index}`),
+				sourceNodeId: nodeIds[index],
+				targetNodeId: nodeIds[index + 1],
+				sourcePort: "output",
+				targetPort: "input",
+				dependencyType: "reference",
+			});
+			if (!isRecord(response) || !isRecord(response.edge) || !Number.isSafeInteger(response.version)) {
+				throw gatewayError("INVALID_RESPONSE", "本地画布未返回有效的连线结果");
+			}
+			edges.push(response.edge);
+			version = response.version as number;
+		}
+		return { operation: command.operation, edges, canvasVersion: version };
+	}
+
+	private async updateNodeConfig(command: CanvasCommand): Promise<Record<string, unknown>> {
+		const nodeId = stringValue(command.payload.nodeId);
+		const config = recordValue(command.payload.config);
+		if (!nodeId) throw gatewayError("INVALID_INPUT", "节点标识无效", 400);
+		const allowed = new Set([
+			"x",
+			"y",
+			"width",
+			"height",
+			"params",
+			"prompt",
+			"modelRef",
+			"creativeType",
+			"status",
+			"execStatus",
+		]);
+		const changes = Object.keys(config).some((key) => allowed.has(key)) ? config : { params: config };
+		const response = await this.call("agent:core:update-node", {
+			projectId: this.projectId,
+			canvasId: command.canvasId,
+			expectedVersion: command.expectedVersion,
+			idempotencyKey: command.idempotencyKey,
+			nodeId,
+			...changes,
+		});
+		if (!isRecord(response) || !isRecord(response.node) || !Number.isSafeInteger(response.version)) {
+			throw gatewayError("INVALID_RESPONSE", "本地画布未返回有效的更新结果");
+		}
+		return { ...response, node: projectNode(response.node), canvasVersion: response.version };
+	}
+
+	private async layoutNodes(command: CanvasCommand): Promise<Record<string, unknown>> {
+		const rawCanvas = await this.loadCanvas(command.canvasId);
+		const detail = projectCanvas(rawCanvas);
+		const version = recordValue(detail.canvas).version;
+		if (typeof version !== "number" || version !== command.expectedVersion) {
+			throw new ToolGatewayError("VERSION_CONFLICT", "画布版本已变化，请刷新", { version }, 409);
+		}
+		const selectedIds = strings(command.payload.nodeIds);
+		const layout = recordValue(command.payload.layout);
+		const positions = recordValue(layout.positions);
+		const direction = layout.direction === "vertical" ? "vertical" : "horizontal";
+		const gap = typeof layout.gap === "number" && Number.isFinite(layout.gap) ? Math.max(80, layout.gap) : 360;
+		const nodes = detail.nodes as Record<string, unknown>[];
+		const moved = nodes.map((node, index) => {
+			const id = stringValue(node.id) ?? "";
+			const explicit = recordValue(positions[id]);
+			if (!selectedIds.includes(id)) return node;
+			return {
+				...node,
+				x: typeof explicit.x === "number" ? explicit.x : direction === "horizontal" ? 120 + index * gap : 120,
+				y: typeof explicit.y === "number" ? explicit.y : direction === "vertical" ? 120 + index * gap : 120,
+			};
+		});
+		const saved = await this.call("agent:core:save-canvas", {
+			projectId: this.projectId,
+			canvasId: command.canvasId,
+			expectedVersion: version,
+			idempotencyKey: command.idempotencyKey,
+			nodes: moved.map((node) =>
+				flowNodeForSave(
+					node,
+					rawCanvas.nodes.find((raw) => raw.id === node.id),
+				),
+			),
+			edges: rawCanvas.edges,
+			groups: rawCanvas.groups,
+			stacks: rawCanvas.stacks,
+		});
+		if (!isRecord(saved) || !Number.isSafeInteger(saved.version))
+			throw gatewayError("INVALID_RESPONSE", "本地画布未返回有效的布局结果");
+		return { operation: command.operation, canvasVersion: saved.version, replayed: saved.replayed === true };
+	}
+
+	private async loadCanvas(canvasId: string | undefined): Promise<LocalCanvas> {
+		const response = await this.call("agent:core:load-canvas", {
+			projectId: this.projectId,
+			...(canvasId ? { canvasId } : {}),
+		});
+		if (
+			!isRecord(response) ||
+			typeof response.canvasId !== "string" ||
+			!Number.isSafeInteger(response.version) ||
+			!Array.isArray(response.nodes) ||
+			!Array.isArray(response.edges)
+		) {
+			throw gatewayError("INVALID_RESPONSE", "本地画布响应无效");
+		}
+		return response as unknown as LocalCanvas;
+	}
+
+	private async call(method: string, payload: Record<string, unknown>): Promise<unknown> {
+		const scope = this.runScope;
+		const key = stringValue(payload.idempotencyKey);
+		const mutating =
+			/agent:core:(?:create-node|update-node|connect-edge|save-canvas|delete-nodes|create-generation-task)$/u.test(
+				method,
+			);
+		if (scope && mutating) {
+			const run = scope.control.findById(scope.runId);
+			if (!run || !["running", "waiting_confirmation", "waiting_task"].includes(run.status))
+				throw gatewayError("RUN_ABORTED", "当前回合已停止，操作未执行", 409);
+			payload = { ...payload, runId: scope.runId };
+		}
+		const operation =
+			scope && key && mutating
+				? scope.control.prepareOperation({
+						sessionId: scope.sessionId,
+						runId: scope.runId,
+						toolCallId: createHash("sha256").update(`${scope.sessionId}\0${key}`).digest("hex"),
+						effect: method,
+						inputHash: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+						canvasVersion:
+							typeof payload.expectedVersion === "number"
+								? payload.expectedVersion
+								: typeof payload.canvasVersion === "number"
+									? payload.canvasVersion
+									: null,
+						idempotencyKey: key,
+					})
+				: undefined;
+		if (operation?.state === "succeeded" && operation.resultJson) return JSON.parse(operation.resultJson);
+		if (operation && operation.state !== "prepared") {
+			if (
+				(operation.state === "dispatched" || operation.state === "uncertain") &&
+				method !== "agent:core:delete-nodes"
+			) {
+				const known = await this.client.request("agent:core:lookup-operation", {
+					projectId: this.projectId,
+					canvasId: payload.canvasId,
+					method,
+					idempotencyKey: key,
+				});
+				if (isRecord(known)) {
+					scope!.control.transitionOperation(operation.operationId, "succeeded", {
+						resultJson: JSON.stringify(operationSnapshot(known)),
+					});
+					return known;
+				}
+			}
+			throw gatewayError("OPERATION_UNCERTAIN", "上次操作的结果需要核验，请读取最新画布和任务状态", 409);
+		}
+		if (operation) scope!.control.transitionOperation(operation.operationId, "dispatched");
+		try {
+			const response = await this.client.request(
+				method,
+				payload,
+				method.endsWith("delete-nodes") ? 300_000 : method.endsWith("save-canvas") ? 60_000 : 30_000,
+			);
+			if (operation) {
+				const projected = isRecord(response) ? operationSnapshot(response) : response;
+				scope!.control.transitionOperation(operation.operationId, "succeeded", {
+					resultJson: JSON.stringify(projected),
+				});
+			}
+			return response;
+		} catch (error) {
+			if (operation) scope!.control.transitionOperation(operation.operationId, "uncertain");
+			if (error instanceof ToolGatewayError) throw error;
+			const raw = error instanceof Error ? error.message : String(error);
+			const code = mapLocalErrorCode(raw);
+			throw gatewayError(
+				code,
+				safeLocalErrorMessage(code),
+				code === "VERSION_CONFLICT" ? 409 : code === "INVALID_INPUT" ? 400 : 502,
+			);
+		}
+	}
+}
+
+type LocalCanvas = {
+	projectId: string;
+	canvasId: string;
+	version: number;
+	nodes: Record<string, unknown>[];
+	edges: Record<string, unknown>[];
+	groups?: unknown[];
+	stacks?: unknown[];
+};
+
+function operationSnapshot(response: Record<string, unknown>): Record<string, unknown> {
+	const result: Record<string, unknown> = {};
+	for (const key of [
+		"version",
+		"canvasVersion",
+		"operation",
+		"replayed",
+		"taskId",
+		"status",
+		"modality",
+		"nodeId",
+		"staleNodeIds",
+	])
+		if (response[key] !== undefined) result[key] = response[key];
+	if (isRecord(response.node)) {
+		const node = response.node;
+		const data = recordValue(node.data);
+		result.node = {
+			id: node.id,
+			type: node.type,
+			position: node.position,
+			width: node.width,
+			height: node.height,
+			data: { label: data.label, creativeType: data.creativeType, status: data.status, execStatus: data.execStatus },
+		};
+	}
+	if (response.edge !== undefined) result.edge = boundValue(stripPrivateFields(recordValue(response.edge)), 0);
+	if (Array.isArray(response.results))
+		result.results = response.results.map((entry) => {
+			const value = recordValue(entry);
+			return {
+				deletedNodeId: value.deletedNodeId,
+				connectedEdges: value.connectedEdges,
+				downstreamNodes: value.downstreamNodes,
+				version: value.version,
+			};
+		});
+	return result;
+}
+
+function projectCanvas(canvas: LocalCanvas): Record<string, unknown> {
+	const nodes = canvas.nodes.map(projectNode);
+	const edges = canvas.edges.map((edge) => {
+		const data = recordValue(edge.data);
+		return {
+			id: edge.id,
+			sourceNodeId: edge.sourceNodeId ?? edge.source,
+			targetNodeId: edge.targetNodeId ?? edge.target,
+			sourcePort: edge.sourcePort ?? edge.sourceHandle ?? "output",
+			targetPort: edge.targetPort ?? edge.targetHandle ?? "input",
+			dependencyType: edge.dependencyType ?? data.dependencyType ?? "reference",
+		};
+	});
+	return {
+		canvas: { id: canvas.canvasId, version: canvas.version },
+		nodes,
+		edges,
+		groups: Array.isArray(canvas.groups)
+			? canvas.groups.slice(0, 500).map((group) => (isRecord(group) ? stripPrivateFields(group) : group))
+			: [],
+		stacks: Array.isArray(canvas.stacks)
+			? canvas.stacks.slice(0, 500).map((stack) => (isRecord(stack) ? stripPrivateFields(stack) : stack))
+			: [],
+	};
+}
+
+function projectNode(node: Record<string, unknown>): Record<string, unknown> {
+	const data = recordValue(node.data);
+	const nested = recordValue(data.node);
+	const dataParams = recordValue(data.params);
+	const params = Object.keys(dataParams).length > 0 ? dataParams : recordValue(nested.params);
+	const position = recordValue(node.position);
+	const dataOutput = recordValue(data.output);
+	const output = Object.keys(dataOutput).length > 0 ? dataOutput : recordValue(nested.output);
+	return stripPrivateFields({
+		id: node.id,
+		type: node.type,
+		x: position.x ?? nested.x,
+		y: position.y ?? nested.y,
+		width: node.width ?? nested.width,
+		height: node.height ?? nested.height,
+		creativeType: data.creativeType ?? nested.creativeType,
+		params: boundValue(stripPrivateFields(params), 0) as Record<string, unknown>,
+		prompt: data.prompt ?? nested.prompt ?? params.prompt,
+		output: boundValue(stripPrivateFields(output), 0) as Record<string, unknown>,
+		status: data.status ?? nested.status,
+		execStatus: data.execStatus ?? nested.execStatus,
+		stale: data.stale ?? nested.stale,
+		label: data.label,
+	});
+}
+
+function flowNodeForSave(
+	projected: Record<string, unknown>,
+	raw: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+	if (!raw) throw gatewayError("NOT_FOUND", "布局节点已不存在", 404);
+	const position = recordValue(raw.position);
+	return { ...raw, position: { ...position, x: projected.x, y: projected.y } };
+}
+
+function projectTask(task: Record<string, unknown>): Record<string, unknown> {
+	const result: Record<string, unknown> = {
+		taskId: task.taskId,
+		status: task.status,
+		outputAvailable: task.status === "succeeded" && task.outputVerified === true,
+	};
+	for (const key of [
+		"modality",
+		"attemptCount",
+		"errorCode",
+		"errorMessage",
+		"createdAt",
+		"updatedAt",
+		"startedAt",
+		"completedAt",
+	])
+		if (task[key] !== undefined) result[key] = task[key];
+	return result;
+}
+
+function projectRenderAudit(value: unknown): Record<string, unknown> {
+	if (
+		!isRecord(value) ||
+		!["pass", "fail"].includes(String(value.verdict)) ||
+		typeof value.ruleVersion !== "string" ||
+		!Array.isArray(value.findings)
+	) {
+		throw gatewayError("INVALID_RESPONSE", "审校服务未返回有效结果");
+	}
+	const findings = value.findings.map((finding) => {
+		if (
+			!isRecord(finding) ||
+			!["SHOT_DURATION", "CHARACTER_CONTINUITY", "AUDIO_VIDEO_SYNC"].includes(String(finding.ruleId)) ||
+			!["error", "warning"].includes(String(finding.severity)) ||
+			typeof finding.evidence !== "string"
+		) {
+			throw gatewayError("INVALID_RESPONSE", "审校服务未返回有效规则结果");
+		}
+		return { ruleId: finding.ruleId, severity: finding.severity, evidence: finding.evidence };
+	});
+	return { verdict: value.verdict, findings, ruleVersion: value.ruleVersion };
+}
+
+function stripPrivateFields(value: Record<string, unknown>): Record<string, unknown> {
+	const output: Record<string, unknown> = {};
+	for (const [key, entry] of Object.entries(value)) {
+		if (/(?:secret|token|password|api[_-]?key|authorization|binary|base64|path|directory|filelocation)/i.test(key))
+			continue;
+		if (typeof entry === "string" && containsAbsolutePath(entry)) continue;
+		if (Array.isArray(entry)) output[key] = entry.map((item) => (isRecord(item) ? stripPrivateFields(item) : item));
+		else output[key] = isRecord(entry) ? stripPrivateFields(entry) : entry;
+	}
+	return output;
+}
+
+function boundValue(value: unknown, depth: number): unknown {
+	if (typeof value === "string") return value.slice(0, depth > 1 ? 4_000 : 20_000);
+	if (Array.isArray(value))
+		return depth >= 4
+			? `[${value.length} items omitted]`
+			: value.slice(0, 100).map((item) => boundValue(item, depth + 1));
+	if (!isRecord(value)) return value;
+	if (depth >= 5) return "[nested content omitted]";
+	return Object.fromEntries(
+		Object.entries(value)
+			.slice(0, 200)
+			.map(([key, child]) => [key, boundValue(child, depth + 1)]),
+	);
+}
+
+function containsAbsolutePath(value: string): boolean {
+	return /(?:^|[\s"'])(?:[A-Za-z]:\\|\\\\[^\\]+\\|\/Users\/|\/home\/|\/private\/var\/|\/tmp\/)/u.test(value);
+}
+
+function childKey(parent: string, step: string): string {
+	return `agent-${createHash("sha256").update(`${parent}\0${step}`).digest("hex").slice(0, 56)}`;
+}
+
+function records(value: unknown): Record<string, unknown>[] {
+	return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function strings(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+	return isRecord(value) ? value : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mapLocalErrorCode(message: string): string {
+	if (/AGENT_CANVAS_CHANGED/u.test(message)) return "VERSION_CONFLICT";
+	if (/AGENT_RENDER_AUDIT_TARGET_INVALID/u.test(message)) return "NOT_FOUND";
+	if (/VERSION_CONFLICT|版本已变化|请刷新|其他会话更新/u.test(message)) return "VERSION_CONFLICT";
+	if (/NOT_FOUND|不存在/u.test(message)) return "NOT_FOUND";
+	if (/非法|无效|超过|必须|禁止|不支持/u.test(message)) return "INVALID_INPUT";
+	if (/AGENT_PROJECT_CHANGED|当前项目已更改/u.test(message)) return "PERMISSION_DENIED";
+	if (/TIMEOUT/u.test(message)) return "SERVICE_TIMEOUT";
+	if (/Idempotency-Key/u.test(message)) return "INVALID_INPUT";
+	return "CANVAS_UNAVAILABLE";
+}
+
+function safeLocalErrorMessage(code: string): string {
+	if (code === "VERSION_CONFLICT") return "画布已更新，请读取最新内容后重试";
+	if (code === "NOT_FOUND") return "请求的画布内容不存在";
+	if (code === "INVALID_INPUT") return "画布操作参数无效";
+	if (code === "PERMISSION_DENIED") return "当前项目已切换，操作未执行";
+	return "本地画布暂时无法处理该操作";
+}
+
+function gatewayError(code: string, message: string, status = 502): ToolGatewayError {
+	return new ToolGatewayError(code, message, {}, status);
+}

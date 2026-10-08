@@ -1,0 +1,13 @@
+{
+  "caseId":"provider-failures-001","profile":"canvas-general","goal":"验证模型不可用、供应商失败和恢复边界均有稳定错误与终态",
+  "turns":[
+    {"turnId":"turn-1","content":"在模型服务不可用时生成一张图片；错误必须是稳定的 MODEL_UNAVAILABLE，不得留下运行中的任务","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-2","content":"服务恢复后重试刚才失败的图片任务，失败任务的冻结点数应先解冻，不能重复冻结","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-3","content":"供应商返回成功但没有媒体地址时，不要创建伪造素材；任务必须进入失败或可重试终态","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-4","content":"重放同一个终态回调，应该幂等返回，不得重复结算或重复写入节点","confirmation":"none","canvasDomain":"general"}
+  ],
+  "assertions":[{"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"image"},{"type":"media","kind":"image"},{"type":"error","code":"MODEL_UNAVAILABLE"},{"type":"event","eventType":"run_failed"}],
+  "browserCheckpoints":[{"turnId":"turn-1","name":"provider-error"},{"turnId":"turn-4","name":"callback-idempotency"}],
+  "tags":["image","generate","failure","provider","recovery"],
+  "coverageCaseIds":["FAIL-01","FAIL-02","FAIL-03","FAIL-04","FAIL-05","FAIL-06","FAIL-07","FAIL-08","FAIL-09","FAIL-10"]
+}

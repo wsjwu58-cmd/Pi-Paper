@@ -1,0 +1,22 @@
+{
+  "caseId": "core-product-visual-001",
+  "profile": "canvas-general",
+  "goal": "从自然语言完成商品视觉的文案、图片、视频和素材派生链路",
+  "turns": [
+    {"turnId":"turn-1","content":"给雨夜玻璃瓶写一段80字以内的商品文案，并放到画布文本节点","confirmation":"none","canvasDomain":"general"},
+    {"turnId":"turn-2","content":"用刚才的文案生成一张2K竖版9:16商品主图并保留瓶身结构；如果画布没有可用的瓶子参考，就按文案直接创作，不要停下来等待我上传","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-3","content":"基于刚生成的商品主图生成一个4秒竖屏产品展示视频，镜头从水滴推到标签","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-4","content":"把刚生成的商品主图向右扩展留白，顺便导出一张高清版本；源图不要被修改","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-5","content":"检查高清商品图的瓶身、标签和雨滴是否保持一致；如果比例不对，只修派生图，不改原图","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-6","content":"从刚才的高清派生图再做一张方形电商缩略图，保留完整瓶身和标签，不要覆盖竖版主图","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-7","content":"把方形缩略图和竖版主图的版本关系整理清楚，并确认视频仍然引用原来的竖版主图","confirmation":"none","canvasDomain":"general"}
+  ],
+  "assertions": [
+    {"type":"confirmation","required":true},{"type":"task","terminal":true},
+    {"type":"node","nodeType":"text"},{"type":"node","nodeType":"image"},{"type":"node","nodeType":"video"},
+    {"type":"media","kind":"image"},{"type":"media","kind":"video"},
+    {"type":"lineage","operation":"outpaint_image"},{"type":"lineage","operation":"upscale_image"}
+  ],
+  "browserCheckpoints":[{"turnId":"turn-2","name":"product-image-node"},{"turnId":"turn-4","name":"derived-image-nodes"}],
+  "tags":["text","image","video","img2img","outpaint_image","upscale_image","generate"]
+}

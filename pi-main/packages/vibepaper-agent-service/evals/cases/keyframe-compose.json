@@ -1,0 +1,21 @@
+{
+  "caseId": "keyframe-compose-001",
+  "profile": "vertical-short-drama",
+  "goal": "验证关键帧优先、视频派生、抽帧、超分、配音和顺序合成",
+  "turns": [
+    {"turnId":"turn-1","content":"请直接按以下完整设定开始，不要反问我补充信息：夜晚小雨的青砖雨巷，石板路有倒影，暖色屋檐灯笼与冷色月光交错。镜头一角色是二十多岁短黑发、米色风衣、手持透明雨伞的年轻女性；镜头二角色是三十岁左右微卷黑发、深蓝长大衣的年轻男性。对白为：镜头一‘你也在等这场雨停吗？’；镜头二‘我在等你回头。’请为两个角色各做一张批准前关键帧，人物外观必须锁定。","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-2","content":"关键帧通过后，分别生成两段4秒9:16视频；再从第一段抽一帧作为检查图","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-3","content":"把第一段视频和抽查通过的第二段视频分别做高清版本，原视频保持不变","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-4","content":"为两段视频生成对白音频和字幕，按镜头一、镜头二的顺序合成一条成片","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-5","content":"检查合成片的两个镜头顺序、对白和字幕时间轴；若有问题，只重新处理对应镜头","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-6","content":"把第二镜视频截取中段画面作为检查图，并与第二镜关键帧放在同一条依赖关系上","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-7","content":"为合成片补一条可选背景音乐，保持对白清晰；没有可用音频时明确报告失败，不要伪称完成","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-8","content":"导出一份保持原始视频和音频节点不变的9:16预览，并核对最终时长和音轨存在","confirmation":"manual","canvasDomain":"short-drama"}
+  ],
+  "assertions":[
+    {"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"image"},{"type":"node","nodeType":"video"},{"type":"node","nodeType":"audio"},{"type":"node","nodeType":"compose"},{"type":"media","kind":"compose"},
+    {"type":"lineage","operation":"keyframe"},{"type":"lineage","operation":"clip_video"},{"type":"lineage","operation":"extract_frame"},{"type":"lineage","operation":"upscale_video"},{"type":"lineage","operation":"mux_audio"},{"type":"lineage","operation":"compose_videos"}
+  ],
+  "browserCheckpoints":[{"turnId":"turn-1","name":"keyframe-review"},{"turnId":"turn-4","name":"compose-node"}],
+  "tags":["image","video","audio","compose","keyframe","clip_video","extract_frame","upscale_video","mux_audio","compose_videos","generate"]
+}

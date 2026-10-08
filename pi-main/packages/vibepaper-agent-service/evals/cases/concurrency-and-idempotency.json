@@ -1,0 +1,13 @@
+{
+  "caseId":"concurrency-and-idempotency-001","profile":"canvas-general","goal":"验证重复提交、确认重放、版本冲突和事件重连",
+  "turns":[
+    {"turnId":"turn-1","content":"生成一张竖版产品图","confirmation":"manual","canvasVersion":0,"canvasDomain":"general"},
+    {"turnId":"turn-2","content":"再次提交刚才完全相同的生成请求，只允许一个任务和一次冻结；随后重连读取完整事件","confirmation":"manual","canvasVersion":0,"canvasDomain":"general"},
+    {"turnId":"turn-3","content":"画布已经被其他操作更新，请继续确认刚才的生成；版本不一致时拒绝执行并要求刷新","confirmation":"manual","canvasVersion":1,"canvasDomain":"general"},
+    {"turnId":"turn-4","content":"用同一个确认令牌再确认一次，第二次必须拒绝，不能新增任务或重复扣费","confirmation":"manual","canvasVersion":1,"canvasDomain":"general"}
+  ],
+  "assertions":[{"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"image"},{"type":"media","kind":"image"},{"type":"error","code":"VERSION_CONFLICT"},{"type":"event","eventType":"run_failed"}],
+  "browserCheckpoints":[{"turnId":"turn-2","name":"idempotent-run"},{"turnId":"turn-3","name":"version-conflict"}],
+  "tags":["image","generate","failure","idempotency","concurrency"],
+  "coverageCaseIds":["CON-01","CON-02","CON-03","CON-04"]
+}

@@ -1,0 +1,20 @@
+{
+  "source": "agent-service/tests",
+  "purpose": "parity input for the Pi replacement; this catalog records behavior categories, not implementation reuse",
+  "categories": {
+    "approval": ["test_hitl_and_simple_create.py", "test_control_plane.py"],
+    "methodology": ["test_chain_methodology.py", "test_methodology_e2e.py", "test_workflow_rails.py"],
+    "dependency": ["test_dependency_and_prompts.py", "test_planner_and_graph.py"],
+    "precedence": ["test_precedence.py", "test_persona_layers.py", "test_turn_policy.py"],
+    "media": ["test_media_process_derive.py", "test_reference_image_submit.py", "test_selection_compile.py", "test_selection_derive.py", "test_compose_reuse.py"],
+    "events": ["test_events_reducer_delta.py", "test_next_actions_coerce.py"],
+    "recovery": ["test_react_loop.py", "test_orchestration_v2.py", "test_model_defaults_and_reply.py"],
+    "skills": ["test_skill_playbook.py", "test_default_skills_seed.py"],
+    "input_contracts": ["test_llm_json.py", "test_option_choice_resolve.py", "test_tool_param_normalize.py"]
+  },
+  "migrationRules": [
+    "Preserve observable safety and billing invariants.",
+    "Re-express service effects through the Pi ToolManifest and Tool Gateway.",
+    "Mark behavior not applicable only with a testable reason in the parity report."
+  ]
+}

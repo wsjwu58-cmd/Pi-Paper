@@ -1,0 +1,89 @@
+# --- Dependencies & virtualenvs ---
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pnpm-store/
+.npm-cache/
+
+# --- Build outputs ---
+dist/
+dist-ssr/
+build/
+/vibepaper-desktop/release/
+target/
+*.class
+*.jar
+!**/src/**/lib/*.jar
+.turbo/
+*.tsbuildinfo
+
+# --- Local data, logs, caches ---
+data/
+logs/
+*.log
+*.err.log
+**/build*.log
+**/install*.log
+**/repackage*.log
+**/cv.log
+**/ent.log
+**/gw.log
+.cache/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+coverage/
+htmlcov/
+.nyc_output/
+
+# --- Secrets & local env ---
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+credentials.json
+**/application-local.yml
+**/application-local.yaml
+
+# --- IDE / OS ---
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.iml
+.DS_Store
+Thumbs.db
+*.suo
+*.sw?
+
+# --- Tooling / scratch (not part of product source) ---
+.codegraph/
+.firecrawl/
+.workbuddy/
+.worktrees/
+.trae-html-share-packages/
+agent-design-optimization/
+agent-test-framework/
+resume-highlights/
+/简历亮点-STAR法则.md
+tmp/pdfs/
+output/pdf/武世杰-后端开发-Agent开发-优化版简历.pdf
+
+# --- Misc ---
+*.local
+.cursor/
+
+# Historical Web services retained locally, removed from desktop branch tracking
+/vibepaper-services/
+/generation-service/
+/agent-service/
+/deploy/
+/Dockerfile
+/docker-compose.yml
+/nginx.conf
+/.dockerignore

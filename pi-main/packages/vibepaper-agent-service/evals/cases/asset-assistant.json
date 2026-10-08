@@ -1,0 +1,14 @@
+{
+  "caseId": "asset-assistant-001",
+  "profile": "asset-assistant",
+  "goal": "查找角色参考素材并验证多会话隔离",
+  "turns": [
+    {"turnId": "turn-1", "content": "查找与雨夜玻璃瓶相关的参考素材，先只读列出候选", "confirmation": "none", "entrypoint": "assets", "canvasDomain": "assets"},
+    {"turnId": "turn-2", "content": "筛选上一轮候选中最适合竖屏短剧的素材，但不要提交生成", "confirmation": "none", "entrypoint": "assets", "canvasDomain": "assets"}
+  ],
+  "assertions": [
+    {"type": "event", "eventType": "tool_completed"}
+  ],
+  "browserCheckpoints": [{"turnId": "turn-2", "name": "asset-candidates"}],
+  "tags": ["assets", "readonly"]
+}

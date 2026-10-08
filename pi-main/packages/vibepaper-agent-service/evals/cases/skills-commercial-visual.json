@@ -1,0 +1,13 @@
+{
+  "caseId":"skills-commercial-visual-001","profile":"canvas-general","goal":"验证产品视觉、广告和商业数据安全边界",
+  "skillIds":["product-visual","product-spray-ad","anti-gravity-product","ecommerce-operation","trend-pv"],
+  "skillBoundaryIds":["product-visual","product-spray-ad","anti-gravity-product","ecommerce-operation","trend-pv"],
+  "turns":[
+    {"turnId":"turn-1","content":"根据我上传的玻璃瓶参考做产品主图、喷绘广告和反重力视觉；保留瓶身结构，不要擅自修改Logo或编造品牌授权","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-2","content":"给电商经营方案补充转化文案和素材排期，但没有真实销量数据；只能标注待填字段，不能伪造销量或投放结果","confirmation":"none","canvasDomain":"general"},
+    {"turnId":"turn-3","content":"确认后生成一张产品图和一段短PV，若参考素材缺失必须先停在缺输入状态","confirmation":"manual","canvasDomain":"general"}
+  ],
+  "assertions":[{"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"text"},{"type":"node","nodeType":"image"},{"type":"node","nodeType":"video"},{"type":"media","kind":"image"},{"type":"media","kind":"video"}],
+  "browserCheckpoints":[{"turnId":"turn-3","name":"commercial-output"}],
+  "tags":["text","image","video","img2img","generate","skill-contract","commercial"]
+}

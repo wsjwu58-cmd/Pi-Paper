@@ -1,0 +1,13 @@
+{
+  "caseId":"skills-comic-character-001","profile":"canvas-general","goal":"验证六格漫画、角色一致性和参考缺失边界",
+  "skillIds":["six-panel-comic","character-consistency","cinematic-still"],
+  "skillBoundaryIds":["six-panel-comic","character-consistency","cinematic-still"],
+  "turns":[
+    {"turnId":"turn-1","content":"把这段雨巷误会做成一张2行3列的六格漫画页，保持同一角色发型、外套和红伞；不要拆成六张图","confirmation":"manual","canvasDomain":"general"},
+    {"turnId":"turn-2","content":"上一页要让角色在三格里保持身份一致，但我没有提供角色参考图。请先说明无法保证什么，不要假装已经完成身份保持","confirmation":"none","canvasDomain":"general"},
+    {"turnId":"turn-3","content":"补充唯一角色参考后，重新生成整页；只允许一个图片节点，拒绝内置六联拼图以外的拆图方案","confirmation":"manual","canvasDomain":"general"}
+  ],
+  "assertions":[{"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"image"},{"type":"media","kind":"image"}],
+  "browserCheckpoints":[{"turnId":"turn-1","name":"single-comic-page"},{"turnId":"turn-3","name":"reference-attached"}],
+  "tags":["image","img2img","generate","skill-contract","comic"]
+}

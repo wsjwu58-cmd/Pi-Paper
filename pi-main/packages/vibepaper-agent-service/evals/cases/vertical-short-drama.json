@@ -1,0 +1,20 @@
+{
+  "caseId": "vertical-short-drama-001",
+  "profile": "vertical-short-drama",
+  "goal": "以关键帧优先方式规划一个竖屏短剧完整单集",
+  "turns": [
+    {"turnId": "turn-1", "content": "创建一个 9:16、约60秒的雨夜悬疑短剧，结局是主角发现录音来自未来；先输出故事圣经和两名角色", "confirmation": "none", "canvasDomain": "short-drama"},
+    {"turnId": "turn-2", "content": "把故事拆成至少15个每镜4秒的镜头，先为重复角色准备参考包和关键帧，再生成视频、配音、字幕并按镜头顺序合成", "confirmation": "manual", "canvasDomain": "short-drama"}
+  ],
+  "assertions": [
+    {"type": "confirmation", "required": true},
+    {"type": "task", "terminal": true},
+    {"type": "node", "nodeType": "text"},
+    {"type": "node", "nodeType": "video"},
+    {"type": "node", "nodeType": "compose"},
+    {"type": "media", "kind": "video"},
+    {"type": "lineage", "operation": "compose_videos"}
+  ],
+  "browserCheckpoints": [{"turnId": "turn-1", "name": "story-bible-and-characters"}, {"turnId": "turn-2", "name": "episode-production-plan"}],
+  "tags": ["text", "image", "video", "audio", "compose", "keyframe", "compose_videos", "generate", "vertical-short-drama"]
+}

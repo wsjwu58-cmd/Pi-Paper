@@ -1,0 +1,22 @@
+{
+  "caseId":"tts-subtitle-001",
+  "profile":"vertical-short-drama",
+  "goal":"将已确认对白转成逐镜音频、字幕并与视频关联",
+  "fixtureNodes":[
+    {"type":"text","creativeType":"script","params":{"content":"镜头一对白：你也在等这场雨停吗？角色：林晚，年轻女性。"}},
+    {"type":"text","creativeType":"script","params":{"content":"镜头二对白：我在等你回头。角色：周屿，年轻男性。"}},
+    {"type":"video","creativeType":"clip","params":{"url":"/api/v1/tasks/220058363638190080/outputs/file/agnes.mp4","output_url":"/api/v1/tasks/220058363638190080/outputs/file/agnes.mp4","duration":4,"aspectRatio":"9:16"}},
+    {"type":"video","creativeType":"clip","params":{"url":"/api/v1/tasks/220056715104751616/outputs/file/agnes.mp4","output_url":"/api/v1/tasks/220056715104751616/outputs/file/agnes.mp4","duration":4,"aspectRatio":"9:16"}}
+  ],
+  "turns":[
+    {"turnId":"turn-1","content":"检查当前画布中两句对白：每句控制在可表演的长度，保持角色声线，不改剧情事实","confirmation":"none","entrypoint":"audit","canvasDomain":"short-drama"},
+    {"turnId":"turn-2","content":"为检查通过的两句对白生成普通话配音和逐句字幕，并分别关联到对应镜头","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-3","content":"把两段真实视频按镜头一、镜头二顺序合成一条9:16可播放版本；对白音频和字幕作为关联产物保留，缺音轨时不要宣称完成","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-4","content":"复核每句字幕与对应对白和镜头的时间关系，发现超出对白长度的字幕就修正后再导出","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-5","content":"把通过复核的配音和字幕挂回对应镜头，保持视频画面不变","confirmation":"manual","canvasDomain":"short-drama"},
+    {"turnId":"turn-6","content":"播放检查最终9:16版本，确认视频、音轨和字幕都存在；任何一项缺失都按失败处理","confirmation":"none","canvasDomain":"short-drama"}
+  ],
+  "assertions":[{"type":"confirmation","required":true},{"type":"task","terminal":true},{"type":"node","nodeType":"text"},{"type":"node","nodeType":"audio"},{"type":"node","nodeType":"compose"},{"type":"media","kind":"audio"},{"type":"media","kind":"compose"},{"type":"event","eventType":"task_status"}],
+  "browserCheckpoints":[{"turnId":"turn-3","name":"subtitle-compose"}],
+  "tags":["text","audio","compose","generate"]
+}

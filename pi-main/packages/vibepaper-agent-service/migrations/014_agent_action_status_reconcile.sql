@@ -1,0 +1,2 @@
+ALTER TABLE agent_actions
+  ALTER COLUMN status TYPE VARCHAR(32);
