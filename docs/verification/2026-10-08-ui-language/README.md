@@ -61,4 +61,18 @@ export default mergeConfig(config, defineConfig({ test: { setupFiles: ['../.test
 ![英文 Agent 面板](agent-en.png)
 ![英文素材库](assets-en.png)
 
-其他截图：[英文历史记录](history-en.png)、[英文画布](canvas-en.png)、[中文偏好重启](workspace-zh-after-restart.png)。此次验证运行于 Windows，未构建或发布新的 AppImage，也未完成 Linux/macOS 安装包的实际系统区域验收。外部内容、供应商原始错误、用户 Skill 与 Agent 输出不做自动翻译。
+其他截图：[英文历史记录](history-en.png)、[英文画布](canvas-en.png)、[中文偏好重启](workspace-zh-after-restart.png)。最初的界面验证运行于 Windows；后续四个平台的原生安装包构建及 Linux 打包资源界面检查已通过，记录见下文。仍未完成各平台完整手工安装、卸载与全部 UI 保真验收。外部内容、供应商原始错误、用户 Skill 与 Agent 输出不做自动翻译。
+
+
+## 后续发布构建验证
+
+源码提交：`476e0c33a308d7c0395841e51e645adcc67dab00`。整合时保留 GitHub 主分支的 `pi-paper-web / pi-paper-desktop` 目录命名；本机旧目录的全部授权源码改动已经整合，既有远端模型、主题与打包改动保留。
+
+- [原生构建与检查](https://github.com/wsjwu58-cmd/Pi-Paper/actions/runs/37783338921)：Windows x64、macOS x64、macOS arm64、Linux x64 全部成功。各平台运行包内 SQLite 画布恢复及 Agent Skill/片段恢复 smoke；生成 Windows EXE、两个 macOS DMG、Linux AppImage 和 DEB。
+- [CI](https://github.com/wsjwu58-cmd/Pi-Paper/actions/runs/37783358548)：前端 lint/构建、Pi Agent lint/类型/单元测试、桌面 Worker/画布测试全部通过。本机整合源码的前端 128 项、桌面 79 项及旧凭据读取 2 项、模型协议 19 项和 Agent 380 项测试通过。
+- Linux 在 Xvfb 中运行安装包暂存目录的 Main、Preload、Renderer 与本地核心，使用匹配的 Electron 运行时。法语区域下默认英文、显式中英文选择、跟随系统、中文偏好重启、原生对话框标题及中文用户数据保真全部通过；见 [Linux smoke](linux/smoke.json)、[重启报告](linux/restart.json)。该检查不是 AppImage 的完整手工安装验收。
+- Linux 首次检查发现无系统凭据库时读取不存在的旧 Agnes/Ark Key 会阻断配置页；已改为先确认文件存在，文件不存在返回未配置，有文件仍要求安全凭据库。回归测试验证缺失文件不访问凭据库、已有文件在凭据库不可用时不解密。前端重复的条件语言 Hook 也已修复。
+
+![Linux 英文模型配置](linux/providers-en.png)
+
+其他 Linux 截图：[英文画布展示](linux/workspace-en.png)、[英文 Agent](linux/agent-en.png)、[中文选择](linux/workspace-zh.png)。CI runner 未安装中文字形，因此用户中文内容或中文界面可能显示缺字方框；本地权威项目读取确认正文保持原样。上方 Windows 截图展示完整中文字形。安装包来源与 SHA-256 将随 [v0.1.0 Release](https://github.com/wsjwu58-cmd/Pi-Paper/releases/tag/v0.1.0) 的构建清单保存。

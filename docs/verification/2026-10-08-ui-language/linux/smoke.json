@@ -1,0 +1,13 @@
+{
+  "success": true,
+  "systemLocale": "fr",
+  "defaultLanguage": "en",
+  "manualSwitch": true,
+  "systemSwitch": true,
+  "nativeDialogs": [
+    "Open a Pi-Paper local project",
+    "打开 Pi-Paper 本地项目"
+  ],
+  "userContentPreserved": true,
+  "modelRequests": 0
+}
