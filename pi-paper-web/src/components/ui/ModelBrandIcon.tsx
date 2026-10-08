@@ -261,7 +261,6 @@ export function ModelBrandIcon({
   const title = typeof model === 'string' ? model : model.displayName || model.name
 
   if (desktop) {
-  useUiLanguage()
     const desktopBrand = resolveDesktopModelBrand(model)
     const desktopIconUrl = preferImage ? DESKTOP_BRAND_ICON_URL[desktopBrand] : null
     if (desktopIconUrl && !imgFailed) {

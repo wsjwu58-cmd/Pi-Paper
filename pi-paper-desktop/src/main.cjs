@@ -1065,7 +1065,6 @@ async function writeAgnesCredentialCiphertext(ciphertext) {
 }
 
 async function getAgnesApiKey() {
-  await assertCredentialVaultAvailable()
   let ciphertext
   try {
     ciphertext = await fs.readFile(agnesCredentialFile)
@@ -1073,6 +1072,7 @@ async function getAgnesApiKey() {
     if (error?.code === 'ENOENT') return null
     throw new Error('无法读取系统保护的 Agnes 凭据。')
   }
+  await assertCredentialVaultAvailable()
   try {
     const decrypted = await safeStorage.decryptStringAsync(ciphertext)
     if (decrypted.shouldReEncrypt) {
@@ -1130,7 +1130,6 @@ async function writeArkCredentialCiphertext(ciphertext) {
 }
 
 async function getArkApiKey() {
-  await assertCredentialVaultAvailable()
   let ciphertext
   try {
     ciphertext = await fs.readFile(arkCredentialFile)
@@ -1138,6 +1137,7 @@ async function getArkApiKey() {
     if (error?.code === 'ENOENT') return null
     throw new Error('无法读取系统保护的火山方舟凭据。')
   }
+  await assertCredentialVaultAvailable()
   try {
     const decrypted = await safeStorage.decryptStringAsync(ciphertext)
     if (decrypted.shouldReEncrypt) {

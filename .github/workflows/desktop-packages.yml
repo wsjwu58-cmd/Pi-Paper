@@ -61,7 +61,7 @@ jobs:
       - name: Build standalone desktop application
         run: npm run build:package --prefix pi-paper-desktop
       - name: Verify language defaults and persistence
-        run: node --test pi-paper-desktop/test/ui-language.test.cjs
+        run: node --test pi-paper-desktop/test/ui-language.test.cjs pi-paper-desktop/test/legacy-credential-read.test.cjs
       - name: Verify Linux packaged-resource interface language
         if: matrix.platform == 'linux'
         working-directory: pi-paper-desktop
