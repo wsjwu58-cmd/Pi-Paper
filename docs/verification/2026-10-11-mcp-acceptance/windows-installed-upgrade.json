@@ -1,0 +1,183 @@
+{
+  "schemaVersion": 1,
+  "acceptanceDate": "2026-10-12",
+  "authorization": "User explicitly authorized updating the existing same-name installation and acceptance.",
+  "installation": {
+    "method": "NSIS silent CLI",
+    "manualWizard": false,
+    "args": [
+      "/S",
+      "/D=E:\\pp\\Pi-Paper"
+    ],
+    "installerPath": "E:\\VibePaperProject\\output\\mcp-windows-2026-10-12\\Pi-Paper-0.1.0-win-x64.exe",
+    "installerSha256": "B1A2EDF5A2E5973D4912BBF63EB8C3406F9EEDFC3BFA882B1209C59D5BC4EA9D",
+    "exitCode": 0,
+    "target": "E:\\pp\\Pi-Paper",
+    "reasonForSilent": "Orca UI runtime was unavailable; local electron-builder NSIS template supports /S and /D=, so the supported silent mode was used."
+  },
+  "registry": {
+    "preInstall": {
+      "displayName": "Pi-Paper 0.1.0",
+      "displayVersion": "0.1.0",
+      "uninstallString": "\"E:\\pp\\Pi-Paper\\Uninstall Pi-Paper.exe\" /currentuser",
+      "installLocation": null
+    },
+    "postInstall": {
+      "displayName": "Pi-Paper 0.1.0",
+      "displayVersion": "0.1.0",
+      "uninstallString": "\"E:\\pp\\Pi-Paper\\Uninstall Pi-Paper.exe\" /currentuser",
+      "installLocation": null
+    }
+  },
+  "installedPayload": {
+    "executableVersion": {
+      "fileVersion": "0.1.0",
+      "productVersion": "0.1.0.0",
+      "length": 246027776
+    },
+    "allKeyFilesMatchFinalPayload": true,
+    "files": [
+      {
+        "name": "Pi-Paper.exe",
+        "installedSha256": "4FF758EB43B4EADE5969BFE137448DE5CD6BE4BAB172DDC3C33C06F5FE4DB11B",
+        "packagedSha256": "4FF758EB43B4EADE5969BFE137448DE5CD6BE4BAB172DDC3C33C06F5FE4DB11B",
+        "match": true
+      },
+      {
+        "name": "resources/app/package.json",
+        "installedSha256": "5A74C77568FD84B64B2DDF26DF83B1142C68AE610DC28D84F27B3940128D9643",
+        "packagedSha256": "5A74C77568FD84B64B2DDF26DF83B1142C68AE610DC28D84F27B3940128D9643",
+        "match": true
+      },
+      {
+        "name": "resources/app/src/main.cjs",
+        "installedSha256": "13F10E80DC5E8BA66057BFEE6C6DC01506295ED859728B46ED2F926116624ED0",
+        "packagedSha256": "13F10E80DC5E8BA66057BFEE6C6DC01506295ED859728B46ED2F926116624ED0",
+        "match": true
+      },
+      {
+        "name": "resources/app/src/preload.cjs",
+        "installedSha256": "2CDAD9D946F9CE5D7EB1B0C288B4C5A5F01E88BE54FF0123A8199DAA2FB0F7BD",
+        "packagedSha256": "2CDAD9D946F9CE5D7EB1B0C288B4C5A5F01E88BE54FF0123A8199DAA2FB0F7BD",
+        "match": true
+      },
+      {
+        "name": "resources/app/src/mcp-node-entry.cjs",
+        "installedSha256": "E242331BF01E84DFE22710725C89A2648488BFB1C66D7DF8C6211EE11BF3D700",
+        "packagedSha256": "E242331BF01E84DFE22710725C89A2648488BFB1C66D7DF8C6211EE11BF3D700",
+        "match": true
+      },
+      {
+        "name": "resources/app/dist/mcp-launcher.cjs",
+        "installedSha256": "587FCFC9D55475038BE8FF8812E711F6A7ABDA95CA1C2DF89F6C37C337DC64AF",
+        "packagedSha256": "587FCFC9D55475038BE8FF8812E711F6A7ABDA95CA1C2DF89F6C37C337DC64AF",
+        "match": true
+      },
+      {
+        "name": "resources/app/dist/mcp-stdio.cjs",
+        "installedSha256": "683111892D8A7E291FC126A9D12C5B43AAB11C0BD9EA0B720F47851943F12F98",
+        "packagedSha256": "683111892D8A7E291FC126A9D12C5B43AAB11C0BD9EA0B720F47851943F12F98",
+        "match": true
+      },
+      {
+        "name": "resources/app/dist/pi-official-media.cjs",
+        "installedSha256": "D3BF96E5EFA26262532A0679A32D09853F242C50CEDF257BBDCCA4535610AB1C",
+        "packagedSha256": "D3BF96E5EFA26262532A0679A32D09853F242C50CEDF257BBDCCA4535610AB1C",
+        "match": true
+      },
+      {
+        "name": "resources/app/renderer/index.html",
+        "installedSha256": "B1BA852CF984886598F41FE8992987EA679A73C91AE191D547DD33BC45368EDE",
+        "packagedSha256": "B1BA852CF984886598F41FE8992987EA679A73C91AE191D547DD33BC45368EDE",
+        "match": true
+      }
+    ]
+  },
+  "dailyUserData": {
+    "path": "C:\\Users\\WSJ\\AppData\\Roaming\\VibePaper",
+    "existedBefore": true,
+    "topLevelEntriesBefore": 30,
+    "existsAfter": true,
+    "topLevelEntriesAfter": 30,
+    "appMainProcessAfterSmoke": 0
+  },
+  "installedAppSmoke": {
+    "success": true,
+    "platform": "win32",
+    "architecture": "x64",
+    "appVersion": "0.1.0",
+    "installer": {
+      "path": "E:\\VibePaperProject\\output\\mcp-windows-2026-10-12\\Pi-Paper-0.1.0-win-x64.exe",
+      "bytes": 120341913,
+      "sha256": "b1a2edf5a2e5973d4912bbf63eb8c3406f9eedfc3bfa882b1209c59d5bc4ea9d"
+    },
+    "runtime": {
+      "executable": "E:\\pp\\Pi-Paper\\Pi-Paper.exe",
+      "sha256": "4ff758eb43b4eade5969bfe137448de5cd6be4bab172ddc3c33c06f5fe4db11b",
+      "appDirectory": "E:\\pp\\Pi-Paper\\resources\\app",
+      "files": {
+        "src/main.cjs": "13f10e80dc5e8ba66057bfee6c6dc01506295ed859728b46ed2f926116624ed0",
+        "src/preload.cjs": "2cdad9d946f9ce5d7eb1b0c288b4c5a5f01e88be54ff0123a8199daa2fb0f7bd",
+        "src/mcp-node-entry.cjs": "e242331bf01e84dfe22710725c89a2648488bfb1c66d7df8c6211ee11bf3d700",
+        "src/project-store.cjs": "a6212a788537e554b666a09d91a58990dd2e3dded792c8ad4e628db88dbd3ec2",
+        "dist/mcp-launcher.cjs": "587fcfc9d55475038be8ff8812e711f6a7abda95ca1c2df89f6c37c337dc64af",
+        "dist/mcp-stdio.cjs": "683111892d8a7e291fc126a9d12c5b43aab11c0bd9ea0b720f47851943f12f98",
+        "dist/pi-official-media.cjs": "d3bf96e5efa26262532a0679a32d09853f242c50cedf257bbdcca4535610ab1c",
+        "renderer/index.html": "b1ba852cf984886598f41fe8992987ea679a73c91ae191d547dd33bc45368ede"
+      }
+    },
+    "resourcesLayout": "loose resources/app files; app.asar is disabled in electron-builder.cjs",
+    "execution": "Installed from final NSIS package into E:\\pp\\Pi-Paper via silent upgrade; isolated --user-data-dir; wizard UI not exercised",
+    "renderer": {
+      "initialRoute": "/workspace",
+      "canvasRoute": "/canvas/48ca95f8-87ad-4bc8-bdfc-63e61a7b4310",
+      "originalCanvasPage": true
+    },
+    "mcp": {
+      "protocol": "stdio",
+      "packagedNodeEntry": "E:\\pp\\Pi-Paper\\resources\\app\\src\\mcp-node-entry.cjs",
+      "electronRunAsNode": true,
+      "serverInfo": true,
+      "discoveredToolCount": 11,
+      "nodeCountBefore": 0,
+      "nodeCountAfter": 2,
+      "edgeCountAfter": 1,
+      "idempotentReplay": true,
+      "desktopProfileIsolated": true
+    },
+    "reopen": {
+      "firstProcessId": 2840,
+      "secondProcessId": 34288,
+      "restartedFromWorkspace": true,
+      "canvasRoute": "/canvas/48ca95f8-87ad-4bc8-bdfc-63e61a7b4310",
+      "nodeCountAfterRestart": 2,
+      "edgeCountAfterRestart": 1,
+      "persistedCanvasIdentity": true
+    },
+    "profile": {
+      "testRunDirectory": "E:\\VibePaperProject\\.test-temp\\installed-mcp-WXrXBO",
+      "userDataDirectory": "E:\\VibePaperProject\\.test-temp\\installed-mcp-WXrXBO\\appdata\\VibePaper",
+      "explicitElectronSwitch": "--user-data-dir"
+    },
+    "screenshots": [
+      "mcp-settings.png",
+      "canvas-after-mcp-write.png",
+      "canvas-after-reopen.png"
+    ],
+    "modelCalls": {
+      "generationSubmitted": false,
+      "cloudProviderRequests": 0
+    },
+    "realCodexOrClaudeCodeSession": false
+  },
+  "screenshots": [
+    "docs/verification/2026-10-11-mcp-acceptance/installed-mcp-settings.png",
+    "docs/verification/2026-10-11-mcp-acceptance/installed-canvas-after-mcp-write.png",
+    "docs/verification/2026-10-11-mcp-acceptance/installed-canvas-after-reopen.png"
+  ],
+  "limitations": [
+    "Interactive installer wizard pages and options were not manually exercised; installation used the supported NSIS silent CLI mode.",
+    "No live Codex or Claude Code client session was run; the packaged stdio bridge was driven with the MCP SDK fixture.",
+    "No real provider credentials, cloud requests, or paid generation were used."
+  ]
+}

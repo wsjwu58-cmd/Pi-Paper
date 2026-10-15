@@ -1,0 +1,64 @@
+{
+  "success": true,
+  "platform": "win32",
+  "architecture": "x64",
+  "appVersion": "0.1.0",
+  "installer": {
+    "path": "E:\\VibePaperProject\\.test-temp\\Final Package Acceptance profile-fix 20261011-214106-2674d7eab4814a1785604ba4d0ed6937\\Pi-Paper-0.1.0-win-x64.exe",
+    "bytes": 120341913,
+    "sha256": "b1a2edf5a2e5973d4912bbf63eb8c3406f9eedfc3bfa882b1209c59d5bc4ea9d"
+  },
+  "runtime": {
+    "executable": "E:\\VibePaperProject\\.test-temp\\Final Package Acceptance profile-fix 20261011-214106-2674d7eab4814a1785604ba4d0ed6937\\NSIS payload with spaces\\win-unpacked\\Pi-Paper.exe",
+    "sha256": "4ff758eb43b4eade5969bfe137448de5cd6be4bab172ddc3c33c06f5fe4db11b",
+    "appDirectory": "E:\\VibePaperProject\\.test-temp\\Final Package Acceptance profile-fix 20261011-214106-2674d7eab4814a1785604ba4d0ed6937\\NSIS payload with spaces\\win-unpacked\\resources\\app",
+    "files": {
+      "src/main.cjs": "13f10e80dc5e8ba66057bfee6c6dc01506295ed859728b46ed2f926116624ed0",
+      "src/preload.cjs": "2cdad9d946f9ce5d7eb1b0c288b4c5a5f01e88be54ff0123a8199daa2fb0f7bd",
+      "src/mcp-node-entry.cjs": "e242331bf01e84dfe22710725c89a2648488bfb1c66d7df8c6211ee11bf3d700",
+      "src/project-store.cjs": "a6212a788537e554b666a09d91a58990dd2e3dded792c8ad4e628db88dbd3ec2",
+      "dist/mcp-launcher.cjs": "587fcfc9d55475038be8ff8812e711f6a7abda95ca1c2df89f6c37c337dc64af",
+      "dist/mcp-stdio.cjs": "683111892d8a7e291fc126a9d12c5b43aab11c0bd9ea0b720f47851943f12f98",
+      "dist/pi-official-media.cjs": "d3bf96e5efa26262532a0679a32d09853f242c50cedf257bbdcca4535610ab1c",
+      "renderer/index.html": "b1ba852cf984886598f41fe8992987ea679a73c91ae191d547dd33bc45368ede"
+    }
+  },
+  "resourcesLayout": "loose resources/app files; app.asar is disabled in electron-builder.cjs",
+  "execution": "NSIS payload direct launch from spaced extraction; installer registration not exercised",
+  "renderer": {
+    "initialRoute": "/workspace",
+    "canvasRoute": "/canvas/f6579d18-0426-47e8-986f-5c8cdbd57284",
+    "originalCanvasPage": true
+  },
+  "mcp": {
+    "protocol": "stdio",
+    "packagedNodeEntry": "E:\\VibePaperProject\\.test-temp\\Final Package Acceptance profile-fix 20261011-214106-2674d7eab4814a1785604ba4d0ed6937\\NSIS payload with spaces\\win-unpacked\\resources\\app\\src\\mcp-node-entry.cjs",
+    "electronRunAsNode": true,
+    "serverInfo": true,
+    "discoveredToolCount": 11,
+    "nodeCountBefore": 0,
+    "nodeCountAfter": 2,
+    "edgeCountAfter": 1,
+    "idempotentReplay": true,
+    "desktopProfileIsolated": true
+  },
+  "profile": {
+    "testRunDirectory": "E:\\VibePaperProject\\.test-temp\\installed-mcp-aX2Jj0",
+    "userDataDirectory": "E:\\VibePaperProject\\.test-temp\\installed-mcp-aX2Jj0\\appdata\\VibePaper",
+    "explicitElectronSwitch": "--user-data-dir"
+  },
+  "screenshots": [
+    "mcp-settings.png",
+    "canvas-after-mcp-write.png"
+  ],
+  "modelCalls": {
+    "generationSubmitted": false,
+    "cloudProviderRequests": 0
+  },
+  "realCodexOrClaudeCodeSession": false,
+  "deliveryArtifact": {
+    "path": "E:\\VibePaperProject\\output\\mcp-windows-2026-10-12\\Pi-Paper-0.1.0-win-x64.exe",
+    "sha256": "b1a2edf5a2e5973d4912bbf63eb8c3406f9eedfc3bfa882b1209c59d5bc4ea9d",
+    "copyVerified": true
+  }
+}

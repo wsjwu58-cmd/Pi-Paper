@@ -27,16 +27,19 @@ describe("desktop Agent render audit adapter", () => {
 			gateway: {} as never,
 			onAuditRequested: async () => ({ verdict: "pass", findings: [], ruleVersion: "continuity-v1" }),
 		});
-		const makeAgent = (profile: AgentProfile) => createDramaAgent({} as never, {
-			profile,
-			streamFn: (() => undefined) as never,
-			runtimeTools,
-		});
+		const makeAgent = (profile: AgentProfile) =>
+			createDramaAgent({} as never, {
+				profile,
+				streamFn: (() => undefined) as never,
+				runtimeTools,
+			});
 
-		expect(makeAgent(selectProfile({ canvasDomain: "general" })).state.tools.map((tool) => tool.name))
-			.not.toContain("request_render_audit");
-		expect(makeAgent(selectProfile({ canvasDomain: "short-drama" })).state.tools.map((tool) => tool.name))
-			.toContain("request_render_audit");
+		expect(makeAgent(selectProfile({ canvasDomain: "general" })).state.tools.map((tool) => tool.name)).not.toContain(
+			"request_render_audit",
+		);
+		expect(makeAgent(selectProfile({ canvasDomain: "short-drama" })).state.tools.map((tool) => tool.name)).toContain(
+			"request_render_audit",
+		);
 	});
 
 	it("sends the captured project, canvas, version, and target to Local Core and hides record IDs", async () => {

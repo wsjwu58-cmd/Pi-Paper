@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "testType": "real installed CLI natural-language MCP acceptance against isolated Electron development runtime",
+  "date": "2026-10-12T11:33:35.976Z",
+  "success": false,
+  "clientResults": [
+    {
+      "success": false,
+      "client": "codex",
+      "failureCategory": "client_turn_failed",
+      "phase": "real-client-natural-language-mcp-turn",
+      "pageState": {
+        "pathname": "/canvas/af59ff1a-2ba7-4d0d-8158-ec59a6cfbd74",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 2
+      },
+      "failureScreenshot": "codex-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 0,
+      "pairedConnectionCount": 0,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": true,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "generation_proposal_not_created:client_turn_failed",
+      "startedAt": "2026-10-12T11:33:26.056Z"
+    },
+    {
+      "success": false,
+      "client": "claude-code",
+      "failureCategory": "client_turn_failed",
+      "phase": "real-client-natural-language-mcp-turn",
+      "pageState": {
+        "pathname": "/canvas/994c7434-1e3e-4459-8e19-19b36999ed78",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 2
+      },
+      "failureScreenshot": "claude-code-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 5,
+      "pairedConnectionCount": 1,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": true,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "generation_proposal_not_created:client_turn_failed",
+      "startedAt": "2026-10-12T11:33:29.602Z"
+    }
+  ],
+  "scope": {
+    "realCodexCliTurn": false,
+    "realClaudeCodeTurn": false,
+    "realCloudMediaRequests": 0,
+    "localFixtureGenerationOnly": true,
+    "desktopGenerationConfirmationUsed": false,
+    "authMaterialReadOrCopied": false,
+    "rawClientOutputPersisted": false,
+    "temporaryMcpConfigurationsRemoved": true,
+    "packagedApplicationTested": false
+  }
+}

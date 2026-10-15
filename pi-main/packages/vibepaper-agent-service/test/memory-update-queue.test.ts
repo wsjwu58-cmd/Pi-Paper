@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
-
-import {
-	InMemoryMemoryUpdateQueue,
-	MemoryUpdateWorker,
-} from "../src/application/memory-update-queue.ts";
 import {
 	InMemoryMemoryCandidateRepository,
 	InMemoryMemoryRepository,
 	MemoryCandidateService,
 	MemoryService,
 } from "../src/application/memory-service.ts";
+import { InMemoryMemoryUpdateQueue, MemoryUpdateWorker } from "../src/application/memory-update-queue.ts";
 
 describe("asynchronous memory update queue", () => {
 	it("persists queued candidates without blocking the caller", async () => {

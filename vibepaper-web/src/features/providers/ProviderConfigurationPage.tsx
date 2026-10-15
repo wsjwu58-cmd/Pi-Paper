@@ -1,12 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronRight, CircleAlert, ExternalLink, Eye, EyeOff, Loader2, LockKeyhole, Save, Trash2, Wifi } from 'lucide-react'
 import { ModelBrandIcon } from '@/components/ui/ModelBrandIcon'
 import { desktopProviderLabel } from '@/desktop/providerModels'
+import {
+  hasUnsavedProviderConfigurationDraft,
+  providerConfigurationRefreshQueryKeys,
+  shouldAdoptProviderDraftAfterRefresh,
+  type ProviderConfigurationDraft,
+  type ProviderConfigurationDraftBaseline,
+} from './providerConfigurationEvents'
 import { getVideoDurationOptions } from '@/features/canvas/nodes/videoNodeParameters'
 import './ProviderConfigurationPage.css'
 import type {
+  DesktopMcpProviderInputRequest,
   DesktopProvider,
   DesktopProviderConfiguration,
   DesktopProviderConfigurationInput,
@@ -36,11 +45,12 @@ function readReturnTo(state: unknown): string {
 }
 
 export function ProviderConfigurationPage() {
+  useUiLanguage()
   const { data: OFFICIAL_DOCUMENTATION = {} } = useQuery<Record<string, string>>({
     queryKey: ['official-provider-documentation'],
     queryFn: async () => {
       const response = await fetch('/provider-documentation.json')
-      if (!response.ok) throw new Error('官方文档链接加载失败。')
+      if (!response.ok) throw new Error(uiText("官方文档链接加载失败。"))
       return response.json()
     },
     staleTime: Infinity,
@@ -49,10 +59,11 @@ export function ProviderConfigurationPage() {
   const location = useLocation()
   const queryClient = useQueryClient()
   const returnTo = readReturnTo(location.state)
+  const [mcpProviderInput, setMcpProviderInput] = useState<DesktopMcpProviderInputRequest | null>(null)
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: CONFIG_QUERY_KEY,
     queryFn: async () => {
-      if (!bridge?.getProviderConfiguration) throw new Error('桌面模型配置接口尚未接入。')
+      if (!bridge?.getProviderConfiguration) throw new Error(uiText("桌面模型配置接口尚未接入。"))
       return bridge.getProviderConfiguration()
     },
   })
@@ -66,6 +77,66 @@ export function ProviderConfigurationPage() {
   const [modelDefaults, setModelDefaults] = useState<Record<string, Record<string, unknown>>>({})
   const [busyAction, setBusyAction] = useState<'save' | 'test' | 'clear' | null>(null)
   const [notice, setNotice] = useState<ProviderNotice | null>(null)
+  const providerDraftBaselineRef = useRef<ProviderConfigurationDraftBaseline | null>(null)
+  const providerDraftRevisionRef = useRef<number | null>(null)
+  const configurationRef = useRef(data)
+  configurationRef.current = data
+  const currentDraft: ProviderConfigurationDraft = {
+    providerId: selectedProvider?.id ?? selectedProviderId,
+    baseUrl,
+    timeoutSeconds,
+    credentials,
+    enabledModelIds,
+    defaultModelIds,
+    modelDefaults,
+  }
+  const currentDraftRef = useRef(currentDraft)
+  currentDraftRef.current = currentDraft
+
+  const applyProviderDraft = useCallback((provider: DesktopProvider) => {
+    const draft: ProviderConfigurationDraft = {
+      providerId: provider.id,
+      baseUrl: provider.baseUrl,
+      timeoutSeconds: provider.timeoutSeconds || 120,
+      credentials: {},
+      enabledModelIds: provider.enabledModelIds ?? [],
+      defaultModelIds: provider.defaultModelIds ?? {},
+      modelDefaults: provider.modelDefaults ?? {},
+    }
+    providerDraftBaselineRef.current = {
+      providerId: draft.providerId,
+      baseUrl: draft.baseUrl,
+      timeoutSeconds: draft.timeoutSeconds,
+      enabledModelIds: draft.enabledModelIds,
+      defaultModelIds: draft.defaultModelIds,
+      modelDefaults: draft.modelDefaults,
+    }
+    providerDraftRevisionRef.current = Number.isSafeInteger(provider.revision) && (provider.revision ?? -1) >= 0
+      ? provider.revision!
+      : null
+    setBaseUrl(draft.baseUrl)
+    setTimeoutSeconds(draft.timeoutSeconds)
+    setEnabledModelIds(draft.enabledModelIds)
+    setDefaultModelIds(draft.defaultModelIds)
+    setModelDefaults(draft.modelDefaults)
+    setCredentials({})
+    setNotice(null)
+  }, [])
+
+  const acceptMcpProviderInput = useCallback((request: DesktopMcpProviderInputRequest) => {
+    if (!request || typeof request.providerId !== 'string' || typeof request.operationId !== 'string') return
+    setMcpProviderInput(request)
+    setSelectedProviderId(request.providerId)
+  }, [])
+
+  useEffect(() => {
+    const routeState = location.state && typeof location.state === 'object'
+      ? location.state as { mcpProviderInput?: DesktopMcpProviderInputRequest }
+      : undefined
+    if (routeState?.mcpProviderInput) acceptMcpProviderInput(routeState.mcpProviderInput)
+    const unsubscribe = bridge?.subscribeMcpProviderInput(acceptMcpProviderInput)
+    return unsubscribe
+  }, [acceptMcpProviderInput, location.state])
 
   useEffect(() => {
     if (!selectedProviderId && data?.providers[0]) setSelectedProviderId(data.providers[0].id)
@@ -73,14 +144,9 @@ export function ProviderConfigurationPage() {
 
   useEffect(() => {
     if (!selectedProvider) return
-    setBaseUrl(selectedProvider.baseUrl)
-    setTimeoutSeconds(selectedProvider.timeoutSeconds || 120)
-    setEnabledModelIds(selectedProvider.enabledModelIds ?? [])
-    setDefaultModelIds(selectedProvider.defaultModelIds ?? {})
-    setModelDefaults(selectedProvider.modelDefaults ?? {})
-    setCredentials({})
-    setNotice(null)
-  }, [selectedProvider?.id, data?.providers])
+    if (providerDraftBaselineRef.current?.providerId === selectedProvider.id) return
+    applyProviderDraft(selectedProvider)
+  }, [selectedProvider?.id, applyProviderDraft])
 
   const providerModels = useMemo(
     () => data?.models.filter((model) => model.providerId === selectedProvider?.id) ?? [],
@@ -98,21 +164,31 @@ export function ProviderConfigurationPage() {
   }, [enabledModelIds, providerModels])
 
   const buildInput = (forConnectionTest = false): DesktopProviderConfigurationInput => {
-    if (!selectedProvider) throw new Error('请选择一个提供方。')
-    if (selectedProvider.configurable === false) throw new Error(selectedProvider.unavailableReason || '此提供方尚未完成接入，暂不可配置。')
+    if (!selectedProvider) throw new Error(uiText("请选择一个提供方。"))
+    if (selectedProvider.configurable === false) throw new Error(selectedProvider.unavailableReason || uiText("此提供方尚未完成接入，暂不可配置。"))
     const credentialsToSave = Object.fromEntries(
       Object.entries(credentials).filter(([, value]) => value.trim().length > 0).map(([key, value]) => [key, value.trim()]),
     )
     for (const field of selectedProvider.credentialFields) {
       if (field.required && !(forConnectionTest && field.name === 'voiceId')
         && !selectedProvider.configured && !credentialsToSave[field.name]) {
-        throw new Error(`请填写${field.label}。`)
+        throw new Error(uiText("请填写{0}。", { 0: uiText(field.label) }))
       }
     }
     const configuredModelIds = new Set(providerModels.filter((model) => model.implemented).map((model) => model.id))
     const enabled = enabledModelIds.filter((id) => configuredModelIds.has(id))
     return {
       providerId: selectedProvider.id,
+      expectedRevision: (() => {
+        const revision = providerDraftRevisionRef.current
+        if (!Number.isSafeInteger(revision) || (revision ?? -1) < 0) {
+          throw new Error(uiText("配置版本尚未就绪，请刷新后重试。"))
+        }
+        return revision!
+      })(),
+      ...(!forConnectionTest && mcpProviderInput?.providerId === selectedProvider.id
+        ? { operationId: mcpProviderInput.operationId, mcpProposalId: mcpProviderInput.proposalId }
+        : {}),
       baseUrl: baseUrl.trim(),
       ...(Object.keys(credentialsToSave).length ? { credentials: credentialsToSave } : {}),
       enabledModelIds: enabled,
@@ -122,11 +198,70 @@ export function ProviderConfigurationPage() {
     }
   }
 
-  const refreshCatalog = async () => {
-    await queryClient.invalidateQueries({ queryKey: CONFIG_QUERY_KEY })
-    await refetch()
+  const refreshCatalog = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: CONFIG_QUERY_KEY, refetchType: 'none' })
+    const refreshed = await refetch()
+    if (refreshed.data) configurationRef.current = refreshed.data
     window.dispatchEvent(new Event('vp-desktop-model-catalog-changed'))
-  }
+    return refreshed.data
+  }, [queryClient, refetch])
+
+  useEffect(() => {
+    const unsubscribe = bridge?.subscribeMcpEvents((event) => {
+      if (event.type !== 'provider.configuration.changed') return
+      const knownRevision = configurationRef.current?.providers.find((provider) => provider.id === event.providerId)?.revision
+      if (!providerConfigurationRefreshQueryKeys(event, knownRevision).length) return
+      const wasDirty = hasUnsavedProviderConfigurationDraft(currentDraftRef.current, providerDraftBaselineRef.current)
+      const selectedIdAtStart = currentDraftRef.current.providerId
+      void refreshCatalog().then((refreshed) => {
+        if (!shouldAdoptProviderDraftAfterRefresh(event, knownRevision, wasDirty)
+          || hasUnsavedProviderConfigurationDraft(currentDraftRef.current, providerDraftBaselineRef.current)
+          || currentDraftRef.current.providerId !== selectedIdAtStart || selectedIdAtStart !== event.providerId) return
+        const updatedProvider = refreshed?.providers.find((provider) => provider.id === event.providerId)
+        if (updatedProvider) applyProviderDraft(updatedProvider)
+      }).catch(() => undefined)
+    })
+    return unsubscribe
+  }, [applyProviderDraft, refreshCatalog])
+
+  useEffect(() => {
+    if (!selectedProvider || !mcpProviderInput || mcpProviderInput.providerId !== selectedProvider.id) return
+    let disposed = false
+    void (async () => {
+      const active = await bridge?.getActiveProject()
+      if (disposed) return
+      if (active?.projectId !== mcpProviderInput.projectId || active.canvasId !== mcpProviderInput.canvasId) {
+        setNotice({ tone: 'error', source: 'save', text: uiText("此配置请求属于另一个项目或画布。请切回原授权画布后重新准备。") })
+        setMcpProviderInput(null)
+        return
+      }
+      if (selectedProvider.revision !== mcpProviderInput.expectedRevision) {
+        setNotice({ tone: 'error', source: 'save', text: uiText("这份外部配置准备期间，提供方版本已变化。请刷新后让外部 Agent 重新准备。") })
+        setMcpProviderInput(null)
+        return
+      }
+      const config = mcpProviderInput.publicConfig
+      if (config.baseUrl !== undefined) setBaseUrl(config.baseUrl)
+      if (config.enabledModelIds !== undefined) setEnabledModelIds(config.enabledModelIds)
+      if (config.defaultModelIds !== undefined) setDefaultModelIds(config.defaultModelIds)
+      if (config.modelDefaults !== undefined) setModelDefaults(config.modelDefaults)
+      if (config.timeoutSeconds !== undefined) setTimeoutSeconds(config.timeoutSeconds)
+      setCredentials({})
+      const credentialLabels = mcpProviderInput.credentialFields
+        .map((name) => selectedProvider.credentialFields.find((field) => field.name === name)?.label ?? name)
+      setNotice({
+        tone: 'info',
+        source: 'save',
+        text: uiText("外部 Agent 已准备公开配置。请在此页面输入密钥并保存；密钥不会返回给外部客户端。需配置字段：{0}", { 0: credentialLabels.join('、') || uiText('按需选择') }),
+      })
+    })().catch(() => {
+      if (!disposed) {
+        setNotice({ tone: 'error', source: 'save', text: uiText("无法验证外部配置请求的画布范围，请刷新状态后重试。") })
+        setMcpProviderInput(null)
+      }
+    })
+    return () => { disposed = true }
+  }, [mcpProviderInput?.proposalId, selectedProvider?.id])
 
   const save = async () => {
     if (!bridge?.saveProviderConfiguration || busyAction || selectedProvider?.configurable === false) return
@@ -134,12 +269,23 @@ export function ProviderConfigurationPage() {
     setNotice(null)
     try {
       const input = buildInput()
-      await bridge.saveProviderConfiguration(input)
-      setCredentials({})
+      const isMcpInput = Boolean(mcpProviderInput?.providerId === input.providerId && input.operationId && input.mcpProposalId)
+      const saved = await bridge.saveProviderConfiguration(input)
+      const savedProvider = saved.providers.find((provider) => provider.id === input.providerId)
+      if (savedProvider) applyProviderDraft(savedProvider)
+      if (mcpProviderInput?.providerId === input.providerId) setMcpProviderInput(null)
       await refreshCatalog()
-      setNotice({ tone: 'success', source: 'save', text: '配置已保存。凭据不会在此页面回显。' })
+      setNotice({
+        tone: 'success',
+        source: 'save',
+        text: isMcpInput
+          ? uiText("配置已保存。外部客户端可查询原请求结果；密钥不会回传。")
+          : uiText("配置已保存。凭据不会在此页面回显。"),
+      })
     } catch (cause) {
-      setNotice({ tone: 'error', source: 'save', text: cause instanceof Error ? cause.message : '保存配置失败。' })
+      const text = cause instanceof Error ? cause.message : uiText("保存配置失败。")
+      if (/版本|revision|conflict/iu.test(text)) await refreshCatalog()
+      setNotice({ tone: 'error', source: 'save', text })
     } finally {
       setBusyAction(null)
     }
@@ -153,7 +299,8 @@ export function ProviderConfigurationPage() {
       const result: DesktopProviderTestResult = await bridge.testProviderConfiguration(buildInput(true))
       setNotice({ tone: result.success && result.status === 'connected' ? 'success' : 'error', source: 'test', text: result.message })
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : '连接检测失败。'
+      const message = cause instanceof Error ? cause.message : uiText("连接检测失败。")
+      if (/版本|revision|conflict/iu.test(message)) await refreshCatalog()
       setNotice({ tone: 'error', source: 'test', text: message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '') })
     } finally {
       setBusyAction(null)
@@ -165,12 +312,20 @@ export function ProviderConfigurationPage() {
     setBusyAction('clear')
     setNotice(null)
     try {
-      await bridge.clearProviderConfiguration(selectedProvider.id)
-      setCredentials({})
+      const expectedRevision = providerDraftRevisionRef.current
+      if (!Number.isSafeInteger(expectedRevision) || (expectedRevision ?? -1) < 0) {
+        throw new Error(uiText("配置版本尚未就绪，请刷新后重试。"))
+      }
+      const cleared = await bridge.clearProviderConfiguration(selectedProvider.id, expectedRevision!)
+      const clearedProvider = cleared.providers.find((provider) => provider.id === selectedProvider.id)
+      if (clearedProvider) applyProviderDraft(clearedProvider)
+      if (mcpProviderInput?.providerId === selectedProvider.id) setMcpProviderInput(null)
       await refreshCatalog()
-      setNotice({ tone: 'success', source: 'clear', text: '此设备上保存的连接凭据和模型启用状态已清除。' })
+      setNotice({ tone: 'success', source: 'clear', text: uiText("此设备上保存的连接凭据和模型启用状态已清除。") })
     } catch (cause) {
-      setNotice({ tone: 'error', source: 'clear', text: cause instanceof Error ? cause.message : '清除配置失败。' })
+      const text = cause instanceof Error ? cause.message : uiText("清除配置失败。")
+      if (/版本|revision|conflict/iu.test(text)) await refreshCatalog()
+      setNotice({ tone: 'error', source: 'clear', text })
     } finally {
       setBusyAction(null)
     }
@@ -214,32 +369,30 @@ export function ProviderConfigurationPage() {
 
   return (
     <div className="provider-config-page mx-auto w-full max-w-[1480px]">
-      <nav className="provider-config-breadcrumb" aria-label="页面位置">
-        <span>设置</span>
+      <nav className="provider-config-breadcrumb" aria-label={uiText("页面位置")}>
+        <span>{uiText("设置")}</span>
         <ChevronRight size={14} aria-hidden="true" />
-        <span aria-current="page">自定义配置</span>
+        <span aria-current="page">{uiText("自定义配置")}</span>
       </nav>
       <div className="provider-config-heading">
         <div>
-          <h1>自定义配置</h1>
-          <p>配置各厂商 API 凭据、启用模型与默认参数。</p>
+          <h1>{uiText("自定义配置")}</h1>
+          <p>{uiText("配置各厂商 API 凭据、启用模型与默认参数。")}</p>
         </div>
         {documentationUrl ? (
           <a className="provider-config-doc-link" href={documentationUrl} target="_blank" rel="noreferrer">
             <ExternalLink size={17} />
-            查看官方文档
-          </a>
+            {uiText("查看官方文档")}</a>
         ) : (
-          <button className="provider-config-doc-link" type="button" disabled title="该提供方暂未登记官方文档链接">
+          <button className="provider-config-doc-link" type="button" disabled title={uiText("该提供方暂未登记官方文档链接")}>
             <ExternalLink size={17} />
-            官方文档暂缺
-          </button>
+            {uiText("官方文档暂缺")}</button>
         )}
       </div>
 
       <div className="provider-config-shell">
         <aside className="provider-config-sidebar">
-          <div className="provider-config-sidebar-heading">模型提供方</div>
+          <div className="provider-config-sidebar-heading">{uiText("模型提供方")}</div>
           <div className="provider-config-provider-list">
             {data?.providers.map((provider) => (
               <ProviderNavItem
@@ -252,20 +405,27 @@ export function ProviderConfigurationPage() {
             ))}
           </div>
           {!isLoading && !data?.providers.length && (
-            <p className="provider-config-empty">暂时没有可配置的模型提供方。</p>
+            <p className="provider-config-empty">{uiText("暂时没有可配置的模型提供方。")}</p>
           )}
           <div className="provider-config-local-note">
             <LockKeyhole size={15} />
-            <span>凭据加密保存在此设备，API Key 不会回显。</span>
+            <span>{uiText("凭据加密保存在此设备，API Key 不会回显。")}</span>
           </div>
         </aside>
 
         <main className="provider-config-main">
           {isLoading ? (
-            <div className="provider-config-loading"><Loader2 size={18} className="animate-spin" />正在读取配置…</div>
+            <div className="provider-config-loading"><Loader2 size={18} className="animate-spin" />{uiText("正在读取配置…")}</div>
           ) : error ? (
-            <div className="provider-config-error" role="alert">{error instanceof Error ? error.message : '读取模型配置失败。'}</div>
+            <div className="provider-config-error" role="alert">{error instanceof Error ? error.message : uiText("读取模型配置失败。")}</div>
           ) : selectedProvider && data ? (
+            <>
+            {mcpProviderInput?.providerId === selectedProvider.id && (
+              <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-900" role="status" data-testid="mcp-provider-input-prompt">
+                <strong>{uiText("来自外部 Agent 的配置请求")}</strong>
+                <p>{uiText("公开配置已预填。请检查模型和请求范围，在下方输入 API Key 后保存。Key 只写入此设备，不会回显给客户端。")}</p>
+              </div>
+            )}
             <ProviderEditor
               provider={selectedProvider}
               models={providerModels}
@@ -294,8 +454,9 @@ export function ProviderConfigurationPage() {
               onClear={() => void clear()}
               onCancel={() => navigate(returnTo)}
             />
+            </>
           ) : (
-            <div className="provider-config-loading">选择左侧提供方开始配置。</div>
+            <div className="provider-config-loading">{uiText("选择左侧提供方开始配置。")}</div>
           )}
         </main>
       </div>
@@ -309,31 +470,32 @@ function ProviderNavItem({ provider, models, selected, onClick }: {
   selected: boolean
   onClick: () => void
 }) {
+  useUiLanguage()
   const providerName = desktopProviderLabel(provider.id, provider.name)
   const enabledCount = models.filter((model) =>
     model.providerId === provider.id && model.implemented && model.enabled,
   ).length
   const serviceHint = provider.id === 'volcengine'
-    ? '文本 / 图片服务'
+    ? uiText("文本 / 图片服务")
     : provider.id === 'volcengine-ark'
-      ? 'Seedance 视频服务'
+      ? uiText("Seedance 视频服务")
       : ''
   const statusCount = provider.configurable === false
-    ? '待接入'
+    ? uiText("待接入")
     : provider.configured
-      ? (enabledCount ? enabledCount + ' 个已启用' : '已配置')
-      : '未配置'
+      ? (enabledCount ? enabledCount + uiText("个已启用") : uiText("已配置"))
+      : uiText("未配置")
   return (
     <button
       type="button"
       onClick={onClick}
       aria-current={selected ? 'page' : undefined}
       className={'provider-config-provider-button' + (selected ? ' is-selected' : '')}
-      title={provider.configured && enabledCount ? enabledCount + ' 个已启用模型' : providerName}
+      title={provider.configured && enabledCount ? enabledCount + uiText("个已启用模型") : providerName}
     >
       <ModelBrandIcon model={{ name: provider.id, provider: provider.id, displayName: providerName }} size={28} desktop symbol="settings" />
       <span className="provider-config-provider-label">
-        <span className="provider-config-provider-name">{providerName}</span>
+        <span className="provider-config-provider-name">{uiText(providerName)}</span>
         {serviceHint && <span className="provider-config-provider-service">{serviceHint}</span>}
       </span>
       <span className={'provider-config-provider-count' + (provider.configured ? ' is-configured' : '')}>
@@ -392,6 +554,7 @@ function ProviderEditor({
   onClear: () => void
   onCancel: () => void
 }) {
+  useUiLanguage()
   const providerName = desktopProviderLabel(provider.id, provider.name)
   const [visibleCredentials, setVisibleCredentials] = useState<Record<string, boolean>>({})
   useEffect(() => setVisibleCredentials({}), [provider.id])
@@ -402,11 +565,11 @@ function ProviderEditor({
   )
   const resultTitle = notice
     ? notice.source === 'test'
-      ? notice.tone === 'success' ? '连接检测成功' : '连接检测未通过'
+      ? notice.tone === 'success' ? uiText("连接检测成功") : uiText("连接检测未通过")
       : notice.source === 'save'
-        ? notice.tone === 'success' ? '配置已保存' : '保存失败'
-        : notice.tone === 'success' ? '配置已清除' : '清除失败'
-    : probeUnavailable ? '暂不支持连接检测' : provider.configured ? '凭据已保存，尚未检测' : '尚未检测'
+        ? notice.tone === 'success' ? uiText("配置已保存") : uiText("保存失败")
+        : notice.tone === 'success' ? uiText("配置已清除") : uiText("清除失败")
+    : probeUnavailable ? uiText("暂不支持连接检测") : provider.configured ? uiText("凭据已保存，尚未检测") : uiText("尚未检测")
   const resultTone = notice?.tone === 'error'
     ? 'error'
     : notice?.tone === 'success'
@@ -414,10 +577,10 @@ function ProviderEditor({
       : 'neutral'
   const resultText = notice?.text ?? (
     probeUnavailable
-      ? '此提供方尚未接入安全鉴权检测接口，无法在此验证 Key。仍可保存配置；模型权限需在实际生成时验证。'
+      ? uiText("此提供方尚未接入安全鉴权检测接口，无法在此验证 Key。仍可保存配置；模型权限需在实际生成时验证。")
       : provider.configured
-      ? '点击检测连接，使用已保存或新填写的凭据发送真实鉴权请求；不会提交生成任务。'
-      : '填写官方凭据后检测连接。检测发送真实鉴权请求，不会提交生成任务。'
+      ? uiText("点击检测连接，使用已保存或新填写的凭据发送真实鉴权请求；不会提交生成任务。")
+      : uiText("填写官方凭据后检测连接。检测发送真实鉴权请求，不会提交生成任务。")
   )
   const detailScrollRef = useRef<HTMLDivElement>(null)
 
@@ -432,32 +595,31 @@ function ProviderEditor({
         <ModelBrandIcon model={{ name: provider.id, provider: provider.id, displayName: providerName }} size={46} desktop symbol="settings" />
         <div className="provider-config-brand-copy">
           <div className="provider-config-brand-title-row">
-            <h2>{providerName}</h2>
-            {provider.configured && <span className="provider-config-saved-badge">凭据已保存</span>}
+            <h2>{uiText(providerName)}</h2>
+            {provider.configured && <span className="provider-config-saved-badge">{uiText("凭据已保存")}</span>}
           </div>
-          <p>配置 {providerName} 的官方 API 凭据，启用已接入模型并设置默认参数。</p>
+          <p>{uiText("配置 ")}{uiText(providerName)} {uiText("的官方 API 凭据，启用已接入模型并设置默认参数。")}</p>
         </div>
       </div>
 
       {provider.configurable === false && (
         <div className="provider-config-unavailable" role="status">
-          {provider.unavailableReason || '此提供方尚未完成 API 适配，当前不能保存凭据或启用模型。'}
+          {uiText(provider.unavailableReason || "此提供方尚未完成 API 适配，当前不能保存凭据或启用模型。")}
         </div>
       )}
 
       {provider.providerType !== 'local' && (
         <p className="provider-config-data-note">
-          使用云端模型时，所需提示词与已选参考素材会发送给 {providerName}，供应商可能收费；生成结果保存在本地项目。
-        </p>
+          {uiText("使用云端模型时，所需提示词与已选参考素材会发送给 ")}{uiText(providerName)}{uiText("，供应商可能收费；生成结果保存在本地项目。")}</p>
       )}
 
-      <section className="provider-config-fields" aria-label="连接凭据与请求设置">
+      <section className="provider-config-fields" aria-label={uiText("连接凭据与请求设置")}>
         {provider.credentialFields.length > 0 && (
           <div className="provider-config-credential-grid">
             {provider.credentialFields.map((field) => (
               <div className="provider-config-field" key={field.name}>
                 <label htmlFor={'credential-' + field.name}>
-                  {field.label}
+                  {uiText(field.label)}
                   {field.required && <span className="provider-config-required"> *</span>}
                 </label>
                 <div className={field.secret ? 'provider-config-secret-input' : undefined}>
@@ -470,23 +632,23 @@ function ProviderEditor({
                   autoComplete="new-password"
                   spellCheck={false}
                   maxLength={2048}
-                  placeholder={provider.configured ? '已保存，留空保留现有值' : '输入' + field.label}
+                  placeholder={provider.configured ? uiText("已保存，留空保留现有值") : uiText("输入") + " " + uiText(field.label)}
                 />
                 {field.secret && (
                   <button
                     type="button"
                     className="provider-config-secret-toggle"
                     onClick={() => setVisibleCredentials((current) => ({ ...current, [field.name]: !current[field.name] }))}
-                    aria-label={(visibleCredentials[field.name] ? '隐藏' : '显示') + field.label}
+                    aria-label={(visibleCredentials[field.name] ? uiText("隐藏") : uiText("显示")) + " " + uiText(field.label)}
                     aria-controls={'credential-' + field.name}
                     aria-pressed={Boolean(visibleCredentials[field.name])}
-                    title={visibleCredentials[field.name] ? '隐藏密钥' : '显示密钥'}
+                    title={visibleCredentials[field.name] ? uiText("隐藏密钥") : uiText("显示密钥")}
                   >
                     {visibleCredentials[field.name] ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
                 )}
                 </div>
-                {provider.configured && <p>已有值不会回显；留空会保留。</p>}
+                {provider.configured && <p>{uiText("已有值不会回显；留空会保留。")}</p>}
               </div>
             ))}
           </div>
@@ -501,12 +663,12 @@ function ProviderEditor({
               onChange={(event) => onBaseUrlChange(event.target.value)}
               disabled={busy}
               spellCheck={false}
-              placeholder={provider.baseUrl || '官方 API 地址'}
+              placeholder={provider.baseUrl || uiText("官方 API 地址")}
             />
-            <p>使用该厂商提供的官方 API 地址。</p>
+            <p>{uiText("使用该厂商提供的官方 API 地址。")}</p>
           </div>
           <div className="provider-config-field">
-            <label htmlFor="provider-timeout">请求超时</label>
+            <label htmlFor="provider-timeout">{uiText("请求超时")}</label>
             <div className="provider-config-timeout">
               <input
                 id="provider-timeout"
@@ -517,9 +679,9 @@ function ProviderEditor({
                 onChange={(event) => onTimeoutChange(Number(event.target.value))}
                 disabled={busy}
               />
-              <span>秒</span>
+              <span>{uiText("秒")}</span>
             </div>
-            <p>单次请求等待时间，范围 10–600 秒。</p>
+            <p>{uiText("单次请求等待时间，范围 10–600 秒。")}</p>
           </div>
         </div>
       </section>
@@ -527,8 +689,8 @@ function ProviderEditor({
       <section className="provider-config-capability-section">
         <div className="provider-config-section-heading">
           <div>
-            <h3>启用能力</h3>
-            <p>切换会真实启用或停用下方已适配模型；未实现的型号不能启用。</p>
+            <h3>{uiText("启用能力")}</h3>
+            <p>{uiText("切换会真实启用或停用下方已适配模型；未实现的型号不能启用。")}</p>
           </div>
         </div>
         {capabilityRows.length ? (
@@ -547,14 +709,14 @@ function ProviderEditor({
                   onClick={() => onToggleModality(modality)}
                   disabled={busy || !implementedModels.length}
                   aria-pressed={allEnabled}
-                  title={implementedModels.length ? '切换此类所有已适配模型' : '此类目前没有已适配模型'}
+                  title={implementedModels.length ? uiText("切换此类所有已适配模型") : uiText("此类目前没有已适配模型")}
                 >
                   <span className="provider-config-capability-copy">
-                    <span>{label}生成</span>
+                    <span>{uiText(label + '生成')}</span>
                     <small>
                       {implementedModels.length
-                        ? enabledCount + ' / ' + implementedModels.length + ' 已启用'
-                        : modalityModels.length ? '模型待适配' : '暂无适配型号'}
+                        ? enabledCount + ' / ' + implementedModels.length + ' ' + uiText("已启用")
+                        : modalityModels.length ? uiText("模型待适配") : uiText("暂无适配型号")}
                     </small>
                   </span>
                   <span className={'provider-config-switch' + (allEnabled ? ' is-on' : '') + (partial ? ' is-partial' : '')} aria-hidden="true">
@@ -565,21 +727,20 @@ function ProviderEditor({
             })}
           </div>
         ) : (
-          <p className="provider-config-no-models">该提供方尚未声明可用能力。</p>
+          <p className="provider-config-no-models">{uiText("该提供方尚未声明可用能力。")}</p>
         )}
       </section>
 
       <section className="provider-config-model-section">
         <div className="provider-config-section-heading">
           <div>
-            <h3>模型列表</h3>
-            <p>可启用的模型由官方目录与本地适配状态决定。</p>
+            <h3>{uiText("模型列表")}</h3>
+            <p>{uiText("可启用的模型由官方目录与本地适配状态决定。")}</p>
           </div>
           <span className="provider-config-model-total">
             {enabledModelIds.filter((id) => models.some((model) => model.id === id && model.implemented)).length}
             {' / '}
-            {models.filter((model) => model.implemented).length} 个已启用
-          </span>
+            {models.filter((model) => model.implemented).length} {uiText("个已启用")}</span>
         </div>
         {models.length ? (
           <div className="provider-config-model-grid">
@@ -602,13 +763,13 @@ function ProviderEditor({
                     <span className="provider-config-model-title">
                       <strong>{model.displayName || model.name}</strong>
                       <span className={'provider-config-model-type' + (unavailable ? ' is-unavailable' : '')}>
-                        {unavailable ? '待适配' : model.modelType}
+                        {unavailable ? uiText("待适配") : model.modelType}
                       </span>
                     </span>
                     <span className="provider-config-api-id">API ID：{model.apiModelId}</span>
                     {(unavailable || provider.configured && !model.enabled && model.unavailableReason) && (
                       <span className="provider-config-model-reason">
-                        {model.unavailableReason || '此模型或生成操作尚未完成适配，暂不能启用。'}
+                        {uiText(model.unavailableReason || "此模型或生成操作尚未完成适配，暂不能启用。")}
                       </span>
                     )}
                     {typeof model.constraints?.accountAccessNotice === 'string' && (
@@ -616,7 +777,7 @@ function ProviderEditor({
                     )}
                     {model.operation && (
                       <span className="provider-config-model-capability">
-                        操作：{model.operation} · 输入：{model.inputModes.length ? model.inputModes.join('、') : '无'}
+                        {uiText("操作：")}{model.operation} {uiText("· 输入：")}{model.inputModes.length ? model.inputModes.join('、') : uiText("无")}
                       </span>
                     )}
                   </span>
@@ -625,7 +786,7 @@ function ProviderEditor({
             })}
           </div>
         ) : (
-          <p className="provider-config-no-models">此提供方暂未登记模型目录。</p>
+          <p className="provider-config-no-models">{uiText("此提供方暂未登记模型目录。")}</p>
         )}
       </section>
 
@@ -633,8 +794,8 @@ function ProviderEditor({
         <section className="provider-config-defaults-section">
           <div className="provider-config-section-heading">
             <div>
-              <h3>默认模型与参数</h3>
-              <p>默认值用于新建节点；已有节点会保留自己的参数。</p>
+              <h3>{uiText("默认模型与参数")}</h3>
+              <p>{uiText("默认值用于新建节点；已有节点会保留自己的参数。")}</p>
             </div>
           </div>
           <div className="provider-config-default-grid">
@@ -643,14 +804,14 @@ function ProviderEditor({
               if (!options.length) return null
               return (
                 <div key={modality} className="provider-config-default-item">
-                  <label htmlFor={'provider-default-' + modality}>{label}默认模型</label>
+                  <label htmlFor={'provider-default-' + modality}>{uiText(label)}{uiText("默认模型")}</label>
                   <select
                     id={'provider-default-' + modality}
                     value={defaultModelIds[modality] ?? ''}
                     onChange={(event) => onDefaultChange(modality, event.target.value)}
                     disabled={busy}
                   >
-                    <option value="">不设置</option>
+                    <option value="">{uiText("不设置")}</option>
                     {options.map((model) => <option key={model.id} value={model.id}>{model.displayName || model.name}</option>)}
                   </select>
                   {options
@@ -680,7 +841,7 @@ function ProviderEditor({
           <span>{resultText}</span>
         </span>
         {notice?.source === 'test' && (
-          <span className="provider-config-result-tag">{notice.tone === 'success' ? '鉴权请求成功' : '检测未通过'}</span>
+          <span className="provider-config-result-tag">{notice.tone === 'success' ? uiText("鉴权请求成功") : uiText("检测未通过")}</span>
         )}
       </div>
       </div>
@@ -690,20 +851,18 @@ function ProviderEditor({
           {provider.configured && (
             <button type="button" onClick={onClear} disabled={busy} className="provider-config-clear-button">
               {busyAction === 'clear' ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-              清除配置
-            </button>
+              {uiText("清除配置")}</button>
           )}
         </div>
         <div className="provider-config-footer-actions">
-          <button type="button" onClick={onCancel} disabled={busy} className="provider-config-secondary-button">取消</button>
+          <button type="button" onClick={onCancel} disabled={busy} className="provider-config-secondary-button">{uiText("取消")}</button>
           <button type="button" onClick={onTest} disabled={busy || provider.configurable === false || probeUnavailable} className="provider-config-secondary-button">
             {busyAction === 'test' ? <Loader2 size={16} className="animate-spin" /> : <Wifi size={16} />}
-            {probeUnavailable ? '暂不支持检测' : busyAction === 'test' ? '正在检测…' : '检测连接'}
+            {probeUnavailable ? uiText("暂不支持检测") : busyAction === 'test' ? uiText("正在检测…") : uiText("检测连接")}
           </button>
           <button type="button" onClick={onSave} disabled={busy || provider.configurable === false} className="provider-config-primary-button">
             {busyAction === 'save' ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-            保存配置
-          </button>
+            {uiText("保存配置")}</button>
         </div>
       </footer>
     </div>
@@ -715,14 +874,20 @@ function ModelDefaultParameters({ model, values, busy, onChange }: {
   busy: boolean
   onChange: (key: string, value: unknown) => void
 }) {
+  useUiLanguage()
   const constraints = model.constraints ?? {}
   const defaults = { ...model.defaults, ...values }
   const durations = getVideoDurationOptions(constraints, String(defaults.resolution ?? ''))
   if (model.modelType !== 'image' && model.modelType !== 'video') return null
+  const optionsForAspect = (field: 'sizesByAspectRatio' | 'resolutionsByAspectRatio', ratio: unknown) => {
+    const mapping = constraints[field]
+    return mapping && typeof mapping === 'object' && !Array.isArray(mapping)
+      ? (mapping as Record<string, unknown>)[String(ratio)] : undefined
+  }
   const lists = [
-    ['ratio', '画幅', constraints.acceptedAspectRatios],
-    ['size', '图片分辨率', constraints.acceptedSizes],
-    ['resolution', '视频分辨率', constraints.acceptedResolutions],
+    ['ratio', uiText("画幅"), constraints.acceptedAspectRatios],
+    ['size', uiText("图片分辨率"), optionsForAspect('sizesByAspectRatio', defaults.ratio) ?? constraints.acceptedSizes],
+    ['resolution', uiText("视频分辨率"), optionsForAspect('resolutionsByAspectRatio', defaults.ratio) ?? constraints.acceptedResolutions],
   ] as const
   return (
     <div className="provider-config-parameter-box">
@@ -731,9 +896,15 @@ function ModelDefaultParameters({ model, values, busy, onChange }: {
         if (!options.length) return null
         return (
           <label key={key} className="provider-config-parameter-row">
-            <span>{label}</span>
+            <span>{uiText(label)}</span>
             <select disabled={busy} value={String(defaults[key] ?? options[0])} onChange={(event) => {
               onChange(key, event.target.value)
+              if (key === 'ratio') {
+                for (const [parameter, field] of [['size', 'sizesByAspectRatio'], ['resolution', 'resolutionsByAspectRatio']] as const) {
+                  const allowed = optionsForAspect(field, event.target.value)
+                  if (Array.isArray(allowed) && allowed.length && !allowed.includes(defaults[parameter])) onChange(parameter, allowed[0])
+                }
+              }
               if (key === 'resolution') {
                 const allowed = getVideoDurationOptions(constraints, event.target.value)
                 if (allowed.length && !allowed.includes(Number(defaults.duration))) onChange('duration', allowed[0])
@@ -746,7 +917,7 @@ function ModelDefaultParameters({ model, values, busy, onChange }: {
       })}
       {model.modelType === 'video' && typeof constraints.minimumDuration === 'number' && typeof constraints.maximumDuration === 'number' && (
         <label className="provider-config-parameter-row">
-          <span>时长（秒）</span>
+          <span>{uiText("时长（秒）")}</span>
           {durations.length ? (
             <select disabled={busy} value={Number(defaults.duration ?? durations[0])} onChange={(event) => onChange('duration', Number(event.target.value))}>
               {durations.map((value) => <option key={value} value={value}>{value}</option>)}
@@ -766,8 +937,7 @@ function ModelDefaultParameters({ model, values, busy, onChange }: {
       {constraints.supportsGenerateAudio === true && (
         <label className="provider-config-parameter-checkbox">
           <input type="checkbox" disabled={busy} checked={defaults.generate_audio === true} onChange={(event) => onChange('generate_audio', event.target.checked)} />
-          生成音频
-        </label>
+          {uiText("生成音频")}</label>
       )}
     </div>
   )

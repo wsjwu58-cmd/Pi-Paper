@@ -6,11 +6,13 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pnpm-store/
+.npm-cache/
 
 # --- Build outputs ---
 dist/
 dist-ssr/
 build/
+/vibepaper-desktop/release/
 target/
 *.class
 *.jar
@@ -60,6 +62,11 @@ Thumbs.db
 *.sw?
 
 # --- Tooling / scratch (not part of product source) ---
+/.test-temp/
+/.playwright-mcp/
+/vibepaper-web/.test-temp/
+/learn-claude-code-main/
+/output/
 .codegraph/
 .firecrawl/
 .workbuddy/

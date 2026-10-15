@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "testType": "real installed CLI natural-language MCP acceptance against isolated Electron development runtime",
+  "date": "2026-10-12T11:40:54.208Z",
+  "success": false,
+  "clientResults": [
+    {
+      "success": false,
+      "client": "codex",
+      "failureCategory": "client_configuration_blocked",
+      "phase": "real-client-natural-language-mcp-turn",
+      "pageState": {
+        "pathname": "/canvas/1e7f29f7-c94f-44b8-b522-b4fddff137c7",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 2
+      },
+      "failureScreenshot": "codex-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 0,
+      "cliExitCode": 1,
+      "cliTerminationSignal": null,
+      "cliTrace": {
+        "assistantReplySeen": false,
+        "completedEventSeen": false,
+        "errorEventSeen": false,
+        "toolCallsObserved": []
+      },
+      "diagnosticHints": {
+        "authenticationLike": true,
+        "networkLike": true,
+        "modelLike": false,
+        "configurationLike": true
+      },
+      "safeNetworkDiagnostic": {
+        "errorClass": null,
+        "httpStatus": null,
+        "targetHostname": null,
+        "timeout": false
+      },
+      "cliOAuthEnvironmentProvided": false,
+      "sanitizedProxyEnvironmentProvided": false,
+      "pairedConnectionCount": 0,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": true,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "generation_proposal_not_created:client_configuration_blocked",
+      "startedAt": "2026-10-12T11:40:43.573Z"
+    },
+    {
+      "success": false,
+      "client": "claude-code",
+      "failureCategory": "client_turn_failed",
+      "phase": "real-client-natural-language-mcp-turn",
+      "pageState": {
+        "pathname": "/canvas/c2142ff6-bb25-4254-9b59-a32642466e3b",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 2
+      },
+      "failureScreenshot": "claude-code-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 5,
+      "cliExitCode": 1,
+      "cliTerminationSignal": null,
+      "cliTrace": {
+        "assistantReplySeen": true,
+        "completedEventSeen": true,
+        "errorEventSeen": true,
+        "toolCallsObserved": []
+      },
+      "diagnosticHints": {
+        "authenticationLike": false,
+        "networkLike": true,
+        "modelLike": false,
+        "configurationLike": false
+      },
+      "safeNetworkDiagnostic": {
+        "errorClass": null,
+        "httpStatus": null,
+        "targetHostname": null,
+        "timeout": false
+      },
+      "cliOAuthEnvironmentProvided": false,
+      "sanitizedProxyEnvironmentProvided": false,
+      "pairedConnectionCount": 1,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": true,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "generation_proposal_not_created:client_turn_failed",
+      "startedAt": "2026-10-12T11:40:47.688Z"
+    }
+  ],
+  "scope": {
+    "realCodexCliTurn": false,
+    "realClaudeCodeTurn": false,
+    "realCloudMediaRequests": 0,
+    "localFixtureGenerationOnly": true,
+    "desktopGenerationConfirmationUsed": false,
+    "authMaterialReadOrCopied": false,
+    "rawClientOutputPersisted": false,
+    "temporaryMcpConfigurationsRemoved": true,
+    "packagedApplicationTested": false
+  }
+}

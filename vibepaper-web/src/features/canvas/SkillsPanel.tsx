@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 /**
  * Skills 面板沿用原版列表 / 详情 / 新建交互。
  * Web 数据来自 /api/v1/skills；桌面数据来自当前项目的 Pi Skill 文件。
@@ -56,18 +57,18 @@ function saveFavorites(ids: Set<string>) {
 
 function skillErrorMessage(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : ''
-  if (message.includes('SKILL_NAME_COLLISION')) return '当前项目或内置 Skill 已有同名 Skill。'
-  if (message.includes('SKILL_FRONTMATTER_INVALID')) return 'Markdown Skill 的 YAML 头部无效。'
-  if (message.includes('SKILL_FILE_TOO_LARGE') || message.includes('SKILL_IMPORT_FILE_INVALID')) return 'Skill 文件不能为空且不能超过 512KB。'
-  if (message.includes('SKILL_SYMLINK_UNSUPPORTED')) return 'Skill 目录不能包含符号链接。'
-  if (message.includes('SKILL_NOT_FOUND')) return '这个项目 Skill 已不存在，请刷新后重试。'
-  if (message.includes('SKILL_NAME_INVALID')) return 'Skill 名称不能为空且不能超过 64 个字符。'
-  if (message.includes('SKILL_DESCRIPTION_INVALID')) return 'Skill 描述不能为空且不能超过 1024 个字符。'
-  if (message.includes('SKILL_CATEGORY_INVALID')) return 'Skill 分类无效。'
-  if (message.includes('SKILL_ENABLED_INVALID')) return 'Skill 启用状态无效。'
-  if (message.includes('SKILL_INSTRUCTIONS_INVALID')) return 'Skill 指令不能为空。'
-  if (message.includes('SKILL_INPUT_INVALID') || message.includes('AGENT_SKILL_INPUT_INVALID')) return 'Skill 信息无效，请检查后重试。'
-  return message || 'Skill 操作失败。'
+  if (message.includes('SKILL_NAME_COLLISION')) return uiText("当前项目或内置 Skill 已有同名 Skill。")
+  if (message.includes('SKILL_FRONTMATTER_INVALID')) return uiText("Markdown Skill 的 YAML 头部无效。")
+  if (message.includes('SKILL_FILE_TOO_LARGE') || message.includes('SKILL_IMPORT_FILE_INVALID')) return uiText("Skill 文件不能为空且不能超过 512KB。")
+  if (message.includes('SKILL_SYMLINK_UNSUPPORTED')) return uiText("Skill 目录不能包含符号链接。")
+  if (message.includes('SKILL_NOT_FOUND')) return uiText("这个项目 Skill 已不存在，请刷新后重试。")
+  if (message.includes('SKILL_NAME_INVALID')) return uiText("Skill 名称不能为空且不能超过 64 个字符。")
+  if (message.includes('SKILL_DESCRIPTION_INVALID')) return uiText("Skill 描述不能为空且不能超过 1024 个字符。")
+  if (message.includes('SKILL_CATEGORY_INVALID')) return uiText("Skill 分类无效。")
+  if (message.includes('SKILL_ENABLED_INVALID')) return uiText("Skill 启用状态无效。")
+  if (message.includes('SKILL_INSTRUCTIONS_INVALID')) return uiText("Skill 指令不能为空。")
+  if (message.includes('SKILL_INPUT_INVALID') || message.includes('AGENT_SKILL_INPUT_INVALID')) return uiText("Skill 信息无效，请检查后重试。")
+  return message || uiText("Skill 操作失败。")
 }
 
 function renderMarkdownLite(md: string) {
@@ -152,6 +153,7 @@ export function SkillsPanel({
   desktopProjectId?: string
   onDesktopSkillsChanged?: () => Promise<void>
 }) {
+  useUiLanguage()
   const [skills, setSkills] = useState<SkillView[]>([])
   const [keyword, setKeyword] = useState('')
   const [category, setCategory] = useState<CategoryKey>('all')
@@ -236,21 +238,21 @@ export function SkillsPanel({
     if (!active) return
     if (desktopMode) {
       if (!enabledLocal) {
-        toastError('请先启用此 Skill')
+        toastError(uiText("请先启用此 Skill"))
         return
       }
       onApplied?.(active.name)
-      toastSuccess(`已选择 Skill：${active.name}`)
+      toastSuccess(uiText("已选择 Skill：{0}", { 0: active.name }))
       onBackToChat()
       return
     }
     if (!sessionId) {
-      toastError('请先打开一个对话')
+      toastError(uiText("请先打开一个对话"))
       return
     }
     try {
       await api(`/agent/sessions/${sessionId}/skills/${active.id}:attach`, { method: 'POST' })
-      toastSuccess(`已应用 Skill：${active.name}`)
+      toastSuccess(uiText("已应用 Skill：{0}", { 0: active.name }))
       onApplied?.(active.name)
       onBackToChat()
     } catch (e) {
@@ -260,13 +262,13 @@ export function SkillsPanel({
 
   const saveCreate = async () => {
     if (!draft.name.trim() || !draft.instructions.trim()) {
-      toastError('名称与指令必填')
+      toastError(uiText("名称与指令必填"))
       return
     }
     try {
       if (desktopMode) {
         const bridge = window.vibepaperDesktop
-        if (!bridge || !desktopProjectId) throw new Error('当前本地项目不可用。')
+        if (!bridge || !desktopProjectId) throw new Error(uiText("当前本地项目不可用。"))
         if (editingSkillId) {
           const updated = await bridge.updateAgentSkill(desktopProjectId, editingSkillId, draft)
           setActive({
@@ -282,11 +284,11 @@ export function SkillsPanel({
           })
           setEnabledLocal(updated.enabled)
           setView('detail')
-          toastSuccess('Skill 已更新')
+          toastSuccess(uiText("Skill 已更新"))
         } else {
           await bridge.createAgentSkill(desktopProjectId, draft)
           setView('list')
-          toastSuccess('Skill 已创建')
+          toastSuccess(uiText("Skill 已创建"))
         }
         setDraft({ name: '', description: '', instructions: '', category: 'general' })
         setEditingSkillId(null)
@@ -297,7 +299,7 @@ export function SkillsPanel({
         method: 'POST',
         body: JSON.stringify(draft),
       })
-      toastSuccess('Skill 已创建')
+      toastSuccess(uiText("Skill 已创建"))
       setDraft({ name: '', description: '', instructions: '', category: 'general' })
       setView('list')
       reload()
@@ -312,7 +314,7 @@ export function SkillsPanel({
     try {
       if (desktopMode) {
         const bridge = window.vibepaperDesktop
-        if (!bridge || !desktopProjectId) throw new Error('当前本地项目不可用。')
+        if (!bridge || !desktopProjectId) throw new Error(uiText("当前本地项目不可用。"))
         const updated = await bridge.updateAgentSkill(desktopProjectId, String(active.id), { enabled: on })
         setActive({ ...active, enabled: updated.enabled, version: updated.version })
         await onDesktopSkillsChanged?.()
@@ -353,13 +355,13 @@ export function SkillsPanel({
     if (!active || active.source !== 'project' || !desktopProjectId) return
     try {
       const bridge = window.vibepaperDesktop
-      if (!bridge) throw new Error('当前本地项目不可用。')
+      if (!bridge) throw new Error(uiText("当前本地项目不可用。"))
       await bridge.deleteAgentSkill(desktopProjectId, String(active.id))
       setDeleteConfirmationOpen(false)
       setActive(null)
       setView('list')
       await onDesktopSkillsChanged?.()
-      toastSuccess('Skill 已移入已删除存档')
+      toastSuccess(uiText("Skill 已移入已删除存档"))
     } catch (cause) {
       toastError(skillErrorMessage(cause))
     }
@@ -369,11 +371,11 @@ export function SkillsPanel({
     if (!desktopProjectId) return
     try {
       const bridge = window.vibepaperDesktop
-      if (!bridge) throw new Error('当前本地项目不可用。')
+      if (!bridge) throw new Error(uiText("当前本地项目不可用。"))
       const imported = await bridge.importAgentSkill(desktopProjectId)
       if (!imported) return
       await onDesktopSkillsChanged?.()
-      toastSuccess(`已导入 Skill：${imported.name}`)
+      toastSuccess(uiText("已导入 Skill：{0}", { 0: imported.name }))
     } catch (cause) {
       toastError(skillErrorMessage(cause))
     }
@@ -388,13 +390,13 @@ export function SkillsPanel({
             type="button"
             onClick={() => setView('list')}
             className="rounded-full p-1.5 text-[#555] hover:bg-black/[0.04]"
-            aria-label="返回"
+            aria-label={uiText("返回")}
           >
             <ArrowLeft size={18} />
           </button>
           <p className="min-w-0 flex-1 truncate text-[15px] font-bold text-[#111]">{active.name}</p>
           {desktopMode && active.source === 'project' && (
-            <button type="button" onClick={beginEdit} className="rounded-full p-1.5 text-[#555] hover:bg-black/[0.04]" aria-label="编辑 Skill" title="编辑 Skill">
+            <button type="button" onClick={beginEdit} className="rounded-full p-1.5 text-[#555] hover:bg-black/[0.04]" aria-label={uiText("编辑 Skill")} title={uiText("编辑 Skill")}>
               <Pencil size={16} />
             </button>
           )}
@@ -405,13 +407,13 @@ export function SkillsPanel({
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
           <section>
-            <p className="mb-2 text-[13px] font-bold text-[#888]">描述</p>
+            <p className="mb-2 text-[13px] font-bold text-[#888]">{uiText("描述")}</p>
             <div className="rounded-2xl bg-[#f3f4f6] px-3.5 py-3 text-[13px] leading-relaxed text-[#333]">
-              {active.description || '暂无描述'}
+              {active.description || uiText("暂无描述")}
             </div>
           </section>
           <section>
-            <p className="mb-2 text-[13px] font-bold text-[#888]">指令</p>
+            <p className="mb-2 text-[13px] font-bold text-[#888]">{uiText("指令")}</p>
             <div className="rounded-2xl border border-black/[0.08] bg-white px-3.5 py-3">
               {renderMarkdownLite(active.instructions || '')}
             </div>
@@ -421,7 +423,7 @@ export function SkillsPanel({
         <div className="flex items-center justify-between border-t border-black/[0.06] px-4 py-3">
           <div className="flex items-center gap-2">
             {desktopMode && active.source === 'project' && (
-              <button type="button" onClick={() => setDeleteConfirmationOpen(true)} className="rounded-full p-2 text-[#9ca3af] hover:bg-red-50 hover:text-red-600" aria-label="删除 Skill" title="删除 Skill">
+              <button type="button" onClick={() => setDeleteConfirmationOpen(true)} className="rounded-full p-2 text-[#9ca3af] hover:bg-red-50 hover:text-red-600" aria-label={uiText("删除 Skill")} title={uiText("删除 Skill")}>
                 <Trash2 size={16} />
               </button>
             )}
@@ -431,7 +433,7 @@ export function SkillsPanel({
               aria-checked={enabledLocal}
               disabled={desktopMode ? active.source !== 'project' : active.source === 'builtin'}
               onClick={() => void toggleEnabled(!enabledLocal)}
-              title={desktopMode ? (active.source === 'project' ? '启用/停用' : '内置 Skill 始终可用') : active.source === 'builtin' ? '内置 Skill 始终可用' : '启用/停用'}
+              title={desktopMode ? (active.source === 'project' ? uiText("启用/停用") : uiText("内置 Skill 始终可用")) : active.source === 'builtin' ? uiText("内置 Skill 始终可用") : uiText("启用/停用")}
               className={`relative h-7 w-12 rounded-full transition ${
                 enabledLocal ? 'bg-[#1f2937]' : 'bg-[#d1d5db]'
               } ${(desktopMode && active.source !== 'project') || (!desktopMode && active.source === 'builtin') ? 'opacity-50' : ''}`}
@@ -449,8 +451,7 @@ export function SkillsPanel({
             onClick={() => void applySkill()}
             className="h-10 min-w-[120px] rounded-xl bg-[#111827] px-6 text-[14px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
-            应用
-          </button>
+            {uiText("应用")}</button>
         </div>
         {deleteConfirmationOpen && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30 p-4" role="presentation">
@@ -460,25 +461,22 @@ export function SkillsPanel({
               aria-labelledby="desktop-skill-delete-title"
               className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl"
             >
-              <h3 id="desktop-skill-delete-title" className="text-[15px] font-bold text-[#111]">删除项目 Skill？</h3>
+              <h3 id="desktop-skill-delete-title" className="text-[15px] font-bold text-[#111]">{uiText("删除项目 Skill？")}</h3>
               <p className="mt-2 text-[13px] leading-relaxed text-[#555]">
-                「{active.name}」会移入当前项目的已删除存档，之后可从项目备份中恢复。
-              </p>
+                「{active.name}{uiText("」会移入当前项目的已删除存档，之后可从项目备份中恢复。")}</p>
               <div className="mt-5 flex gap-2">
                 <button
                   type="button"
                   onClick={() => setDeleteConfirmationOpen(false)}
                   className="h-10 flex-1 rounded-xl border border-black/10 text-[13px] font-bold"
                 >
-                  取消
-                </button>
+                  {uiText("取消")}</button>
                 <button
                   type="button"
                   onClick={() => void deleteSkill()}
                   className="h-10 flex-1 rounded-xl bg-red-600 text-[13px] font-bold text-white"
                 >
-                  移入存档
-                </button>
+                  {uiText("移入存档")}</button>
               </div>
             </section>
           </div>
@@ -495,7 +493,7 @@ export function SkillsPanel({
           <button type="button" onClick={() => setView(editingSkillId ? 'detail' : 'list')} className="rounded-full p-1.5 text-[#555] hover:bg-black/[0.04]">
             <ArrowLeft size={18} />
           </button>
-          <p className="flex-1 text-[15px] font-bold text-[#111]">{editingSkillId ? '编辑 Skill' : '新建 Skill'}</p>
+          <p className="flex-1 text-[15px] font-bold text-[#111]">{editingSkillId ? uiText("编辑 Skill") : uiText("新建 Skill")}</p>
           <button type="button" onClick={onClose} className="rounded-full p-1.5 text-[#888] hover:bg-black/[0.04]">
             <X size={18} />
           </button>
@@ -504,19 +502,19 @@ export function SkillsPanel({
           <input
             value={draft.name}
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-            placeholder="名称"
+            placeholder={uiText("名称")}
             className="h-10 w-full rounded-xl border border-black/10 bg-[#f9fafb] px-3 text-[13px]"
           />
           <textarea
             value={draft.description}
             onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-            placeholder="描述"
+            placeholder={uiText("描述")}
             className="h-20 w-full rounded-xl border border-black/10 bg-[#f3f4f6] px-3 py-2 text-[13px]"
           />
           <textarea
             value={draft.instructions}
             onChange={(e) => setDraft({ ...draft, instructions: e.target.value })}
-            placeholder="指令（支持 Markdown）"
+            placeholder={uiText("指令（支持 Markdown）")}
             className="h-48 w-full rounded-xl border border-black/10 px-3 py-2 font-mono text-[12px]"
           />
           <select
@@ -524,11 +522,11 @@ export function SkillsPanel({
             onChange={(e) => setDraft({ ...draft, category: e.target.value })}
             className="h-10 w-full rounded-xl border border-black/10 bg-white px-3 text-[13px]"
           >
-            <option value="general">通用</option>
-            <option value="image">图片</option>
-            <option value="video">视频</option>
-            <option value="text">文本</option>
-            <option value="canvas">画布</option>
+            <option value="general">{uiText("通用")}</option>
+            <option value="image">{uiText("图片")}</option>
+            <option value="video">{uiText("视频")}</option>
+            <option value="text">{uiText("文本")}</option>
+            <option value="canvas">{uiText("画布")}</option>
           </select>
         </div>
         <div className="flex gap-2 border-t border-black/[0.06] px-4 py-3">
@@ -537,10 +535,9 @@ export function SkillsPanel({
             setEditingSkillId(null)
             setDraft({ name: '', description: '', instructions: '', category: 'general' })
           }} className="h-10 flex-1 rounded-xl border border-black/10 text-[13px] font-bold">
-            取消
-          </button>
+            {uiText("取消")}</button>
           <button type="button" onClick={() => void saveCreate()} className="h-10 flex-1 rounded-xl bg-[#111827] text-[13px] font-bold text-white">
-            {editingSkillId ? '保存更改' : '保存'}
+            {editingSkillId ? uiText("保存更改") : uiText("保存")}
           </button>
         </div>
       </div>
@@ -556,33 +553,30 @@ export function SkillsPanel({
           <button
             type="button"
             onClick={beginCreate}
-            title="新建 Skill"
+            title={uiText("新建 Skill")}
             className="flex h-8 items-center gap-1 rounded-full bg-[#111] px-3 text-[12px] font-bold text-white"
           >
-            <Plus size={14} strokeWidth={2.5} /> 新建
-          </button>
+            <Plus size={14} strokeWidth={2.5} /> {uiText("新建")}</button>
           {desktopMode && (
             <button
               type="button"
               onClick={() => void importSkill()}
               className="flex h-8 items-center gap-1 rounded-full border border-black/10 px-2.5 text-[12px] font-semibold text-[#333] hover:bg-black/[0.04]"
-              title="从本地 Markdown 文件导入 Skill"
+              title={uiText("从本地 Markdown 文件导入 Skill")}
             >
-              <Upload size={14} /> 导入
-            </button>
+              <Upload size={14} /> {uiText("导入")}</button>
           )}
           <button
             type="button"
             onClick={() => {
               const target = filtered.find((s) => String(s.id) === hoverId) ?? filtered[0]
               if (target) void openDetail(target)
-              else toastError('暂无 Skill，请先新建或等待默认 Skill 同步')
+              else toastError(uiText("暂无 Skill，请先新建或等待默认 Skill 同步"))
             }}
             className="flex h-8 items-center gap-1 rounded-full px-2.5 text-[12px] font-semibold text-[#333] hover:bg-black/[0.04]"
-            title="查看详情"
+            title={uiText("查看详情")}
           >
-            <SlidersHorizontal size={14} /> 管理
-          </button>
+            <SlidersHorizontal size={14} /> {uiText("管理")}</button>
           <button type="button" onClick={onClose} className="rounded-full p-1.5 text-[#888] hover:bg-black/[0.04]">
             <X size={16} />
           </button>
@@ -595,7 +589,7 @@ export function SkillsPanel({
           <input
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
-            placeholder="搜索名称或描述"
+            placeholder={uiText("搜索名称或描述")}
             className="h-full w-full bg-transparent text-[13px] text-[#111] outline-none placeholder:text-[#9ca3af]"
           />
         </div>
@@ -612,22 +606,21 @@ export function SkillsPanel({
                 }`}
               >
                 <Icon size={13} strokeWidth={activeCat ? 2.25 : 2} />
-                {label}
+                {uiText(label)}
               </button>
             )
           })}
         </div>
         {desktopMode && (
           <p className="mt-2 rounded-lg bg-[#f8f9fb] px-2.5 py-2 text-[10px] leading-relaxed text-[#6b7280]">
-            项目 Skill 保存在当前项目中；编辑会保留历史版本，删除会移入项目内的已删除存档。
-          </p>
+            {uiText("项目 Skill 保存在当前项目中；编辑会保留历史版本，删除会移入项目内的已删除存档。")}</p>
         )}
       </div>
 
       <div className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-        {loading && <p className="px-3 py-6 text-center text-[12px] text-[#999]">加载中…</p>}
+        {loading && <p className="px-3 py-6 text-center text-[12px] text-[#999]">{uiText("加载中…")}</p>}
         {!loading && filtered.length === 0 && (
-          <p className="px-3 py-8 text-center text-[12px] text-[#999]">暂无 Skill</p>
+          <p className="px-3 py-8 text-center text-[12px] text-[#999]">{uiText("暂无 Skill")}</p>
         )}
         {filtered.map((s) => {
           const id = String(s.id)
@@ -657,7 +650,7 @@ export function SkillsPanel({
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span className="block truncate text-[14px] font-bold text-[#111]">{s.name}</span>
                   {desktopMode && loadedSkillIds.includes(id) && (
-                    <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">本会话已加载</span>
+                    <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">{uiText("本会话已加载")}</span>
                   )}
                 </span>
                 <span className="mt-0.5 block truncate text-[12px] text-[#9ca3af]">
@@ -684,10 +677,10 @@ export function SkillsPanel({
         <button type="button" className="rounded-full p-2 text-[#2563eb]" title="Skills" aria-current="page">
           <Puzzle size={18} />
         </button>
-        <button type="button" onClick={onBackToChat} className="rounded-full p-2 text-[#9ca3af] hover:text-[#555]" title="偏好">
+        <button type="button" onClick={onBackToChat} className="rounded-full p-2 text-[#9ca3af] hover:text-[#555]" title={uiText("偏好")}>
           <SlidersHorizontal size={18} />
         </button>
-        <button type="button" onClick={onBackToChat} className="rounded-full p-2 text-[#9ca3af] hover:text-[#555]" title="对话">
+        <button type="button" onClick={onBackToChat} className="rounded-full p-2 text-[#9ca3af] hover:text-[#555]" title={uiText("对话")}>
           <CheckCircle2 size={18} />
         </button>
       </div>

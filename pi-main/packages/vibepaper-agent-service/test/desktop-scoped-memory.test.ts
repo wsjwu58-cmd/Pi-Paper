@@ -1,14 +1,16 @@
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { openDesktopAgentStores } from "../src/desktop/agent-stores.ts";
 import { DesktopProjectMemory } from "../src/desktop/project-memory.ts";
 import { DesktopScopedMemoryStore, desktopCandidateScope } from "../src/desktop/scoped-memory.ts";
 
-const { createLocalProjectStore } = createRequire(import.meta.url)("../../../../vibepaper-desktop/src/project-store.cjs");
+const { createLocalProjectStore } = createRequire(import.meta.url)(
+	"../../../../vibepaper-desktop/src/project-store.cjs",
+);
 
 it("maps project, canvas and general preference hints to distinct desktop scopes", () => {
 	expect(desktopCandidateScope("记住这个项目的主角姓林", "long_term")).toBe("project");
@@ -37,7 +39,13 @@ describe("desktop scoped memory", () => {
 		agentStores = await openDesktopAgentStores(projectDirectory);
 		memory = new DesktopProjectMemory(projectDirectory, projectId, { userDataDirectory });
 		await memory.initialize();
-		scoped = new DesktopScopedMemoryStore(projectDirectory, projectId, agentStores.sessions, memory, agentStores.control);
+		scoped = new DesktopScopedMemoryStore(
+			projectDirectory,
+			projectId,
+			agentStores.sessions,
+			memory,
+			agentStores.control,
+		);
 		await scoped.initialize();
 	});
 
@@ -73,8 +81,17 @@ describe("desktop scoped memory", () => {
 		expect(daily.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/u);
 		expect((await scoped.list("project")).items.map((item) => item.id)).not.toContain(canvas.id);
 
-		const projectMetadata = JSON.parse(await readFile(join(projectDirectory, ".vibepaper", "project.json"), "utf8")) as { canvasId: string };
-		const canvasFile = join(projectDirectory, ".vibepaper", "agent", "memory", "canvas", `${await sha256(projectMetadata.canvasId)}.md`);
+		const projectMetadata = JSON.parse(
+			await readFile(join(projectDirectory, ".vibepaper", "project.json"), "utf8"),
+		) as { canvasId: string };
+		const canvasFile = join(
+			projectDirectory,
+			".vibepaper",
+			"agent",
+			"memory",
+			"canvas",
+			`${await sha256(projectMetadata.canvasId)}.md`,
+		);
 		expect(await readFile(canvasFile, "utf8")).toContain("柔和的纸张质感");
 		const dailyFiles = await readdir(join(projectDirectory, ".vibepaper", "agent", "daily-memory"));
 		expect(dailyFiles).toContain(`${new Date().toISOString().slice(0, 10)}.md`);
@@ -100,8 +117,11 @@ describe("desktop scoped memory", () => {
 		const accepted = await scoped.reviewCandidate(candidate.id, "accept");
 		expect(accepted.status).toBe("accepted");
 		expect(accepted.item).toMatchObject({ scope: "global", content: candidate.content });
-		expect(accepted.item).toMatchObject({ confidence: candidate.confidence,
-			source: candidate.source, memoryType: candidate.memoryType });
+		expect(accepted.item).toMatchObject({
+			confidence: candidate.confidence,
+			source: candidate.source,
+			memoryType: candidate.memoryType,
+		});
 		expect((await scoped.list("global")).items).toMatchObject([{ content: candidate.content }]);
 		expect((await scoped.listCandidates()).items).toEqual([]);
 		await expect(scoped.reviewCandidate(candidate.id, "accept")).rejects.toThrow("NOT_FOUND");
@@ -110,11 +130,17 @@ describe("desktop scoped memory", () => {
 	it("deduplicates an accepted memory when a crash happens before candidate status is saved", async () => {
 		let failNextStatusUpdate = true;
 		const candidates = {
-			listPendingDesktopMemoryCandidates: agentStores.control.listPendingDesktopMemoryCandidates.bind(agentStores.control),
-			findPendingDesktopMemoryCandidate: agentStores.control.findPendingDesktopMemoryCandidate.bind(agentStores.control),
+			listPendingDesktopMemoryCandidates: agentStores.control.listPendingDesktopMemoryCandidates.bind(
+				agentStores.control,
+			),
+			findPendingDesktopMemoryCandidate: agentStores.control.findPendingDesktopMemoryCandidate.bind(
+				agentStores.control,
+			),
 			getDesktopMemoryCandidate: agentStores.control.getDesktopMemoryCandidate.bind(agentStores.control),
 			saveDesktopMemoryCandidate: agentStores.control.saveDesktopMemoryCandidate.bind(agentStores.control),
-			updateDesktopMemoryCandidateStatus: (...args: Parameters<typeof agentStores.control.updateDesktopMemoryCandidateStatus>) => {
+			updateDesktopMemoryCandidateStatus: (
+				...args: Parameters<typeof agentStores.control.updateDesktopMemoryCandidateStatus>
+			) => {
 				if (failNextStatusUpdate) {
 					failNextStatusUpdate = false;
 					return false;
@@ -122,7 +148,13 @@ describe("desktop scoped memory", () => {
 				return agentStores.control.updateDesktopMemoryCandidateStatus(...args);
 			},
 		};
-		const retryable = new DesktopScopedMemoryStore(projectDirectory, projectId, agentStores.sessions, memory, candidates);
+		const retryable = new DesktopScopedMemoryStore(
+			projectDirectory,
+			projectId,
+			agentStores.sessions,
+			memory,
+			candidates,
+		);
 		await retryable.initialize();
 		const candidate = await retryable.proposeCandidate({ scope: "global", content: "默认使用克制的暖色" });
 
@@ -152,7 +184,13 @@ describe("desktop scoped memory", () => {
 			userDataDirectory: join(temporaryRoot, "user-data"),
 		});
 		await memory.initialize();
-		scoped = new DesktopScopedMemoryStore(projectDirectory, projectId, agentStores.sessions, memory, agentStores.control);
+		scoped = new DesktopScopedMemoryStore(
+			projectDirectory,
+			projectId,
+			agentStores.sessions,
+			memory,
+			agentStores.control,
+		);
 		await scoped.initialize();
 
 		expect(await scoped.list("session", session.id)).toMatchObject({

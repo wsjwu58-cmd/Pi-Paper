@@ -20,6 +20,8 @@ const MAX_CANVAS_BYTES = 32 * 1024 * 1024
 const MAX_ASSET_BYTES = 200 * 1024 * 1024
 const MAX_TASK_INPUT_BYTES = 1024 * 1024
 const MAX_TASK_OUTPUT_BYTES = 4 * 1024 * 1024 * 1024
+const MAX_MCP_IMAGE_OUTPUT_BYTES = 4 * 1024 * 1024
+const MAX_MCP_VIDEO_OUTPUT_BYTES = 8 * 1024 * 1024
 const MAX_TASK_SEARCH_PAGE = 1_000_000
 const MAX_TASK_SEARCH_PAGE_SIZE = 100
 const COMPOSE_PROVIDER_ID = 'mock-compose'
@@ -1027,6 +1029,34 @@ async function resolveTaskOutputFile(dataDirectory, taskId, modality, relativePa
     throw new Error('生成结果文件超过本地结果上限。')
   }
   return { filePath: actualPath, fingerprint, ...digest }
+}
+
+function mcpTaskOutputError(code, message = code) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
+function sameTaskOutputPath(left, right) {
+  const resolvedLeft = path.resolve(left)
+  const resolvedRight = path.resolve(right)
+  return process.platform === 'win32'
+    ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
+    : resolvedLeft === resolvedRight
+}
+
+function sniffMcpTaskOutputMimeType(bytes, extension) {
+  if (extension === '.png' && bytes.length >= 8
+    && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png'
+  if (['.jpg', '.jpeg'].includes(extension) && bytes.length >= 4
+    && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9) return 'image/jpeg'
+  if (extension === '.webp' && bytes.length >= 12
+    && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'image/webp'
+  if (extension === '.webm' && bytes.length >= 4
+    && bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) return 'video/webm'
+  if (['.mp4', '.mov'].includes(extension) && bytes.length >= 12
+    && bytes.toString('ascii', 4, 8) === 'ftyp') return extension === '.mov' ? 'video/quicktime' : 'video/mp4'
+  return null
 }
 
 async function ensureTaskOutputDirectory(dataDirectory, taskId) {
@@ -5238,6 +5268,131 @@ function createLocalProjectStore() {
     })
   }
 
+  function readTaskOutputMedia(projectId, taskId, outputIndex = 0) {
+    return enqueue(async () => {
+      if (!active || projectId !== active.metadata.projectId) {
+        throw mcpTaskOutputError('PROJECT_CHANGED', '当前项目已更改，无法读取任务结果。')
+      }
+      if (typeof taskId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(taskId)
+        || !Number.isSafeInteger(outputIndex)
+        || outputIndex < 0 || outputIndex > 3) throw mcpTaskOutputError('INVALID_INPUT', '任务结果查询参数无效。')
+      const row = active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} WHERE tasks.task_id = ?`).get(taskId)
+      if (!row || row.status !== 'succeeded' || !['image', 'video', 'compose'].includes(row.modality)) {
+        throw mcpTaskOutputError('TASK_NOT_FOUND', '此任务没有可读取的图片或视频结果。')
+      }
+      const operation = taskOperationFromInput(row.input_json)
+      const indexedOutput = active.database.prepare(`SELECT output_path, output_sha256, output_size_bytes, output_metadata_json
+        FROM task_outputs WHERE task_id = ? AND output_index = ?`).get(taskId, outputIndex)
+      const outputRow = indexedOutput ?? (outputIndex === 0 ? {
+        output_path: row.output_path,
+        output_sha256: row.output_sha256,
+        output_size_bytes: row.output_size_bytes,
+        output_metadata_json: null,
+      } : null)
+      if (!outputRow) throw mcpTaskOutputError('TASK_OUTPUT_NOT_FOUND', '任务没有此序号的结果。')
+
+      let rawOutputMeta = null
+      try {
+        rawOutputMeta = typeof outputRow.output_metadata_json === 'string'
+          ? JSON.parse(outputRow.output_metadata_json)
+          : typeof row.output_metadata === 'string' ? JSON.parse(row.output_metadata) : null
+      } catch {
+        rawOutputMeta = null
+      }
+      let outputType = row.modality === 'compose' ? 'video' : row.modality
+      if (row.provider_type === 'local' && row.provider_id === 'local-media-tools') {
+        let parameters
+        try {
+          parameters = JSON.parse(row.input_json)
+        } catch {
+          throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果元数据无效。')
+        }
+        const outputMeta = normalizeLocalMediaOutputMeta(rawOutputMeta, row, parameters)
+        if (!outputMeta) throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果元数据无效。')
+        outputType = outputMeta.outputType
+      }
+      if (!['image', 'video'].includes(outputType)) {
+        throw mcpTaskOutputError('UNSUPPORTED', '此任务结果不是图片或视频。')
+      }
+      const maxBytes = outputType === 'image' ? MAX_MCP_IMAGE_OUTPUT_BYTES : MAX_MCP_VIDEO_OUTPUT_BYTES
+      if (!Number.isSafeInteger(outputRow.output_size_bytes) || outputRow.output_size_bytes <= 0) {
+        throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果大小无效。')
+      }
+      if (outputRow.output_size_bytes > maxBytes) {
+        throw mcpTaskOutputError('OUTPUT_TOO_LARGE', '任务媒体结果超过 MCP 读取上限。')
+      }
+
+      const dataDirectory = path.join(active.directory, '.vibepaper')
+      const generatedDirectory = path.join(dataDirectory, 'generated')
+      const taskDirectory = path.join(generatedDirectory, taskId)
+      for (const directory of [dataDirectory, generatedDirectory, taskDirectory]) {
+        const info = await fs.lstat(directory).catch(() => null)
+        if (!info?.isDirectory() || info.isSymbolicLink()
+          || !sameTaskOutputPath(directory, await fs.realpath(directory).catch(() => ''))) {
+          throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果目录无效。')
+        }
+      }
+      let expectedPath
+      try {
+        validateTaskOutputRelativePath(taskId, row.modality, outputRow.output_path, operation)
+        expectedPath = path.resolve(dataDirectory, ...outputRow.output_path.split('/'))
+      } catch {
+        throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果路径无效。')
+      }
+      const relativeToTask = path.relative(taskDirectory, expectedPath)
+      if (!relativeToTask || relativeToTask.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToTask)) {
+        throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果路径越界。')
+      }
+      const beforeInfo = await fs.lstat(expectedPath).catch(() => null)
+      const beforeRealPath = await fs.realpath(expectedPath).catch(() => '')
+      if (!beforeInfo?.isFile() || beforeInfo.isSymbolicLink() || beforeInfo.size !== outputRow.output_size_bytes
+        || beforeInfo.size <= 0 || beforeInfo.size > maxBytes
+        || !sameTaskOutputPath(expectedPath, beforeRealPath)) {
+        throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果文件无效。')
+      }
+      const noFollow = nativeFs.constants.O_NOFOLLOW || 0
+      const handle = await fs.open(expectedPath, nativeFs.constants.O_RDONLY | noFollow).catch(() => null)
+      if (!handle) throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果文件无法打开。')
+      const bytes = Buffer.alloc(outputRow.output_size_bytes)
+      try {
+        const openedInfo = await handle.stat()
+        if (!openedInfo.isFile() || openedInfo.size !== beforeInfo.size
+          || (beforeInfo.dev !== undefined && openedInfo.dev !== beforeInfo.dev)
+          || (beforeInfo.ino !== undefined && openedInfo.ino !== beforeInfo.ino)) {
+          throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果文件在读取期间发生变化。')
+        }
+        let offset = 0
+        while (offset < bytes.length) {
+          const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset)
+          if (bytesRead <= 0) throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '任务结果文件读取不完整。')
+          offset += bytesRead
+        }
+        const afterInfo = await handle.stat()
+        const afterPathInfo = await fs.lstat(expectedPath).catch(() => null)
+        const afterRealPath = await fs.realpath(expectedPath).catch(() => '')
+        if (!afterInfo.isFile() || afterInfo.size !== bytes.length || !afterPathInfo?.isFile()
+          || afterPathInfo.isSymbolicLink() || !sameTaskOutputPath(expectedPath, afterRealPath)
+          || (afterInfo.dev !== undefined && afterPathInfo.dev !== afterInfo.dev)
+          || (afterInfo.ino !== undefined && afterPathInfo.ino !== afterInfo.ino)
+          || createHash('sha256').update(bytes).digest('hex') !== outputRow.output_sha256) {
+          throw mcpTaskOutputError('TASK_OUTPUT_UNAVAILABLE', '读取任务结果时校验失败。')
+        }
+        const extension = path.extname(expectedPath).toLowerCase()
+        const mimeType = sniffMcpTaskOutputMimeType(bytes, extension)
+        if (!mimeType || (outputType === 'image' && !mimeType.startsWith('image/'))
+          || (outputType === 'video' && !mimeType.startsWith('video/'))) {
+          throw mcpTaskOutputError('OUTPUT_MIME_MISMATCH', '任务结果内容与媒体类型不匹配。')
+        }
+        return { bytes, mimeType, modality: outputType, outputIndex, sizeBytes: bytes.length }
+      } catch (error) {
+        bytes.fill(0)
+        throw error
+      } finally {
+        await handle.close().catch(() => undefined)
+      }
+    })
+  }
+
   function listTaskEvents(projectId, taskId, afterSeq = 0) {
     return enqueue(() => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务记录。')
@@ -8244,6 +8399,7 @@ function createLocalProjectStore() {
     readTaskOutputText,
     resolveComposeInputPaths,
     resolveTaskOutputForPreview,
+    readTaskOutputMedia,
     loadCanvas,
     openProject,
     recordTaskFailed,

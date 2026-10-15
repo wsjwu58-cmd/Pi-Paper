@@ -73,7 +73,11 @@ function parseContext(value: unknown): SessionContext | undefined {
 	if (typeof context.schemaVersion !== "number" || typeof context.sessionId !== "string") return undefined;
 	if (typeof context.canvasVersion !== "number" || typeof context.compactedToEventSeq !== "number") return undefined;
 	if (!Array.isArray(context.constraints) || !Array.isArray(context.activePlan)) return undefined;
-	if (!Array.isArray(context.completedSteps) || !Array.isArray(context.pendingSteps) || !Array.isArray(context.nodeRefs))
+	if (
+		!Array.isArray(context.completedSteps) ||
+		!Array.isArray(context.pendingSteps) ||
+		!Array.isArray(context.nodeRefs)
+	)
 		return undefined;
 	if (typeof context.tasks !== "object" || context.tasks === null || Array.isArray(context.tasks)) return undefined;
 	return context as SessionContext;

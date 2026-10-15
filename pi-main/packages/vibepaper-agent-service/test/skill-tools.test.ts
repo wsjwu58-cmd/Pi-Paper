@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { rehydratedSkillInstructions } from "../src/application/agent-runtime.ts";
 import { SYSTEM_SKILLS } from "../src/domain/skill-manifest.ts";
 import { createLoadSkillTool } from "../src/tools/skill-tools.ts";
-import { rehydratedSkillInstructions } from "../src/application/agent-runtime.ts";
 
 describe("Skill progressive disclosure", () => {
 	it("extracts all workspace skills with the correct builtin/dynamic split", () => {

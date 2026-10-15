@@ -1,6 +1,45 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
+// Provider-input requests contain only public configuration. Keep a short
+// renderer-local queue so a request survives a route transition until the
+// original provider configuration page mounts; credentials never enter it.
+const mcpProviderInputListeners = new Set()
+const mcpProviderInputQueue = []
+ipcRenderer.on('desktop:mcp:provider-input', (_event, payload) => {
+  if (mcpProviderInputListeners.size) {
+    for (const listener of mcpProviderInputListeners) listener(payload)
+    return
+  }
+  mcpProviderInputQueue.push(payload)
+  if (mcpProviderInputQueue.length > 5) mcpProviderInputQueue.shift()
+})
+
 contextBridge.exposeInMainWorld('vibepaperDesktop', {
+  getUiLanguage: () => ipcRenderer.invoke('desktop:ui-language:get'),
+  setUiLanguage: (preference) => ipcRenderer.invoke('desktop:ui-language:set', preference),
+  getMcpState: () => ipcRenderer.invoke('desktop:mcp:state:get'),
+  setMcpEnabled: (enabled) => ipcRenderer.invoke('desktop:mcp:enabled:set', enabled),
+  createMcpClientGrant: (input) => ipcRenderer.invoke('desktop:mcp:client:create', input),
+  revokeMcpClientGrant: (clientId) => ipcRenderer.invoke('desktop:mcp:client:revoke', clientId),
+  getMcpPendingActions: () => ipcRenderer.invoke('desktop:mcp:actions:list'),
+  resolveMcpPendingAction: (input) => ipcRenderer.invoke('desktop:mcp:actions:resolve', input),
+  setMcpCanvasReady: (input) => ipcRenderer.invoke('desktop:mcp:canvas-ready:set', input),
+  respondMcpCanvasFlush: (input) => ipcRenderer.invoke('desktop:mcp:canvas-flush:respond', input),
+  subscribeMcpEvents: (listener) => {
+    const handleEvent = (_event, payload) => listener(payload)
+    ipcRenderer.on('desktop:mcp:event', handleEvent)
+    return () => ipcRenderer.removeListener('desktop:mcp:event', handleEvent)
+  },
+  subscribeMcpCanvasFlush: (listener) => {
+    const handleFlush = (_event, payload) => listener(payload)
+    ipcRenderer.on('desktop:mcp:canvas-flush', handleFlush)
+    return () => ipcRenderer.removeListener('desktop:mcp:canvas-flush', handleFlush)
+  },
+  subscribeMcpProviderInput: (listener) => {
+    mcpProviderInputListeners.add(listener)
+    for (const payload of mcpProviderInputQueue.splice(0)) listener(payload)
+    return () => mcpProviderInputListeners.delete(listener)
+  },
   getActiveProject: () => ipcRenderer.invoke('desktop:project:get-active'),
   listRecentProjects: () => ipcRenderer.invoke('desktop:project:list-recent'),
   openRecentProject: (projectId) => ipcRenderer.invoke('desktop:project:open-recent', projectId),
@@ -73,7 +112,7 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   getAgnesModels: () => ipcRenderer.invoke('desktop:model:get-agnes'),
   getProviderConfiguration: () => ipcRenderer.invoke('desktop:model:providers:get'),
   saveProviderConfiguration: (input) => ipcRenderer.invoke('desktop:model:providers:save', input),
-  clearProviderConfiguration: (providerId) => ipcRenderer.invoke('desktop:model:providers:clear', providerId),
+  clearProviderConfiguration: (providerId, expectedRevision) => ipcRenderer.invoke('desktop:model:providers:clear', providerId, expectedRevision),
   testProviderConfiguration: (input) => ipcRenderer.invoke('desktop:model:providers:test', input),
   saveAgnesApiKey: (apiKey) => ipcRenderer.invoke('desktop:model:save-agnes-key', apiKey),
   clearAgnesApiKey: () => ipcRenderer.invoke('desktop:model:clear-agnes-key'),

@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { MemoryService, type MemoryRepository } from "../application/memory-service.ts";
+import { type MemoryRepository, MemoryService } from "../application/memory-service.ts";
 import type { MemoryRecord } from "../domain/memory.ts";
-import type { DesktopAgentSessionStore } from "./session-store.ts";
+import type { DesktopAgentControlStore, DesktopMemoryCandidateRecord } from "./control-store.ts";
 import {
 	type DesktopProjectMemory,
 	normalizeDesktopMemoryContent,
@@ -11,10 +11,7 @@ import {
 	replaceMarkdownMemoryContent,
 	writeMarkdownMemoryFile,
 } from "./project-memory.ts";
-import type {
-	DesktopMemoryCandidateRecord,
-	DesktopAgentControlStore,
-} from "./control-store.ts";
+import type { DesktopAgentSessionStore } from "./session-store.ts";
 
 const MEMORY_SCHEMA_VERSION = 1;
 const MAX_MEMORY_ID_LENGTH = 128;
@@ -68,12 +65,13 @@ export type DesktopMemoryCandidate = {
 
 type ProjectMetadata = { projectId: string; canvasId: string };
 type SessionScopeValidator = Pick<DesktopAgentSessionStore, "listSessions" | "openSession">;
-type CandidateStore = Pick<DesktopAgentControlStore,
-	"listPendingDesktopMemoryCandidates" |
-	"findPendingDesktopMemoryCandidate" |
-	"getDesktopMemoryCandidate" |
-	"saveDesktopMemoryCandidate" |
-	"updateDesktopMemoryCandidateStatus"
+type CandidateStore = Pick<
+	DesktopAgentControlStore,
+	| "listPendingDesktopMemoryCandidates"
+	| "findPendingDesktopMemoryCandidate"
+	| "getDesktopMemoryCandidate"
+	| "saveDesktopMemoryCandidate"
+	| "updateDesktopMemoryCandidateStatus"
 >;
 
 type ScopeFile = {
@@ -87,9 +85,24 @@ type ScopeFile = {
 };
 
 const SCOPED_MEMORY_HEADERS: Record<ScopeFile["scope"], string> = {
-	session: ["# VibePaper session memory", "", "<!-- schemaVersion: 1; scope: session; user-authored session continuity. -->", ""].join("\n"),
-	canvas: ["# VibePaper canvas memory", "", "<!-- schemaVersion: 1; scope: canvas; user-authored canvas preferences. -->", ""].join("\n"),
-	daily: ["# VibePaper daily memory", "", "<!-- schemaVersion: 1; scope: daily; entries expire at the next UTC day boundary. -->", ""].join("\n"),
+	session: [
+		"# VibePaper session memory",
+		"",
+		"<!-- schemaVersion: 1; scope: session; user-authored session continuity. -->",
+		"",
+	].join("\n"),
+	canvas: [
+		"# VibePaper canvas memory",
+		"",
+		"<!-- schemaVersion: 1; scope: canvas; user-authored canvas preferences. -->",
+		"",
+	].join("\n"),
+	daily: [
+		"# VibePaper daily memory",
+		"",
+		"<!-- schemaVersion: 1; scope: daily; entries expire at the next UTC day boundary. -->",
+		"",
+	].join("\n"),
 };
 
 class BoundMarkdownMemoryRepository implements MemoryRepository {
@@ -118,8 +131,12 @@ class BoundMarkdownMemoryRepository implements MemoryRepository {
 	}
 
 	async save(record: MemoryRecord): Promise<void> {
-		if (record.userId !== this.scopeFile.ownerId || record.scope !== this.scopeFile.scope
-			|| record.sessionId !== this.scopeFile.sessionId || record.canvasId !== this.scopeFile.canvasId) {
+		if (
+			record.userId !== this.scopeFile.ownerId ||
+			record.scope !== this.scopeFile.scope ||
+			record.sessionId !== this.scopeFile.sessionId ||
+			record.canvasId !== this.scopeFile.canvasId
+		) {
 			throw new Error("PERMISSION_DENIED");
 		}
 		const records = [...(await this.list())];
@@ -143,7 +160,7 @@ class BoundMarkdownMemoryRepository implements MemoryRepository {
 	async replaceContent(memoryId: string, userId: string, content: string): Promise<MemoryRecord> {
 		if (userId !== this.scopeFile.ownerId) throw new Error("PERMISSION_DENIED");
 		return await replaceMarkdownMemoryContent(
-			async () => [...await this.list()],
+			async () => [...(await this.list())],
 			this.write.bind(this),
 			memoryId,
 			content,
@@ -275,7 +292,10 @@ export class DesktopScopedMemoryStore {
 			if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
 				throw new Error("AGENT_MEMORY_CANDIDATE_INVALID");
 			}
-			if (input.sourceEventSeq !== undefined && (!Number.isSafeInteger(input.sourceEventSeq) || input.sourceEventSeq < 0)) {
+			if (
+				input.sourceEventSeq !== undefined &&
+				(!Number.isSafeInteger(input.sourceEventSeq) || input.sourceEventSeq < 0)
+			) {
 				throw new Error("AGENT_MEMORY_CANDIDATE_INVALID");
 			}
 			const context = await this.scopeContext(input.scope, input.sessionId);
@@ -284,7 +304,9 @@ export class DesktopScopedMemoryStore {
 				throw new Error("AGENT_MEMORY_CANDIDATE_INVALID");
 			}
 			const dedupeKey = createHash("sha256")
-				.update(`${input.scope}:${context.sessionId ?? ""}:${context.canvasId ?? ""}:${content.toLocaleLowerCase()}`)
+				.update(
+					`${input.scope}:${context.sessionId ?? ""}:${context.canvasId ?? ""}:${content.toLocaleLowerCase()}`,
+				)
 				.digest("hex");
 			const existing = this.candidateStore.findPendingDesktopMemoryCandidate(this.projectId, input.scope, dedupeKey);
 			if (existing) return toDesktopMemoryCandidate(existing);
@@ -305,7 +327,11 @@ export class DesktopScopedMemoryStore {
 				createdAt: new Date(),
 			};
 			if (!this.candidateStore.saveDesktopMemoryCandidate(candidate)) {
-				const duplicate = this.candidateStore.findPendingDesktopMemoryCandidate(this.projectId, input.scope, dedupeKey);
+				const duplicate = this.candidateStore.findPendingDesktopMemoryCandidate(
+					this.projectId,
+					input.scope,
+					dedupeKey,
+				);
 				if (duplicate) return toDesktopMemoryCandidate(duplicate);
 				throw new Error("AGENT_MEMORY_CANDIDATE_SAVE_FAILED");
 			}
@@ -315,7 +341,8 @@ export class DesktopScopedMemoryStore {
 
 	async listCandidates(): Promise<{ items: DesktopMemoryCandidate[] }> {
 		const now = Date.now();
-		const items = this.candidateStore.listPendingDesktopMemoryCandidates(this.projectId)
+		const items = this.candidateStore
+			.listPendingDesktopMemoryCandidates(this.projectId)
 			.filter((candidate) => !candidate.expiresAt || candidate.expiresAt.getTime() > now)
 			.slice(0, MAX_CANDIDATES)
 			.map(toDesktopMemoryCandidate);
@@ -349,11 +376,13 @@ export class DesktopScopedMemoryStore {
 	private async listRecords(scope: DesktopMemoryScope, sessionId?: string): Promise<MemoryRecord[]> {
 		if (!isDesktopMemoryScope(scope)) throw new Error("AGENT_MEMORY_SCOPE_INVALID");
 		if (scope === "project" || scope === "global") {
-			return [...await this.projectMemory.listManaged(scope)];
+			return [...(await this.projectMemory.listManaged(scope))];
 		}
 		const repository = await this.repositoryFor(scope, sessionId);
 		const now = new Date();
-		return (await repository.list()).filter((record) => !record.deleted && (!record.expiresAt || record.expiresAt > now));
+		return (await repository.list()).filter(
+			(record) => !record.deleted && (!record.expiresAt || record.expiresAt > now),
+		);
 	}
 
 	private async createInternal(
@@ -394,7 +423,7 @@ export class DesktopScopedMemoryStore {
 		knownContext?: { sessionId?: string; canvasId?: string },
 	): Promise<BoundMarkdownMemoryRepository> {
 		if (scope === "project" || scope === "global") throw new Error("AGENT_MEMORY_SCOPE_INVALID");
-		const context = knownContext ?? await this.scopeContext(scope, sessionId);
+		const context = knownContext ?? (await this.scopeContext(scope, sessionId));
 		const paths = await this.requireProjectPaths();
 		let directory: string;
 		let file: string;
@@ -484,7 +513,10 @@ export class DesktopScopedMemoryStore {
 
 	private async mutate<T>(operation: () => Promise<T>): Promise<T> {
 		const result = this.mutationTail.then(operation);
-		this.mutationTail = result.then(() => undefined, () => undefined);
+		this.mutationTail = result.then(
+			() => undefined,
+			() => undefined,
+		);
 		return await result;
 	}
 }
@@ -529,10 +561,15 @@ function toDesktopMemoryCandidate(candidate: DesktopMemoryCandidateRecord): Desk
 }
 
 function defaultMemoryType(scope: DesktopMemoryScope): string {
-	return scope === "project" ? "project_preference"
-		: scope === "global" ? "preference"
-			: scope === "canvas" ? "project_rule"
-				: scope === "session" ? "session_memory" : "daily_note";
+	return scope === "project"
+		? "project_preference"
+		: scope === "global"
+			? "preference"
+			: scope === "canvas"
+				? "project_rule"
+				: scope === "session"
+					? "session_memory"
+					: "daily_note";
 }
 
 function isDesktopMemoryScope(value: unknown): value is DesktopMemoryScope {
@@ -564,8 +601,12 @@ function utcNextDay(value: Date): Date {
 function decodeProjectMetadata(value: unknown, projectId: string): ProjectMetadata {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("AGENT_PROJECT_CHANGED");
 	const metadata = value as Record<string, unknown>;
-	if (metadata.projectId !== projectId || typeof metadata.canvasId !== "string"
-		|| !metadata.canvasId.trim() || metadata.canvasId.length > MAX_CANVAS_ID_LENGTH) {
+	if (
+		metadata.projectId !== projectId ||
+		typeof metadata.canvasId !== "string" ||
+		!metadata.canvasId.trim() ||
+		metadata.canvasId.length > MAX_CANVAS_ID_LENGTH
+	) {
 		throw new Error("AGENT_PROJECT_CHANGED");
 	}
 	return { projectId, canvasId: metadata.canvasId };
@@ -604,7 +645,10 @@ async function requireProjectFile(filePath: string, projectDirectory: string, er
 
 function isWithin(parent: string, candidate: string): boolean {
 	const relativePath = relative(parent, candidate);
-	return relativePath === "" || (!isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${sep}`));
+	return (
+		relativePath === "" ||
+		(!isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${sep}`))
+	);
 }
 
 function nodeErrorCode(error: unknown): string | undefined {

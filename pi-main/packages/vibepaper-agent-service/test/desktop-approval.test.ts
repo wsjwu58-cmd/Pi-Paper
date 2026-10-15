@@ -356,8 +356,14 @@ describe("desktop persisted approvals", () => {
 			const acceptedTaskEvent = (await store.listEvents(single.run.runId)).find(
 				(event) => event.type === "task_status" && event.data.task_id === singleTask.taskId,
 			);
-			expect(acceptedTaskEvent?.data).toMatchObject({ actionId: single.action.actionId, actionStatus: "accepted", status: "queued" });
-			expect((await store.listEvents(single.run.runId)).filter((event) => event.type === "run_completed")).toHaveLength(0);
+			expect(acceptedTaskEvent?.data).toMatchObject({
+				actionId: single.action.actionId,
+				actionStatus: "accepted",
+				status: "queued",
+			});
+			expect(
+				(await store.listEvents(single.run.runId)).filter((event) => event.type === "run_completed"),
+			).toHaveLength(0);
 			expect(singleTask).toMatchObject({ status: "queued", modality: "audio", nodeId: "audio-node-1" });
 			await confirmDesktopGenerationAction(confirmation(single), stores, singleGateway.gateway);
 			expect(singleGateway.creationWrites).toBe(1);

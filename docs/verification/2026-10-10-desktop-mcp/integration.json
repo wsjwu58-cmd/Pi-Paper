@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "isolatedProfile": true,
+  "fixtureProfile": "E:\\VibePaperProject\\.test-temp\\mcp-integration-1791709588101\\VibePaper",
+  "officialSdk": "1.32.1",
+  "protocol": "stdio",
+  "nodeCount": 7,
+  "oneToOneEdges": 3,
+  "localModelRequests": 1,
+  "taskStatus": "succeeded",
+  "realCloudProviderRequests": 0,
+  "realCodexClaudeSessions": false,
+  "packagedApplication": false,
+  "exportedConfigurationUsed": true
+}

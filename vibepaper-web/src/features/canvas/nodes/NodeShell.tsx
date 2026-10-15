@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
+import { useRef, useState } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -20,6 +21,7 @@ import { sid } from '@/lib/ids'
 import { useAuthedMediaUrl } from '@/lib/media'
 import { useCanvasStore } from '../canvasStore'
 import { NodeEditorDialog, NodeFloatingToolbar } from './NodeEditorPanel'
+import { SoftCollapse, useAnimatedNodeGeometry, useNodeArrival } from '../canvasMotion'
 
 const typeMeta: Record<string, { label: string; icon: LucideIcon; color: string }> = {
   text: { label: '文本', icon: Type, color: '#6366f1' },
@@ -47,7 +49,7 @@ export function statusBadge(status: string): { text: string; cls: string } {
     case 'expired':
       return { text: '已过期', cls: 'bg-slate-200 text-slate-600' }
     default:
-      return { text: '就绪', cls: 'bg-slate-100 text-slate-500' }
+      return { text: uiText("就绪"), cls: 'bg-slate-100 text-slate-500' }
   }
 }
 
@@ -75,7 +77,11 @@ export function NodeShell({
   showEditor?: boolean
   extraSelected?: React.ReactNode
 }) {
+  useUiLanguage()
   const meta = typeMeta[node.type] ?? typeMeta.text
+  const shellRef = useRef<HTMLDivElement>(null)
+  useAnimatedNodeGeometry(sid(node.id), shellRef)
+  const arrivalClass = useNodeArrival(sid(node.id))
   const Icon = meta.icon
   const [fullscreen, setFullscreen] = useState(false)
   const authedMediaUrl = useAuthedMediaUrl(mediaUrl)
@@ -93,7 +99,7 @@ export function NodeShell({
     (node.params.model as string) ||
     preferred?.displayName ||
     preferred?.name ||
-    '选择模型'
+    uiText("选择模型")
 
   // 文本：双击进入编辑；图/音/视频：选中即编辑
   const useNewEditor =
@@ -103,7 +109,7 @@ export function NodeShell({
       : selected && ['image', 'video', 'audio'].includes(node.type))
 
   return (
-    <div className="relative">
+    <div ref={shellRef} className={`relative ${arrivalClass}`}>
       {useNewEditor && (node.type === 'image' || node.type === 'video') && (
         <NodeFloatingToolbar
           node={node}
@@ -115,16 +121,16 @@ export function NodeShell({
       )}
       <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[11px] font-semibold text-[#8e8e93]">
         <Icon size={12} />
-        <span>{meta.label}</span>
+        <span>{uiText(meta.label)}</span>
         <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${statusBadge(node.status).cls}`}>
           {statusBadge(node.status).text}
         </span>
       </div>
       <div
-        className={`${wide || useNewEditor ? 'w-[400px]' : 'w-[300px]'} overflow-hidden rounded-[20px] bg-white shadow-[0_8px_28px_rgba(15,23,42,0.10)] ring-1 ${
+        className={`vp-node-shell overflow-hidden rounded-[20px] bg-white shadow-[0_8px_28px_rgba(15,23,42,0.10)] ring-1 ${
           selected || isEditing ? 'ring-[#111]/35' : 'ring-black/5'
         }`}
-        style={{ outline: node.status === 'running' ? `2px solid ${meta.color}` : undefined }}
+        style={{ width: wide || useNewEditor ? 400 : 300, outline: node.status === 'running' ? `2px solid ${meta.color}` : undefined }}
       >
         <Handle
           type="target"
@@ -145,15 +151,15 @@ export function NodeShell({
           {useNewEditor && node.type !== 'text' && (
             <div className="mb-2 max-h-[160px] overflow-hidden rounded-xl">{children}</div>
           )}
-          {useNewEditor && (
+          <SoftCollapse open={useNewEditor}>
             <NodeEditorDialog
               node={node}
               models={models}
               latest={latest}
               autoFocusPrompt={node.type === 'text'}
             />
-          )}
-          {selected && extraSelected}
+          </SoftCollapse>
+          <SoftCollapse open={selected && Boolean(extraSelected)}>{extraSelected}</SoftCollapse>
         </div>
         {!useNewEditor && (
           <div className="flex items-center gap-2 border-t border-black/6 bg-[#1a1a1a] px-2.5 py-2">
@@ -224,6 +230,7 @@ export function OutputActions({
   onSaveToLibrary: () => void
   mediaType?: 'image' | 'video' | 'audio' | 'text'
 }) {
+  useUiLanguage()
   const [fullscreen, setFullscreen] = useState(false)
   return (
     <>
@@ -235,29 +242,26 @@ export function OutputActions({
             rel="noreferrer"
             className="inline-flex h-8 items-center justify-center gap-1 rounded-lg bg-black/5 px-2.5 text-[12px] font-bold text-[#333] hover:bg-black/10"
           >
-            <Download size={13} /> 下载
-          </a>
+            <Download size={13} /> {uiText("下载")}</a>
         ) : null}
         <button
           type="button"
           onClick={onSaveToLibrary}
           className="inline-flex h-8 items-center justify-center gap-1 rounded-lg bg-black/5 px-2.5 text-[12px] font-bold whitespace-nowrap text-[#333] hover:bg-black/10"
         >
-          <Library size={13} /> 存入素材库
-        </button>
+          <Library size={13} /> {uiText("存入素材库")}</button>
         {url && (mediaType === 'image' || mediaType === 'video') && (
           <button
             type="button"
             onClick={() => setFullscreen(true)}
             className="inline-flex h-8 items-center justify-center rounded-lg bg-black/5 px-2 text-[#333] hover:bg-black/10"
-            title="全屏展示"
+            title={uiText("全屏展示")}
           >
             <Maximize2 size={13} />
           </button>
         )}
         <span className="ml-auto truncate rounded-md bg-emerald-50 px-1.5 py-1 text-[10px] font-bold text-emerald-700">
-          <Check size={11} className="inline" /> 已生成
-        </span>
+          <Check size={11} className="inline" /> {uiText("已生成")}</span>
       </div>
       {fullscreen && url && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 p-6" onClick={() => setFullscreen(false)}>

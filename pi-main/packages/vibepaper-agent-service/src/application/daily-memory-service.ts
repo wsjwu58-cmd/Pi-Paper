@@ -58,9 +58,15 @@ export class DailyMemoryService {
 		const terms = tokenize(query);
 		return (await this.repository.list(userId, dateKey(now)))
 			.filter((entry) => !canvasId || !entry.canvasId || entry.canvasId === canvasId)
-			.map((entry) => ({ entry, score: terms.filter((term) => entry.content.toLocaleLowerCase().includes(term)).length }))
+			.map((entry) => ({
+				entry,
+				score: terms.filter((term) => entry.content.toLocaleLowerCase().includes(term)).length,
+			}))
 			.filter((result) => terms.length === 0 || result.score > 0)
-			.sort((left, right) => right.score - left.score || right.entry.createdAt.getTime() - left.entry.createdAt.getTime())
+			.sort(
+				(left, right) =>
+					right.score - left.score || right.entry.createdAt.getTime() - left.entry.createdAt.getTime(),
+			)
 			.slice(0, Math.max(0, limit))
 			.map((result) => result.entry);
 	}
@@ -83,7 +89,9 @@ export class InMemoryDailyMemoryRepository implements DailyMemoryRepository {
 }
 
 export function extractDailyMemory(content: string): string | undefined {
-	const match = content.trim().match(/^(?:今天|本轮|这次|暂时|当前任务|for today|this turn|this task)\s*[:：,，]?\s*(.{2,500})$/iu);
+	const match = content
+		.trim()
+		.match(/^(?:今天|本轮|这次|暂时|当前任务|for today|this turn|this task)\s*[:：,，]?\s*(.{2,500})$/iu);
 	if (!match?.[1]) return undefined;
 	return match[1].trim().replace(/[。.!！]+$/u, "");
 }
@@ -104,5 +112,7 @@ function secondsUntilNextDay(value: Date): number {
 
 function tokenize(value: string): string[] {
 	const matches = value.toLocaleLowerCase().match(/[\p{Script=Han}]|[a-z0-9_]{2,}/gu);
-	return matches && matches.length > 0 ? [...new Set(matches)] : value.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+	return matches && matches.length > 0
+		? [...new Set(matches)]
+		: value.toLocaleLowerCase().split(/\s+/).filter(Boolean);
 }

@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import type { TokenResponse } from "./types";
 import { parseJsonPreserveIds } from "./ids";
 
@@ -89,7 +90,7 @@ function parseLocalJsonObject(options: RequestInit, label: string): Record<strin
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid')
     return parsed as Record<string, unknown>
   } catch {
-    throw new ApiError(400, 'INVALID_INPUT', `${label}请求无效。`)
+    throw new ApiError(400, 'INVALID_INPUT', uiText("{0}请求无效。", { 0: label }))
   }
 }
 
@@ -99,12 +100,12 @@ function localDramaPathId(segment: string, label: string): string {
     if (!id) throw new Error('empty')
     return id
   } catch {
-    throw new ApiError(400, 'INVALID_INPUT', `${label}标识无效。`)
+    throw new ApiError(400, 'INVALID_INPUT', uiText("{0}标识无效。", { 0: label }))
   }
 }
 
 function localDramaRequiredText(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) throw new ApiError(400, 'INVALID_INPUT', `缺少或非法 ${field}`)
+  if (typeof value !== 'string' || !value.trim()) throw new ApiError(400, 'INVALID_INPUT', uiText("缺少或非法 {0}", { 0: field }))
   return value.trim()
 }
 
@@ -115,7 +116,7 @@ function localDramaOptionalText(value: unknown): string | undefined {
 function localDramaInteger(value: unknown, field: string, fallback?: number): number {
   if (value === undefined && fallback !== undefined) return fallback
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw new ApiError(400, 'INVALID_INPUT', `缺少或非法 ${field}`)
+    throw new ApiError(400, 'INVALID_INPUT', uiText("缺少或非法 {0}", { 0: field }))
   }
   return value
 }
@@ -126,14 +127,14 @@ function localDramaOptionalInteger(value: unknown): number | undefined {
 
 function localDramaStringArray(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every((item) => typeof item === 'string' && item.trim())) {
-    throw new ApiError(400, 'INVALID_INPUT', '字段必须是非空字符串数组')
+    throw new ApiError(400, 'INVALID_INPUT', uiText("字段必须是非空字符串数组"))
   }
   return value.map((item: string) => item.trim())
 }
 
 function localDramaStatus<T extends string>(value: unknown, allowed: readonly T[]): T {
   if (typeof value !== 'string' || !allowed.includes(value as T)) {
-    throw new ApiError(400, 'INVALID_INPUT', 'status 无效')
+    throw new ApiError(400, 'INVALID_INPUT', uiText("status 无效"))
   }
   return value as T
 }
@@ -142,12 +143,12 @@ function localMemoryScope(value: unknown, optional = false): 'session' | 'canvas
   if (optional && value === undefined) return undefined
   if (value === 'long_term' || value === 'project') return 'project'
   if (value === 'session' || value === 'canvas' || value === 'global' || value === 'daily') return value
-  throw new ApiError(400, 'AGENT_MEMORY_SCOPE_INVALID', '记忆范围无效。')
+  throw new ApiError(400, 'AGENT_MEMORY_SCOPE_INVALID', uiText("记忆范围无效。"))
 }
 
 function localMemoryContent(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 2_000) {
-    throw new ApiError(400, 'AGENT_MEMORY_INPUT_INVALID', '记忆内容不能为空且不得超过 2000 个字符。')
+    throw new ApiError(400, 'AGENT_MEMORY_INPUT_INVALID', uiText("记忆内容不能为空且不得超过 2000 个字符。"))
   }
   return value.trim()
 }
@@ -158,7 +159,7 @@ export async function authedFetch(
   options: RequestInit & { idempotencyKey?: string } = {},
 ): Promise<Response> {
   if (typeof window !== "undefined" && (window.vibepaperDesktop || window.location.protocol === "vibe:")) {
-    throw new ApiError(0, "DESKTOP_API_UNAVAILABLE", "此功能尚未接入本地项目，请使用桌面画布中的本地操作入口。");
+    throw new ApiError(0, "DESKTOP_API_UNAVAILABLE", uiText("此功能尚未接入本地项目，请使用桌面画布中的本地操作入口。"));
   }
   const headers: Record<string, string> = {
     ...((options.headers as Record<string, string>) ?? {}),
@@ -199,10 +200,10 @@ export async function api<T = unknown>(
 
   if (typeof window !== "undefined" && (window.vibepaperDesktop || window.location.protocol === "vibe:")) {
     const bridge = window.vibepaperDesktop;
-    if (!bridge) throw new ApiError(0, "DESKTOP_BRIDGE_UNAVAILABLE", "桌面本地桥接不可用，请重新启动桌面应用。")
+    if (!bridge) throw new ApiError(0, "DESKTOP_BRIDGE_UNAVAILABLE", uiText("桌面本地桥接不可用，请重新启动桌面应用。"))
     const url = new URL(path, "http://desktop.local");
     if (url.origin !== "http://desktop.local") {
-      throw new ApiError(0, "DESKTOP_API_UNAVAILABLE", "桌面本地项目不支持此服务请求。")
+      throw new ApiError(0, "DESKTOP_API_UNAVAILABLE", uiText("桌面本地项目不支持此服务请求。"))
     }
     const pathname = url.pathname.replace(/^\/api\/v1(?=\/)/u, "")
     const method = (options.method ?? "GET").toUpperCase()
@@ -210,11 +211,11 @@ export async function api<T = unknown>(
     const planMatch = /^\/agent\/plans\/([^/]+)(?:\/(ready-set|rerun|execute|execution|cancel))?$/u.exec(pathname)
     if (sessionMatch || planMatch) {
       const project = await bridge.getActiveProject()
-      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', uiText("没有打开的本地项目。"))
       const identifier = (raw: string): string => {
         let value: string
-        try { value = decodeURIComponent(raw) } catch { throw new ApiError(400, 'INVALID_INPUT', '标识无效。') }
-        if (!/^[A-Za-z0-9_-]{1,128}$/u.test(value)) throw new ApiError(400, 'INVALID_INPUT', '标识无效。')
+        try { value = decodeURIComponent(raw) } catch { throw new ApiError(400, 'INVALID_INPUT', uiText("标识无效。")) }
+        if (!/^[A-Za-z0-9_-]{1,128}$/u.test(value)) throw new ApiError(400, 'INVALID_INPUT', uiText("标识无效。"))
         return value
       }
       if (planMatch) {
@@ -223,29 +224,29 @@ export async function api<T = unknown>(
         if (planMatch[2] === 'execution' && method === 'GET') return await bridge.getAgentPlanExecution(project.projectId, planId) as T
         if (planMatch[2] === 'cancel' && method === 'POST') return await bridge.cancelAgentPlan(project.projectId, planId) as T
         if (planMatch[2] === 'execute' && method === 'POST') {
-          const body = parseLocalJsonObject(options, '计划执行')
+          const body = parseLocalJsonObject(options, uiText("计划执行"))
           const profile = body.profile
-          if (profile !== 'canvas-general' && profile !== 'vertical-short-drama' && profile !== 'asset-assistant' && profile !== 'audit-readonly') throw new ApiError(400, 'INVALID_INPUT', '请选择有效的计划执行范围。')
+          if (profile !== 'canvas-general' && profile !== 'vertical-short-drama' && profile !== 'asset-assistant' && profile !== 'audit-readonly') throw new ApiError(400, 'INVALID_INPUT', uiText("请选择有效的计划执行范围。"))
           return await bridge.executeAgentPlan(project.projectId, planId, { profile }) as T
         }
         if (planMatch[2] === 'ready-set' && method === 'GET') {
           return await bridge.getAgentPlanReadySet(project.projectId, planId, url.searchParams.get('profile') ?? undefined) as T
         }
         if (planMatch[2] === 'rerun' && method === 'POST') {
-          const body = parseLocalJsonObject(options, '计划续跑')
-          if (typeof body.stepId !== 'string') throw new ApiError(400, 'INVALID_INPUT', '请选择计划步骤。')
+          const body = parseLocalJsonObject(options, uiText("计划续跑"))
+          if (typeof body.stepId !== 'string') throw new ApiError(400, 'INVALID_INPUT', uiText("请选择计划步骤。"))
           return await bridge.rerunAgentPlan(project.projectId, planId, identifier(body.stepId)) as T
         }
       } else if (sessionMatch) {
         if (!sessionMatch[1]) {
           if (method === 'GET') {
             const status = url.searchParams.get('status') ?? 'all'
-            if (!['active', 'archived', 'all'].includes(status)) throw new ApiError(400, 'INVALID_INPUT', '会话状态无效。')
+            if (!['active', 'archived', 'all'].includes(status)) throw new ApiError(400, 'INVALID_INPUT', uiText("会话状态无效。"))
             return await bridge.listAgentSessions(project.projectId, { status: status as 'active' | 'archived' | 'all' }) as T
           }
           if (method === 'POST') {
-            const body = parseLocalJsonObject(options, '会话创建')
-            if (body.canvasId !== undefined && body.canvasId !== project.canvasId) throw new ApiError(409, 'PROJECT_CHANGED', '画布不匹配。')
+            const body = parseLocalJsonObject(options, uiText("会话创建"))
+            if (body.canvasId !== undefined && body.canvasId !== project.canvasId) throw new ApiError(409, 'PROJECT_CHANGED', uiText("画布不匹配。"))
             return await bridge.createAgentSession(project.projectId, typeof body.title === 'string' ? body.title : undefined) as T
           }
         } else {
@@ -253,58 +254,58 @@ export async function api<T = unknown>(
           const action = sessionMatch[2]
           if (!action && method === 'GET') return await bridge.getAgentSession(project.projectId, sessionId) as T
           if (!action && method === 'DELETE') return await bridge.deleteAgentSession(project.projectId, sessionId) as T
-          if (!action && method === 'PATCH') return await bridge.updateAgentSession(project.projectId, sessionId, parseLocalJsonObject(options, '会话更新')) as T
-          if (action === 'copy' && method === 'POST') return await bridge.copyAgentSession(project.projectId, sessionId, parseLocalJsonObject(options, '会话复制')) as T
-          if (action === 'plans' && method === 'POST') return await bridge.createAgentPlan(project.projectId, sessionId, parseLocalJsonObject(options, '计划创建')) as T
+          if (!action && method === 'PATCH') return await bridge.updateAgentSession(project.projectId, sessionId, parseLocalJsonObject(options, uiText("会话更新"))) as T
+          if (action === 'copy' && method === 'POST') return await bridge.copyAgentSession(project.projectId, sessionId, parseLocalJsonObject(options, uiText("会话复制"))) as T
+          if (action === 'plans' && method === 'POST') return await bridge.createAgentPlan(project.projectId, sessionId, parseLocalJsonObject(options, uiText("计划创建"))) as T
           if (action === 'skills' && !sessionMatch[3] && method === 'PUT') {
-            const body = parseLocalJsonObject(options, '会话技能设置')
-            if (!Array.isArray(body.skillIds) || body.skillIds.some((id) => typeof id !== 'string')) throw new ApiError(400, 'INVALID_INPUT', '技能列表无效。')
+            const body = parseLocalJsonObject(options, uiText("会话技能设置"))
+            if (!Array.isArray(body.skillIds) || body.skillIds.some((id) => typeof id !== 'string')) throw new ApiError(400, 'INVALID_INPUT', uiText("技能列表无效。"))
             return await bridge.setAgentSessionSkills(project.projectId, sessionId, body.skillIds as string[]) as T
           }
           if (action === 'skills' && sessionMatch[3] && method === 'POST') return await bridge.attachAgentSessionSkill(project.projectId, sessionId, identifier(sessionMatch[3])) as T
         }
       }
-      throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Agent 接口不支持此请求方法。')
+      throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("Agent 接口不支持此请求方法。"))
     }
     const fragmentListPath = pathname === '/agent/fragments'
     const fragmentSaveMatch = /^\/agent\/sessions\/([^/]+)\/fragments$/u.exec(pathname)
     const fragmentImportMatch = /^\/agent\/fragments\/([^/]+)\/import$/u.exec(pathname)
     if (fragmentListPath || fragmentSaveMatch || fragmentImportMatch) {
       const project = await bridge.getActiveProject()
-      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', uiText("没有打开的本地项目。"))
       if (fragmentListPath) {
-        if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '会话片段只支持读取。')
+        if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("会话片段只支持读取。"))
         return await bridge.listAgentFragments(project.projectId) as T
       }
       if (fragmentSaveMatch) {
-        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '保存会话片段只支持提交。')
+        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("保存会话片段只支持提交。"))
         let sessionId: string
         try { sessionId = decodeURIComponent(fragmentSaveMatch[1]) } catch {
-          throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+          throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', uiText("Agent 会话标识无效。"))
         }
         if (!sessionId || sessionId.length > 128) {
-          throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+          throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', uiText("Agent 会话标识无效。"))
         }
-        const body = parseLocalJsonObject(options, '会话片段保存')
+        const body = parseLocalJsonObject(options, uiText("会话片段保存"))
         const title = body.title
         if (title !== undefined && (typeof title !== 'string' || title.length > 120)) {
-          throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', '会话片段标题无效。')
+          throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', uiText("会话片段标题无效。"))
         }
         return await bridge.saveAgentSessionFragment(project.projectId, sessionId, title) as T
       }
-      if (!fragmentImportMatch) throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', '会话片段标识无效。')
-      if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '导入会话片段只支持提交。')
+      if (!fragmentImportMatch) throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', uiText("会话片段标识无效。"))
+      if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("导入会话片段只支持提交。"))
       let fragmentId: string
       try { fragmentId = decodeURIComponent(fragmentImportMatch[1]) } catch {
-        throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', '会话片段标识无效。')
+        throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', uiText("会话片段标识无效。"))
       }
       if (!fragmentId || fragmentId.length > 128) {
-        throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', '会话片段标识无效。')
+        throw new ApiError(400, 'AGENT_SESSION_FRAGMENT_INPUT_INVALID', uiText("会话片段标识无效。"))
       }
-      const body = parseLocalJsonObject(options, '会话片段导入')
+      const body = parseLocalJsonObject(options, uiText("会话片段导入"))
       const canvasId = body.canvasId
       if (canvasId !== undefined && (typeof canvasId !== 'string' || canvasId !== project.canvasId)) {
-        throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+        throw new ApiError(0, 'PROJECT_CHANGED', uiText("当前本地项目与请求的画布不匹配，请重新打开画布。"))
       }
       return await bridge.importAgentFragment(project.projectId, fragmentId, canvasId) as T
     }
@@ -315,9 +316,9 @@ export async function api<T = unknown>(
     const memoryCandidateMatch = /^\/memory-candidates\/([^/]+)\/(accept|reject)$/u.exec(pathname)
     if (memoryListPath || memoryExportPath || memoryItemMatch || memoryCandidatesPath || memoryCandidateMatch) {
       const project = await bridge.getActiveProject()
-      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', uiText("没有打开的本地项目。"))
       if (memoryExportPath) {
-        if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆导出只支持读取。')
+        if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("记忆导出只支持读取。"))
         return await bridge.exportAgentMemories(project.projectId) as T
       }
       if (memoryListPath) {
@@ -325,68 +326,68 @@ export async function api<T = unknown>(
           const scope = localMemoryScope(url.searchParams.get('scope') ?? undefined, true)
           const sessionId = url.searchParams.get('sessionId') ?? undefined
           if (sessionId !== undefined && (!/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId))) {
-            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', uiText("Agent 会话标识无效。"))
           }
           if (scope === 'session' && !sessionId) {
-            throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', '请选择一个 Agent 会话。')
+            throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', uiText("请选择一个 Agent 会话。"))
           }
           return await bridge.listAgentMemories(project.projectId, scope, sessionId) as T
         }
         if (method === 'POST') {
-          const body = parseLocalJsonObject(options, '记忆创建')
+          const body = parseLocalJsonObject(options, uiText("记忆创建"))
           const scope = localMemoryScope(body.scope, true) ?? 'project'
           const sessionId = body.sessionId
           if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId))) {
-            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', uiText("Agent 会话标识无效。"))
           }
           if (scope === 'session' && typeof sessionId !== 'string') {
-            throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', '请选择一个 Agent 会话。')
+            throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', uiText("请选择一个 Agent 会话。"))
           }
           const saved = await bridge.createAgentMemory(project.projectId, localMemoryContent(body.content), scope, sessionId)
           return { id: saved.id, content: saved.content, scope: saved.scope } as T
         }
-        throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆接口不支持此请求方法。')
+        throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("记忆接口不支持此请求方法。"))
       }
       if (memoryCandidatesPath) {
-        if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆候选列表只支持读取。')
+        if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("记忆候选列表只支持读取。"))
         return await bridge.listAgentMemoryCandidates(project.projectId) as T
       }
       if (memoryItemMatch) {
         let memoryId: string
         try { memoryId = decodeURIComponent(memoryItemMatch[1]) } catch {
-          throw new ApiError(400, 'AGENT_MEMORY_INPUT_INVALID', '记忆标识无效。')
+          throw new ApiError(400, 'AGENT_MEMORY_INPUT_INVALID', uiText("记忆标识无效。"))
         }
         if (method === 'DELETE') {
           const scope = localMemoryScope(url.searchParams.get('scope') ?? undefined, true)
           const sessionId = url.searchParams.get('sessionId') ?? undefined
           if (sessionId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) {
-            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', uiText("Agent 会话标识无效。"))
           }
-          if (scope === 'session' && !sessionId) throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', '请选择一个 Agent 会话。')
+          if (scope === 'session' && !sessionId) throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', uiText("请选择一个 Agent 会话。"))
           return await bridge.deleteAgentMemory(project.projectId, memoryId, scope, sessionId) as T
         }
         if (method === 'PATCH' || method === 'PUT') {
-          const body = parseLocalJsonObject(options, '记忆更新')
+          const body = parseLocalJsonObject(options, uiText("记忆更新"))
           const scope = localMemoryScope(body.scope, true)
           const sessionId = url.searchParams.get('sessionId') ?? undefined
           if (sessionId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) {
-            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', 'Agent 会话标识无效。')
+            throw new ApiError(400, 'AGENT_SESSION_INPUT_INVALID', uiText("Agent 会话标识无效。"))
           }
-          if (scope === 'session' && !sessionId) throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', '请选择一个 Agent 会话。')
+          if (scope === 'session' && !sessionId) throw new ApiError(400, 'AGENT_MEMORY_SESSION_REQUIRED', uiText("请选择一个 Agent 会话。"))
           return await bridge.updateAgentMemory(project.projectId, memoryId, localMemoryContent(body.content), scope, sessionId) as T
         }
-        throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆条目只支持读取、修改或删除。')
+        throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("记忆条目只支持读取、修改或删除。"))
       }
       if (memoryCandidateMatch) {
         let candidateId: string
         try { candidateId = decodeURIComponent(memoryCandidateMatch[1]) } catch {
-          throw new ApiError(400, 'AGENT_MEMORY_INPUT_INVALID', '记忆候选标识无效。')
+          throw new ApiError(400, 'AGENT_MEMORY_INPUT_INVALID', uiText("记忆候选标识无效。"))
         }
-        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '记忆候选审阅只支持提交。')
+        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("记忆候选审阅只支持提交。"))
         const action = memoryCandidateMatch[2] as 'accept' | 'reject'
         const result = await bridge.reviewAgentMemoryCandidate(project.projectId, candidateId, action)
         if (action === 'accept') {
-          if (!result.item) throw new ApiError(500, 'AGENT_MEMORY_CANDIDATE_INVALID', '保存记忆候选失败。')
+          if (!result.item) throw new ApiError(500, 'AGENT_MEMORY_CANDIDATE_INVALID', uiText("保存记忆候选失败。"))
           return { id: result.item.id, content: result.item.content, scope: result.item.scope } as T
         }
         return { status: 'ok' } as T
@@ -396,11 +397,11 @@ export async function api<T = unknown>(
     if (dramaMatch) {
       let canvasId: string
       try { canvasId = decodeURIComponent(dramaMatch[1]) } catch {
-        throw new ApiError(400, "CANVAS_ID_INVALID", "画布标识无效。")
+        throw new ApiError(400, "CANVAS_ID_INVALID", uiText("画布标识无效。"))
       }
       const project = await bridge.getActiveProject()
       if (!project || project.canvasId !== canvasId) {
-        throw new ApiError(0, "PROJECT_CHANGED", "当前本地项目与请求的画布不匹配，请重新打开画布。")
+        throw new ApiError(0, "PROJECT_CHANGED", uiText("当前本地项目与请求的画布不匹配，请重新打开画布。"))
       }
       if (method === "GET") {
         const filters = Object.fromEntries(
@@ -417,7 +418,7 @@ export async function api<T = unknown>(
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid")
           body = parsed as Record<string, unknown>
         } catch {
-          throw new ApiError(400, "DRAMA_ASSET_INPUT_INVALID", "短剧资产写入请求无效。")
+          throw new ApiError(400, "DRAMA_ASSET_INPUT_INVALID", uiText("短剧资产写入请求无效。"))
         }
         const idempotencyKey = options.idempotencyKey ?? headers["Idempotency-Key"]
         return await bridge.upsertDramaAsset({
@@ -427,7 +428,7 @@ export async function api<T = unknown>(
           idempotencyKey,
         } as Parameters<typeof bridge.upsertDramaAsset>[0]) as T
       }
-      throw new ApiError(405, "METHOD_NOT_ALLOWED", "短剧资产接口不支持此请求方法。")
+      throw new ApiError(405, "METHOD_NOT_ALLOWED", uiText("短剧资产接口不支持此请求方法。"))
     }
 
     const dramaSeriesCreateMatch = pathname === '/drama/series'
@@ -442,17 +443,17 @@ export async function api<T = unknown>(
     if (dramaSeriesCreateMatch || dramaCharacterCreateMatch || dramaReferencePackCreateMatch
       || dramaShotCreateMatch || dramaKeyframeNodeMatch || dramaKeyframeRecordMatch
       || dramaVideoNodeMatch || dramaLineageCreateMatch || dramaStaleLineagesMatch) {
-      if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '短剧状态接口不支持此请求方法。')
+      if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("短剧状态接口不支持此请求方法。"))
       const project = await bridge.getActiveProject()
-      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', uiText("没有打开的本地项目。"))
       const idempotencyKey = options.idempotencyKey ?? headers['Idempotency-Key']
-      if (!idempotencyKey) throw new ApiError(400, 'INVALID_INPUT', 'Idempotency-Key 无效。')
+      if (!idempotencyKey) throw new ApiError(400, 'INVALID_INPUT', uiText("Idempotency-Key 无效。"))
       const scope = { projectId: project.projectId, canvasId: project.canvasId, idempotencyKey }
 
       if (dramaSeriesCreateMatch) {
-        const body = parseLocalJsonObject(options, '短剧系列创建')
+        const body = parseLocalJsonObject(options, uiText("短剧系列创建"))
         if (body.canvasId !== project.canvasId) {
-          throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+          throw new ApiError(0, 'PROJECT_CHANGED', uiText("当前本地项目与请求的画布不匹配，请重新打开画布。"))
         }
         return await bridge.createDramaSeries({
           ...scope,
@@ -467,12 +468,12 @@ export async function api<T = unknown>(
       }
 
       if (dramaCharacterCreateMatch) {
-        const body = parseLocalJsonObject(options, '角色创建')
+        const body = parseLocalJsonObject(options, uiText("角色创建"))
         return await bridge.createDramaCharacter({
           ...scope,
           character: {
             ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
-            seriesId: localDramaPathId(dramaCharacterCreateMatch[1], '短剧系列'),
+            seriesId: localDramaPathId(dramaCharacterCreateMatch[1], uiText("短剧系列")),
             name: localDramaRequiredText(body.name, 'name'),
             identityAnchors: localDramaStringArray(body.identityAnchors),
             activeLookRevision: localDramaOptionalInteger(body.activeLookRevision) ?? 1,
@@ -482,12 +483,12 @@ export async function api<T = unknown>(
       }
 
       if (dramaReferencePackCreateMatch) {
-        const body = parseLocalJsonObject(options, '角色参考包创建')
+        const body = parseLocalJsonObject(options, uiText("角色参考包创建"))
         return await bridge.addDramaReferencePack({
           ...scope,
           pack: {
             ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
-            characterId: localDramaPathId(dramaReferencePackCreateMatch[1], '角色'),
+            characterId: localDramaPathId(dramaReferencePackCreateMatch[1], uiText("角色")),
             lookRevision: localDramaInteger(body.lookRevision, 'lookRevision'),
             status: localDramaStatus(body.status, ['draft', 'approved', 'retired'] as const),
             frontAssetId: localDramaRequiredText(body.frontAssetId, 'frontAssetId'),
@@ -499,13 +500,13 @@ export async function api<T = unknown>(
       }
 
       if (dramaShotCreateMatch) {
-        const body = parseLocalJsonObject(options, '镜头创建')
+        const body = parseLocalJsonObject(options, uiText("镜头创建"))
         if (!Array.isArray(body.characterBindings)) {
-          throw new ApiError(400, 'INVALID_INPUT', 'characterBindings 必须是数组')
+          throw new ApiError(400, 'INVALID_INPUT', uiText("characterBindings 必须是数组"))
         }
         const characterBindings = body.characterBindings.map((value) => {
           if (!value || typeof value !== 'object' || Array.isArray(value)) {
-            throw new ApiError(400, 'INVALID_INPUT', 'characterBindings 格式无效')
+            throw new ApiError(400, 'INVALID_INPUT', uiText("characterBindings 格式无效"))
           }
           const binding = value as Record<string, unknown>
           return {
@@ -517,7 +518,7 @@ export async function api<T = unknown>(
           ...scope,
           shot: {
             ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
-            seriesId: localDramaPathId(dramaShotCreateMatch[1], '短剧系列'),
+            seriesId: localDramaPathId(dramaShotCreateMatch[1], uiText("短剧系列")),
             episodeNo: localDramaInteger(body.episodeNo, 'episodeNo'),
             shotNo: localDramaInteger(body.shotNo, 'shotNo'),
             durationSeconds: localDramaInteger(body.durationSeconds, 'durationSeconds'),
@@ -528,11 +529,11 @@ export async function api<T = unknown>(
       }
 
       if (dramaKeyframeNodeMatch || dramaVideoNodeMatch) {
-        const body = parseLocalJsonObject(options, '画布节点创建')
+        const body = parseLocalJsonObject(options, uiText("画布节点创建"))
         if (body.canvasId !== project.canvasId) {
-          throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+          throw new ApiError(0, 'PROJECT_CHANGED', uiText("当前本地项目与请求的画布不匹配，请重新打开画布。"))
         }
-        const shotId = localDramaPathId((dramaKeyframeNodeMatch ?? dramaVideoNodeMatch)![1], '镜头')
+        const shotId = localDramaPathId((dramaKeyframeNodeMatch ?? dramaVideoNodeMatch)![1], uiText("镜头"))
         const prompt = localDramaRequiredText(body.prompt, 'prompt')
         const model = localDramaOptionalText(body.model)
         if (dramaKeyframeNodeMatch) {
@@ -584,12 +585,12 @@ export async function api<T = unknown>(
       }
 
       if (dramaKeyframeRecordMatch) {
-        const body = parseLocalJsonObject(options, '关键帧状态写入')
+        const body = parseLocalJsonObject(options, uiText("关键帧状态写入"))
         return await bridge.recordDramaKeyframe({
           ...scope,
           render: {
             ...(localDramaOptionalText(body.id) ? { id: localDramaOptionalText(body.id) } : {}),
-            shotId: localDramaPathId(dramaKeyframeRecordMatch[1], '镜头'),
+            shotId: localDramaPathId(dramaKeyframeRecordMatch[1], uiText("镜头")),
             status: localDramaStatus(body.status, ['draft', 'accepted', 'rejected', 'stale'] as const),
             referencePackIds: localDramaStringArray(body.referencePackIds),
           },
@@ -597,7 +598,7 @@ export async function api<T = unknown>(
       }
 
       if (dramaLineageCreateMatch) {
-        const body = parseLocalJsonObject(options, '镜头渲染血缘写入')
+        const body = parseLocalJsonObject(options, uiText("镜头渲染血缘写入"))
         return await bridge.recordDramaLineage({
           ...scope,
           lineage: {
@@ -612,19 +613,19 @@ export async function api<T = unknown>(
       if (dramaStaleLineagesMatch) {
         const lineageIds = await bridge.staleDramaLineagesForCharacter({
           ...scope,
-          characterId: localDramaPathId(dramaStaleLineagesMatch[1], '角色'),
+          characterId: localDramaPathId(dramaStaleLineagesMatch[1], uiText("角色")),
         })
         return { lineageIds } as T
       }
     }
 
     if (pathname === '/drama/render-batches/candidates') {
-      if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '渲染候选只支持读取。')
+      if (method !== 'GET') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("渲染候选只支持读取。"))
       const project = await bridge.getActiveProject()
-      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', uiText("没有打开的本地项目。"))
       const requestedCanvasId = url.searchParams.get('canvasId')
       if (requestedCanvasId && requestedCanvasId !== project.canvasId) {
-        throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+        throw new ApiError(0, 'PROJECT_CHANGED', uiText("当前本地项目与请求的画布不匹配，请重新打开画布。"))
       }
       return await bridge.listDramaRenderCandidates(project.projectId, project.canvasId) as T
     }
@@ -635,38 +636,38 @@ export async function api<T = unknown>(
     const renderBatchRerunMatch = /^\/drama\/render-batches\/([^/]+)\/jobs\/([^/]+)\/rerun$/u.exec(pathname)
     if (renderBatchListMatch || renderBatchDetailMatch || renderBatchActionMatch || renderBatchRerunMatch) {
       const project = await bridge.getActiveProject()
-      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', uiText("没有打开的本地项目。"))
       const requestedCanvasId = url.searchParams.get('canvasId')
       if (requestedCanvasId && requestedCanvasId !== project.canvasId) {
-        throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+        throw new ApiError(0, 'PROJECT_CHANGED', uiText("当前本地项目与请求的画布不匹配，请重新打开画布。"))
       }
       const scope = { projectId: project.projectId, canvasId: project.canvasId }
       if (method === 'GET') {
         if (renderBatchDetailMatch) {
-          const batchId = localDramaPathId(renderBatchDetailMatch[1], '渲染批次')
+          const batchId = localDramaPathId(renderBatchDetailMatch[1], uiText("渲染批次"))
           return await bridge.getDramaRenderBatch(project.projectId, project.canvasId, batchId) as T
         }
         if (renderBatchListMatch) return await bridge.listDramaRenderBatches(project.projectId, project.canvasId) as T
-        throw new ApiError(405, 'METHOD_NOT_ALLOWED', '该渲染批次接口不支持读取。')
+        throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("该渲染批次接口不支持读取。"))
       }
 
       if (renderBatchListMatch && method === 'POST') {
-        const body = parseLocalJsonObject(options, '渲染批次创建')
+        const body = parseLocalJsonObject(options, uiText("渲染批次创建"))
         if (body.canvasId !== undefined && String(body.canvasId) !== project.canvasId) {
-          throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+          throw new ApiError(0, 'PROJECT_CHANGED', uiText("当前本地项目与请求的画布不匹配，请重新打开画布。"))
         }
         const idempotencyKey = options.idempotencyKey ?? headers['Idempotency-Key']
-        if (!idempotencyKey) throw new ApiError(400, 'INVALID_INPUT', 'Idempotency-Key 无效。')
+        if (!idempotencyKey) throw new ApiError(400, 'INVALID_INPUT', uiText("Idempotency-Key 无效。"))
         if (!Array.isArray(body.jobs) || body.jobs.length < 1 || body.jobs.length > 90) {
-          throw new ApiError(400, 'INVALID_INPUT', '渲染批次需包含 1-90 个镜头。')
+          throw new ApiError(400, 'INVALID_INPUT', uiText("渲染批次需包含 1-90 个镜头。"))
         }
         const jobs = body.jobs.map((value) => {
           if (!value || typeof value !== 'object' || Array.isArray(value)) {
-            throw new ApiError(400, 'INVALID_INPUT', '渲染批次镜头参数无效。')
+            throw new ApiError(400, 'INVALID_INPUT', uiText("渲染批次镜头参数无效。"))
           }
           const job = value as Record<string, unknown>
           if (!job.modelParams || typeof job.modelParams !== 'object' || Array.isArray(job.modelParams)) {
-            throw new ApiError(400, 'INVALID_INPUT', '渲染批次模型参数无效。')
+            throw new ApiError(400, 'INVALID_INPUT', uiText("渲染批次模型参数无效。"))
           }
           return {
             shotId: localDramaRequiredText(job.shotId, 'shotId'),
@@ -682,7 +683,7 @@ export async function api<T = unknown>(
         })
         const canvas = await bridge.loadCanvas(project.projectId, project.canvasId)
         if (body.canvasVersion !== undefined && body.canvasVersion !== canvas.version) {
-          throw new ApiError(409, 'VERSION_CONFLICT', '画布已变化，请刷新生产链候选后再创建批次。')
+          throw new ApiError(409, 'VERSION_CONFLICT', uiText("画布已变化，请刷新生产链候选后再创建批次。"))
         }
         const batch = await bridge.createDramaRenderBatch({
           ...scope,
@@ -696,10 +697,10 @@ export async function api<T = unknown>(
       }
 
       if (renderBatchActionMatch) {
-        const batchId = localDramaPathId(renderBatchActionMatch[1], '渲染批次')
+        const batchId = localDramaPathId(renderBatchActionMatch[1], uiText("渲染批次"))
         const action = renderBatchActionMatch[2]
-        const body = parseLocalJsonObject(options, '渲染确认')
-        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '渲染确认接口只支持提交。')
+        const body = parseLocalJsonObject(options, uiText("渲染确认"))
+        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("渲染确认接口只支持提交。"))
         if (action === 'prepare') {
           const operation = body.operation === undefined ? 'submit'
             : localDramaStatus(body.operation, ['submit', 'rerun'] as const)
@@ -722,22 +723,22 @@ export async function api<T = unknown>(
       }
 
       if (renderBatchRerunMatch) {
-        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', '局部重跑只支持提交。')
+        if (method !== 'POST') throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("局部重跑只支持提交。"))
         return await bridge.rerunDramaRenderBatchJob({
           ...scope,
-          batchId: localDramaPathId(renderBatchRerunMatch[1], '渲染批次'),
-          jobId: localDramaPathId(renderBatchRerunMatch[2], '渲染任务'),
+          batchId: localDramaPathId(renderBatchRerunMatch[1], uiText("渲染批次")),
+          jobId: localDramaPathId(renderBatchRerunMatch[2], uiText("渲染任务")),
         }) as T
       }
     }
 
     if (pathname === '/render-reviews') {
       const project = await bridge.getActiveProject()
-      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', '没有打开的本地项目。')
+      if (!project) throw new ApiError(0, 'PROJECT_REQUIRED', uiText("没有打开的本地项目。"))
       if (method === 'GET') {
         const requestedCanvasId = url.searchParams.get('canvasId')
         if (!requestedCanvasId || requestedCanvasId !== project.canvasId) {
-          throw new ApiError(400, 'CANVAS_ID_INVALID', '审校查询必须指定当前本地画布。')
+          throw new ApiError(400, 'CANVAS_ID_INVALID', uiText("审校查询必须指定当前本地画布。"))
         }
         const targetNodeId = url.searchParams.get('targetNodeId') ?? undefined
         return await bridge.listRenderReviews(project.projectId, project.canvasId, targetNodeId) as T
@@ -749,10 +750,10 @@ export async function api<T = unknown>(
           if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid')
           body = parsed as Record<string, unknown>
         } catch {
-          throw new ApiError(400, 'RENDER_REVIEW_INPUT_INVALID', '审校写入请求无效。')
+          throw new ApiError(400, 'RENDER_REVIEW_INPUT_INVALID', uiText("审校写入请求无效。"))
         }
         if (String(body.canvasId ?? '') !== project.canvasId) {
-          throw new ApiError(0, 'PROJECT_CHANGED', '当前本地项目与请求的画布不匹配，请重新打开画布。')
+          throw new ApiError(0, 'PROJECT_CHANGED', uiText("当前本地项目与请求的画布不匹配，请重新打开画布。"))
         }
         return await bridge.createRenderReview({
           ...body,
@@ -760,28 +761,28 @@ export async function api<T = unknown>(
           canvasId: project.canvasId,
         } as Parameters<typeof bridge.createRenderReview>[0]) as T
       }
-      throw new ApiError(405, 'METHOD_NOT_ALLOWED', '审校接口不支持此请求方法。')
+      throw new ApiError(405, 'METHOD_NOT_ALLOWED', uiText("审校接口不支持此请求方法。"))
     }
 
     const usageMatch = /^\/agent\/sessions\/([^/]+)\/usage$/u.exec(pathname)
     if (usageMatch && method === "GET") {
       let sessionId: string
       try { sessionId = decodeURIComponent(usageMatch[1]) } catch {
-        throw new ApiError(400, "AGENT_SESSION_INPUT_INVALID", "Agent 会话标识无效。")
+        throw new ApiError(400, "AGENT_SESSION_INPUT_INVALID", uiText("Agent 会话标识无效。"))
       }
       const project = await bridge.getActiveProject()
-      if (!project) throw new ApiError(0, "PROJECT_REQUIRED", "没有打开的本地项目。")
+      if (!project) throw new ApiError(0, "PROJECT_REQUIRED", uiText("没有打开的本地项目。"))
       return await bridge.getAgentUsage(project.projectId, sessionId) as T
     }
 
-    throw new ApiError(0, "DESKTOP_API_UNAVAILABLE", "此功能尚未接入本地项目，请使用桌面画布中的本地操作入口。")
+    throw new ApiError(0, "DESKTOP_API_UNAVAILABLE", uiText("此功能尚未接入本地项目，请使用桌面画布中的本地操作入口。"))
   }
 
   const res = await authedFetch(path, { ...options, headers });
 
   if (!res.ok) {
     let code = "INTERNAL_ERROR";
-    let message = `请求失败 (${res.status})`;
+    let message = uiText("请求失败 ({0})", { 0: res.status });
     let details: unknown;
     let retryable = false;
     try {
@@ -855,6 +856,6 @@ export async function uploadAsset(
     body: fd,
     idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
   });
-  if (!res.ok) throw new ApiError(res.status, "UPLOAD_FAILED", "上传失败");
+  if (!res.ok) throw new ApiError(res.status, "UPLOAD_FAILED", uiText("上传失败"));
   return parseJsonPreserveIds(await res.text());
 }

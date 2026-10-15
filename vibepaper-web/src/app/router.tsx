@@ -15,6 +15,7 @@ import { AnnouncementsPage } from '@/features/announcements/AnnouncementsPage'
 import { AdminPage } from '@/features/admin/AdminPage'
 import { CanvasPage } from '@/features/canvas/CanvasPage'
 import { ProviderConfigurationPage } from '@/features/providers/ProviderConfigurationPage'
+import { DesktopMcpSettingsPage } from '@/features/mcp/DesktopMcpSettingsPage'
 import { Spinner } from '@/components/ui/Spinner'
 import { isDesktopRuntime } from '@/features/canvas/canvasPort'
 
@@ -47,6 +48,7 @@ export function AppRouter() {
           <Route path="/workspace" element={<WorkspacePage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/settings/providers" element={<ProviderConfigurationPage />} />
+          <Route path="/settings/mcp" element={<DesktopMcpSettingsPage />} />
         </Route>
         <Route path="/canvas/:canvasId" element={<CanvasPage />} />
         <Route path="*" element={<Navigate to="/workspace" replace />} />

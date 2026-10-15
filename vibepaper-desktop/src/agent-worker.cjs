@@ -54,6 +54,13 @@ const { extractDailyMemory } = require('../../pi-main/packages/vibepaper-agent-s
 const { selectProfile } = require('../../pi-main/packages/vibepaper-agent-service/src/application/profile-selector.ts')
 const { DesktopLocalToolGateway } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/local-tool-gateway.ts')
 const {
+  confirmExternalMcpGeneration,
+  executeMcpRuntimeTool,
+  invalidateExternalMcpGeneration,
+  listMcpAuxiliaryTools,
+  listMcpRuntimeTools,
+} = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/mcp-runtime.ts')
+const {
   createRuntimeTools,
   desktopGenerationConfirmationItems,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/tools/runtime-tools.ts')
@@ -1238,8 +1245,441 @@ function toEventEnvelopes(events) {
     }))
 }
 
+function isMcpRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function requireMcpScope(payload, current, extraKeys = []) {
+  if (!isMcpRecord(payload)) throw new Error('MCP_CONTEXT_INVALID')
+  const permitted = new Set(['clientId', 'grantId', 'projectId', 'canvasId', ...extraKeys])
+  if (Object.keys(payload).some((key) => !permitted.has(key))) throw new Error('MCP_CONTEXT_INVALID')
+  for (const key of ['clientId', 'grantId', 'projectId', 'canvasId']) {
+    if (typeof payload[key] !== 'string' || payload[key].length < 1 || payload[key].length > 128) {
+      throw new Error('MCP_CONTEXT_INVALID')
+    }
+  }
+  if (payload.projectId !== current.projectId) throw new Error('AGENT_PROJECT_CHANGED')
+  if (!current.control) throw new Error('MCP_CONTROL_STORE_UNAVAILABLE')
+  return {
+    clientId: payload.clientId,
+    grantId: payload.grantId,
+    projectId: payload.projectId,
+    canvasId: payload.canvasId,
+  }
+}
+
+function requireMcpCommandId(value) {
+  if (typeof value !== 'string' || !/^[a-f0-9-]{36}$/iu.test(value)) throw new Error('MCP_CONTEXT_INVALID')
+  return value
+}
+
+function requireMcpProviderRevisions(value, optional = false) {
+  if (value === undefined && optional) return undefined
+  if (!isMcpRecord(value) || Object.keys(value).length > 100) throw new Error('MCP_CONTEXT_INVALID')
+  const revisions = {}
+  for (const [providerId, revision] of Object.entries(value)) {
+    if (providerId.length < 1 || providerId.length > 256 || !Number.isSafeInteger(revision) || revision < 0) {
+      throw new Error('MCP_CONTEXT_INVALID')
+    }
+    revisions[providerId] = revision
+  }
+  return revisions
+}
+
+function publicMcpProposal(proposal, includeScope = false) {
+  if (!proposal) return null
+  return {
+    proposalId: proposal.proposalId,
+    kind: 'generation',
+    operationId: proposal.operationId,
+    status: proposal.status,
+    canvasVersion: proposal.canvasVersion,
+    expiresAt: proposal.expiresAt,
+    createdAt: proposal.createdAt,
+    updatedAt: proposal.updatedAt,
+    taskIds: [...proposal.taskIds],
+    ...(proposal.providerRevision === undefined ? {} : { providerRevision: proposal.providerRevision }),
+    ...(proposal.providerRevisions === undefined ? {} : { providerRevisions: { ...proposal.providerRevisions } }),
+    ...(proposal.errorCode ? { errorCode: proposal.errorCode } : {}),
+    ...(includeScope ? {
+      clientId: proposal.clientId,
+      grantId: proposal.grantId,
+      projectId: proposal.projectId,
+      canvasId: proposal.canvasId,
+    } : {}),
+  }
+}
+
+function publicMcpOperation(operation) {
+  if (!operation) return null
+  return {
+    operationId: operation.operationId,
+    kind: operation.kind,
+    status: operation.status,
+    canvasVersion: operation.canvasVersion,
+    ...(operation.result ? { result: operation.result } : {}),
+    ...(operation.errorCode ? { errorCode: operation.errorCode } : {}),
+    createdAt: operation.createdAt,
+    updatedAt: operation.updatedAt,
+  }
+}
+
+function mcpOperationResult(current, proposal, status, errorCode, tasks) {
+  const result = {
+    proposalId: proposal.proposalId,
+    status,
+    ...(errorCode ? { errorCode } : {}),
+    ...(tasks ? { tasks } : {}),
+  }
+  const operation = current.control.getMcpOperation({
+    operationId: proposal.operationId,
+    clientId: proposal.clientId,
+    grantId: proposal.grantId,
+  })
+  if (operation && operation.status !== status) {
+    current.control.updateMcpOperation({
+      operationId: proposal.operationId,
+      clientId: proposal.clientId,
+      grantId: proposal.grantId,
+      status,
+      result,
+      ...(errorCode ? { errorCode } : {}),
+    })
+  }
+  return result
+}
+
+function drainMcpEffects(gateway) {
+  if (typeof gateway?.drainMcpStepResults !== 'function') return []
+  let drained
+  try { drained = gateway.drainMcpStepResults() } catch { return [] }
+  if (!Array.isArray(drained)) return []
+  const effects = new Set([
+    'node_created', 'node_updated', 'edge_connected', 'canvas_saved',
+    'nodes_deleted', 'task_submitted', 'canvas_effect',
+  ])
+  return drained.slice(0, 100).flatMap((step) => {
+    if (!isMcpRecord(step) || !effects.has(step.effect)) return []
+    // Gateway versions before the status-overwrite fix copied the submitted
+    // TaskStore state (queued/running) over the effect status. A returned task
+    // ID is still proof of a completed durable submission.
+    const status = step.effect === 'task_submitted' && step.taskId
+      && ['completed', 'queued', 'running'].includes(step.status)
+      ? 'completed'
+      : step.status
+    if (!['completed', 'uncertain'].includes(status)) return []
+    const safe = { effect: step.effect, status }
+    for (const key of ['version', 'canvasVersion']) {
+      if (Number.isSafeInteger(step[key]) && step[key] >= 0) safe[key] = step[key]
+    }
+    for (const key of ['taskId', 'nodeId', 'edgeId']) {
+      if (typeof step[key] === 'string' && step[key].length > 0 && step[key].length <= 128
+        && !/[\u0000-\u001f\u007f]/u.test(step[key])) safe[key] = step[key]
+    }
+    if (typeof step.errorCode === 'string' && /^[A-Z0-9_]{1,120}$/u.test(step.errorCode)) {
+      safe.errorCode = step.errorCode
+    }
+    return [safe]
+  })
+}
+
+async function resolveMcpProposal(payload, current) {
+  if (!isMcpRecord(payload)
+    || Object.keys(payload).some((key) => ![
+      'clientId', 'grantId', 'projectId', 'canvasId', 'proposalId', 'decision',
+      'currentCanvasVersion', 'providerRevisions', 'mcpCommandId',
+    ].includes(key))) throw new Error('MCP_CONTEXT_INVALID')
+  const scope = requireMcpScope(payload, current, [
+    'proposalId', 'decision', 'currentCanvasVersion', 'providerRevisions', 'mcpCommandId',
+  ])
+  if (typeof payload.proposalId !== 'string' || payload.proposalId.length < 1 || payload.proposalId.length > 128
+    || !['approve', 'reject'].includes(payload.decision)
+    || !Number.isSafeInteger(payload.currentCanvasVersion) || payload.currentCanvasVersion < 0) {
+    throw new Error('MCP_CONTEXT_INVALID')
+  }
+  const commandId = requireMcpCommandId(payload.mcpCommandId)
+  const currentProviderRevisions = requireMcpProviderRevisions(payload.providerRevisions, true)
+  const proposal = current.control.getMcpProposal({
+    proposalId: payload.proposalId,
+    clientId: scope.clientId,
+    grantId: scope.grantId,
+  })
+  if (!proposal || proposal.projectId !== scope.projectId || proposal.canvasId !== scope.canvasId) {
+    throw new Error('MCP_PROPOSAL_NOT_FOUND')
+  }
+
+  const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
+  gateway.attachMcpCommand(commandId)
+  // This read also validates a rejection or idempotent replay against Main's
+  // current client, grant, project and canvas command scope.
+  await gateway.getCanvasSummary(scope.projectId, scope.canvasId)
+
+  if (proposal.status === 'submitted') {
+    return {
+      proposalId: proposal.proposalId,
+      status: 'submitted',
+      tasks: proposal.taskIds.map((taskId) => ({ taskId, status: 'queued' })),
+    }
+  }
+  if (proposal.status === 'submission_unknown') {
+    const operation = current.control.getMcpOperation({
+      operationId: proposal.operationId, clientId: scope.clientId, grantId: scope.grantId,
+    })
+    const tasks = proposal.taskIds.map((taskId) => ({ taskId, status: 'queued' }))
+    return {
+      proposalId: proposal.proposalId,
+      status: 'submission_unknown',
+      ...(proposal.errorCode ? { errorCode: proposal.errorCode } : {}),
+      taskIds: [...proposal.taskIds],
+      tasks,
+      ...(Array.isArray(operation?.result?.completedSteps)
+        ? { completedSteps: operation.result.completedSteps } : {}),
+      ...(Array.isArray(operation?.result?.effects) ? { effects: operation.result.effects } : {}),
+    }
+  }
+  if (['rejected', 'expired', 'invalidated', 'failed'].includes(proposal.status)) {
+    return { proposalId: proposal.proposalId, status: proposal.status, ...(proposal.errorCode ? { errorCode: proposal.errorCode } : {}) }
+  }
+
+  const approvals = new ApprovalService(current.control, current.control.getOrCreateApprovalSecret(), 10 * 60)
+  const approvalRecord = await approvals.findApprovalRecord(proposal.approvalActionId)
+  const approvalToken = approvalRecord?.action?.approvalToken
+  if (!approvalRecord || typeof approvalToken !== 'string' || approvalToken.length < 1) {
+    current.control.updateMcpProposal({
+      proposalId: proposal.proposalId, clientId: scope.clientId, grantId: scope.grantId,
+      status: 'invalidated', errorCode: 'CONFIRMATION_REQUIRED',
+    })
+    return mcpOperationResult(current, proposal, 'invalidated', 'CONFIRMATION_REQUIRED')
+  }
+  if (approvalRecord.status === 'rejected') {
+    current.control.updateMcpProposal({
+      proposalId: proposal.proposalId, clientId: scope.clientId, grantId: scope.grantId,
+      status: 'rejected', errorCode: 'CONFIRMATION_REQUIRED',
+    })
+    return mcpOperationResult(current, proposal, 'rejected', 'CONFIRMATION_REQUIRED')
+  }
+
+  const actionExpiresAt = approvalRecord.action?.binding?.expiresAt
+  const expired = proposal.expiresAt <= Date.now()
+    || !Number.isSafeInteger(actionExpiresAt) || actionExpiresAt <= Date.now()
+  const providerChanged = Object.entries(proposal.providerRevisions ?? {}).some(([providerId, revision]) =>
+    currentProviderRevisions?.[providerId] !== revision)
+  if (expired || providerChanged) {
+    await approvals.rejectApproval(proposal.approvalActionId, approvalToken).catch(() => undefined)
+    const status = expired ? 'expired' : 'invalidated'
+    const errorCode = expired ? 'CONFIRMATION_EXPIRED' : 'PROVIDER_REVISION_CONFLICT'
+    current.control.updateMcpProposal({
+      proposalId: proposal.proposalId, clientId: scope.clientId, grantId: scope.grantId,
+      status, errorCode,
+    })
+    return mcpOperationResult(current, proposal, status, errorCode)
+  }
+
+  // A consumed approval may have committed before its result was persisted.
+  // Replay that submission idempotently; a later reject cannot reverse it.
+  const accept = approvalRecord.status === 'consumed' || payload.decision === 'approve'
+  if (!accept) {
+    if (proposal.status !== 'awaiting_confirmation') {
+      return { proposalId: proposal.proposalId, status: proposal.status, errorCode: 'MCP_SUBMISSION_STATE_UNKNOWN' }
+    }
+    await confirmExternalMcpGeneration({
+      clientId: scope.clientId, projectId: scope.projectId, canvasId: scope.canvasId,
+      actionId: proposal.approvalActionId, approvalToken, accept: false,
+      currentCanvasVersion: payload.currentCanvasVersion,
+    }, current, gateway)
+    current.control.updateMcpProposal({
+      proposalId: proposal.proposalId, clientId: scope.clientId, grantId: scope.grantId,
+      status: 'rejected',
+    })
+    return mcpOperationResult(current, proposal, 'rejected')
+  }
+
+  if (proposal.status === 'awaiting_confirmation') {
+    current.control.updateMcpProposal({
+      proposalId: proposal.proposalId, clientId: scope.clientId, grantId: scope.grantId,
+      status: 'submitting',
+    })
+    const operation = current.control.getMcpOperation({
+      operationId: proposal.operationId, clientId: scope.clientId, grantId: scope.grantId,
+    })
+    if (operation?.status === 'awaiting_confirmation') {
+      current.control.updateMcpOperation({
+        operationId: proposal.operationId, clientId: scope.clientId, grantId: scope.grantId,
+        status: 'submitting',
+      })
+    }
+  }
+
+  try {
+    const resolved = await confirmExternalMcpGeneration({
+      clientId: scope.clientId, projectId: scope.projectId, canvasId: scope.canvasId,
+      actionId: proposal.approvalActionId, approvalToken, accept: true,
+      currentCanvasVersion: payload.currentCanvasVersion,
+    }, current, gateway)
+    if (resolved.status === 'submitted') {
+      const tasks = Array.isArray(resolved.tasks) ? resolved.tasks : []
+      current.control.updateMcpProposal({
+        proposalId: proposal.proposalId, clientId: scope.clientId, grantId: scope.grantId,
+        status: 'submitted', taskIds: tasks.map((task) => task.taskId),
+      })
+      return mcpOperationResult(current, proposal, 'submitted', undefined, tasks)
+    }
+    if (resolved.status === 'invalidated') {
+      const errorCode = typeof resolved.errorCode === 'string' ? resolved.errorCode : 'CONFIRMATION_REQUIRED'
+      current.control.updateMcpProposal({
+        proposalId: proposal.proposalId, clientId: scope.clientId, grantId: scope.grantId,
+        status: 'invalidated', errorCode,
+      })
+      return mcpOperationResult(current, proposal, 'invalidated', errorCode)
+    }
+    throw new Error('MCP_SUBMISSION_STATE_UNKNOWN')
+  } catch (error) {
+    const errorCode = typeof error?.code === 'string' && /^[A-Z0-9_]{1,120}$/u.test(error.code)
+      ? error.code : 'MCP_SUBMISSION_STATE_UNKNOWN'
+    const effects = drainMcpEffects(gateway)
+    const completedSteps = effects.filter((step) => step.status === 'completed')
+    const hasUncertainStep = effects.some((step) => step.status === 'uncertain')
+    const operationStatus = hasUncertainStep ? 'submission_unknown'
+      : completedSteps.length > 0 ? 'partial' : 'failed'
+    const taskIds = [...new Set([
+      ...proposal.taskIds,
+      ...effects.filter((step) => step.effect === 'task_submitted'
+        && step.status === 'completed' && typeof step.taskId === 'string')
+        .map((step) => step.taskId),
+    ])]
+    const tasks = taskIds.map((taskId) => ({ taskId, status: 'queued' }))
+    current.control.updateMcpProposal({
+      proposalId: proposal.proposalId, clientId: scope.clientId, grantId: scope.grantId,
+      status: 'submission_unknown', errorCode, taskIds,
+    })
+    const operation = current.control.getMcpOperation({
+      operationId: proposal.operationId, clientId: scope.clientId, grantId: scope.grantId,
+    })
+    if (operation) {
+      const result = {
+        operationId: proposal.operationId,
+        status: operationStatus,
+        errorCode,
+        effects,
+        completedSteps,
+        taskIds,
+        tasks,
+      }
+      current.control.updateMcpOperation({
+        operationId: proposal.operationId, clientId: scope.clientId, grantId: scope.grantId,
+        status: operationStatus, errorCode, result,
+      })
+    }
+    return { proposalId: proposal.proposalId, status: 'submission_unknown', errorCode, taskIds, tasks, completedSteps, effects }
+  }
+}
+
 async function dispatch(method, payload) {
   switch (method) {
+    case 'mcp:tools:list': {
+      const current = await requireProject(payload?.projectId)
+      const scope = requireMcpScope(payload, current, ['canvasVersion', 'permission', 'providerGrants'])
+      if (!Number.isSafeInteger(payload.canvasVersion) || payload.canvasVersion < 0
+        || (payload.permission !== undefined && (!Array.isArray(payload.permission)
+          || payload.permission.some((entry) => typeof entry !== 'string' || entry.length > 80)))
+        || (payload.providerGrants !== undefined && !Array.isArray(payload.providerGrants))) {
+        throw new Error('MCP_CONTEXT_INVALID')
+      }
+      const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
+      const approvals = new ApprovalService(current.control, current.control.getOrCreateApprovalSecret(), 10 * 60)
+      return [
+        ...listMcpAuxiliaryTools(),
+        ...listMcpRuntimeTools({
+        clientId: scope.clientId,
+        grantId: scope.grantId,
+        projectId: current.projectId,
+        canvasId: scope.canvasId,
+        canvasVersion: payload.canvasVersion,
+        gateway,
+        approvals,
+        }),
+      ]
+    }
+    case 'mcp:tool:execute': {
+      const current = await requireProject(payload?.projectId)
+      const scope = requireMcpScope(payload, current, [
+        'toolName', 'arguments', 'operationId', 'expectedVersion', 'canvasVersion',
+        'mcpCommandId', 'providerRevisions',
+      ])
+      if (typeof payload.toolName !== 'string' || payload.toolName.length < 1 || payload.toolName.length > 128
+        || !Number.isSafeInteger(payload.canvasVersion) || payload.canvasVersion < 0) {
+        throw new Error('MCP_CONTEXT_INVALID')
+      }
+      const commandId = requireMcpCommandId(payload.mcpCommandId)
+      const providerRevisions = requireMcpProviderRevisions(payload.providerRevisions, true)
+      const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
+      gateway.attachMcpCommand(commandId)
+      const approvals = new ApprovalService(current.control, current.control.getOrCreateApprovalSecret(), 10 * 60)
+      return executeMcpRuntimeTool({
+        toolName: payload.toolName,
+        arguments: payload.arguments,
+        operationId: payload.operationId,
+        expectedVersion: payload.expectedVersion,
+        clientId: scope.clientId,
+        grantId: scope.grantId,
+        projectId: current.projectId,
+        canvasId: scope.canvasId,
+        canvasVersion: payload.canvasVersion,
+        providerRevisions,
+        control: current.control,
+        gateway,
+        approvals,
+      })
+    }
+    case 'mcp:action:resolve': {
+      const current = await requireProject(payload?.projectId)
+      return resolveMcpProposal(payload, current)
+    }
+    case 'mcp:actions:list': {
+      const current = await requireProject(payload?.projectId)
+      const scope = requireMcpScope(payload, current)
+      return current.control.listMcpProposals(scope).map((proposal) => ({
+        proposalId: proposal.proposalId,
+        kind: 'generation',
+        status: proposal.status,
+        createdAt: new Date(proposal.createdAt).toISOString(),
+        expiresAt: new Date(proposal.expiresAt).toISOString(),
+        projectId: proposal.projectId,
+        canvasId: proposal.canvasId,
+        canvasVersion: proposal.canvasVersion,
+        operationId: proposal.operationId,
+        ...(proposal.errorCode ? { errorCode: proposal.errorCode } : {}),
+      }))
+    }
+    case 'mcp:proposal:get': {
+      const current = await requireProject(payload?.projectId)
+      const scope = requireMcpScope(payload, current, ['proposalId', 'includeScope'])
+      if (typeof payload.proposalId !== 'string' || payload.proposalId.length < 1 || payload.proposalId.length > 128
+        || (payload.includeScope !== undefined && typeof payload.includeScope !== 'boolean')) {
+        throw new Error('MCP_CONTEXT_INVALID')
+      }
+      const proposal = current.control.getMcpProposal({
+        proposalId: payload.proposalId, clientId: scope.clientId, grantId: scope.grantId,
+      })
+      if (!proposal || proposal.projectId !== scope.projectId || proposal.canvasId !== scope.canvasId) return null
+      return publicMcpProposal(proposal, payload.includeScope === true)
+    }
+    case 'mcp:operation:get': {
+      const current = await requireProject(payload?.projectId)
+      const scope = requireMcpScope(payload, current, ['operationId'])
+      if (typeof payload.operationId !== 'string' || payload.operationId.length < 1 || payload.operationId.length > 128) {
+        throw new Error('MCP_CONTEXT_INVALID')
+      }
+      const operation = current.control.getMcpOperation({
+        operationId: payload.operationId, clientId: scope.clientId, grantId: scope.grantId,
+      })
+      if (!operation || operation.projectId !== scope.projectId || operation.canvasId !== scope.canvasId) return null
+      return publicMcpOperation(operation)
+    }
+    case 'mcp:actions:invalidate': {
+      const current = await requireProject(payload?.projectId)
+      return invalidateExternalMcpGeneration(payload, current)
+    }
     case 'agent:open': {
       if (!payload || typeof payload.projectDirectory !== 'string') throw new Error('AGENT_PROJECT_PATH_INVALID')
       continuationConnectionsBySession.clear()
@@ -1254,6 +1694,7 @@ async function dispatch(method, payload) {
       sessionFragments = null
       const openedStores = await openDesktopAgentStores(payload.projectDirectory)
       try {
+        openedStores.control.invalidatePendingMcpWorkForRestart?.()
         const openedMemory = new DesktopProjectMemory(openedStores.projectDirectory, openedStores.projectId, {
           ...(typeof payload.userDataDirectory === 'string' ? { userDataDirectory: payload.userDataDirectory } : {}),
         })

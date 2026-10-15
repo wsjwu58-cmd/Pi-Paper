@@ -147,6 +147,8 @@ export type RuntimeToolContext = {
 	confirmationPending?: boolean;
 	/** Resume the original creative workflow in a fresh Agent run after this task succeeds. */
 	continueAfterTask?: boolean;
+	/** Stable approval identity for a trusted external operation replay. */
+	approvalActionId?: string;
 	gateway: RuntimeToolGateway;
 	approvals?: ApprovalService;
 	/** Use desktop disclosures and omit unimplemented/destructive tools without a local approval flow. */
@@ -253,6 +255,7 @@ function safePromptSummary(value: string): string {
 export async function submitApprovedGenerationAction(
 	action: Pick<PlannedAction, "actionId" | "userId" | "canvasId" | "canvasVersion" | "toolName" | "params">,
 	gateway: RuntimeToolGateway,
+	options: { onTaskCreated?: (task: DesktopGenerationTaskResult, index: number) => void | Promise<void> } = {},
 ): Promise<DesktopGenerationTaskResult[]> {
 	if (!gateway.createGenerationTask)
 		throw new ToolGatewayError("GENERATION_UNAVAILABLE", "本地生成任务入口不可用", {});
@@ -281,12 +284,14 @@ export async function submitApprovedGenerationAction(
 			typeof created.nodeId !== "string"
 		)
 			throw new ToolGatewayError("INVALID_RESPONSE", "本地任务存储未返回有效任务", {});
-		tasks.push({
+		const task = {
 			taskId: created.taskId,
 			status: created.status,
 			modality: created.modality,
 			nodeId: created.nodeId,
-		});
+		};
+		tasks.push(task);
+		await options.onTaskCreated?.(task, index);
 	}
 	return tasks;
 }
@@ -609,6 +614,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 										})
 									).estimatedCost;
 							const action = await generations.submitGeneration({
+								actionId: context.approvalActionId,
 								actionIdempotencyKey: `${context.sessionId}:${params.nodeId}:${modelType}:${JSON.stringify(modelParams)}`,
 								userId: context.userId,
 								runId: context.runId,
@@ -689,6 +695,7 @@ export function createRuntimeTools(context: RuntimeToolContext): AgentTool[] {
 								});
 							}
 							const action = await generations.submitGenerationBatch({
+								actionId: context.approvalActionId,
 								actionIdempotencyKey: `${context.sessionId}:batch:${JSON.stringify(prepared)}`,
 								userId: context.userId,
 								runId: context.runId,
@@ -791,6 +798,7 @@ async function withCanvasVersionRetry<T>(context: RuntimeToolContext, operation:
 		return await operation();
 	} catch (error) {
 		if (!isVersionConflict(error)) throw error;
+		if (context.canvasVersionPinned) throw error;
 		const summary = (await context.gateway.getCanvasSummary(
 			context.userId,
 			context.canvasId,
@@ -829,6 +837,11 @@ function parseNodeArray(nodes: unknown): Array<{ type: string; sourceNodeIds?: r
 	if (!Value.Check(NodeArraySchema, parsed))
 		throw new ToolGatewayError("INVALID_INPUT", "创建节点参数不符合节点数组契约。", {});
 	return parsed as Array<{ type: string; sourceNodeIds?: readonly string[] }>;
+}
+
+/** Keep the MCP adapter on the exact same parser and schema as the original canvas tool. */
+export function parseDesktopMcpNodeArray(nodes: unknown): Array<Record<string, unknown>> {
+	return parseNodeArray(nodes) as unknown as Array<Record<string, unknown>>;
 }
 
 function parseNodeIdArray(nodeIds: unknown): string[] {

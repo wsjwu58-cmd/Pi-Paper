@@ -1,0 +1,788 @@
+{
+  "success": false,
+  "error": "MCP get_operation did not reach the required state",
+  "fixtureProfile": "E:\\VibePaperProject\\.test-temp\\mcp-integration-1791708970884\\VibePaper",
+  "pairingDialogCount": 1,
+  "phase": "desktop-confirm-local-generation",
+  "bridgeDiagnostics": "VibePaper connection approval: verify code 032690 in the desktop dialog.\n",
+  "ui": {
+    "pathname": "/canvas/7dff44a2-b43b-4ac1-90b3-139932fff279",
+    "state": {
+      "enabled": true,
+      "status": "ready",
+      "canvasReady": true,
+      "connectionDisclosureVersion": "desktop-mcp-provider-disclosure-v1",
+      "activeCanvas": {
+        "projectId": "e366e893-78d0-447a-83a3-a73e8d2a9d38",
+        "canvasId": "7dff44a2-b43b-4ac1-90b3-139932fff279",
+        "version": 10
+      },
+      "clients": [
+        {
+          "clientId": "a63e0074-b213-475d-8d81-5e3906ca60b1",
+          "clientName": "codex",
+          "displayName": "codex",
+          "permissions": [
+            "canvas.read",
+            "canvas.write",
+            "generation.propose",
+            "task.read",
+            "provider.read"
+          ],
+          "projectId": "e366e893-78d0-447a-83a3-a73e8d2a9d38",
+          "canvasId": "7dff44a2-b43b-4ac1-90b3-139932fff279",
+          "providerGrants": [
+            {
+              "providerId": "zhipu",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "anthropic",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "deepseek",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "google",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "openai",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "xai",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "moonshot",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "volcengine",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "byteplus",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "doubao",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "volcengine-ark",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "alibaba",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "minimax",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "agnes",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "elevenlabs",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "alibaba-video",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "doubao-voice",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "doubao-voice-v1",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "fish-audio",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "kling",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "vidu",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "pixverse",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "midjourney",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            },
+            {
+              "providerId": "happyhorse",
+              "credentialFields": [],
+              "credentialInputModes": [
+                "authorized_env",
+                "desktop_input"
+              ],
+              "authorizedEnv": []
+            }
+          ],
+          "mediaTypes": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1",
+          "createdAt": "2026-10-11T08:56:15.130Z",
+          "expiresAt": "2027-01-09T08:56:15.130Z",
+          "revokedAt": null,
+          "connected": true
+        }
+      ],
+      "providers": [
+        {
+          "providerId": "zhipu",
+          "name": "智谱 AI",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "智谱 API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "text",
+            "image",
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "anthropic",
+          "name": "Anthropic",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "Anthropic API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "text"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "deepseek",
+          "name": "DeepSeek",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "DeepSeek API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "text"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "google",
+          "name": "Google AI Studio",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "Google AI API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "text",
+            "video",
+            "image"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "openai",
+          "name": "OpenAI",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "OpenAI API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "text",
+            "image"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "xai",
+          "name": "xAI",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "xAI API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "image",
+            "text",
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "moonshot",
+          "name": "Moonshot",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "Moonshot API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "text"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "volcengine",
+          "name": "火山方舟",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "火山方舟 API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "text",
+            "image",
+            "audio"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "byteplus",
+          "name": "BytePlus",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "BytePlus API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "doubao",
+          "name": "豆包",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "火山方舟 API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "volcengine-ark",
+          "name": "火山方舟 Seedance",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "火山方舟 API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "alibaba",
+          "name": "阿里云百炼",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "阿里云百炼 API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "text",
+            "image"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "minimax",
+          "name": "MiniMax",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "MiniMax API Key",
+              "configured": false
+            },
+            {
+              "name": "voiceId",
+              "label": "Voice ID（语音模型必填）",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "text",
+            "audio",
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "agnes",
+          "name": "Agnes",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "Agnes API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "image",
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "elevenlabs",
+          "name": "ElevenLabs",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "ElevenLabs API Key",
+              "configured": false
+            },
+            {
+              "name": "voiceId",
+              "label": "Voice ID",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "audio"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "alibaba-video",
+          "name": "阿里云百炼视频",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "百炼 API Key",
+              "configured": false
+            },
+            {
+              "name": "workspaceId",
+              "label": "Workspace ID",
+              "configured": false
+            },
+            {
+              "name": "region",
+              "label": "Region（如 cn-beijing）",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "doubao-voice",
+          "name": "豆包语音",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "豆包语音 API Key",
+              "configured": false
+            },
+            {
+              "name": "voiceId",
+              "label": "Speaker ID（2.0 音色）",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "audio"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "doubao-voice-v1",
+          "name": "豆包语音 v1（兼容）",
+          "credentialFields": [
+            {
+              "name": "accessToken",
+              "label": "Access Token（v1）",
+              "configured": false
+            },
+            {
+              "name": "appId",
+              "label": "AppID",
+              "configured": false
+            },
+            {
+              "name": "voiceId",
+              "label": "Voice Type（v1 音色）",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "audio"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "fish-audio",
+          "name": "Fish Audio",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "Fish Audio API Key",
+              "configured": false
+            },
+            {
+              "name": "voiceId",
+              "label": "Reference ID（可选音色）",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "audio"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "kling",
+          "name": "Kling（官方 API Key / AK/SK 兼容）",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "Kling API Key（官方；或使用下方旧版 AK/SK）",
+              "configured": false
+            },
+            {
+              "name": "accessKey",
+              "label": "Kling Access Key（旧版）",
+              "configured": false
+            },
+            {
+              "name": "secretKey",
+              "label": "Kling Secret Key（旧版）",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "vidu",
+          "name": "Vidu",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "Vidu API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "pixverse",
+          "name": "PixVerse",
+          "credentialFields": [
+            {
+              "name": "apiKey",
+              "label": "PixVerse API Key",
+              "configured": false
+            }
+          ],
+          "modalities": [
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "midjourney",
+          "name": "Midjourney",
+          "credentialFields": [],
+          "modalities": [
+            "image"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        },
+        {
+          "providerId": "happyhorse",
+          "name": "HappyHorse",
+          "credentialFields": [],
+          "modalities": [
+            "video"
+          ],
+          "revision": 0,
+          "enabledModelNames": [],
+          "disclosureVersion": "desktop-mcp-provider-disclosure-v1"
+        }
+      ]
+    },
+    "text": "MCP review fixture\n\n已保存到本地\n\n跟随系统\n中文\nEnglish\n\nExisting local user content\n\n新对话\n\nPaper Agent\n\nPaper Agent\n\n让 Paper Agent 理解整张画布的脉络，把零散灵感推进为清晰、可执行的创作方案。\n\n梳理画布信息，提炼核心创意与明确的下一步\n基于画布素材，写出鲜明有记忆点的品牌文案\n延展画布内容，提出三个差异化可落地的方向\n选择 Agent 模型",
+    "testIds": [
+      {
+        "id": "mcp-canvas-page",
+        "pressed": null
+      },
+      {
+        "id": "mcp-canvas-input-surface",
+        "pressed": null
+      },
+      {
+        "id": "rf__wrapper",
+        "pressed": null
+      },
+      {
+        "id": "rf__edge-093a3770-573e-47fb-a232-47113ace0a50",
+        "pressed": null
+      },
+      {
+        "id": "rf__edge-bf31d27b-6d77-4c2f-9b30-342628b2b329",
+        "pressed": null
+      },
+      {
+        "id": "rf__edge-ef965bd2-e24e-4790-bfb5-9a0d96d51270",
+        "pressed": null
+      },
+      {
+        "id": "rf__node-87c4539d-9d66-42f2-a5a8-e14e1ef41cf4",
+        "pressed": null
+      },
+      {
+        "id": "rf__node-eaefaa0b-f57e-4b5a-86b1-377af51f31da",
+        "pressed": null
+      },
+      {
+        "id": "rf__node-97eda62a-30b1-44a2-900b-688914d73e4f",
+        "pressed": null
+      },
+      {
+        "id": "rf__node-95c03a78-0a71-4e53-ab35-a93a5b03c7ed",
+        "pressed": null
+      },
+      {
+        "id": "rf__node-592cb267-2f8d-4c97-bb99-7e045c701c38",
+        "pressed": null
+      },
+      {
+        "id": "rf__node-27fce123-68f5-4d0a-a4a9-20911cb57f57",
+        "pressed": null
+      },
+      {
+        "id": "rf__node-1f74b1cc-979c-4b95-944b-3e0f1fab620b",
+        "pressed": null
+      },
+      {
+        "id": "rf__background",
+        "pressed": null
+      },
+      {
+        "id": "rf__minimap",
+        "pressed": null
+      },
+      {
+        "id": "rf__controls",
+        "pressed": null
+      }
+    ]
+  }
+}

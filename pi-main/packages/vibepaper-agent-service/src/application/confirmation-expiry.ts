@@ -2,8 +2,7 @@ import type { AgentRunEvent } from "../domain/agent-run.ts";
 
 /** Parse the timestamp formats accepted from the approval event payload. */
 export function parseConfirmationExpiry(value: unknown): number | undefined {
-	if (typeof value === "number" && Number.isFinite(value))
-		return value < 1_000_000_000_000 ? value * 1000 : value;
+	if (typeof value === "number" && Number.isFinite(value)) return value < 1_000_000_000_000 ? value * 1000 : value;
 	if (typeof value !== "string") return undefined;
 	const normalized = value.trim();
 	if (!normalized) return undefined;

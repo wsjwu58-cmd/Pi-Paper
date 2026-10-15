@@ -889,9 +889,9 @@ describe("runtime tool integration", () => {
 						return { taskId: "unexpected", status: "queued", modality: "audio", nodeId: "audio-node" };
 					},
 				} as never,
-			onApprovalRequired: (action) => {
-				requestedActions.push(action as unknown as Record<string, unknown>);
-			},
+				onApprovalRequired: (action) => {
+					requestedActions.push(action as unknown as Record<string, unknown>);
+				},
 			});
 		const single = buildTools("session-audio-single").find((tool) => tool.name === "submit_generation")!;
 		const batch = buildTools("session-audio-batch").find((tool) => tool.name === "submit_generation_batch")!;

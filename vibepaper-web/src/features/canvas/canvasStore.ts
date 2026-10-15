@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import { create } from 'zustand'
 import type { Edge, Node } from '@xyflow/react'
 import { api } from '@/lib/api'
@@ -146,11 +147,11 @@ export async function createCanvasGroup(
   const nodeIds = [...new Set(requestedNodeIds.map(sid).filter((id) => existingIds.has(id)))]
   const minimum = options.allowSingle ? 1 : 2
   if (nodeIds.length < minimum) return null
-  if (!snapshot.canvas) throw new Error('画布尚未加载完成，无法编组。')
+  if (!snapshot.canvas) throw new Error(uiText("画布尚未加载完成，无法编组。"))
   const canvasId = sid(snapshot.canvas.canvas.id)
   const assertCanvasCurrent = () => {
     if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) {
-      throw new Error('画布已切换，编组未写入当前画布。')
+      throw new Error(uiText("画布已切换，编组未写入当前画布。"))
     }
   }
 
@@ -166,7 +167,7 @@ export async function createCanvasGroup(
 
   const group: GroupPayload = {
     id: nodeIds.length === 1 ? crypto.randomUUID() : '',
-    name: options.name ?? '编组',
+    name: options.name ?? uiText("编组"),
     color: options.color ?? '#111111',
     layout: options.layout ?? 'free',
     nodeIds,
@@ -192,14 +193,14 @@ export async function createCanvasGroup(
     const project = await bridge.getActiveProject()
     assertCanvasCurrent()
     if (!project || sid(project.canvasId) !== canvasId) {
-      throw new Error('当前本地项目与画布不匹配，无法编组。')
+      throw new Error(uiText("当前本地项目与画布不匹配，无法编组。"))
     }
     const assertProjectCurrent = async () => {
       assertCanvasCurrent()
       const currentProject = await bridge.getActiveProject()
       assertCanvasCurrent()
       if (!currentProject || currentProject.projectId !== project.projectId || sid(currentProject.canvasId) !== canvasId) {
-        throw new Error('当前本地项目已更改，编组未写入当前画布。')
+        throw new Error(uiText("当前本地项目已更改，编组未写入当前画布。"))
       }
     }
     created = await bridge.addGroup({
@@ -227,7 +228,7 @@ export async function createCanvasGroup(
     assertCanvasCurrent()
     created = {
       id: sid(response.id),
-      name: response.name ?? '编组',
+      name: response.name ?? uiText("编组"),
       color: response.color ?? group.color,
       layout: response.layout ?? 'free',
       nodeIds: response.nodeIds.map(sid),
@@ -285,7 +286,7 @@ export function buildFlow(
     source: sid(e.sourceNodeId),
     target: sid(e.targetNodeId),
     animated: false,
-    label: e.valid ? undefined : '无效',
+    label: e.valid ? undefined : uiText("无效"),
     labelStyle: e.valid ? undefined : { fill: '#888', fontSize: 10, fontWeight: 700 },
     style: { stroke: e.valid ? '#93c5fd' : '#c0c0c0', strokeWidth: 1.5 },
     data: { valid: e.valid, edge: e },

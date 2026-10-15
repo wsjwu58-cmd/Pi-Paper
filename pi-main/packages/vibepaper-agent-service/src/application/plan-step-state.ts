@@ -22,12 +22,7 @@ export function releaseExpiredLeases(plan: AgentPlan, now: Date): AgentPlan {
 	return changed ? { ...plan, version: plan.version + 1, steps } : plan;
 }
 
-export function claimPlanStep(
-	plan: AgentPlan,
-	stepId: string,
-	now: Date,
-	leaseDurationMs = 30_000,
-): AgentPlan {
+export function claimPlanStep(plan: AgentPlan, stepId: string, now: Date, leaseDurationMs = 30_000): AgentPlan {
 	const step = requireStep(plan, stepId);
 	if (!isReady(plan.steps, step)) throw new PlanStepStateError("NOT_READY");
 	const concurrencyKey = step.concurrencyKey?.trim();
@@ -78,7 +73,10 @@ function assertRunningAndIdempotent(step: PlanStep, idempotencyKey: string): voi
 }
 
 function isReady(steps: readonly PlanStep[], step: PlanStep): boolean {
-	return step.status === "pending" && step.dependsOn.every((id) => steps.find((candidate) => candidate.id === id)?.status === "completed");
+	return (
+		step.status === "pending" &&
+		step.dependsOn.every((id) => steps.find((candidate) => candidate.id === id)?.status === "completed")
+	);
 }
 
 function requireStep(plan: AgentPlan, stepId: string): PlanStep {

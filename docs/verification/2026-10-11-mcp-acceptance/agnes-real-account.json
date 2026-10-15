@@ -1,0 +1,1088 @@
+{
+  "success": true,
+  "startedAt": "2026-10-11T13:33:58.166Z",
+  "completedAt": "2026-10-13T08:39:57.927Z",
+  "phase": "completed",
+  "platform": "win32",
+  "electron": "44.4.4",
+  "node": "24.21.0",
+  "isolatedProfile": "E:\\VibePaperProject\\.test-temp\\mcp-agnes-1791725635317\\VibePaper",
+  "projectDirectory": "E:\\VibePaperProject\\.test-temp\\mcp-agnes-1791725635317\\project\\Agnes real account acceptance",
+  "provider": "agnes",
+  "realAccountTest": true,
+  "credentialsInput": "authorized_env",
+  "secureStorage": true,
+  "savedRevision": 3,
+  "results": [
+    {
+      "modality": "image",
+      "taskId": "f43f35ef-d872-489d-9507-5dbe4b8f512b",
+      "model": "target-agnes-image-2-5-flash",
+      "status": "succeeded",
+      "filename": "agnes-real-image.png",
+      "mimeType": "image/png",
+      "sizeBytes": 853173,
+      "sha256": "3f5641ce429f9c896b530a2875d09a7ffe2df763491085b995e9f896f3b0b716",
+      "desktopConfirmed": true,
+      "originalNodeVisible": true,
+      "providerId": "agnes",
+      "createdAt": "2026-10-11T13:33:58.166Z",
+      "completedAt": "2026-10-11T13:34:30.593Z",
+      "eventTypes": [
+        "created",
+        "running",
+        "succeeded"
+      ]
+    },
+    {
+      "modality": "video",
+      "taskId": "792700e6-0468-4653-8fc9-86b262728c24",
+      "model": "target-agnes-video-2-5-flash",
+      "status": "failed",
+      "errorCode": "CLOUD_REQUEST_FAILED",
+      "providerId": "agnes",
+      "createdAt": "2026-10-11T13:34:32.934Z",
+      "completedAt": "2026-10-11T13:35:25.028Z",
+      "eventTypes": [
+        "created",
+        "running",
+        "failed"
+      ],
+      "desktopConfirmed": true,
+      "httpStatus": 503,
+      "upstreamError": "video queue is full, please retry later",
+      "requestId": "2026101113352410173936e347JoWg",
+      "upstreamVideoIdReceived": false
+    },
+    {
+      "modality": "video",
+      "taskId": "30af402d-39b6-49ae-a9cd-93a82c410794",
+      "model": "target-agnes-video-2-5-flash",
+      "status": "failed",
+      "errorCode": "CLOUD_REQUEST_FAILED",
+      "providerId": "agnes",
+      "createdAt": "2026-10-12T11:28:56.617Z",
+      "completedAt": "2026-10-12T11:29:49.296Z",
+      "eventTypes": [
+        "created",
+        "running",
+        "failed"
+      ],
+      "desktopConfirmed": true,
+      "httpStatus": 503,
+      "upstreamError": "video queue is full, please retry later",
+      "requestId": "202610121129472908615275ffs6A6W",
+      "upstreamVideoIdReceived": false
+    },
+    {
+      "modality": "video",
+      "taskId": "55bffcd0-b59b-4e95-94b0-763937a61c15",
+      "model": "target-agnes-video-2-5-flash",
+      "status": "succeeded",
+      "filename": "agnes-real-video.mp4",
+      "mimeType": "video/mp4",
+      "sizeBytes": 1070236,
+      "sha256": "7a1e6bb89e38b6a763f4eab0d3f5c43dfae2fa8a0344ac5b7cdc71899c927a76",
+      "desktopConfirmed": true,
+      "originalNodeVisible": true,
+      "providerId": "agnes",
+      "createdAt": "2026-10-13T08:30:38.041Z",
+      "completedAt": "2026-10-13T08:39:57.927Z",
+      "eventTypes": [
+        "created",
+        "running",
+        "succeeded"
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "name": "list_provider_configuration",
+      "at": "2026-10-13T08:30:34.824Z"
+    },
+    {
+      "name": "configure_provider",
+      "status": "awaiting_disclosure",
+      "at": "2026-10-13T08:30:34.843Z"
+    },
+    {
+      "name": "configure_provider",
+      "status": "saved",
+      "at": "2026-10-13T08:30:35.544Z"
+    },
+    {
+      "name": "test_provider_connection",
+      "status": "unsupported",
+      "at": "2026-10-13T08:30:35.578Z"
+    },
+    {
+      "name": "get_canvas_summary",
+      "at": "2026-10-13T08:30:37.637Z"
+    },
+    {
+      "name": "list_models",
+      "at": "2026-10-13T08:30:37.689Z"
+    },
+    {
+      "name": "get_canvas_summary",
+      "at": "2026-10-13T08:30:37.709Z"
+    },
+    {
+      "name": "prepare_generation",
+      "status": "awaiting_confirmation",
+      "at": "2026-10-13T08:30:37.817Z"
+    },
+    {
+      "name": "get_operation",
+      "status": "awaiting_confirmation",
+      "at": "2026-10-13T08:30:37.946Z"
+    },
+    {
+      "name": "get_operation",
+      "status": "submitted",
+      "at": "2026-10-13T08:30:40.953Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:30:40.980Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:30:44.000Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:30:47.038Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:30:50.075Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:30:53.107Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:30:56.136Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:30:59.159Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:02.189Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:05.227Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:08.259Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:11.303Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:14.348Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:17.370Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:20.395Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:23.419Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:26.451Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:29.477Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:32.514Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:35.536Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:38.586Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:41.611Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:44.632Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:47.658Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:50.692Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:53.734Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:56.768Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:31:59.795Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:02.845Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:05.880Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:08.908Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:11.961Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:14.989Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:18.025Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:21.051Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:24.082Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:27.139Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:30.163Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:33.186Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:36.219Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:39.255Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:42.281Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:45.311Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:48.332Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:51.364Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:54.397Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:32:57.432Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:00.464Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:03.499Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:06.523Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:09.556Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:12.588Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:15.622Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:18.657Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:21.690Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:24.720Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:27.759Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:30.785Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:33.808Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:36.835Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:39.860Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:42.888Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:45.920Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:48.953Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:51.986Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:55.013Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:33:58.036Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:01.084Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:04.121Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:07.171Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:10.203Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:13.229Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:16.260Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:19.292Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:22.312Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:25.341Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:28.372Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:31.400Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:34.439Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:37.480Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:40.507Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:43.530Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:46.562Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:49.596Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:52.634Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:55.661Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:34:58.699Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:01.724Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:04.747Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:07.783Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:10.810Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:13.847Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:16.875Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:19.920Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:22.951Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:25.985Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:29.018Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:32.061Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:35.107Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:38.133Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:41.175Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:44.199Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:47.233Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:50.267Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:53.302Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:56.333Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:35:59.362Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:02.397Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:05.430Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:08.463Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:11.491Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:14.529Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:17.559Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:20.593Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:23.640Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:26.665Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:29.696Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:32.741Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:35.767Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:38.806Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:41.862Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:44.897Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:47.941Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:50.962Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:53.996Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:36:57.019Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:00.070Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:03.094Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:06.124Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:09.147Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:12.176Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:15.220Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:18.245Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:21.281Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:24.314Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:27.343Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:30.362Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:33.394Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:36.428Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:39.451Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:42.483Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:45.510Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:48.539Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:51.570Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:54.601Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:37:57.625Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:00.654Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:03.691Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:06.723Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:09.761Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:12.787Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:15.816Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:18.860Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:21.893Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:24.918Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:27.967Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:30.996Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:34.025Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:37.056Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:40.100Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:43.145Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:46.182Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:49.212Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:52.234Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:55.272Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:38:58.300Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:01.331Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:04.355Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:07.377Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:10.407Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:13.431Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:16.451Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:19.479Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:22.498Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:25.518Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:28.551Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:31.578Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:34.612Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:37.640Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:40.669Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:43.698Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:46.728Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:49.754Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:52.775Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "running",
+      "at": "2026-10-13T08:39:55.795Z"
+    },
+    {
+      "name": "check_task_status",
+      "status": "succeeded",
+      "at": "2026-10-13T08:39:58.819Z"
+    },
+    {
+      "name": "prepare_generation",
+      "status": "submitted",
+      "at": "2026-10-13T08:39:59.626Z"
+    }
+  ],
+  "bridgeDiagnostics": "VibePaper connection approval: verify code 156263 in the desktop dialog.\n",
+  "resumedVideoOnly": true,
+  "acceptanceAttempt": 3,
+  "submittedTaskId": "55bffcd0-b59b-4e95-94b0-763937a61c15",
+  "credentialHygieneEvidence": "credential-hygiene.json",
+  "reconciliation": {
+    "checkedAt": "2026-10-13T08:43:46.531Z",
+    "source": "read-only project SQLite tasks and task_events",
+    "taskDataChanged": false,
+    "earlierCleanupHarnessFailure": "agnes-cleanup-harness-failure.json",
+    "finalCleanupPassed": true
+  }
+}

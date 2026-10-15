@@ -1,8 +1,10 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useState } from 'react'
 import { Image as ImageIcon, Settings2 } from 'lucide-react'
 import type { ModelInfo } from '@/lib/types'
 
 export type ModelBrand =
+  | 'zhipu'
   | 'agnes'
   | 'anthropic'
   | 'deepseek'
@@ -47,6 +49,7 @@ const BRAND_ICON_URL: Partial<Record<ModelBrand, string>> = {
 
 /** Locally bundled vendor marks used only by the desktop UI. */
 const DESKTOP_BRAND_ICON_URL: Partial<Record<ModelBrand, string>> = {
+  zhipu: '/provider-icons/zhipu.png',
   agnes: '/provider-icons/agnes.png',
   anthropic: '/provider-icons/anthropic.ico',
   deepseek: '/provider-icons/deepseek.ico',
@@ -69,6 +72,7 @@ const DESKTOP_BRAND_ICON_URL: Partial<Record<ModelBrand, string>> = {
 }
 
 const DESKTOP_PROVIDER_BRANDS: Record<string, ModelBrand> = {
+  zhipu: 'zhipu',
   agnes: 'agnes',
   anthropic: 'anthropic',
   deepseek: 'deepseek',
@@ -108,6 +112,7 @@ const DESKTOP_PROVIDER_LABEL_BRANDS: Record<string, ModelBrand> = {
 }
 
 const BRAND_META: Record<ModelBrand, { label: string; bg: string; fg: string }> = {
+  zhipu: { label: '智', bg: '#3859ff', fg: '#fff' },
   agnes: { label: 'A', bg: '#111827', fg: '#fff' },
   anthropic: { label: 'A', bg: '#d97757', fg: '#fff' },
   deepseek: { label: 'DS', bg: '#4d6bfe', fg: '#fff' },
@@ -247,6 +252,7 @@ export function ModelBrandIcon({
   desktop?: boolean
   symbol?: 'image' | 'settings'
 }) {
+  useUiLanguage()
   const brand = resolveModelBrand(model)
   const meta = BRAND_META[brand]
   const font = Math.max(8, Math.round(size * 0.42))
@@ -260,9 +266,9 @@ export function ModelBrandIcon({
     if (desktopIconUrl && !imgFailed) {
       return (
         <span
-          className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-black/10 bg-white p-0.5 ${className}`}
+          className={`vp-brand-mark inline-flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-black/10 bg-white p-0.5 ${className}`}
           style={{ width: size, height: size }}
-          title={title}
+          title={uiText(title)}
           aria-hidden
         >
           <img
@@ -280,7 +286,7 @@ export function ModelBrandIcon({
       <span
         className={`inline-flex shrink-0 items-center justify-center rounded-md bg-[#f0eef8] text-[#6d55c9] ${className}`}
         style={{ width: size, height: size }}
-        title={title}
+        title={uiText(title)}
         aria-hidden
       >
         <SymbolIcon size={Math.max(12, Math.round(size * 0.58))} strokeWidth={1.8} />
@@ -293,7 +299,7 @@ export function ModelBrandIcon({
       <span
         className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded ${className}`}
         style={{ width: size, height: size }}
-        title={title}
+        title={uiText(title)}
         aria-hidden
       >
         <img
@@ -318,10 +324,10 @@ export function ModelBrandIcon({
         color: meta.fg,
         fontSize: font,
       }}
-      title={title}
+      title={uiText(title)}
       aria-hidden
     >
-      {useBean ? <BeanIcon size={size} /> : meta.label}
+      {useBean ? <BeanIcon size={size} /> : uiText(meta.label)}
     </span>
   )
 }

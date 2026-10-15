@@ -1,0 +1,9 @@
+{
+  "installedStylesheet": "E:\\pp\\Pi-Paper\\resources\\app\\renderer\\assets\\index-iSCdpPIt.css",
+  "backup": "E:\\pp\\Pi-Paper\\resources\\app\\renderer\\assets\\index-iSCdpPIt.css.confirmation-backup-20261009",
+  "originalSha256": "06479409CE5649DB6578F127D38B78D40A4015A5A69C62382B24B3C78A8D450F",
+  "patchedSha256": "526091B9D7C45EC7AE4FA79F40482BA9064EC9B878950BB7095E7C626F20AABB",
+  "scope": "CSS grid minimum width only",
+  "applied": true,
+  "restartRequired": true
+}

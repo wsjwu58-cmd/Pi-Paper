@@ -56,7 +56,7 @@ afterEach(async () => {
 	);
 });
 
-describe("desktop plan execution v7-to-v8 migration", () => {
+describe("desktop plan execution v7-to-current migration", () => {
 	it("backs up and preserves v7 plans and Runs, then freezes a legacy plan context on explicit execution", async () => {
 		const project = await createProject();
 		const originalPlan: AgentPlan = {
@@ -113,7 +113,7 @@ describe("desktop plan execution v7-to-v8 migration", () => {
 
 		stores = await openDesktopAgentStores(project.directory);
 		try {
-			expect(DESKTOP_AGENT_CONTROL_SCHEMA_VERSION).toBe(8);
+			expect(DESKTOP_AGENT_CONTROL_SCHEMA_VERSION).toBe(11);
 			expect((await stores.control.findById(runId))?.status).toBe("running");
 			expect(stores.control.listEvents(runId).some((event) => event.type === "assistant_delta")).toBe(true);
 			expect(await stores.plans.get(originalPlan.id, project.projectId)).toEqual({ ...originalPlan, sessionId });
@@ -160,7 +160,7 @@ describe("desktop plan execution v7-to-v8 migration", () => {
 
 		const migrated = new DatabaseSync(project.controlPath, { readOnly: true });
 		try {
-			expect((migrated.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(8);
+			expect((migrated.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(11);
 		} finally {
 			migrated.close();
 		}

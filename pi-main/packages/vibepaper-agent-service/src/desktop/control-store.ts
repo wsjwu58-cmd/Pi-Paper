@@ -13,7 +13,7 @@ import type { AgentRun, AgentRunEvent, AgentRunEventType, AgentRunStatus } from 
 import { isActiveRunStatus } from "../domain/agent-run.ts";
 import type { DesktopAgentSkillSnapshot } from "./skill-context.ts";
 
-export const DESKTOP_AGENT_CONTROL_SCHEMA_VERSION = 8;
+export const DESKTOP_AGENT_CONTROL_SCHEMA_VERSION = 11;
 const CONTROL_SCHEMA_VERSION = DESKTOP_AGENT_CONTROL_SCHEMA_VERSION;
 const MAX_OPERATION_RESULT_BYTES = 1_000_000;
 
@@ -172,6 +172,56 @@ const DESKTOP_AGENT_PLAN_EXECUTION_SCHEMA_V8 = `
   CREATE INDEX IF NOT EXISTS desktop_plan_execution_tasks_by_step ON desktop_plan_execution_tasks(plan_id, step_id);
 `;
 
+const DESKTOP_MCP_SCHEMA_V9 = `
+  CREATE TABLE IF NOT EXISTS desktop_mcp_operations (
+    operation_id TEXT NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 128),
+    client_id TEXT NOT NULL CHECK (length(client_id) BETWEEN 1 AND 128),
+    grant_id TEXT NOT NULL CHECK (length(grant_id) BETWEEN 1 AND 128),
+    project_id TEXT NOT NULL CHECK (length(project_id) BETWEEN 1 AND 128),
+    canvas_id TEXT NOT NULL CHECK (length(canvas_id) BETWEEN 1 AND 128),
+    kind TEXT NOT NULL CHECK (length(kind) BETWEEN 1 AND 80),
+    payload_digest TEXT NOT NULL CHECK (length(payload_digest) = 64),
+    canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
+    status TEXT NOT NULL CHECK (status IN (
+      'started', 'awaiting_confirmation', 'submitting', 'submission_unknown',
+      'submitted', 'completed', 'partial', 'rejected', 'expired', 'invalidated', 'failed'
+    )),
+    result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+    error_code TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (client_id, grant_id, operation_id)
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS desktop_mcp_operations_by_scope
+    ON desktop_mcp_operations(project_id, canvas_id, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS desktop_mcp_proposals (
+    proposal_id TEXT PRIMARY KEY CHECK (length(proposal_id) BETWEEN 1 AND 128),
+    client_id TEXT NOT NULL CHECK (length(client_id) BETWEEN 1 AND 128),
+    grant_id TEXT NOT NULL CHECK (length(grant_id) BETWEEN 1 AND 128),
+    operation_id TEXT NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 128),
+    project_id TEXT NOT NULL CHECK (length(project_id) BETWEEN 1 AND 128),
+    canvas_id TEXT NOT NULL CHECK (length(canvas_id) BETWEEN 1 AND 128),
+    canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
+    model_binding_id TEXT NOT NULL CHECK (length(model_binding_id) BETWEEN 1 AND 256),
+    provider_revision INTEGER,
+    provider_revisions_json TEXT CHECK (provider_revisions_json IS NULL OR json_valid(provider_revisions_json)),
+    approval_action_id TEXT NOT NULL UNIQUE CHECK (length(approval_action_id) BETWEEN 1 AND 128),
+    status TEXT NOT NULL CHECK (status IN (
+      'awaiting_confirmation', 'submitting', 'submission_unknown', 'submitted',
+      'rejected', 'expired', 'invalidated', 'failed'
+    )),
+    task_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(task_ids_json)),
+    error_code TEXT,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (client_id, grant_id, operation_id)
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS desktop_mcp_proposals_by_scope
+    ON desktop_mcp_proposals(client_id, grant_id, project_id, canvas_id, status, created_at DESC);
+`;
+
 const CONTROL_SCHEMA = `
   CREATE TABLE agent_runs (
     id TEXT PRIMARY KEY,
@@ -224,7 +274,7 @@ const CONTROL_SCHEMA = `
   CREATE TABLE approvals (
     approval_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
-    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    run_id TEXT REFERENCES agent_runs(id) ON DELETE CASCADE,
     project_id TEXT NOT NULL,
     canvas_id TEXT NOT NULL,
     canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
@@ -255,6 +305,8 @@ const CONTROL_SCHEMA = `
   ${DESKTOP_AGENT_SCHEMA_V7}
 
   ${DESKTOP_AGENT_PLAN_EXECUTION_SCHEMA_V8}
+
+  ${DESKTOP_MCP_SCHEMA_V9}
 
   CREATE TABLE task_links (
     task_id TEXT PRIMARY KEY,
@@ -415,10 +467,74 @@ export type DesktopOutboxItem = {
 	createdAt: Date;
 };
 
+export type DesktopMcpOperationStatus =
+	| "started"
+	| "awaiting_confirmation"
+	| "submitting"
+	| "submission_unknown"
+	| "submitted"
+	| "completed"
+	| "partial"
+	| "rejected"
+	| "expired"
+	| "invalidated"
+	| "failed";
+
+export type DesktopMcpOperation = {
+	operationId: string;
+	clientId: string;
+	grantId: string;
+	projectId: string;
+	canvasId: string;
+	kind: string;
+	payloadDigest: string;
+	canvasVersion: number;
+	status: DesktopMcpOperationStatus;
+	result?: Record<string, unknown>;
+	errorCode?: string;
+	createdAt: number;
+	updatedAt: number;
+};
+
+export type BeginDesktopMcpOperation = Omit<
+	DesktopMcpOperation,
+	"status" | "result" | "errorCode" | "createdAt" | "updatedAt"
+>;
+
+export type DesktopMcpProposalStatus =
+	| "awaiting_confirmation"
+	| "submitting"
+	| "submission_unknown"
+	| "submitted"
+	| "rejected"
+	| "expired"
+	| "invalidated"
+	| "failed";
+
+export type DesktopMcpProposal = {
+	proposalId: string;
+	clientId: string;
+	grantId: string;
+	operationId: string;
+	projectId: string;
+	canvasId: string;
+	canvasVersion: number;
+	modelBindingId: string;
+	providerRevision?: number;
+	providerRevisions?: Record<string, number>;
+	approvalActionId: string;
+	status: DesktopMcpProposalStatus;
+	taskIds: string[];
+	errorCode?: string;
+	expiresAt: number;
+	createdAt: number;
+	updatedAt: number;
+};
+
 type ApprovalRow = {
 	approval_id: string;
 	session_id: string;
-	run_id: string;
+	run_id: string | null;
 	project_id: string;
 	canvas_id: string;
 	canvas_version: number;
@@ -592,8 +708,154 @@ function toApprovalRecord(row: ApprovalRow): ApprovalRecord {
 	};
 }
 
+function toDesktopMcpOperation(row: Record<string, unknown>): DesktopMcpOperation {
+	const result = row.result_json === null ? undefined : jsonObject(String(row.result_json));
+	return {
+		operationId: String(row.operation_id),
+		clientId: String(row.client_id),
+		grantId: String(row.grant_id),
+		projectId: String(row.project_id),
+		canvasId: String(row.canvas_id),
+		kind: String(row.kind),
+		payloadDigest: String(row.payload_digest),
+		canvasVersion: Number(row.canvas_version),
+		status: row.status as DesktopMcpOperationStatus,
+		...(result ? { result } : {}),
+		...(row.error_code === null ? {} : { errorCode: String(row.error_code) }),
+		createdAt: Number(row.created_at),
+		updatedAt: Number(row.updated_at),
+	};
+}
+
+function toDesktopMcpProposal(row: Record<string, unknown>): DesktopMcpProposal {
+	const taskIds: unknown = JSON.parse(String(row.task_ids_json));
+	if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string"))
+		throw new Error("MCP_PROPOSAL_RECORD_INVALID");
+	return {
+		proposalId: String(row.proposal_id),
+		clientId: String(row.client_id),
+		grantId: String(row.grant_id),
+		operationId: String(row.operation_id),
+		projectId: String(row.project_id),
+		canvasId: String(row.canvas_id),
+		canvasVersion: Number(row.canvas_version),
+		modelBindingId: String(row.model_binding_id),
+		...(row.provider_revision === null ? {} : { providerRevision: Number(row.provider_revision) }),
+		...(row.provider_revisions_json === null || row.provider_revisions_json === undefined
+			? {}
+			: { providerRevisions: jsonObject(String(row.provider_revisions_json)) as Record<string, number> }),
+		approvalActionId: String(row.approval_action_id),
+		status: row.status as DesktopMcpProposalStatus,
+		taskIds: taskIds as string[],
+		...(row.error_code === null ? {} : { errorCode: String(row.error_code) }),
+		expiresAt: Number(row.expires_at),
+		createdAt: Number(row.created_at),
+		updatedAt: Number(row.updated_at),
+	};
+}
+
+const MCP_OPERATION_STATUSES = new Set<DesktopMcpOperationStatus>([
+	"started",
+	"awaiting_confirmation",
+	"submitting",
+	"submission_unknown",
+	"submitted",
+	"completed",
+	"partial",
+	"rejected",
+	"expired",
+	"invalidated",
+	"failed",
+]);
+const MCP_PROPOSAL_STATUSES = new Set<DesktopMcpProposalStatus>([
+	"awaiting_confirmation",
+	"submitting",
+	"submission_unknown",
+	"submitted",
+	"rejected",
+	"expired",
+	"invalidated",
+	"failed",
+]);
+
 function digest(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateMcpOperationInput(input: BeginDesktopMcpOperation): void {
+	for (const value of [input.operationId, input.clientId, input.grantId, input.projectId, input.canvasId]) {
+		if (typeof value !== "string" || value.length < 1 || value.length > 128)
+			throw new Error("MCP_OPERATION_INPUT_INVALID");
+	}
+	if (
+		typeof input.kind !== "string" ||
+		!/^[a-z_]{1,80}$/u.test(input.kind) ||
+		!/^[a-f0-9]{64}$/u.test(input.payloadDigest) ||
+		!Number.isSafeInteger(input.canvasVersion) ||
+		input.canvasVersion < 0
+	)
+		throw new Error("MCP_OPERATION_INPUT_INVALID");
+}
+
+function validateMcpProposalInput(
+	input: Omit<DesktopMcpProposal, "createdAt" | "updatedAt" | "taskIds"> & { taskIds?: string[] },
+): void {
+	for (const value of [
+		input.proposalId,
+		input.clientId,
+		input.grantId,
+		input.operationId,
+		input.projectId,
+		input.canvasId,
+		input.approvalActionId,
+	]) {
+		if (typeof value !== "string" || value.length < 1 || value.length > 128)
+			throw new Error("MCP_PROPOSAL_INPUT_INVALID");
+	}
+	if (
+		!Number.isSafeInteger(input.canvasVersion) ||
+		input.canvasVersion < 0 ||
+		typeof input.modelBindingId !== "string" ||
+		input.modelBindingId.length < 1 ||
+		input.modelBindingId.length > 256 ||
+		(input.providerRevision !== undefined &&
+			(!Number.isSafeInteger(input.providerRevision) || input.providerRevision < 0)) ||
+		(input.providerRevisions !== undefined &&
+			(!isRecordValue(input.providerRevisions) ||
+				Object.entries(input.providerRevisions).some(
+					([bindingId, revision]) =>
+						bindingId.length < 1 ||
+						bindingId.length > 256 ||
+						!Number.isSafeInteger(revision) ||
+						Number(revision) < 0,
+				))) ||
+		!MCP_PROPOSAL_STATUSES.has(input.status) ||
+		!Number.isSafeInteger(input.expiresAt) ||
+		input.expiresAt < 0 ||
+		(input.taskIds !== undefined &&
+			(!Array.isArray(input.taskIds) ||
+				input.taskIds.length > 20 ||
+				input.taskIds.some((taskId) => typeof taskId !== "string" || taskId.length < 1 || taskId.length > 128)))
+	)
+		throw new Error("MCP_PROPOSAL_INPUT_INVALID");
+}
+
+function isAllowedMcpProposalTransition(current: DesktopMcpProposalStatus, next: DesktopMcpProposalStatus): boolean {
+	const transitions: Record<DesktopMcpProposalStatus, readonly DesktopMcpProposalStatus[]> = {
+		awaiting_confirmation: ["submitting", "rejected", "expired", "invalidated", "failed"],
+		submitting: ["submission_unknown", "submitted", "failed", "invalidated"],
+		submission_unknown: ["submitted", "failed", "invalidated"],
+		submitted: [],
+		rejected: [],
+		expired: [],
+		invalidated: [],
+		failed: [],
+	};
+	return transitions[current].includes(next);
 }
 
 function validateSessionId(sessionId: string): void {
@@ -1040,10 +1302,11 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 	private saveApproval(record: ApprovalRecord): void {
 		const action = record.action;
 		const approvalToken = action.approvalToken;
+		const externalMcpApproval = action.sessionId.startsWith("mcp:");
 		if (
 			!approvalToken ||
 			action.status !== "awaiting_approval" ||
-			!action.runId ||
+			(!action.runId && !externalMcpApproval) ||
 			!Number.isSafeInteger(action.canvasVersion) ||
 			!Number.isSafeInteger(action.binding.expiresAt) ||
 			!/^[a-f0-9]{64}$/u.test(action.actionHash)
@@ -1051,14 +1314,16 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			throw new Error("APPROVAL_RECORD_INVALID");
 		const actionJson = JSON.stringify(action);
 		if (typeof actionJson !== "string") throw new Error("APPROVAL_RECORD_NOT_SERIALIZABLE");
-		const runId = action.runId;
+		const runId = action.runId ?? null;
 		const now = new Date().toISOString();
 		this.transaction(() => {
-			const run = this.database.prepare("SELECT session_id, status FROM agent_runs WHERE id = ?").get(runId) as
-				| { session_id: string; status: AgentRunStatus }
-				| undefined;
-			if (!run || run.session_id !== action.sessionId || !isActiveRunStatus(run.status))
-				throw new Error("RUN_NOT_ACTIVE");
+			if (runId) {
+				const run = this.database.prepare("SELECT session_id, status FROM agent_runs WHERE id = ?").get(runId) as
+					| { session_id: string; status: AgentRunStatus }
+					| undefined;
+				if (!run || run.session_id !== action.sessionId || !isActiveRunStatus(run.status))
+					throw new Error("RUN_NOT_ACTIVE");
+			}
 			this.database
 				.prepare(`
 				INSERT INTO approvals (
@@ -1627,6 +1892,309 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 		return rows.map(toEvent);
 	}
 
+	beginMcpOperation(input: BeginDesktopMcpOperation): {
+		status: "created" | "replay" | "conflict";
+		record?: DesktopMcpOperation;
+	} {
+		validateMcpOperationInput(input);
+		return this.transaction(() => {
+			const existingRow = this.database
+				.prepare(`
+				SELECT * FROM desktop_mcp_operations
+				WHERE operation_id = ? AND client_id = ? AND grant_id = ?
+			`)
+				.get(input.operationId, input.clientId, input.grantId) as Record<string, unknown> | undefined;
+			if (existingRow) {
+				const existing = toDesktopMcpOperation(existingRow);
+				if (
+					existing.projectId !== input.projectId ||
+					existing.canvasId !== input.canvasId ||
+					existing.kind !== input.kind ||
+					existing.payloadDigest !== input.payloadDigest ||
+					existing.canvasVersion !== input.canvasVersion
+				)
+					return { status: "conflict" };
+				return { status: "replay", record: existing };
+			}
+			const now = Date.now();
+			this.database
+				.prepare(`
+				INSERT INTO desktop_mcp_operations (
+					operation_id, client_id, grant_id, project_id, canvas_id, kind, payload_digest,
+					canvas_version, status, result_json, error_code, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'started', NULL, NULL, ?, ?)
+			`)
+				.run(
+					input.operationId,
+					input.clientId,
+					input.grantId,
+					input.projectId,
+					input.canvasId,
+					input.kind,
+					input.payloadDigest,
+					input.canvasVersion,
+					now,
+					now,
+				);
+			const record = this.getMcpOperation(input);
+			if (!record) throw new Error("MCP_OPERATION_NOT_FOUND");
+			return { status: "created", record };
+		});
+	}
+
+	getMcpOperation(
+		input: Pick<BeginDesktopMcpOperation, "operationId" | "clientId" | "grantId">,
+	): DesktopMcpOperation | undefined {
+		const row = this.database
+			.prepare(`
+			SELECT * FROM desktop_mcp_operations
+			WHERE operation_id = ? AND client_id = ? AND grant_id = ?
+		`)
+			.get(input.operationId, input.clientId, input.grantId) as Record<string, unknown> | undefined;
+		return row ? toDesktopMcpOperation(row) : undefined;
+	}
+
+	updateMcpOperation(input: {
+		operationId: string;
+		clientId: string;
+		grantId: string;
+		status: DesktopMcpOperationStatus;
+		result?: Record<string, unknown>;
+		errorCode?: string;
+	}): DesktopMcpOperation {
+		if (!MCP_OPERATION_STATUSES.has(input.status)) throw new Error("MCP_OPERATION_STATUS_INVALID");
+		if (
+			input.result !== undefined &&
+			(!isRecordValue(input.result) || Buffer.byteLength(JSON.stringify(input.result), "utf8") > 64_000)
+		)
+			throw new Error("MCP_OPERATION_RESULT_INVALID");
+		if (input.errorCode !== undefined && !/^[A-Z0-9_]{1,120}$/u.test(input.errorCode))
+			throw new Error("MCP_OPERATION_ERROR_INVALID");
+		return this.transaction(() => {
+			const current = this.getMcpOperation(input);
+			if (!current) throw new Error("MCP_OPERATION_NOT_FOUND");
+			if (current.status === input.status) {
+				if (input.result !== undefined && JSON.stringify(input.result) !== JSON.stringify(current.result))
+					throw new Error("MCP_OPERATION_RESULT_CONFLICT");
+				if (input.errorCode !== undefined && input.errorCode !== current.errorCode)
+					throw new Error("MCP_OPERATION_RESULT_CONFLICT");
+				return current;
+			}
+			const allowed: Record<DesktopMcpOperationStatus, readonly DesktopMcpOperationStatus[]> = {
+				started: ["awaiting_confirmation", "completed", "partial", "submission_unknown", "failed", "invalidated"],
+				awaiting_confirmation: ["submitting", "rejected", "expired", "invalidated", "failed"],
+				submitting: ["submitted", "submission_unknown", "failed", "invalidated"],
+				submission_unknown: ["submitted", "failed", "invalidated"],
+				submitted: [],
+				completed: [],
+				partial: [],
+				rejected: [],
+				expired: [],
+				invalidated: [],
+				failed: [],
+			};
+			if (!allowed[current.status].includes(input.status)) throw new Error("MCP_OPERATION_STATE_CONFLICT");
+			const resultJson = input.result === undefined ? undefined : JSON.stringify(input.result);
+			const now = Date.now();
+			this.database
+				.prepare(`
+				UPDATE desktop_mcp_operations SET status = ?, result_json = COALESCE(?, result_json),
+					error_code = ?, updated_at = ?
+				WHERE operation_id = ? AND client_id = ? AND grant_id = ?
+			`)
+				.run(
+					input.status,
+					resultJson ?? null,
+					input.errorCode ?? null,
+					now,
+					input.operationId,
+					input.clientId,
+					input.grantId,
+				);
+			const updated = this.getMcpOperation(input);
+			if (!updated) throw new Error("MCP_OPERATION_NOT_FOUND");
+			return updated;
+		});
+	}
+
+	createMcpProposal(
+		input: Omit<DesktopMcpProposal, "createdAt" | "updatedAt" | "taskIds"> & { taskIds?: string[] },
+	): DesktopMcpProposal {
+		validateMcpProposalInput(input);
+		const now = Date.now();
+		this.database
+			.prepare(`
+			INSERT INTO desktop_mcp_proposals (
+				proposal_id, client_id, grant_id, operation_id, project_id, canvas_id, canvas_version,
+				model_binding_id, provider_revision, provider_revisions_json, approval_action_id, status, task_ids_json, error_code,
+				expires_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`)
+			.run(
+				input.proposalId,
+				input.clientId,
+				input.grantId,
+				input.operationId,
+				input.projectId,
+				input.canvasId,
+				input.canvasVersion,
+				input.modelBindingId,
+				input.providerRevision ?? null,
+				input.providerRevisions === undefined ? null : JSON.stringify(input.providerRevisions),
+				input.approvalActionId,
+				input.status,
+				JSON.stringify(input.taskIds ?? []),
+				input.errorCode ?? null,
+				input.expiresAt,
+				now,
+				now,
+			);
+		const proposal = this.getMcpProposal({
+			proposalId: input.proposalId,
+			clientId: input.clientId,
+			grantId: input.grantId,
+		});
+		if (!proposal) throw new Error("MCP_PROPOSAL_NOT_FOUND");
+		return proposal;
+	}
+
+	getMcpProposal(input: { proposalId: string; clientId: string; grantId: string }): DesktopMcpProposal | undefined {
+		const row = this.database
+			.prepare(`
+			SELECT * FROM desktop_mcp_proposals
+			WHERE proposal_id = ? AND client_id = ? AND grant_id = ?
+		`)
+			.get(input.proposalId, input.clientId, input.grantId) as Record<string, unknown> | undefined;
+		return row ? toDesktopMcpProposal(row) : undefined;
+	}
+
+	findMcpProposalByOperation(input: {
+		operationId: string;
+		clientId: string;
+		grantId: string;
+	}): DesktopMcpProposal | undefined {
+		const row = this.database
+			.prepare(`
+			SELECT * FROM desktop_mcp_proposals
+			WHERE operation_id = ? AND client_id = ? AND grant_id = ?
+		`)
+			.get(input.operationId, input.clientId, input.grantId) as Record<string, unknown> | undefined;
+		return row ? toDesktopMcpProposal(row) : undefined;
+	}
+
+	updateMcpProposal(input: {
+		proposalId: string;
+		clientId: string;
+		grantId: string;
+		status: DesktopMcpProposalStatus;
+		taskIds?: string[];
+		errorCode?: string;
+	}): DesktopMcpProposal {
+		if (!MCP_PROPOSAL_STATUSES.has(input.status)) throw new Error("MCP_PROPOSAL_STATUS_INVALID");
+		if (
+			input.taskIds !== undefined &&
+			(!Array.isArray(input.taskIds) ||
+				input.taskIds.length > 20 ||
+				input.taskIds.some((taskId) => typeof taskId !== "string" || taskId.length < 1 || taskId.length > 128))
+		)
+			throw new Error("MCP_PROPOSAL_TASKS_INVALID");
+		if (input.errorCode !== undefined && !/^[A-Z0-9_]{1,120}$/u.test(input.errorCode))
+			throw new Error("MCP_PROPOSAL_ERROR_INVALID");
+		return this.transaction(() => {
+			const current = this.getMcpProposal(input);
+			if (!current) throw new Error("MCP_PROPOSAL_NOT_FOUND");
+			if (current.status !== input.status && !isAllowedMcpProposalTransition(current.status, input.status))
+				throw new Error("MCP_PROPOSAL_STATE_CONFLICT");
+			const taskIds = input.taskIds ?? current.taskIds;
+			if (input.taskIds !== undefined && JSON.stringify(taskIds) !== JSON.stringify(current.taskIds)) {
+				const appendOnly =
+					taskIds.length >= current.taskIds.length &&
+					current.taskIds.every((taskId, index) => taskIds[index] === taskId);
+				if (!appendOnly || !["submitting", "submission_unknown", "submitted"].includes(input.status))
+					throw new Error("MCP_PROPOSAL_RESULT_CONFLICT");
+			}
+			this.database
+				.prepare(`
+				UPDATE desktop_mcp_proposals SET status = ?, task_ids_json = ?, error_code = ?, updated_at = ?
+				WHERE proposal_id = ? AND client_id = ? AND grant_id = ?
+			`)
+				.run(
+					input.status,
+					JSON.stringify(taskIds),
+					input.errorCode ?? current.errorCode ?? null,
+					Date.now(),
+					input.proposalId,
+					input.clientId,
+					input.grantId,
+				);
+			const updated = this.getMcpProposal(input);
+			if (!updated) throw new Error("MCP_PROPOSAL_NOT_FOUND");
+			return updated;
+		});
+	}
+
+	listMcpProposals(input: {
+		clientId: string;
+		grantId: string;
+		projectId: string;
+		canvasId?: string;
+	}): DesktopMcpProposal[] {
+		const rows = this.database
+			.prepare(`
+			SELECT * FROM desktop_mcp_proposals
+			WHERE client_id = ? AND grant_id = ? AND project_id = ? AND (? IS NULL OR canvas_id = ?)
+			ORDER BY created_at DESC LIMIT 100
+		`)
+			.all(input.clientId, input.grantId, input.projectId, input.canvasId ?? null, input.canvasId ?? null) as Record<
+			string,
+			unknown
+		>[];
+		return rows.map(toDesktopMcpProposal);
+	}
+
+	invalidatePendingMcpWorkForRestart(): void {
+		this.transaction(() => {
+			const now = Date.now();
+			const timestamp = new Date(now).toISOString();
+			this.database
+				.prepare(`
+				UPDATE approvals SET status = 'invalidated', updated_at = ?
+				WHERE session_id LIKE 'mcp:%' AND status = 'pending'
+			`)
+				.run(timestamp);
+			this.database
+				.prepare(`
+				UPDATE desktop_mcp_proposals SET status = 'invalidated', updated_at = ?
+				WHERE status = 'awaiting_confirmation'
+			`)
+				.run(now);
+			this.database
+				.prepare(`
+				UPDATE desktop_mcp_proposals SET status = 'submission_unknown', updated_at = ?
+				WHERE status = 'submitting'
+			`)
+				.run(now);
+			this.database
+				.prepare(`
+				UPDATE desktop_mcp_operations SET status = 'invalidated', error_code = 'MCP_OPERATION_RECOVERY_REQUIRED', updated_at = ?
+				WHERE status = 'started'
+			`)
+				.run(now);
+			this.database
+				.prepare(`
+				UPDATE desktop_mcp_operations SET status = 'invalidated', error_code = 'MCP_CONFIRMATION_INVALIDATED', updated_at = ?
+				WHERE status = 'awaiting_confirmation'
+			`)
+				.run(now);
+			this.database
+				.prepare(`
+				UPDATE desktop_mcp_operations SET status = 'submission_unknown', updated_at = ?
+				WHERE status = 'submitting'
+			`)
+				.run(now);
+		});
+	}
+
 	prepareOperation(input: PrepareDesktopOperation): DesktopOperation {
 		if (
 			!input.sessionId ||
@@ -2146,6 +2714,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
 				this.ensureSchemaV8();
+				this.ensureSchemaV9();
 			});
 			return;
 		}
@@ -2163,6 +2732,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
 				this.ensureSchemaV8();
+				this.ensureSchemaV9();
 			});
 			return;
 		}
@@ -2173,6 +2743,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
 				this.ensureSchemaV8();
+				this.ensureSchemaV9();
 			});
 			return;
 		}
@@ -2182,6 +2753,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
 				this.ensureSchemaV8();
+				this.ensureSchemaV9();
 			});
 			return;
 		}
@@ -2190,6 +2762,7 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 				this.database.exec(DESKTOP_TASK_CONTINUATIONS_SCHEMA);
 				this.ensureSchemaV7();
 				this.ensureSchemaV8();
+				this.ensureSchemaV9();
 			});
 			return;
 		}
@@ -2197,11 +2770,23 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 			this.transaction(() => {
 				this.ensureSchemaV7();
 				this.ensureSchemaV8();
+				this.ensureSchemaV9();
 			});
 			return;
 		}
 		if (version === 7) {
-			this.transaction(() => this.ensureSchemaV8());
+			this.transaction(() => {
+				this.ensureSchemaV8();
+				this.ensureSchemaV9();
+			});
+			return;
+		}
+		if (version === 8) {
+			this.transaction(() => this.ensureSchemaV9());
+			return;
+		}
+		if (version === 9 || version === 10) {
+			this.transaction(() => this.ensureSchemaV9());
 			return;
 		}
 		if (version !== 0) throw new Error(`Agent 控制库版本 ${version} 当前不受支持。`);
@@ -2224,7 +2809,67 @@ export class DesktopAgentControlStore implements RunRepository, ApprovalReposito
 
 	private ensureSchemaV8(): void {
 		this.database.exec(DESKTOP_AGENT_PLAN_EXECUTION_SCHEMA_V8);
-		this.database.exec(`PRAGMA user_version = ${CONTROL_SCHEMA_VERSION}`);
+		this.database.exec("PRAGMA user_version = 8");
+	}
+
+	private ensureSchemaV9(): void {
+		const approvalColumns = this.database.prepare("PRAGMA table_info(approvals)").all() as Array<{
+			name: string;
+			notnull: number;
+		}>;
+		if (!approvalColumns.some((column) => column.name === "run_id")) throw new Error("APPROVAL_SCHEMA_INVALID");
+		if (approvalColumns.find((column) => column.name === "run_id")?.notnull === 1) {
+			this.database.exec(`
+				DROP INDEX IF EXISTS approvals_by_session_status;
+				CREATE TABLE approvals_mcp_v9 (
+					approval_id TEXT PRIMARY KEY,
+					session_id TEXT NOT NULL,
+					run_id TEXT REFERENCES agent_runs(id) ON DELETE CASCADE,
+					project_id TEXT NOT NULL,
+					canvas_id TEXT NOT NULL,
+					canvas_version INTEGER NOT NULL CHECK (canvas_version >= 0),
+					operation_hash TEXT NOT NULL CHECK (length(operation_hash) = 64),
+					token_hash TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
+					action_json TEXT NOT NULL CHECK (json_valid(action_json)),
+					nonce TEXT NOT NULL,
+					token_signature TEXT NOT NULL,
+					expires_at INTEGER NOT NULL,
+					status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected', 'expired', 'invalidated')),
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL
+				) STRICT;
+				INSERT INTO approvals_mcp_v9 (
+					approval_id, session_id, run_id, project_id, canvas_id, canvas_version,
+					operation_hash, token_hash, action_json, nonce, token_signature,
+					expires_at, status, created_at, updated_at
+				) SELECT approval_id, session_id, run_id, project_id, canvas_id, canvas_version,
+					operation_hash, token_hash, action_json, nonce, token_signature,
+					expires_at, status, created_at, updated_at FROM approvals;
+				DROP TABLE approvals;
+				ALTER TABLE approvals_mcp_v9 RENAME TO approvals;
+				CREATE INDEX approvals_by_session_status ON approvals(session_id, status, expires_at);
+			`);
+		}
+		this.database.exec(DESKTOP_MCP_SCHEMA_V9);
+		this.database.exec("PRAGMA user_version = 9");
+		this.ensureSchemaV10();
+		this.ensureSchemaV11();
+	}
+
+	private ensureSchemaV10(): void {
+		this.database.exec("PRAGMA user_version = 10");
+	}
+
+	private ensureSchemaV11(): void {
+		const columns = this.database.prepare("PRAGMA table_info(desktop_mcp_proposals)").all() as Array<{
+			name: string;
+		}>;
+		if (columns.length === 0) throw new Error("MCP 提案表缺失，拒绝升级控制库。");
+		if (!columns.some((column) => column.name === "provider_revisions_json")) {
+			this.database.exec(`ALTER TABLE desktop_mcp_proposals ADD COLUMN provider_revisions_json TEXT
+				CHECK (provider_revisions_json IS NULL OR json_valid(provider_revisions_json))`);
+		}
+		this.database.exec("PRAGMA user_version = 11");
 	}
 
 	private ensureTaskLinkActionColumn(): void {

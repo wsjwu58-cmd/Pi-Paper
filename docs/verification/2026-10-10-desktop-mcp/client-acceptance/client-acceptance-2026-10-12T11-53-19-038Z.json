@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "testType": "real installed CLI natural-language MCP acceptance against isolated Electron development runtime",
+  "date": "2026-10-12T11:53:33.069Z",
+  "success": false,
+  "clientResults": [
+    {
+      "success": false,
+      "client": "codex",
+      "failureCategory": "model_configuration_blocked",
+      "phase": "real-client-natural-language-mcp-turn",
+      "pageState": {
+        "pathname": "/canvas/44e54ac3-e3e9-4bf7-b2cd-c427b6a8486f",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 2
+      },
+      "failureScreenshot": "codex-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 5,
+      "cliExitCode": 1,
+      "cliTerminationSignal": null,
+      "cliTrace": {
+        "assistantReplySeen": false,
+        "completedEventSeen": false,
+        "errorEventSeen": true,
+        "toolCallsObserved": [],
+        "toolResults": []
+      },
+      "mcpToolResults": [],
+      "diagnosticHints": {
+        "authenticationLike": true,
+        "networkLike": false,
+        "modelLike": true,
+        "configurationLike": false
+      },
+      "safeNetworkDiagnostic": {
+        "errorClass": "http_error",
+        "httpStatus": 400,
+        "targetHostname": "mcp.neon.tech",
+        "timeout": false
+      },
+      "safeFailureReason": "model_configuration",
+      "cliOAuthEnvironmentProvided": false,
+      "sanitizedProxyEnvironmentProvided": true,
+      "systemProxyAddressProvided": true,
+      "codexUserConfigPreserved": true,
+      "configuredOtherMcpCount": 4,
+      "disabledOtherMcpCount": 4,
+      "pairedConnectionCount": 1,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": true,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "generation_proposal_not_created:model_configuration_blocked",
+      "startedAt": "2026-10-12T11:53:19.177Z"
+    }
+  ],
+  "scope": {
+    "realCodexCliTurn": false,
+    "realClaudeCodeTurn": false,
+    "realCloudMediaRequests": 0,
+    "localFixtureGenerationOnly": true,
+    "desktopGenerationConfirmationUsed": false,
+    "authMaterialReadOrCopied": false,
+    "rawClientOutputPersisted": false,
+    "temporaryMcpConfigurationsRemoved": true,
+    "packagedApplicationTested": false
+  }
+}

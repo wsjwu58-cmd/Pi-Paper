@@ -21,6 +21,8 @@ export interface DesktopProviderCredentialField {
 export interface DesktopProvider {
   id: string
   name: string
+  /** Monotonic public configuration revision used by compare-and-swap saves. */
+  revision?: number
   providerType?: 'local' | 'cloud'
   baseUrl: string
   modalities?: string[]
@@ -75,6 +77,12 @@ export interface DesktopAgentModelCatalog {
 
 export interface DesktopProviderConfigurationInput {
   providerId: string
+  /** Required by desktop provider settings to reject stale edits. */
+  expectedRevision: number
+  /** Links a desktop-input submission back to its durable MCP operation. */
+  operationId?: string
+  /** Exact pending MCP proposal authorized to receive this desktop-input save. */
+  mcpProposalId?: string
   baseUrl: string
   credentials?: Record<string, string>
   enabledModelIds: string[]
@@ -865,12 +873,200 @@ export interface DesktopArkModelCatalog {
   cancellation: false
 }
 
+export type DesktopMcpPermission =
+  | 'canvas.read'
+  | 'canvas.write'
+  | 'generation.propose'
+  | 'task.read'
+  | 'media.read'
+  | 'provider.read'
+  | 'provider.configure'
+
+export type DesktopMcpCredentialInputMode = 'authorized_env' | 'desktop_input' | 'inline'
+
+export interface DesktopMcpAuthorizedEnvField {
+  fieldName: string
+  /** Variable name only. The environment value is never sent to Renderer. */
+  envVariableName: string
+}
+
+export interface DesktopMcpProviderGrantInput {
+  providerId: string
+  credentialFields: string[]
+  credentialInputModes: DesktopMcpCredentialInputMode[]
+  authorizedEnv: DesktopMcpAuthorizedEnvField[]
+}
+
+export interface DesktopMcpClientGrantInput {
+  clientName: 'codex' | 'claude-code' | 'other'
+  displayName?: string
+  permissions: DesktopMcpPermission[]
+  providerGrants: DesktopMcpProviderGrantInput[]
+  mediaTypes: string[]
+  disclosureVersion: string
+  accepted: boolean
+}
+
+export interface DesktopMcpProviderDescriptor {
+  providerId: string
+  name: string
+  credentialFields: DesktopProviderCredentialField[]
+  modalities: string[]
+  revision?: number
+  enabledModelNames?: string[]
+  disclosureVersion?: string
+}
+
+export interface DesktopMcpClientProviderGrant {
+  providerId: string
+  credentialFields: string[]
+  credentialInputModes: DesktopMcpCredentialInputMode[]
+  authorizedEnv: DesktopMcpAuthorizedEnvField[]
+}
+
+export interface DesktopMcpClientGrant {
+  clientId: string
+  clientName: 'codex' | 'claude-code' | 'other' | string
+  displayName?: string
+  permissions: DesktopMcpPermission[]
+  projectId: string
+  canvasId: string
+  providerGrants: DesktopMcpClientProviderGrant[]
+  mediaTypes: string[]
+  disclosureVersion?: string
+  createdAt: string
+  expiresAt?: string
+  revokedAt?: string | null
+  connected?: boolean
+}
+
+export interface DesktopMcpState {
+  enabled: boolean
+  status: 'ready' | 'disabled' | 'desktop_unavailable' | string
+  /** Main-owned version of the provider data-sharing disclosure accepted by client grants. */
+  connectionDisclosureVersion?: string
+  /** True only while the original CanvasPage and its persistence registration are ready. */
+  canvasReady: boolean
+  activeCanvas?: { projectId: string; canvasId: string; name?: string; version: number }
+  clients: DesktopMcpClientGrant[]
+  providers: DesktopMcpProviderDescriptor[]
+}
+
+export interface DesktopMcpClientGrantResult {
+  clientId: string
+  grant: DesktopMcpClientGrant
+  /** Client-specific snippets contain launcher and opaque client ID only, never credentials. */
+  config: { codex: string; claudeCode: string }
+}
+
+export interface DesktopMcpPendingAction {
+  proposalId: string
+  kind: 'pairing' | 'generation' | 'provider_disclosure' | string
+  clientId?: string
+  clientName?: string
+  displayName?: string
+  status: string
+  projectId?: string
+  canvasId?: string
+  createdAt?: string
+  expiresAt?: string
+  target?: string
+  model?: string
+  input?: string
+  impact?: string
+  /** Generation proposals may contain several targets; show each in desktop confirmation. */
+  payload?: DesktopMcpGenerationPayload[]
+  shortCode?: string
+  grant?: Partial<DesktopMcpClientGrant>
+  providerId?: string
+  providerConfig?: {
+    providerId?: string
+    providerName?: string
+    baseUrl?: string
+    enabledModelIds?: string[]
+    defaultModelIds?: Record<string, string>
+    modelDefaults?: Record<string, Record<string, unknown>>
+    timeoutSeconds?: number
+    dataTypes?: string[]
+    estimatedCost?: string | number
+    expectedRevision?: number
+  }
+}
+
+export interface DesktopMcpGenerationPayload {
+  target: string
+  model: string
+  input: string
+  impact: string
+}
+
+export interface DesktopMcpPendingActions {
+  actions: DesktopMcpPendingAction[]
+}
+
+export type DesktopMcpEvent =
+  | { type: 'pending-action.created' | 'pending-action.updated'; action: DesktopMcpPendingAction }
+  | { type: 'provider.configuration.changed'; providerId: string; revision: number }
+  | { type: 'canvas.changed'; projectId: string; canvasId: string; version: number; operationId: string; source: 'external_mcp' }
+  | { type: 'canvas.write-settled'; requestId: string; projectId: string; canvasId: string; status: 'committed' | 'aborted'; version?: number; errorCode?: string }
+  | { type: 'task.changed'; projectId: string; canvasId: string; taskId: string; status: string }
+  | { type: 'state.changed'; state?: DesktopMcpState }
+
+export interface DesktopMcpCanvasFlushRequest {
+  requestId: string
+  projectId: string
+  canvasId: string
+  expectedVersion: number
+}
+
+export interface DesktopMcpCanvasFlushResponse {
+  requestId: string
+  projectId: string
+  canvasId: string
+  status: 'flushed' | 'failed'
+  persistedVersion?: number
+  errorCode?: string
+}
+
+export interface DesktopMcpCanvasReadyInput {
+  projectId: string
+  canvasId: string
+  ready: boolean
+  version?: number
+}
+
+export interface DesktopMcpProviderInputRequest {
+  proposalId: string
+  providerId: string
+  operationId: string
+  projectId: string
+  canvasId: string
+  publicConfig: Partial<Pick<DesktopProviderConfigurationInput,
+    'baseUrl' | 'enabledModelIds' | 'defaultModelIds' | 'modelDefaults' | 'timeoutSeconds'
+  >>
+  expectedRevision: number
+  credentialFields: string[]
+}
+
 export interface DesktopBridge {
+  getUiLanguage(): Promise<{ preference: 'system' | 'zh' | 'en'; language: 'zh' | 'en'; systemLanguage: 'zh' | 'en' }>
+  setUiLanguage(preference: 'system' | 'zh' | 'en'): Promise<{ preference: 'system' | 'zh' | 'en'; language: 'zh' | 'en'; systemLanguage: 'zh' | 'en' }>
+  getMcpState(): Promise<DesktopMcpState>
+  setMcpEnabled(enabled: boolean): Promise<DesktopMcpState>
+  createMcpClientGrant(input: DesktopMcpClientGrantInput): Promise<DesktopMcpClientGrantResult>
+  revokeMcpClientGrant(clientId: string): Promise<{ clientId: string; revoked: boolean }>
+  getMcpPendingActions(): Promise<DesktopMcpPendingActions>
+  resolveMcpPendingAction(input: { proposalId: string; decision: 'approve' | 'reject' }): Promise<{ proposalId: string; status: string }>
+  setMcpCanvasReady(input: DesktopMcpCanvasReadyInput): Promise<void>
+  respondMcpCanvasFlush(input: DesktopMcpCanvasFlushResponse): Promise<void>
+  subscribeMcpEvents(listener: (event: DesktopMcpEvent) => void): () => void
+  subscribeMcpCanvasFlush(listener: (request: DesktopMcpCanvasFlushRequest) => void): () => void
+  subscribeMcpProviderInput(listener: (input: DesktopMcpProviderInputRequest) => void): () => void
   getAgentModelCatalog(): Promise<DesktopAgentModelCatalog>
   setAgentSessionModel(projectId: string, sessionId: string, modelId: string): Promise<{ bindingId: string }>
   getProviderConfiguration(): Promise<DesktopProviderConfiguration>
   saveProviderConfiguration(input: DesktopProviderConfigurationInput): Promise<DesktopProviderConfiguration>
-  clearProviderConfiguration(providerId: string): Promise<DesktopProviderConfiguration>
+  clearProviderConfiguration(providerId: string, expectedRevision: number): Promise<DesktopProviderConfiguration>
   testProviderConfiguration(input: DesktopProviderConfigurationInput): Promise<DesktopProviderTestResult>
   getActiveProject(): Promise<DesktopProject | null>
   listRecentProjects(): Promise<DesktopProject[]>

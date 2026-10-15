@@ -1,3 +1,18 @@
+if (process.argv?.includes('--mcp-stdio')) {
+  const mcpPath = require('node:path')
+  const { app: mcpApp } = require('electron')
+  const launcherPath = mcpApp.isPackaged
+    ? mcpPath.join(__dirname, '..', 'dist', 'mcp-launcher.cjs')
+    : mcpPath.join(__dirname, 'mcp-launcher.cjs')
+  const { runMcpLauncher } = require(launcherPath)
+  void runMcpLauncher({ argv: process.argv, stdin: process.stdin, stdout: process.stdout,
+    stderr: process.stderr, env: process.env, appDataPath: mcpApp.getPath('appData') })
+    .then((code) => mcpApp.exit(Number.isInteger(code) ? code : 0))
+    .catch(() => {
+      try { process.stderr.write('VibePaper MCP bridge startup failed.\n') } catch {}
+      mcpApp.exit(1)
+    })
+} else {
 const path = require('node:path')
 const fs = require('node:fs/promises')
 const nativeFs = require('node:fs')
@@ -35,7 +50,7 @@ const {
 } = require('./media-postprocess.cjs')
 const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
 const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = require('./agent-model-directory.cjs')
-const { ALLOWED_AGENT_CORE_METHODS, getAgentCanvasDomain } = require('./agent-local-tools.cjs')
+const { ALLOWED_AGENT_CORE_METHODS, getAgentCanvasDomain, safeAgentCoreErrorCode } = require('./agent-local-tools.cjs')
 const { deleteAgentNodes } = require('./agent-node-deletion.cjs')
 const { readAgentTaskAuthority } = require('./agent-task-authority.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
@@ -45,9 +60,25 @@ const { createDramaBatchTaskInput } = require('./drama-render-batch.cjs')
 const { exportNodeOutput } = require('./node-export.cjs')
 const { registerCanvasMediaIpc } = require('./canvas-media.cjs')
 const { createProviderSettings } = require('./provider-settings.cjs')
+const { createMcpMainService } = require('./mcp-main-service.cjs')
 const { isOfficialDocumentationUrl } = require('./official-documentation.cjs')
+const { createUiLanguageSettings } = require('./ui-language.cjs')
+const uiEnglish = require('./ui-english.cjs')
+let uiLanguageSettings = null
+function uiText(source) {
+  return uiLanguageSettings?.get().language === 'en' ? uiEnglish[source] || source : source
+}
 
-app.setName('VibePaper')
+// Keep the existing settings, credentials and Chromium profile after rebranding.
+// Electron's standard switch also lets isolated package checks use a separate profile.
+const userDataOverride = app.commandLine.getSwitchValue('user-data-dir')
+if (userDataOverride && !path.isAbsolute(userDataOverride)) {
+  throw new Error('The --user-data-dir switch must use an absolute path.')
+}
+const userDataDirectory = userDataOverride || path.join(app.getPath('appData'), 'VibePaper')
+if (userDataOverride) nativeFs.mkdirSync(userDataDirectory, { recursive: true })
+app.setPath('userData', userDataDirectory)
+app.setName('Pi-Paper')
 protocol.registerSchemesAsPrivileged([{
   scheme: 'vibe',
   // Local video/audio responses use file streams, including byte-range requests.
@@ -64,6 +95,14 @@ let desktopSettingsFile = null
 let agnesCredentialFile = null
 let arkCredentialFile = null
 let providerSettings = null
+let mcpMainService = null
+
+function notifyProviderConfigurationChanged(snapshot, providerId) {
+  const provider = snapshot?.providers?.find((entry) => entry?.id === providerId)
+  if (Number.isSafeInteger(provider?.revision)) {
+    mcpMainService?.notifyProviderConfigurationChanged(providerId, provider.revision)
+  }
+}
 let quittingAfterCoreClose = false
 let stopping = false
 let generationWorker = null
@@ -78,7 +117,7 @@ let projectTransitionCount = 0
 const taskCreationWaiters = []
 const desktopRoot = path.resolve(__dirname, '..')
 const webRoot = path.resolve(desktopRoot, '..', 'vibepaper-web')
-const rendererRoot = path.join(webRoot, 'dist')
+const rendererRoot = app.isPackaged ? path.join(desktopRoot, 'renderer') : path.join(webRoot, 'dist')
 const rendererIndex = path.join(rendererRoot, 'index.html')
 const developmentUrl = process.env.VITE_DEV_SERVER_URL
 
@@ -220,7 +259,7 @@ function assertGroupStackRequest(input, label, options = {}) {
 
 function startLocalCore() {
   const child = utilityProcess.fork(path.join(__dirname, 'local-core.cjs'), [], {
-    serviceName: 'VibePaper Local Core',
+    serviceName: 'Pi-Paper Local Core',
     stdio: 'ignore',
   })
   const pending = new Map()
@@ -256,7 +295,7 @@ function startLocalCore() {
     }
     pending.clear()
     if (mainWindow && !quittingAfterCoreClose) {
-      void dialog.showErrorBox('本地核心已停止', '本地项目服务意外退出。请重新启动 VibePaper 后继续。')
+      void dialog.showErrorBox(uiText("本地核心已停止"), uiText("本地项目服务意外退出。请重新启动 Pi-Paper 后继续。"))
       app.quit()
     }
   })
@@ -296,7 +335,7 @@ async function startGenerationWorker() {
   const proxy = await session.defaultSession.resolveProxy('https://api.openai.com/v1')
   if (generationWorker) return generationWorker
   const child = utilityProcess.fork(path.join(__dirname, 'generation-worker.cjs'), [], {
-    serviceName: 'VibePaper Local Generation Worker',
+    serviceName: 'Pi-Paper Local Generation Worker',
     stdio: 'ignore',
     env: workerProxyEnvironment(process.env, proxy),
   })
@@ -408,7 +447,7 @@ async function startGenerationWorker() {
 async function createAgentWorker() {
   const proxy = await session.defaultSession.resolveProxy('https://api.openai.com/v1')
   const child = utilityProcess.fork(path.join(desktopRoot, 'dist', 'agent-worker.cjs'), [], {
-    serviceName: 'VibePaper Agent Worker',
+    serviceName: 'Pi-Paper Agent Worker',
     stdio: 'ignore',
     env: workerProxyEnvironment(process.env, proxy),
   })
@@ -443,8 +482,17 @@ async function createAgentWorker() {
     }[method]
     const mutating = ['agent:core:create-node', 'agent:core:update-node', 'agent:core:delete-nodes', 'agent:core:connect-edge', 'agent:core:save-canvas', 'agent:core:create-generation-task'].includes(method)
     if (mutating) allowedKeys.push('runId')
+    if (input.mcpCommandId !== undefined) allowedKeys.push('mcpCommandId')
     if (Object.keys(input).some((key) => !allowedKeys.includes(key))
-      || (input.runId !== undefined && (typeof input.runId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runId)))) throw new Error('AGENT_LOCAL_CORE_INPUT_INVALID')
+      || (input.runId !== undefined && (typeof input.runId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runId)))
+      || (input.mcpCommandId !== undefined && (typeof input.mcpCommandId !== 'string' || !/^[0-9a-f-]{36}$/iu.test(input.mcpCommandId)))) throw new Error('AGENT_LOCAL_CORE_INPUT_INVALID')
+    const mcpCommandId = input.mcpCommandId
+    const reauthorizeMcp = () => mcpCommandId === undefined ? undefined
+      : mcpMainService?.authorizeAgentCoreRequest(mcpCommandId, method, input)
+    if (mcpCommandId !== undefined) {
+      if (!mcpMainService) throw codedError('PERMISSION_DENIED')
+      await reauthorizeMcp()
+    }
     if (input.runId && workerReference?.cancelledRunIds.has(input.runId)) throw new Error('RUN_ABORTED')
     if (stopping || projectTransitionCount > 0 || agentWorker !== workerReference || agentProjectId !== input.projectId) {
       throw new Error('AGENT_PROJECT_CHANGED')
@@ -455,8 +503,10 @@ async function createAgentWorker() {
       || stopping || projectTransitionCount > 0 || agentWorker !== workerReference || agentProjectId !== input.projectId) {
       throw new Error('AGENT_PROJECT_CHANGED')
     }
+    if (mcpCommandId !== undefined) await reauthorizeMcp()
     const coreInput = { ...input }
     delete coreInput.runId
+    delete coreInput.mcpCommandId
     if (mutating && input.runId && workerReference.cancelledRunIds.has(input.runId)) throw new Error('RUN_ABORTED')
     switch (method) {
       case 'agent:core:load-canvas':
@@ -466,7 +516,7 @@ async function createAgentWorker() {
       case 'agent:core:update-node':
         return localCore.request('canvas:update-node', coreInput, 30_000)
       case 'agent:core:lookup-operation':
-        return localCore.request('agent:lookup-operation', input, 15_000)
+        return localCore.request('agent:lookup-operation', coreInput, 15_000)
       case 'agent:core:delete-nodes':
         return deleteAgentNodes(input, {
           loadCanvas: () => localCore.request('canvas:load', { projectId: input.projectId, canvasId: active.canvasId }, 15_000),
@@ -475,6 +525,7 @@ async function createAgentWorker() {
             if (stopping || projectTransitionCount > 0 || agentWorker !== workerReference
               || agentProjectId !== input.projectId || current?.projectId !== input.projectId) throw new Error('AGENT_PROJECT_CHANGED')
             if (input.runId && workerReference.cancelledRunIds.has(input.runId)) throw new Error('RUN_ABORTED')
+            if (mcpCommandId !== undefined) await reauthorizeMcp()
           },
           // This private Worker RPC is dispatched only after the original TS
           // approval service consumes the canvas-bound confirmation token.
@@ -526,6 +577,7 @@ async function createAgentWorker() {
         if (input.providerType === 'local' && !['text', 'audio', 'compose'].includes(input.modality)) {
           throw new Error(input.providerType === 'cloud' ? 'CLOUD_CREDENTIAL_MISSING' : 'UNSUPPORTED_MODALITY')
         }
+        if (mcpCommandId !== undefined) await reauthorizeMcp()
         beginTaskCreation()
         try {
           const task = input.modality === 'compose' ? await localCore.request('task:create', {
@@ -635,8 +687,7 @@ async function createAgentWorker() {
       void executeAgentCoreRequest(message.method, message.payload).then((result) => {
         child.postMessage({ kind: 'agent-local-core-response', requestId: message.requestId, ok: true, result })
       }).catch((error) => {
-        const errorMessage = error instanceof Error ? error.message : ''
-        const errorCode = /^[A-Z0-9_]{1,120}$/u.test(errorMessage) ? errorMessage : 'CANVAS_UNAVAILABLE'
+        const errorCode = safeAgentCoreErrorCode(error)
         try {
           child.postMessage({ kind: 'agent-local-core-response', requestId: message.requestId, ok: false, errorCode })
         } catch {
@@ -952,6 +1003,7 @@ async function waitForTaskCreations() {
 
 async function runProjectTransition(operation) {
   projectTransitionCount += 1
+  mcpMainService?.invalidateForProjectTransition()
   const previousDirectory = activeProjectDirectory
   let projectSwitched = false
   try {
@@ -1005,7 +1057,7 @@ async function readDesktopSettings() {
   if (!settings || typeof settings !== 'object' || Array.isArray(settings) || settings.schemaVersion !== 1) {
     throw new Error('桌面设置文件格式无效。')
   }
-  if (Object.keys(settings).some((key) => !['schemaVersion', 'localTextModel'].includes(key))) {
+  if (Object.keys(settings).some((key) => !['schemaVersion', 'localTextModel', 'localTextModelRevision'].includes(key))) {
     throw new Error('桌面设置文件包含当前版本不支持的字段。')
   }
   return settings
@@ -1057,7 +1109,6 @@ async function writeAgnesCredentialCiphertext(ciphertext) {
 }
 
 async function getAgnesApiKey() {
-  await assertCredentialVaultAvailable()
   let ciphertext
   try {
     ciphertext = await fs.readFile(agnesCredentialFile)
@@ -1065,6 +1116,7 @@ async function getAgnesApiKey() {
     if (error?.code === 'ENOENT') return null
     throw new Error('无法读取系统保护的 Agnes 凭据。')
   }
+  await assertCredentialVaultAvailable()
   try {
     const decrypted = await safeStorage.decryptStringAsync(ciphertext)
     if (decrypted.shouldReEncrypt) {
@@ -1122,7 +1174,6 @@ async function writeArkCredentialCiphertext(ciphertext) {
 }
 
 async function getArkApiKey() {
-  await assertCredentialVaultAvailable()
   let ciphertext
   try {
     ciphertext = await fs.readFile(arkCredentialFile)
@@ -1130,6 +1181,7 @@ async function getArkApiKey() {
     if (error?.code === 'ENOENT') return null
     throw new Error('无法读取系统保护的火山方舟凭据。')
   }
+  await assertCredentialVaultAvailable()
   try {
     const decrypted = await safeStorage.decryptStringAsync(ciphertext)
     if (decrypted.shouldReEncrypt) {
@@ -1174,6 +1226,22 @@ async function getLocalTextModelConfig() {
   return normalizeLocalTextModelConfig(settings.localTextModel)
 }
 
+async function getLocalTextModelRevision() {
+  const settings = await readDesktopSettings()
+  return Number.isSafeInteger(settings.localTextModelRevision) && settings.localTextModelRevision >= 0
+    ? settings.localTextModelRevision : settings.localTextModel === undefined ? 0 : 1
+}
+
+async function getMcpProviderRevisions() {
+  const [snapshot, localTextRevision] = await Promise.all([
+    providerSettings?.snapshot?.() ?? Promise.resolve({ providers: [] }),
+    getLocalTextModelRevision(),
+  ])
+  const revisions = Object.fromEntries((snapshot.providers || []).map((provider) => [provider.id, provider.revision || 0]))
+  revisions['local-openai-compatible'] = localTextRevision
+  return revisions
+}
+
 function getLocalAudioModel() {
   const available = process.platform === 'win32'
   return {
@@ -1192,13 +1260,17 @@ function getLocalAudioModel() {
 async function saveLocalTextModelConfig(input) {
   const config = normalizeLocalTextModelConfig(input)
   const settings = await readDesktopSettings()
-  await writeDesktopSettings({ ...settings, schemaVersion: 1, localTextModel: config })
+  const revision = Number.isSafeInteger(settings.localTextModelRevision) ? settings.localTextModelRevision : settings.localTextModel ? 1 : 0
+  await writeDesktopSettings({ ...settings, schemaVersion: 1, localTextModel: config, localTextModelRevision: revision + 1 })
   return config
 }
 
 async function clearLocalTextModelConfig() {
   const settings = await readDesktopSettings()
-  if (settings.localTextModel !== undefined) await writeDesktopSettings({ schemaVersion: 1 })
+  if (settings.localTextModel !== undefined) {
+    const revision = Number.isSafeInteger(settings.localTextModelRevision) ? settings.localTextModelRevision : 1
+    await writeDesktopSettings({ schemaVersion: 1, localTextModelRevision: revision + 1 })
+  }
   return null
 }
 
@@ -1441,7 +1513,7 @@ async function createGenerationTaskInStore(input) {
     || input.idempotencyKey.length < 1 || input.idempotencyKey.length > 255
     || !modalities.includes(input.modality)
     || !['local', 'cloud'].includes(input.providerType)
-    || input.providerId !== undefined && (typeof input.providerId !== 'string' || !getOfficialCatalog().providers.some((p) => p.id === input.providerId) && ![AGNES_PROVIDER_ID, ARK_PROVIDER_ID].includes(input.providerId))
+    || input.providerId !== undefined && (typeof input.providerId !== 'string' || input.providerId.length > 80)
     || input.modelId !== undefined && (typeof input.modelId !== 'string' || !input.modelId.trim() || input.modelId.length > 256)
     || (input.parameters !== undefined && (!input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)))) {
     throw codedError('INVALID_INPUT', '生成任务请求无效。')
@@ -1451,9 +1523,16 @@ async function createGenerationTaskInStore(input) {
   let modelDefaults = {}
   let modelConstraints = {}
   if (input.providerType === 'local') {
+    const assertLocalBinding = (expectedProviderId, expectedModelId) => {
+      if ((input.providerId !== undefined && input.providerId !== expectedProviderId)
+        || (input.modelId !== undefined && input.modelId !== expectedModelId)) {
+        throw codedError('MODEL_UNAVAILABLE')
+      }
+    }
     if (input.modality === 'audio') {
       providerId = SAPI_PROVIDER_ID
       modelId = SAPI_MODEL_ID
+      assertLocalBinding(providerId, modelId)
     } else if (['image', 'video'].includes(input.modality)
       && isLocalMediaOperation(input.modality, input.parameters?.operation)) {
       if (!parseLocalMediaReference(input.parameters?.sourceUrl)) {
@@ -1461,12 +1540,14 @@ async function createGenerationTaskInStore(input) {
       }
       providerId = LOCAL_MEDIA_PROVIDER_ID
       modelId = LOCAL_MEDIA_MODEL_ID
+      assertLocalBinding(providerId, modelId)
     } else {
       if (input.modality !== 'text') throw codedError('UNSUPPORTED_MODALITY')
       const model = await getLocalTextModelConfig()
       if (!model) throw codedError('LOCAL_MODEL_CONFIGURATION_MISSING', '请先配置本地文本模型。')
       providerId = model.providerId
       modelId = model.modelId
+      assertLocalBinding(providerId, modelId)
     }
   } else {
     const officialBinding = (await providerSettings.snapshot()).models.find((m) => m.id === input.modelId && m.providerId === input.providerId)
@@ -1496,6 +1577,17 @@ async function createGenerationTaskInStore(input) {
   // Snapshot user defaults when the task is created, so later settings changes
   // cannot change an already submitted task's recovery parameters.
   const suppliedParameters = input.parameters ?? {}
+  // Explicit canvas/Agent aliases must replace the configured default as a
+  // group, otherwise e.g. resolution=4K can conflict with a default size=2K.
+  for (const aliases of [
+    ['ratio', 'aspect', 'aspectRatio', 'aspect_ratio'],
+    ['size', 'resolution', 'resKey'],
+    ...(input.modality === 'video' ? [['duration', 'seconds']] : []),
+  ]) {
+    if (aliases.some((alias) => suppliedParameters[alias] !== undefined)) {
+      for (const alias of aliases) if (suppliedParameters[alias] === undefined) delete modelDefaults[alias]
+    }
+  }
   const hasImageInput = Boolean(suppliedParameters.firstFrameUrl || suppliedParameters.imageUrl || suppliedParameters.referenceImages?.length || suppliedParameters.referenceUrls?.length)
   const hasDerivedAspect = modelConstraints.imageAspectRatio && hasImageInput
     || modelConstraints.firstLastFrameAspectRatio && suppliedParameters.firstFrameUrl && suppliedParameters.lastFrameUrl
@@ -1588,6 +1680,14 @@ function localAssetImportName(sourcePath) {
 }
 
 function registerProjectIpc() {
+  ipcMain.handle('desktop:ui-language:get', (event) => {
+    assertTrustedSender(event)
+    return uiLanguageSettings.get()
+  })
+  ipcMain.handle('desktop:ui-language:set', async (event, preference) => {
+    assertTrustedSender(event)
+    return uiLanguageSettings.set(preference)
+  })
   registerCanvasMediaIpc(ipcMain, {
     assertTrustedSender,
     assertActive: async (projectId, canvasId) => {
@@ -1603,14 +1703,46 @@ function registerProjectIpc() {
     resolveAsset: (assetId) => localCore.request('asset:resolve', { assetId }),
     importImage: (sourcePath, projectId) => localCore.request('asset:import', { sourcePath, projectId, assetKind: 'image' }, 5 * 60 * 1000),
     renameAsset: (projectId, assetId, name) => localCore.request('asset:rename', { projectId, assetId, name }),
-    showDirectoryDialog: () => dialog.showOpenDialog(mainWindow, { title: '选择编组下载位置', properties: ['openDirectory', 'createDirectory'] }),
+    showDirectoryDialog: () => dialog.showOpenDialog(mainWindow, { title: uiText("选择编组下载位置"), properties: ['openDirectory', 'createDirectory'] }),
   })
   for (const [channel, method] of Object.entries({
     get: 'snapshot', save: 'save', clear: 'clear', test: 'test',
   })) {
-    ipcMain.handle(`desktop:model:providers:${channel}`, async (event, input) => {
+    ipcMain.handle(`desktop:model:providers:${channel}`, async (event, ...args) => {
       assertTrustedSender(event)
-      const result = await providerSettings[method](input)
+      let result
+      if (method === 'clear') {
+        const [providerId, expectedRevision, ...extra] = args
+        if (extra.length || typeof providerId !== 'string' || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+          throw codedError('INVALID_INPUT')
+        }
+        result = await providerSettings.clear(providerId, { expectedRevision })
+          notifyProviderConfigurationChanged(result, providerId)
+      } else {
+        const [input, ...extra] = args
+        if (extra.length) throw codedError('INVALID_INPUT')
+        if (method === 'save' && input?.mcpProposalId !== undefined) {
+          if (!mcpMainService) throw codedError('MCP_UNAVAILABLE')
+          const authorization = await mcpMainService.authorizeProviderInputSave(input)
+          result = await providerSettings.save(authorization.cleanInput, { assertAuthorized: authorization.assertAuthorized })
+            notifyProviderConfigurationChanged(result, authorization.cleanInput.providerId)
+          const provider = result.providers?.find((entry) => entry.id === authorization.cleanInput.providerId)
+          const models = (result.models || []).filter((entry) => entry.providerId === authorization.cleanInput.providerId)
+          const recorded = await mcpMainService.recordProviderUiSave({ proposalId: authorization.action.proposalId,
+            clientId: authorization.client.clientId, grantId: authorization.client.grantId,
+            operationId: authorization.action.payload.operationId,
+            providerId: authorization.cleanInput.providerId, publicResult: { provider, models } })
+          if (!recorded) throw codedError('MCP_PROVIDER_OPERATION_MISMATCH')
+        } else {
+          result = await providerSettings[method](input)
+            if (method === 'save') notifyProviderConfigurationChanged(result, input?.providerId)
+            if (method === 'test' && typeof input?.providerId === 'string') {
+              const snapshot = typeof providerSettings.snapshotProvider === 'function'
+                ? await providerSettings.snapshotProvider(input.providerId) : await providerSettings.snapshot()
+              notifyProviderConfigurationChanged(snapshot, input.providerId)
+            }
+        }
+      }
       if (method === 'save' || method === 'clear') void notifyAgentTaskState(agentProjectId)
       return result
     })
@@ -1630,7 +1762,10 @@ function registerProjectIpc() {
       readTextTask: (projectId, taskId) => localCore.request('task:read-output', { projectId, taskId }),
       resolveTask: (projectId, taskId, outputIndex) => localCore.request('task:resolve-output-preview', { projectId, taskId, outputIndex }),
       resolveAsset: (assetId) => localCore.request('asset:resolve', { assetId }),
-      showSaveDialog: (options) => dialog.showSaveDialog(mainWindow, options),
+      showSaveDialog: (options) => dialog.showSaveDialog(mainWindow, { ...options,
+        title: uiText(options.title),
+        filters: options.filters?.map((filter) => ({ ...filter, name: uiText(filter.name) })),
+      }),
     })
   })
   ipcMain.handle('desktop:project:get-active', (event) => {
@@ -1671,7 +1806,7 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:create', async (event, name) => {
     assertTrustedSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '选择新项目的保存位置',
+      title: uiText("选择新项目的保存位置"),
       properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1724,7 +1859,7 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:open', async (event) => {
     assertTrustedSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '打开 VibePaper 本地项目',
+      title: uiText("打开 Pi-Paper 本地项目"),
       properties: ['openDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1736,7 +1871,7 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:backup', async (event, projectId) => {
     assertTrustedSender(event)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '选择项目备份保存位置',
+      title: uiText("选择项目备份保存位置"),
       properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1746,8 +1881,8 @@ function registerProjectIpc() {
     }))
     await dialog.showMessageBox(mainWindow, {
       type: 'info',
-      title: '项目备份完成',
-      message: '本地项目备份已创建，包含支持的 Agent 会话与记忆文件。',
+      title: uiText("项目备份完成"),
+      message: uiText("本地项目备份已创建，包含支持的 Agent 会话与记忆文件。"),
       detail: backup.directory,
     })
     return { name: backup.name }
@@ -1755,12 +1890,12 @@ function registerProjectIpc() {
   ipcMain.handle('desktop:project:restore-backup', async (event) => {
     assertTrustedSender(event)
     const sourceResult = await dialog.showOpenDialog(mainWindow, {
-      title: '选择要恢复的 VibePaper 项目备份',
+      title: uiText("选择要恢复的 Pi-Paper 项目备份"),
       properties: ['openDirectory'],
     })
     if (sourceResult.canceled || sourceResult.filePaths.length === 0) return null
     const destinationResult = await dialog.showOpenDialog(mainWindow, {
-      title: '选择恢复副本的保存位置',
+      title: uiText("选择恢复副本的保存位置"),
       properties: ['openDirectory', 'createDirectory'],
     })
     if (destinationResult.canceled || destinationResult.filePaths.length === 0) return null
@@ -1773,8 +1908,8 @@ function registerProjectIpc() {
     void scheduleTaskPump(restored.project.projectId)
     await dialog.showMessageBox(mainWindow, {
       type: 'info',
-      title: '备份恢复完成',
-      message: '已创建并打开恢复副本。',
+      title: uiText("备份恢复完成"),
+      message: uiText("已创建并打开恢复副本。"),
       detail: `${restored.project.name}\n${restored.directory}`,
     })
     return restored.project
@@ -1783,7 +1918,7 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '导入本地图片素材',
+      title: uiText("导入本地图片素材"),
       properties: ['openFile'],
       filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
     })
@@ -1795,7 +1930,7 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '导入本地素材',
+      title: uiText("导入本地素材"),
       properties: ['openFile'],
       filters: [{ name: '图片、视频、音频和文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'] }],
     })
@@ -1807,7 +1942,7 @@ function registerProjectIpc() {
     assertTrustedSender(event)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '批量导入本地素材',
+      title: uiText("批量导入本地素材"),
       properties: ['openFile', 'multiSelections'],
       filters: [{ name: '图片、视频、音频和文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'] }],
     })
@@ -1901,7 +2036,7 @@ function registerProjectIpc() {
     assertAssetId(assetId)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '替换本地图片素材',
+      title: uiText("替换本地图片素材"),
       properties: ['openFile'],
       filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
     })
@@ -1918,7 +2053,7 @@ function registerProjectIpc() {
     assertAssetId(assetId)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '替换本地音频素材',
+      title: uiText("替换本地音频素材"),
       properties: ['openFile'],
       filters: [{ name: 'WAV、MP3、OGG 和 M4A 音频', extensions: ['wav', 'mp3', 'ogg', 'm4a'] }],
     })
@@ -1935,7 +2070,7 @@ function registerProjectIpc() {
     assertAssetId(assetId)
     await assertActiveAssetProject(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '替换本地素材',
+      title: uiText("替换本地素材"),
       properties: ['openFile'],
       filters: [{ name: '图片、视频、音频和文本', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'wav', 'mp3', 'ogg', 'm4a', 'txt', 'md'] }],
     })
@@ -2197,7 +2332,7 @@ function registerProjectIpc() {
       throw new Error('画布导入请求无效或超过本地画布数据上限。')
     }
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '选择导入画布的新项目保存位置',
+      title: uiText("选择导入画布的新项目保存位置"),
       properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -2592,17 +2727,24 @@ function registerProjectIpc() {
   })
   ipcMain.handle('desktop:model:save-agnes-key', async (event, apiKey) => {
     assertTrustedSender(event)
-    const settings = await saveAgnesApiKey(apiKey)
     const provider = (await providerSettings.snapshot()).providers.find((item) => item.id === AGNES_PROVIDER_ID)
-    await providerSettings.save({ providerId: AGNES_PROVIDER_ID, credentials: { apiKey },
-      enabledModelIds: provider.enabledModelIds, defaultModelIds: provider.defaultModelIds })
+    if (!provider) throw codedError('PROVIDER_NOT_FOUND')
+    const providerSnapshot = await providerSettings.save({ providerId: AGNES_PROVIDER_ID, credentials: { apiKey },
+      enabledModelIds: provider.enabledModelIds, defaultModelIds: provider.defaultModelIds,
+      expectedRevision: provider.revision })
+    notifyProviderConfigurationChanged(providerSnapshot, AGNES_PROVIDER_ID)
+    const settings = await saveAgnesApiKey(apiKey)
     void notifyAgentTaskState(agentProjectId)
     return settings
   })
   ipcMain.handle('desktop:model:clear-agnes-key', async (event) => {
     assertTrustedSender(event)
+    const provider = (await providerSettings.snapshot()).providers.find((item) => item.id === AGNES_PROVIDER_ID)
+    if (provider) {
+      const providerSnapshot = await providerSettings.clear(AGNES_PROVIDER_ID, { expectedRevision: provider.revision })
+      notifyProviderConfigurationChanged(providerSnapshot, AGNES_PROVIDER_ID)
+    }
     const settings = await clearAgnesApiKey()
-    await providerSettings.clear(AGNES_PROVIDER_ID)
     void notifyAgentTaskState(agentProjectId)
     return settings
   })
@@ -2612,16 +2754,23 @@ function registerProjectIpc() {
   })
   ipcMain.handle('desktop:model:save-ark-key', async (event, apiKey) => {
     assertTrustedSender(event)
-    const settings = await saveArkApiKey(apiKey)
     const provider = (await providerSettings.snapshot()).providers.find((item) => item.id === ARK_PROVIDER_ID)
-    await providerSettings.save({ providerId: ARK_PROVIDER_ID, credentials: { apiKey },
-      enabledModelIds: provider.enabledModelIds, defaultModelIds: provider.defaultModelIds })
+    if (!provider) throw codedError('PROVIDER_NOT_FOUND')
+    const providerSnapshot = await providerSettings.save({ providerId: ARK_PROVIDER_ID, credentials: { apiKey },
+      enabledModelIds: provider.enabledModelIds, defaultModelIds: provider.defaultModelIds,
+      expectedRevision: provider.revision })
+    notifyProviderConfigurationChanged(providerSnapshot, ARK_PROVIDER_ID)
+    const settings = await saveArkApiKey(apiKey)
     return settings
   })
   ipcMain.handle('desktop:model:clear-ark-key', async (event) => {
     assertTrustedSender(event)
+    const provider = (await providerSettings.snapshot()).providers.find((item) => item.id === ARK_PROVIDER_ID)
+    if (provider) {
+      const providerSnapshot = await providerSettings.clear(ARK_PROVIDER_ID, { expectedRevision: provider.revision })
+      notifyProviderConfigurationChanged(providerSnapshot, ARK_PROVIDER_ID)
+    }
     const settings = await clearArkApiKey()
-    await providerSettings.clear(ARK_PROVIDER_ID)
     return settings
   })
   ipcMain.handle('desktop:model:get-local-text', (event) => {
@@ -2886,7 +3035,7 @@ function registerAgentIpc() {
     assertTrustedSender(event)
     const worker = await getAgentWorker(projectId)
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '导入本地 Markdown Skill',
+      title: uiText("导入本地 Markdown Skill"),
       properties: ['openFile'],
       filters: [{ name: 'Markdown Skill', extensions: ['md', 'markdown'] }],
     })
@@ -3055,6 +3204,7 @@ function registerAgentIpc() {
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
+    title: 'Pi-Paper',
     icon: require('./application-icon.cjs').applicationIcon(require('electron').nativeImage, path.join(__dirname, '..', 'assets')),
     width: 1440,
     height: 920,
@@ -3073,7 +3223,7 @@ async function createWindow() {
     },
   })
 
-  const providerDocumentation = require(path.join(webRoot, developmentUrl ? 'public' : 'dist', 'provider-documentation.json'))
+  const providerDocumentation = require(path.join(developmentUrl ? path.join(webRoot, 'public') : rendererRoot, 'provider-documentation.json'))
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isOfficialDocumentationUrl(url, providerDocumentation)) {
       void shell.openExternal(url).catch(() => console.warn('OFFICIAL_DOCUMENTATION_OPEN_FAILED'))
@@ -3085,7 +3235,10 @@ async function createWindow() {
   })
   mainWindow.webContents.on('will-attach-webview', (event) => event.preventDefault())
   mainWindow.once('ready-to-show', () => mainWindow?.show())
-  mainWindow.on('closed', () => { mainWindow = null })
+  mainWindow.on('closed', () => {
+    mcpMainService?.handleWindowClosed()
+    mainWindow = null
+  })
 
   if (developmentUrl) {
     await mainWindow.loadURL(developmentUrl)
@@ -3102,11 +3255,16 @@ if (hasSingleInstanceLock) {
   })
 
   app.whenReady().then(async () => {
+    if (process.platform === 'win32') app.setAppUserModelId('com.vibepaper.desktop')
     if (process.platform === 'darwin') app.dock.setIcon(require('./application-icon.cjs').applicationIcon(require('electron').nativeImage, path.join(__dirname, '..', 'assets')))
     if (!developmentUrl) await fs.access(rendererIndex)
     recentProjectFile = path.join(app.getPath('userData'), 'recent-project.json')
     recentProjectsFile = path.join(app.getPath('userData'), 'recent-projects.json')
     desktopSettingsFile = path.join(app.getPath('userData'), 'settings.json')
+    uiLanguageSettings = createUiLanguageSettings({
+      file: path.join(app.getPath('userData'), 'ui-settings.json'), locale: app.getLocale(),
+    })
+    await uiLanguageSettings.load()
     agnesCredentialFile = path.join(app.getPath('userData'), 'credentials', 'agnes-api-key.bin')
     arkCredentialFile = path.join(app.getPath('userData'), 'credentials', 'ark-api-key.bin')
     providerSettings = createProviderSettings({
@@ -3139,6 +3297,27 @@ if (hasSingleInstanceLock) {
     registerContentSecurityPolicy()
     registerProjectIpc()
     registerAgentIpc()
+    mcpMainService = createMcpMainService({
+      userDataDirectory: app.getPath('userData'), ipcMain, dialog,
+      getMainWindow: () => mainWindow,
+      assertTrustedSender,
+      getActiveContext: async () => {
+        const active = await localCore.request('project:get-active', undefined, 15_000)
+        if (!active || typeof active.projectId !== 'string' || typeof active.canvasId !== 'string') return null
+        const canvas = await localCore.request('canvas:load', { projectId: active.projectId, canvasId: active.canvasId }, 15_000)
+        if (!canvas || canvas.projectId !== active.projectId || canvas.canvasId !== active.canvasId
+          || !Number.isSafeInteger(canvas.version)) return null
+        return { projectId: active.projectId, canvasId: active.canvasId,
+          name: canvas.name || active.project?.name, version: canvas.version }
+      },
+      getWorker: () => agentWorker,
+      getProviderSettings: () => providerSettings,
+      getProviderRevisions: getMcpProviderRevisions,
+      getModelDirectory: () => getUnifiedAgentModelDirectory(),
+      loadCanvas: (projectId, canvasId) => localCore.request('canvas:load', { projectId, canvasId }, 15_000),
+      getLocalCore: () => localCore,
+    })
+    await mcpMainService.start()
     await createWindow()
 
     app.on('activate', () => {
@@ -3146,7 +3325,7 @@ if (hasSingleInstanceLock) {
     })
   }).catch((error) => {
     const message = error instanceof Error ? error.message : '桌面应用启动失败。'
-    void dialog.showErrorBox('VibePaper 启动失败', message)
+    void dialog.showErrorBox(uiText("Pi-Paper 启动失败"), message)
     app.quit()
   })
 
@@ -3161,6 +3340,7 @@ if (hasSingleInstanceLock) {
       stopping = true
       taskPumpRequestedProjectId = null
       void (async () => {
+        await mcpMainService?.stop().catch(() => undefined)
         await waitForTaskCreations()
         await stopAgentWorker().catch(() => undefined)
         await stopGenerationWorker().catch(() => undefined)
@@ -3172,4 +3352,5 @@ if (hasSingleInstanceLock) {
   })
 } else {
   app.quit()
+}
 }

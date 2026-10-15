@@ -3,10 +3,11 @@ import { join, resolve, sep } from "path";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
-import { loadSkillFromFile, loadSkillsFromDirInternal } from "./skill-loader.ts";
 import type { LoadSkillsResult, Skill } from "./skill-loader.ts";
+import { loadSkillFromFile, loadSkillsFromDirInternal } from "./skill-loader.ts";
+
+export type { LoadSkillsFromDirOptions, LoadSkillsResult, Skill, SkillFrontmatter } from "./skill-loader.ts";
 export { loadSkillsFromDir } from "./skill-loader.ts";
-export type { LoadSkillsFromDirOptions, LoadSkillsResult, SkillFrontmatter, Skill } from "./skill-loader.ts";
 /**
  * Format skills for inclusion in a system prompt.
  * Uses XML format per Agent Skills standard.

@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { Puzzle, Type, Video, X } from 'lucide-react'
 import { resolveMediaUrl } from '@/lib/media'
 import { cn } from '@/lib/cn'
@@ -25,6 +26,7 @@ export function AgentComposerBar({
   nodes: FlowNode[]
   onRemove: (ref: ComposerRef) => void
 }) {
+  useUiLanguage()
   if (refs.length === 0) return null
   return (
     <div className="flex flex-wrap gap-1.5 border-b border-[var(--canvas-border)] px-2.5 py-2">
@@ -55,7 +57,7 @@ export function AgentComposerBar({
             </span>
             <button
               type="button"
-              aria-label="移除参考"
+              aria-label={uiText("移除参考")}
               onClick={() => onRemove(ref)}
               className="rounded p-0.5 text-[#aaa] hover:bg-black/5 hover:text-[#555]"
             >

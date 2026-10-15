@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "reviewDate": "2026-10-15",
+  "reviewType": "independent source, structured trace and screenshot review; not an automation rerun",
+  "sourceRun": "client-acceptance-2026-10-15T07-41-19-174Z.json",
+  "rawHarnessReportedSuccess": false,
+  "reviewerAcceptedCoreFlow": true,
+  "client": "Codex CLI 0.154.0",
+  "runtime": "isolated Windows Electron development runtime",
+  "observations": {
+    "cliExitCode": 0,
+    "actualCliTurnCompleted": true,
+    "authorizedConnectionEstablished": true,
+    "pairedConnectionCount": 1,
+    "distinctMcpToolsObserved": 10,
+    "mcpToolResultCount": 11,
+    "createdImageNodes": 2,
+    "referenceToTargetEdges": 1,
+    "extraEdgesTouchingCreatedNodes": 0,
+    "originalTextNodePreserved": true,
+    "desktopGenerationConfirmationObserved": true,
+    "localFixtureRequests": 1,
+    "taskSucceeded": true,
+    "mcpResultReadCompleted": true,
+    "originalCanvasTextOutputVisible": true,
+    "realCloudMediaRequests": 0
+  },
+  "modelSelectionRecovery": {
+    "firstAttempt": "The client supplied modality text as modelType and Main/Worker returned MODEL_NOT_FOUND.",
+    "secondAttempt": "The same natural-language turn selected the local fixture model binding, obtained desktop confirmation, and completed generation and output reading.",
+    "diagnosticsBoundary": "Only public error codes and whitelisted argument shapes were recorded; no prompts, credentials or raw client transcript."
+  },
+  "harnessFailureReview": {
+    "stage": "after original-canvas result screenshot, at the final grant-revocation assertion",
+    "incorrectAssumption": "Revocation must remove the client row from getMcpState().clients.",
+    "actualContract": "Revocation preserves the historical client row, sets revokedAt, and clears active sessions. getState returns historical rows with revokedAt and connected.",
+    "sourceEvidence": [
+      "../../../vibepaper-desktop/src/mcp-control-store.cjs:138",
+      "../../../vibepaper-desktop/src/mcp-main-service.cjs:141",
+      "../../../vibepaper-desktop/src/mcp-main-service.cjs:222",
+      "../../../vibepaper-desktop/src/mcp-main-service.cjs:1482"
+    ],
+    "qaCorrection": "Find the same temporary client in memory and require revokedAt plus connected === false.",
+    "qaSyntaxCheckPassed": true,
+    "correctedAssertionRerun": false,
+    "revocationRuntimeStateCaptured": false,
+    "rawRunModified": false,
+    "fixtureAlreadyRemovedByOriginalController": true,
+    "relatedRegressionCheck": {
+      "command": "node --test vibepaper-desktop/test/mcp-review-main.test.cjs",
+      "date": "2026-10-15",
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "includesActiveConnectionRevocationDenial": true,
+      "environmentNote": "The first sandboxed invocation was blocked at test-runner child spawn with EPERM; the authorized local-process rerun passed. This regression is separate from the unrepeated real-CLI cleanup assertion."
+    }
+  },
+  "visualReview": {
+    "screenshot": "codex-result-on-original-canvas.png",
+    "reviewedByRoot": true,
+    "observation": "The original canvas visibly displays the completed local text output; the minimap contains three nodes. The two image nodes and the single reference edge are verified by persisted canvas assertions, not claimed to be fully visible in this screenshot.",
+    "historicalRendererDiagnosticCaveat": "The raw run used prompt-label DOM matching for image nodes. Its zero matches do not mean the persisted image nodes are missing. The QA script now matches node DOM elements using IDs held only in memory; this correction was not rerun."
+  },
+  "notEstablishedByThisRun": [
+    "Natural-language Codex configuration of real provider credentials",
+    "Codex-driven official image/video generation or native media preview",
+    "The full real-client flow inside the installed Windows application",
+    "A passing rerun of the corrected cleanup assertion",
+    "Claude Code real-session compatibility"
+  ],
+  "relatedIndependentEvidence": [
+    "agnes-real-account.json",
+    "mcp-real-image-read.json",
+    "mcp-real-video-read.json",
+    "windows-installed-upgrade.json",
+    "reviewer-tests.log"
+  ]
+}

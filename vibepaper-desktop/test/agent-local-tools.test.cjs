@@ -8,6 +8,7 @@ const {
   AGENT_CORE_METHODS,
   ALLOWED_AGENT_CORE_METHODS,
   getAgentCanvasDomain,
+  safeAgentCoreErrorCode,
   createAgentLocalToolClient,
 } = require('../src/agent-local-tools.cjs')
 const {
@@ -67,6 +68,13 @@ test('Main and Worker share the restricted agent:core method allowlist', () => {
   assert.match(workerSource, /onAuditRequested: async \(input\) => gateway\.requestRenderAudit\(current\.projectId, canvasId, toolContext\.canvasVersion, input\)/u)
   assert.match(workerSource, /const profile = selectProfile\(\{ canvasDomain \}\)/u)
   assert.match(workerSource, /prepareDesktopAgentTurnContext/u)
+})
+
+test('Main preserves fixed Local Core error codes without exposing raw error messages', () => {
+  const validation = Object.assign(new Error('生成任务请求无效。'), { code: 'INVALID_INPUT' })
+  assert.equal(safeAgentCoreErrorCode(validation), 'INVALID_INPUT')
+  assert.equal(safeAgentCoreErrorCode(new Error('INVALID_INPUT')), 'INVALID_INPUT')
+  assert.equal(safeAgentCoreErrorCode(Object.assign(new Error('prompt or secret content'), { code: 'RAW_PRIVATE_ERROR' })), 'CANVAS_UNAVAILABLE')
 })
 
 test('Agent canvas domain uses explicit short-drama node markers and defaults to general', () => {

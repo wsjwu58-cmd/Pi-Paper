@@ -2,9 +2,35 @@
 
 2026-10-03，Pi 二次开发路径。配置、任务检查点与输出由本地核心持久化，Pi 适配器只处理供应商协议。
 
+## 2026-10-10 外部 MCP 配置扩展（2026-10-11 已接通）
+
+用户已授权 Codex、Claude Code 等本机 Agent 在桌面应用运行时协助填写图片、视频模型的官方 API Key、启用模型并使用。外部协议、数据字典及代码入口见 [MCP 功能规格](desktop-mcp-functional-spec.md)，分阶段落地见 [实施计划](../plans/2026-10-10-desktop-mcp-implementation-plan.md)，实际验收见 [2026-10-11 记录](../verification/2026-10-11-mcp-acceptance/README.md)。下列运行接口已接通；实现、fixture 和真实账号成功仍分别判定。
+
+| 数据/接口 | 实际映射与约束 |
+| --- | --- |
+| 提供方配置 `revision` | providers.json schemaVersion=2 的 providerRevisions；加密凭据记录独立携带相同 revision。provider-settings.transaction.json 保存无秘密的 fromRevision/toRevision、nextSettings 和 credentialStageRef；不完整状态拒绝生成；revision 变化失效旧检测 |
+| 提供方披露 `disclosureVersion` / `consentRecordId` | 可信桌面记录供应商、发送范围与可能费用；MCP 参数不能自报同意；与生成确认独立 |
+| MCP `provider.read` / `provider.configure` | 配置权限独立于画布授权，按厂商/字段限定；无秘密读取或清空全部凭据工具 |
+| `configure_provider` | providerId、expectedRevision、operationId、原公开配置字段、credentialInput；响应仅保存/授权状态和公开快照 |
+| `credentialInput` | tagged union：`authorized_env`（逐字段受限 sourceRefs）、`desktop_input`（原配置页输入）、`inline`（本连接明确允许用户提供的新 credentials）；只用一种来源，缺省保留已有凭据，拒绝任意环境变量/文件读取 |
+| `CredentialSource` | sourceRef、clientId、providerId、fieldName、sourceKind、精确 envVariableName、expiresAt；来源映射不含秘密值 |
+| `ProviderProbeResult` | providerId、revision、status、checkedAt、已脱敏错误；`connected`、`failed`、`unsupported` 区分，未检测不伪报有效 |
+| 配置幂等/恢复记录 | userData/mcp-control.sqlite 的 mcp_actions/mcp_operations；只存操作、revision、公开结果、秘密版本/安全暂存的不透明引用；不存原始凭据请求或普通 Key 哈希，不混入项目备份 |
+
+凭据由受限外部输入临时送入 Main，继续复用 credentialFields、互斥鉴权组合、官方主机、模型能力、加密存储与安全检测。缺省/空白秘密保留已有值；保存没有秘密回显或已保存 Key 复制接口。Key 不进入 providers.json、MCP 配置片段、命令参数、普通 SQLite 操作账本、Pi JSONL、任务/节点、日志、异常或导出；不支持安全存储时不降级明文。普通 MCP schema 的秘密字段没有协议保证，脱敏必须在 VibePaper 的日志/异常/审计边界实际实现，不能依靠客户端隐藏显示。
+
+用户在外部 Agent 明确提供 Key 时可用 inline 代填，但外部聊天、模型上下文和工具日志可能保存原文；VibePaper 的脱敏只覆盖自己控制的链路，不能保证外部副本清除。优先支持用户授权环境变量映射和原配置页输入；不用 MCP form elicitation 收集秘密。
+
+`saved`、安全鉴权 `connected`、模型可用及生成成功是不同结论。配置保存/Key 写入不隐式联网生成；安全探测只使用已核验官方接口。生成仍按桌面提案确认后提交 TaskStore。提供方或绑定配置 revision 变化使受影响的未确认提案失效，已提交任务保持原参数快照与既有凭据解析政策。
+
+## 已有提供方配置与本地数据契约
+
+2026-10-06 扩展：`constraints.sizesByAspectRatio`、`resolutionsByAspectRatio` 是比例到合法尺寸／分辨率数组的映射。设置页、画布编辑器和本地设置校验共同应用该映射；切换比例时同步调整不匹配的尺寸。节点原 `params` 可保存音频界面模式 `audioMode:'speech'|'music'`；音乐模式保存 `lyrics_optimizer`、`is_instrumental` 和手工 `lyrics`，模式标签本身不发送供应商。Main 创建任务时先消除被画布显式参数替代的默认别名，Worker 再规范化 ratio/aspect、size/resolution、duration/seconds；同次请求的冲突值明确拒绝。提交后沿用参数快照和检查点，设置变更不改历史任务。此扩展使用现有可选参数，不变更项目 schemaVersion。
+
 | 数据 | 保存位置 | 字段/限制 |
 | --- | --- | --- |
-| 提供方设置 | userData/providers.json | schemaVersion=1；providers 按稳定 providerId 索引；baseUrl、enabledModelIds、defaultModelIds、modelDefaults、timeoutSeconds |
+| 界面语言偏好 | userData/ui-settings.json | schemaVersion=1；language 为 system、zh 或 en；与提供方设置和凭据独立保存；原子替换写入 |
+| 提供方设置 | userData/providers.json | schemaVersion=2；providers 按稳定 providerId 索引，providerRevisions 独立保留清除后的版本；baseUrl、enabledModelIds、defaultModelIds、modelDefaults、timeoutSeconds；原 schemaVersion=1 备份后可迁移 |
 | 官方凭据 | userData/credentials/provider-{id}.bin | safeStorage 加密；只在受控进程解密；Renderer 不回读；Linux basic_text 不可用 |
 | 提供方描述 | Pi 静态目录，经 IPC 返回 | id、name、providerType、官方 baseUrl、allowedHosts、credentialFields、configured、connectionTest.kind；字段 secret/required 独立声明 |
 | 模型绑定 | Pi 静态目录，经 IPC 返回 | id、displayName、providerId、apiModelId、modelType、inputModes、implemented、enabled、unavailableReason、defaults、constraints、toolCalling/streaming/cancellation（只有明确支持时为真） |
@@ -12,7 +38,9 @@
 | 上游提交检查点 | 本地 SQLite task_events.data_json | providerCheckpoint={phase:'submitting'} 或 {phase:'submitted',remoteTaskId}；仅已运行云端任务写入；已有远端 ID 不允许替换 |
 | 输出 | 项目 generated/{taskId}/ | 文本或最多4个索引媒体文件；原子保存、MIME/签名与大小校验；主输出及全部输出路径沿用 TaskStore 字段 |
 
-IPC `getProviderConfiguration()` 返回公开 `{providers,models}`；`saveProviderConfiguration(input)` 接受 providerId、baseUrl、credentials、enabledModelIds、defaultModelIds、modelDefaults、timeoutSeconds；credentials 只用于写入，响应不包含秘密。空白 Key 保留已有秘密。`clearProviderConfiguration(providerId)` 移除配置和凭据；兼容清除旧 Agnes/Ark Key。
+IPC `getProviderConfiguration()` 返回公开 `{providers,models}`；`saveProviderConfiguration(input)` 接受 providerId、expectedRevision、baseUrl、credentials、enabledModelIds、defaultModelIds、modelDefaults、timeoutSeconds；credentials 只用于写入，响应不包含秘密。空白 Key 保留已有秘密。`clearProviderConfiguration(providerId, expectedRevision)` 通过 CAS 清除配置并保存加密空凭据 tombstone，防止旧 Agnes/Ark Key 回退复活。
+
+2026-10-08 界面语言 IPC：`getUiLanguage()` 与 `setUiLanguage('system'|'zh'|'en')` 返回 `{preference,language,systemLanguage}`；后两项仅为 `zh|en`。Main 验证可信 Renderer 来源并拒绝未知语言值，保存成功后才更新语言状态。缺失、损坏或未知版本的偏好文件回退到系统；系统为中文时解析为 `zh`，其余为 `en`。Linux 使用 `LC_ALL > LC_MESSAGES > LANG > Electron locale`，其他平台读取 Electron locale。该偏好不是项目数据，不包含模型配置、凭据或用户正文。
 
 `modelDefaults` 按稳定模型绑定 ID 索引，允许保存目录声明的 ratio、size、resolution、duration、generate_audio 子集，按该型号的枚举、时长上下界和音频开关能力校验；离散时长使用 acceptedDurations，分辨率与时长联动使用 durationByResolution。未知字段（包括任何凭据）拒绝写入。公开模型 defaults 合并用户覆盖后交给原画布编辑器，新节点及切换模型沿用这些值，已有节点显式参数保持优先；手工及Agent任务创建时快照默认参数和本次覆盖，防止设置变化影响已提交任务恢复。旧 schemaVersion=1 配置无此字段时等价于空对象，可无损读取。
 

@@ -10,6 +10,7 @@ interface TextProviderDefinition {
 }
 
 const TEXT_PROVIDERS: Record<string, TextProviderDefinition> = {
+	zhipu: { api: "openai-completions", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
 	openai: { api: "openai-responses", baseUrl: "https://api.openai.com/v1" },
 	anthropic: { api: "anthropic-messages", baseUrl: "https://api.anthropic.com" },
 	google: { api: "google-generative-ai", baseUrl: "https://generativelanguage.googleapis.com/v1beta" },

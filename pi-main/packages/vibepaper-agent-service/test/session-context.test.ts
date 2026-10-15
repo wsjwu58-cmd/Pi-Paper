@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-
-import { InMemorySessionContextRepository, SessionContextService } from "../src/application/session-context-service.ts";
 import { compactContext } from "../src/application/context-compaction-service.ts";
+import { InMemorySessionContextRepository, SessionContextService } from "../src/application/session-context-service.ts";
 import type { AgentRunEvent } from "../src/domain/agent-run.ts";
 import { createSessionContext, reduceSessionEvent } from "../src/domain/session-context.ts";
 
@@ -36,7 +35,12 @@ describe("session context checkpoint", () => {
 		);
 		context = reduceSessionEvent(
 			context,
-			event("task_status", 3, { task_id: "task-1", status: "succeeded", node_id: "node-video", canvas_version: 581 }),
+			event("task_status", 3, {
+				task_id: "task-1",
+				status: "succeeded",
+				node_id: "node-video",
+				canvas_version: 581,
+			}),
 		);
 		expect(context.canvasVersion).toBe(581);
 		expect(context.nodeRefs).toEqual(expect.arrayContaining(["node-ref", "node-video"]));

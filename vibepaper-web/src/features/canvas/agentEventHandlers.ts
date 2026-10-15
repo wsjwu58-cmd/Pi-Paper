@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import type { AgentChatMsg, AgentConfirmation, ExecutionStep } from './agentTypes'
 import { stepFromPlan, stepFromResult, stepFromSpeech, stepFromThinking, toolLabel } from './agentTypes'
 import { normalizeConfirmationExpiry } from './confirmationState'
@@ -104,7 +105,7 @@ export function applyAgentEvent(
       actionId,
       approvalToken,
       tool: typeof ev.tool === 'string' ? ev.tool : undefined,
-      summary: String(ev.summary ?? ev.tool ?? '待确认操作'),
+      summary: String(ev.summary ?? ev.tool ?? uiText("待确认操作")),
       confirmReason: typeof ev.confirmReason === 'string' ? ev.confirmReason : undefined,
       estimatedCost: Number(ev.estimatedCost ?? 0) || 0,
       chainEstimatedCost: Number(ev.chainEstimatedCost ?? 0) || 0,
@@ -151,10 +152,10 @@ export function applyAgentEvent(
             id: `skill-${name}`,
             kind: 'result',
             tool: 'load_skill',
-            label: '加载技能',
+            label: uiText("加载技能"),
             summary: name,
             ok: true,
-            reasoning: `加载 ${name}`,
+            reasoning: uiText("加载 {0}", { 0: name }),
           }),
         },
       }
@@ -212,10 +213,10 @@ export function applyAgentEvent(
     const detail = ok
       ? tool === 'submit_generation'
         ? data.skipped
-          ? String(data.note ?? '已跳过（节点已有成品）')
+          ? String(data.note ?? uiText("已跳过（节点已有成品）"))
           : submitAck
-            ? '已受理，排队生成中'
-            : String(data.note ?? data.error ?? '未实际提交')
+            ? uiText("已受理，排队生成中")
+            : String(data.note ?? data.error ?? uiText("未实际提交"))
         : undefined
       : String(data.error ?? '')
     const label = toolLabel(tool)
@@ -225,10 +226,10 @@ export function applyAgentEvent(
       ok
         ? submitAck || tool !== 'submit_generation'
           ? data.skipped && tool === 'submit_generation'
-            ? `${label}（已跳过）`
+            ? uiText("{0}（已跳过）", { 0: label })
             : label
-          : `${label}（未提交）`
-        : `${label}失败`,
+          : uiText("{0}（未提交）", { 0: label })
+        : uiText("{0}失败", { 0: label }),
       detail,
     )
     return patchLastAssistant(messages, (m) => ({
@@ -353,8 +354,8 @@ export function applyAgentEvent(
     if (st === 'succeeded' || st === 'failed') {
       const content =
         st === 'succeeded'
-          ? '✅ 生成完成，产物已写回画布节点。'
-          : `❌ 生成失败：${String(data.error || data.error_code || '原因未知')}`
+          ? uiText("✅ 生成完成，产物已写回画布节点。")
+          : uiText("❌ 生成失败：{0}", { 0: String(data.error || data.error_code || '原因未知') })
       return [
         ...messages,
         {

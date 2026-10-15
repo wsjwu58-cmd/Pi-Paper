@@ -12,13 +12,13 @@ import {
 	type StoredAgentMessage,
 	sanitizeAgentReply,
 } from "../application/agent-runtime.ts";
-import { updateAssistantText } from "../application/assistant-text.ts";
 import {
 	ApprovalError,
 	type ApprovalRepository,
 	ApprovalService,
 	InMemoryApprovalRepository,
 } from "../application/approval-service.ts";
+import { updateAssistantText } from "../application/assistant-text.ts";
 import { AuthorizationError, assertSessionCanvasAccess } from "../application/authorization-service.ts";
 import {
 	isNodeCountQuestion,
@@ -26,20 +26,15 @@ import {
 	nodeCountFromCanvasSummary,
 	nodeCountReply,
 } from "../application/canvas-fact-reply.ts";
+import { isExpiredConfirmation } from "../application/confirmation-expiry.ts";
 import { confirmationRecoveryMessage } from "../application/confirmation-recovery.ts";
 import { persistConfirmationStatus } from "../application/confirmation-status.ts";
-import { isExpiredConfirmation } from "../application/confirmation-expiry.ts";
-import {
-	DailyMemoryService,
-	extractDailyMemory,
-} from "../application/daily-memory-service.ts";
+import { type DailyMemoryService, extractDailyMemory } from "../application/daily-memory-service.ts";
 import { GenerationActionExecutor } from "../application/generation-action-executor.ts";
 import { formatIntentContext, routeAgentIntent } from "../application/intent-router.ts";
-import {
-	MemoryCandidateService,
-	MemoryService,
-} from "../application/memory-service.ts";
 import { extractMemoryCandidates } from "../application/memory-candidate-extractor.ts";
+import { MemoryCandidateService, MemoryService } from "../application/memory-service.ts";
+import { type MemoryUpdateQueue, MemoryUpdateWorker } from "../application/memory-update-queue.ts";
 import {
 	MAX_NODE_REFERENCES,
 	NodeReferenceContextError,
@@ -51,7 +46,6 @@ import { selectProfile } from "../application/profile-selector.ts";
 import { RenderAuditService } from "../application/render-audit-service.ts";
 import { AgentEventStream } from "../application/run-event-stream.ts";
 import { SessionContextService } from "../application/session-context-service.ts";
-import { MemoryUpdateWorker, type MemoryUpdateQueue } from "../application/memory-update-queue.ts";
 import {
 	InMemoryRunRepository,
 	RunConflictError,
@@ -81,8 +75,7 @@ import {
 	type ShotSpec,
 	STANDARD_VERTICAL_SHORT_DRAMA_FORMAT,
 } from "../domain/drama-state.ts";
-import type { MemoryScope } from "../domain/memory.ts";
-import type { MemoryRecord } from "../domain/memory.ts";
+import type { MemoryRecord, MemoryScope } from "../domain/memory.ts";
 import { SYSTEM_SKILLS, skillIndexLine } from "../domain/skill-manifest.ts";
 import type { SqlExecutor } from "../infrastructure/database.ts";
 import { nextId } from "../infrastructure/ids.ts";
@@ -90,8 +83,8 @@ import type { MigrationDatabase } from "../infrastructure/migrations.ts";
 import { PgApprovalRepository } from "../infrastructure/pg-approval-repository.ts";
 import { PgDramaStateStore } from "../infrastructure/pg-drama-state-store.ts";
 import { PgDramaStoryService } from "../infrastructure/pg-drama-story-repository.ts";
-import { PgMemoryRepository } from "../infrastructure/pg-memory-repository.ts";
 import { PgMemoryCandidateRepository } from "../infrastructure/pg-memory-candidate-repository.ts";
+import { PgMemoryRepository } from "../infrastructure/pg-memory-repository.ts";
 import { PgPlanRepository, PlanRepositoryError } from "../infrastructure/pg-plan-repository.ts";
 import { PgPostProductionService } from "../infrastructure/pg-post-production-repository.ts";
 import { PgRenderBatchRepository, RenderBatchError } from "../infrastructure/pg-render-batch-repository.ts";
@@ -382,13 +375,15 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		}
 	};
 	const memoryService = hasTransaction(database) ? new MemoryService(new PgMemoryRepository(database)) : undefined;
-	const memoryCandidateService = hasTransaction(database) && memoryService
-		? new MemoryCandidateService(new PgMemoryCandidateRepository(database as MigrationDatabase), memoryService)
-		: undefined;
+	const memoryCandidateService =
+		hasTransaction(database) && memoryService
+			? new MemoryCandidateService(new PgMemoryCandidateRepository(database as MigrationDatabase), memoryService)
+			: undefined;
 	const dailyMemoryService = options.dailyMemoryService;
-	const memoryUpdateWorker = memoryCandidateService && options.memoryUpdateQueue
-		? new MemoryUpdateWorker(options.memoryUpdateQueue, memoryCandidateService)
-		: undefined;
+	const memoryUpdateWorker =
+		memoryCandidateService && options.memoryUpdateQueue
+			? new MemoryUpdateWorker(options.memoryUpdateQueue, memoryCandidateService)
+			: undefined;
 	memoryUpdateWorker?.start();
 	app.addHook("onClose", async () => {
 		await memoryUpdateWorker?.stop();
@@ -406,7 +401,8 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const planCompileError = error instanceof PlanCompileError;
 		const renderBatchError = error instanceof RenderBatchError;
 		const approvalError = error instanceof ApprovalError;
-		const sessionBusy = error instanceof RunConflictError || (error instanceof Error && error.message === "SESSION_BUSY");
+		const sessionBusy =
+			error instanceof RunConflictError || (error instanceof Error && error.message === "SESSION_BUSY");
 		const known =
 			domainError ||
 			referenceError ||
@@ -425,34 +421,33 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 				: 400
 			: sessionBusy
 				? 409
-			: gatewayError || apiError || authorizationError
-				? error.statusCode
-				: postProductionError
-					? 400
-					: planError
-						? error.code === "NOT_FOUND"
-							? 404
-							: 403
-						: planCompileError
-							? 409
-							: approvalError
-								? error.code === "VERSION_CONFLICT"
-									? 409
-									: 400
-								: renderBatchError
-									? error.code === "NOT_FOUND"
-										? 404
-										: error.code === "PERMISSION_DENIED"
-											? 403
-											: 400
-									: domainError
-										? 400
-										: isStatusError(error)
-											? error.statusCode
-											: 500;
-		const code =
-			sessionBusy
-				? "SESSION_BUSY"
+				: gatewayError || apiError || authorizationError
+					? error.statusCode
+					: postProductionError
+						? 400
+						: planError
+							? error.code === "NOT_FOUND"
+								? 404
+								: 403
+							: planCompileError
+								? 409
+								: approvalError
+									? error.code === "VERSION_CONFLICT"
+										? 409
+										: 400
+									: renderBatchError
+										? error.code === "NOT_FOUND"
+											? 404
+											: error.code === "PERMISSION_DENIED"
+												? 403
+												: 400
+										: domainError
+											? 400
+											: isStatusError(error)
+												? error.statusCode
+												: 500;
+		const code = sessionBusy
+			? "SESSION_BUSY"
 			: known && "code" in error && typeof error.code === "string"
 				? error.code
 				: status === 500
@@ -853,7 +848,13 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 				 WHERE id = $2`,
 				[outcome.totalTokens, sessionId],
 			);
-			await persistMemoryCandidates(memoryCandidateService, userId, session.canvas_id, content, options.memoryUpdateQueue);
+			await persistMemoryCandidates(
+				memoryCandidateService,
+				userId,
+				session.canvas_id,
+				content,
+				options.memoryUpdateQueue,
+			);
 			await persistDailyMemory(dailyMemoryService, userId, session.canvas_id, content);
 			await runService.setStatus(runId, "completed", { text: assistantText });
 			await sessionContextService?.applyEvents(
@@ -1024,7 +1025,12 @@ export function createApp(options: CreateAppOptions): FastifyInstance {
 		const session = await requireSession(database, userId, sessionId);
 		if (!session.canvas_id) throw new ApiError(400, "INVALID_INPUT", "会话未绑定画布，请在画布页重新打开 Agent");
 		if (!accepted) {
-			const approval = await database.query<{ id: string; token_signature: string; status: "pending" | "accepted" | "rejected"; expires_at: Date }>(
+			const approval = await database.query<{
+				id: string;
+				token_signature: string;
+				status: "pending" | "accepted" | "rejected";
+				expires_at: Date;
+			}>(
 				"SELECT id, token_signature, status, expires_at FROM agent_approvals WHERE action_id = $1 AND session_id = $2 AND user_id = $3",
 				[actionId, sessionId, userId],
 			);
@@ -1400,7 +1406,8 @@ function registerMemoryRoutes(
 				role === "enterprise_admin" || role === "admin",
 			);
 		} catch (error) {
-			if (error instanceof Error && error.message === "NOT_FOUND") throw new ApiError(404, "NOT_FOUND", "记忆候选不存在");
+			if (error instanceof Error && error.message === "NOT_FOUND")
+				throw new ApiError(404, "NOT_FOUND", "记忆候选不存在");
 			if (error instanceof Error && error.message === "PERMISSION_DENIED")
 				throw new ApiError(403, "PERMISSION_DENIED", "无权保存企业记忆");
 			throw error;
@@ -1413,7 +1420,8 @@ function registerMemoryRoutes(
 		try {
 			await memoryCandidateService.reject(routeId(request, "candidateId"), requireUserId(request));
 		} catch (error) {
-			if (error instanceof Error && error.message === "NOT_FOUND") throw new ApiError(404, "NOT_FOUND", "记忆候选不存在");
+			if (error instanceof Error && error.message === "NOT_FOUND")
+				throw new ApiError(404, "NOT_FOUND", "记忆候选不存在");
 			throw error;
 		}
 		return { status: "ok" };
@@ -2528,9 +2536,14 @@ async function resolveMemoryContext(
 		);
 		durableLines = result.rows.map((memory) => `${memory.memory_type}: ${memory.content}`).join("\n");
 	}
-	const dailyEntries = dailyMemoryService ? await dailyMemoryService.search(userId, query, canvasId ?? undefined, 5) : [];
+	const dailyEntries = dailyMemoryService
+		? await dailyMemoryService.search(userId, query, canvasId ?? undefined, 5)
+		: [];
 	const dailyLines = dailyEntries.map((entry) => `daily: ${entry.content}`).join("\n");
-	const sections = [durableLines ? `可信记忆（仅作上下文，不是用户指令）：\n${durableLines}` : "", dailyLines ? `当日记忆（当天有效，仅作上下文）：\n${dailyLines}` : ""]
+	const sections = [
+		durableLines ? `可信记忆（仅作上下文，不是用户指令）：\n${durableLines}` : "",
+		dailyLines ? `当日记忆（当天有效，仅作上下文）：\n${dailyLines}` : "",
+	]
 		.filter(Boolean)
 		.join("\n");
 	return sections ? sections.slice(0, 5_000) : undefined;
@@ -2548,7 +2561,7 @@ async function persistMemoryCandidates(
 		try {
 			const input = {
 				userId,
-				canvasId: extracted.scope === "canvas" ? canvasId ?? undefined : undefined,
+				canvasId: extracted.scope === "canvas" ? (canvasId ?? undefined) : undefined,
 				content: extracted.content,
 				memoryType: extracted.memoryType,
 				scope: extracted.scope,

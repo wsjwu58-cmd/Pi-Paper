@@ -1,0 +1,72 @@
+{
+  "success": true,
+  "startedAt": "2026-10-12T11:35:47.486Z",
+  "completedAt": "2026-10-12T11:35:49.293Z",
+  "phase": "completed",
+  "platform": "win32",
+  "electron": "44.4.4",
+  "node": "24.21.0",
+  "profile": "E:\\VibePaperProject\\.test-temp\\mcp-local-video-read-1791804947486\\VibePaper",
+  "projectDirectory": "E:\\VibePaperProject\\.test-temp\\mcp-local-video-read-1791804947486\\projects\\Local MP4 media acceptance",
+  "projectId": "d0eb92c8-12bc-401a-83d1-a24705285329",
+  "canvasId": "93e64489-c64c-40de-a820-84e65dd48bdd",
+  "taskId": "4f4d22e1-4ea3-4c7b-a55a-83ff11b337cb",
+  "nodeId": "5d1179b2-a6c8-42d2-ab4b-6f75378a7de4",
+  "providerCredentialAccessed": false,
+  "cloudRequestMade": false,
+  "fixture": {
+    "kind": "local-generated-mp4",
+    "durationSeconds": 1,
+    "decodedByFfmpeg": true,
+    "sha256": "0703a0beb10380e805d8725257af5318cf04fd2bbb4b8132f6491bfcc2c84743",
+    "sizeBytes": 1007
+  },
+  "taskStore": {
+    "status": "succeeded",
+    "relativePath": "generated/4f4d22e1-4ea3-4c7b-a55a-83ff11b337cb/result.mp4",
+    "sha256": "0703a0beb10380e805d8725257af5318cf04fd2bbb4b8132f6491bfcc2c84743",
+    "sizeBytes": 1007
+  },
+  "grant": {
+    "permissions": [
+      "canvas.read",
+      "task.read",
+      "media.read"
+    ],
+    "mediaTypes": [
+      "video"
+    ],
+    "providerGrants": []
+  },
+  "protocol": {
+    "transport": "stdio",
+    "sdkVersion": "1.32.1",
+    "tool": "read_task_output"
+  },
+  "metadata": {
+    "mode": "metadata",
+    "modality": "video",
+    "sizeBytes": 1007,
+    "contentType": "text"
+  },
+  "preview": {
+    "mode": "preview",
+    "modality": "video",
+    "mimeType": "video/mp4",
+    "uri": "vibepaper://task-output/4f4d22e1-4ea3-4c7b-a55a-83ff11b337cb/0",
+    "sizeBytes": 1007,
+    "contentType": "resource",
+    "sha256": "0703a0beb10380e805d8725257af5318cf04fd2bbb4b8132f6491bfcc2c84743",
+    "decodedByFfmpeg": true
+  },
+  "assertions": {
+    "validMp4FixtureDecoded": true,
+    "previewMatchesTaskStoreDigest": true,
+    "previewMatchesFixtureDigest": true,
+    "originalCanvasOpen": true,
+    "originalNodeVisible": true,
+    "existingProjectReopened": true,
+    "videoOnlyReadGrant": true
+  },
+  "bridgeDiagnostics": "VibePaper connection approval: verify code [pairing-code] in the desktop dialog.\n"
+}

@@ -6,6 +6,7 @@ export type SessionTaskState = {
 	status: string;
 	nodeId?: string;
 	errorCode?: string;
+	errorMessage?: string;
 	outputRef?: string;
 	updatedAtEventSeq: number;
 };
@@ -72,7 +73,11 @@ export function reduceSessionEvent(context: SessionContext, event: AgentRunEvent
 		updatedAt: event.createdAt.toISOString(),
 		compactedToEventSeq: Math.max(context.compactedToEventSeq, event.eventSeq),
 	};
-	const canvasVersion = firstInteger(data.canvas_version, data.canvasVersion, nestedValue(data, "details.canvasVersion"));
+	const canvasVersion = firstInteger(
+		data.canvas_version,
+		data.canvasVersion,
+		nestedValue(data, "details.canvasVersion"),
+	);
 	if (canvasVersion !== undefined && canvasVersion >= next.canvasVersion) next.canvasVersion = canvasVersion;
 
 	if (event.type === "confirmation_required") {
@@ -95,12 +100,18 @@ export function reduceSessionEvent(context: SessionContext, event: AgentRunEvent
 	if (event.type === "task_status") {
 		const taskId = stringValue(data.task_id ?? data.taskId);
 		const status = stringValue(data.status);
+		const actionId = stringValue(data.actionId);
+		if (actionId && data.actionStatus === "accepted" && next.pendingApproval?.actionId === actionId)
+			next.pendingApproval = undefined;
 		if (taskId && status) {
 			next.tasks[taskId] = {
 				status,
 				...(stringValue(data.node_id ?? data.nodeId) ? { nodeId: stringValue(data.node_id ?? data.nodeId) } : {}),
 				...(stringValue(data.error_code ?? data.errorCode)
 					? { errorCode: stringValue(data.error_code ?? data.errorCode) }
+					: {}),
+				...(stringValue(data.error_message ?? data.errorMessage)
+					? { errorMessage: stringValue(data.error_message ?? data.errorMessage) }
 					: {}),
 				...(stringValue(data.output_ref ?? data.outputRef)
 					? { outputRef: stringValue(data.output_ref ?? data.outputRef) }
@@ -117,10 +128,7 @@ export function reduceSessionEvent(context: SessionContext, event: AgentRunEvent
 	return next;
 }
 
-export function reduceSessionEvents(
-	context: SessionContext,
-	events: readonly AgentRunEvent[],
-): SessionContext {
+export function reduceSessionEvents(context: SessionContext, events: readonly AgentRunEvent[]): SessionContext {
 	return [...events]
 		.filter((event) => event.eventSeq > context.compactedToEventSeq)
 		.sort((left, right) => left.eventSeq - right.eventSeq)
@@ -140,7 +148,11 @@ export function formatSessionContext(context: SessionContext, maxCharacters = 8_
 		nodeRefs: context.nodeRefs,
 		tasks,
 		pendingApproval: context.pendingApproval
-			? { actionId: context.pendingApproval.actionId, tool: context.pendingApproval.tool, canvasVersion: context.pendingApproval.canvasVersion }
+			? {
+					actionId: context.pendingApproval.actionId,
+					tool: context.pendingApproval.tool,
+					canvasVersion: context.pendingApproval.canvasVersion,
+				}
 			: undefined,
 		lastRunStatus: context.lastRunStatus,
 	};

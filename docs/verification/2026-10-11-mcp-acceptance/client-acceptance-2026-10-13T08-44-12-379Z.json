@@ -1,0 +1,271 @@
+{
+  "schemaVersion": 1,
+  "testType": "real installed CLI natural-language MCP acceptance against isolated Electron development runtime",
+  "date": "2026-10-13T08:45:09.476Z",
+  "success": false,
+  "clientResults": [
+    {
+      "success": false,
+      "client": "codex",
+      "failureCategory": "client_turn_incomplete",
+      "phase": "real-client-natural-language-mcp-turn",
+      "pageState": {
+        "pathname": "/canvas/8493eab6-ec17-44c9-ad94-c9e6126a49a8",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 2
+      },
+      "failureScreenshot": "codex-precli-failure.png",
+      "mcpToolTrace": [
+        "get_canvas_summary",
+        "get_context",
+        "list_models",
+        "create_nodes",
+        "connect_nodes",
+        "get_node_detail",
+        "prepare_generation"
+      ],
+      "cliJsonEventCount": 21,
+      "cliExitCode": 0,
+      "cliTerminationSignal": null,
+      "actualCliTurnCompleted": true,
+      "cliAssistantReplySeen": true,
+      "authorizedConnectionEstablished": true,
+      "toolCallsObserved": [
+        "get_canvas_summary",
+        "get_context",
+        "list_models",
+        "create_nodes",
+        "connect_nodes",
+        "get_node_detail",
+        "prepare_generation"
+      ],
+      "generationConfirmationObserved": false,
+      "taskSucceeded": false,
+      "resultRead": false,
+      "cliTrace": {
+        "assistantReplySeen": true,
+        "completedEventSeen": true,
+        "errorEventSeen": false,
+        "toolCallsObserved": [
+          "get_canvas_summary",
+          "get_context",
+          "list_models",
+          "create_nodes",
+          "connect_nodes",
+          "get_node_detail",
+          "prepare_generation"
+        ],
+        "distinctToolCount": 7,
+        "toolResultCount": 8,
+        "toolResults": [
+          {
+            "tool": "get_canvas_summary",
+            "isError": false,
+            "errorCode": null,
+            "status": "completed"
+          },
+          {
+            "tool": "get_context",
+            "isError": false,
+            "errorCode": null,
+            "status": "completed"
+          },
+          {
+            "tool": "list_models",
+            "isError": false,
+            "errorCode": null,
+            "status": "completed"
+          },
+          {
+            "tool": "create_nodes",
+            "isError": false,
+            "errorCode": null,
+            "status": "completed"
+          },
+          {
+            "tool": "connect_nodes",
+            "isError": false,
+            "errorCode": null,
+            "status": "completed"
+          },
+          {
+            "tool": "get_node_detail",
+            "isError": false,
+            "errorCode": null,
+            "status": "completed"
+          },
+          {
+            "tool": "prepare_generation",
+            "isError": true,
+            "errorCode": null,
+            "status": "failed",
+            "eventPath": "$.item",
+            "toolCallFields": [
+              "arguments",
+              "error",
+              "id",
+              "result",
+              "server",
+              "status",
+              "tool",
+              "type"
+            ],
+            "errorFieldPaths": [
+              "item.error"
+            ]
+          },
+          {
+            "tool": "prepare_generation",
+            "isError": true,
+            "errorCode": null,
+            "status": "failed",
+            "eventPath": "$.item",
+            "toolCallFields": [
+              "arguments",
+              "error",
+              "id",
+              "result",
+              "server",
+              "status",
+              "tool",
+              "type"
+            ],
+            "errorFieldPaths": [
+              "item.error"
+            ]
+          }
+        ]
+      },
+      "mcpToolResults": [
+        {
+          "tool": "get_canvas_summary",
+          "isError": false,
+          "errorCode": null,
+          "status": "completed"
+        },
+        {
+          "tool": "get_context",
+          "isError": false,
+          "errorCode": null,
+          "status": "completed"
+        },
+        {
+          "tool": "list_models",
+          "isError": false,
+          "errorCode": null,
+          "status": "completed"
+        },
+        {
+          "tool": "create_nodes",
+          "isError": false,
+          "errorCode": null,
+          "status": "completed"
+        },
+        {
+          "tool": "connect_nodes",
+          "isError": false,
+          "errorCode": null,
+          "status": "completed"
+        },
+        {
+          "tool": "get_node_detail",
+          "isError": false,
+          "errorCode": null,
+          "status": "completed"
+        },
+        {
+          "tool": "prepare_generation",
+          "isError": true,
+          "errorCode": null,
+          "status": "failed",
+          "eventPath": "$.item",
+          "toolCallFields": [
+            "arguments",
+            "error",
+            "id",
+            "result",
+            "server",
+            "status",
+            "tool",
+            "type"
+          ],
+          "errorFieldPaths": [
+            "item.error"
+          ]
+        },
+        {
+          "tool": "prepare_generation",
+          "isError": true,
+          "errorCode": null,
+          "status": "failed",
+          "eventPath": "$.item",
+          "toolCallFields": [
+            "arguments",
+            "error",
+            "id",
+            "result",
+            "server",
+            "status",
+            "tool",
+            "type"
+          ],
+          "errorFieldPaths": [
+            "item.error"
+          ]
+        }
+      ],
+      "diagnosticHints": {
+        "authenticationLike": false,
+        "networkLike": true,
+        "modelLike": false,
+        "configurationLike": false
+      },
+      "safeNetworkDiagnostic": {
+        "errorClass": null,
+        "httpStatus": null,
+        "targetHostname": null,
+        "timeout": false
+      },
+      "safeFailureReason": "client_or_provider_error",
+      "cliOAuthEnvironmentProvided": false,
+      "sanitizedProxyEnvironmentProvided": true,
+      "systemProxyAddressProvided": true,
+      "codexUserConfigFilePresent": true,
+      "codexUserConfigIgnoredByCli": true,
+      "codexUserConfigModified": false,
+      "configuredMcpEntryCount": 4,
+      "excludedOtherMcpCount": 4,
+      "excludedEnabledOtherMcpCount": 4,
+      "pairedConnectionCount": 1,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": true,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "generation_proposal_not_created:client_turn_completed",
+      "startedAt": "2026-10-13T08:44:12.447Z"
+    }
+  ],
+  "scope": {
+    "realCodexCliTurn": true,
+    "realClaudeCodeTurn": false,
+    "actualCliTurnCompleted": true,
+    "authorizedConnectionEstablished": true,
+    "toolCallsObserved": true,
+    "generationConfirmationObserved": false,
+    "taskSucceeded": false,
+    "resultRead": false,
+    "realCloudMediaRequests": 0,
+    "localFixtureGenerationOnly": true,
+    "desktopGenerationConfirmationUsed": false,
+    "authMaterialReadOrCopied": false,
+    "rawClientOutputPersisted": false,
+    "temporaryMcpConfigurationsRemoved": true,
+    "packagedApplicationTested": false
+  }
+}

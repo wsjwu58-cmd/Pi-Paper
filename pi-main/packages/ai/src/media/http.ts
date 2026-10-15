@@ -65,6 +65,7 @@ function isAllowedOfficialHost(providerId: string, hostname: string, credentials
 		);
 	}
 	const hosts: Record<string, string[]> = {
+		zhipu: ["open.bigmodel.cn"],
 		openai: ["api.openai.com"],
 		anthropic: ["api.anthropic.com"],
 		google: ["generativelanguage.googleapis.com"],

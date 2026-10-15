@@ -63,7 +63,11 @@ export type ProposeMemoryCandidateInput = Omit<
 
 export interface MemoryCandidateRepository {
 	listPending(userId: string): readonly MemoryCandidate[] | Promise<readonly MemoryCandidate[]>;
-	findPending(userId: string, scope: MemoryScope, dedupeKey: string): MemoryCandidate | undefined | Promise<MemoryCandidate | undefined>;
+	findPending(
+		userId: string,
+		scope: MemoryScope,
+		dedupeKey: string,
+	): MemoryCandidate | undefined | Promise<MemoryCandidate | undefined>;
 	get(id: string, userId: string): MemoryCandidate | undefined | Promise<MemoryCandidate | undefined>;
 	save(candidate: MemoryCandidate): void | Promise<void>;
 	updateStatus(id: string, userId: string, status: "accepted" | "rejected"): boolean | Promise<boolean>;
@@ -217,7 +221,9 @@ export class MemoryService {
 
 function tokenize(value: string): string[] {
 	const matches = value.toLocaleLowerCase().match(/[\p{Script=Han}]|[a-z0-9_]{2,}/gu);
-	return matches && matches.length > 0 ? [...new Set(matches)] : value.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+	return matches && matches.length > 0
+		? [...new Set(matches)]
+		: value.toLocaleLowerCase().split(/\s+/).filter(Boolean);
 }
 
 export class InMemoryMemoryRepository implements MemoryRepository {
@@ -251,7 +257,10 @@ export class InMemoryMemoryCandidateRepository implements MemoryCandidateReposit
 	findPending(userId: string, scope: MemoryScope, dedupeKey: string): MemoryCandidate | undefined {
 		return [...this.candidates.values()].find(
 			(candidate) =>
-				candidate.userId === userId && candidate.scope === scope && candidate.dedupeKey === dedupeKey && candidate.status === "pending",
+				candidate.userId === userId &&
+				candidate.scope === scope &&
+				candidate.dedupeKey === dedupeKey &&
+				candidate.status === "pending",
 		);
 	}
 

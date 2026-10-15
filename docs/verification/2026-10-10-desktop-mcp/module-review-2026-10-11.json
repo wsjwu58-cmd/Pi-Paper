@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-11",
+  "reviewer": "root",
+  "command": "node --test --test-isolation=none test/mcp-stdio.test.cjs test/mcp-launcher.test.cjs test/mcp-provider-controller.test.cjs test/provider-settings.test.cjs test/provider-task-defaults.test.cjs test/agent-local-tools.test.cjs test/mcp-review-runtime.test.cjs test/mcp-review-main.test.cjs test/mcp-provider-main-integration.test.cjs test/agent-worker-continuation.test.cjs test/renderer-trust.test.cjs",
+  "workingDirectory": "vibepaper-desktop",
+  "exitCode": 0,
+  "tests": 114,
+  "passed": 114,
+  "failed": 0,
+  "skipped": 0,
+  "scope": "Provider transactions and image/video Main integration fixtures, official SDK fixtures, launcher, device SQLite, original TypeScript runtime, Worker recovery and trusted Renderer routes",
+  "actualDesktopIntegration": false,
+  "realCodexClaudeToolSessions": false,
+  "realCloudProviderRequests": 0,
+  "threePlatformPackagesValidated": false
+}

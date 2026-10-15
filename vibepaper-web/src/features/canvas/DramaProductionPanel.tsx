@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -73,18 +74,18 @@ function idempotencyKey() {
 
 function providerLabel(providerId: string) {
   if (providerId === 'agnes') return 'Agnes'
-  if (providerId === 'volcengine-ark') return '火山方舟'
+  if (providerId === 'volcengine-ark') return uiText("火山方舟")
   return providerId
 }
 
 function statusLabel(status: string) {
   return ({
-    draft: '待确认',
-    awaiting_approval: '等待确认',
-    running: '生成中',
-    partial: '部分完成',
-    completed: '已完成',
-    failed: '失败',
+    draft: uiText("待确认"),
+    awaiting_approval: uiText("等待确认"),
+    running: uiText("生成中"),
+    partial: uiText("部分完成"),
+    completed: uiText("已完成"),
+    failed: uiText("失败"),
   } as Record<string, string>)[status] ?? status
 }
 
@@ -110,13 +111,13 @@ export function hasActiveRenderJobs(batches: Array<{ jobs: Array<{ status: strin
 }
 
 export function DramaUnavailableRenderCandidates({ candidates }: { candidates: RenderCandidate[] }) {
+  useUiLanguage()
   if (candidates.length === 0) return null
   return (
-    <ul aria-label="暂不可提交的镜头" className="mt-2 space-y-1">
+    <ul aria-label={uiText("暂不可提交的镜头")} className="mt-2 space-y-1">
       {candidates.map((candidate) => (
         <li key={`${candidate.shotId}:${candidate.canvasNodeId}`} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] text-amber-900">
-          第 {candidate.shotNo} 镜 · {providerLabel(candidate.providerId)} · {candidate.modelId} · {candidate.durationSeconds} 秒：
-          {' '}{candidate.unavailableReason || '当前提供方暂不支持此镜头参数'}
+          {uiText("第 ")}{candidate.shotNo} {uiText("镜 · ")}{providerLabel(candidate.providerId)} · {candidate.modelId} · {candidate.durationSeconds} {uiText("秒：")}{' '}{candidate.unavailableReason || uiText("当前提供方暂不支持此镜头参数")}
         </li>
       ))}
     </ul>
@@ -136,26 +137,25 @@ export function DramaRenderConfirmationCard({
   onSubmit: () => void
   onReject: () => void
 }) {
+  useUiLanguage()
   return (
-    <div role="dialog" aria-label="确认视频生成" className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-2.5">
+    <div role="dialog" aria-label={uiText("确认视频生成")} className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-2.5">
       <p className="text-[12px] font-bold text-[#222]">
-        {confirmation.operation === 'rerun' ? '确认局部重跑' : '确认视频生成'}
+        {confirmation.operation === 'rerun' ? uiText("确认局部重跑") : uiText("确认视频生成")}
       </p>
       <p className="mt-1 text-[11px] leading-relaxed text-[#555]">
-        将为这 {confirmation.jobs.length} 个镜头提交本地生成任务。选择云端模型时，会把下方提示词和已接受关键帧发送给对应提供方；提供方可能按其规则收费。
-      </p>
+        {uiText("将为这 ")}{confirmation.jobs.length} {uiText("个镜头提交本地生成任务。选择云端模型时，会把下方提示词和已接受关键帧发送给对应提供方；提供方可能按其规则收费。")}</p>
       <ul className="mt-2 space-y-2">
         {confirmation.jobs.map((job) => {
           const candidate = candidateForShot.get(job.shotId)
           return (
             <li key={job.id} className="rounded-md bg-white/80 p-2 text-[11px]">
               <p className="font-semibold text-[#333]">
-                {candidate ? `第 ${candidate.shotNo} 镜` : '镜头'} · {providerLabel(job.providerId)} · {job.modelId} · {job.durationSeconds} 秒
-              </p>
-              <p className="mt-0.5 text-[#666]">输入：已接受关键帧；目标：原镜头视频节点</p>
-              <p className="mt-0.5 text-[#666]">新结果会成为该节点当前预览的最新结果，原任务仍保存在本地历史中。</p>
+                {candidate ? uiText("第 {0} 镜", { 0: candidate.shotNo }) : uiText("镜头")} · {providerLabel(job.providerId)} · {job.modelId} · {job.durationSeconds} {uiText("秒")}</p>
+              <p className="mt-0.5 text-[#666]">{uiText("输入：已接受关键帧；目标：原镜头视频节点")}</p>
+              <p className="mt-0.5 text-[#666]">{uiText("新结果会成为该节点当前预览的最新结果，原任务仍保存在本地历史中。")}</p>
               <details className="mt-1">
-                <summary className="cursor-pointer text-[#555]">查看完整提示词</summary>
+                <summary className="cursor-pointer text-[#555]">{uiText("查看完整提示词")}</summary>
                 <p className="mt-1 whitespace-pre-wrap break-words text-[#666]">{job.prompt}</p>
               </details>
             </li>
@@ -164,10 +164,9 @@ export function DramaRenderConfirmationCard({
       </ul>
       <div className="mt-2 flex justify-end gap-2">
         <button type="button" disabled={busy} onClick={onReject} className="rounded-md border border-black/10 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[#444] disabled:opacity-60">
-          拒绝
-        </button>
+          {uiText("拒绝")}</button>
         <button type="button" disabled={busy} onClick={onSubmit} className="rounded-md bg-[#111] px-2.5 py-1.5 text-[11px] font-bold text-white disabled:opacity-60">
-          {busy ? '处理中…' : `确认并生成 ${confirmation.jobs.length} 个任务`}
+          {busy ? uiText("处理中…") : uiText("确认并生成 {0} 个任务", { 0: confirmation.jobs.length })}
         </button>
       </div>
     </div>
@@ -175,6 +174,7 @@ export function DramaRenderConfirmationCard({
 }
 
 export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?: string | number; desktop?: boolean }) {
+  useUiLanguage()
   const [items, setItems] = useState<ProductionItem[]>([])
   const [batches, setBatches] = useState<RenderBatch[]>([])
   const [candidates, setCandidates] = useState<RenderCandidate[]>([])
@@ -194,7 +194,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
         id: item.assetId,
         label: `${item.assetType} v${item.assetVersion}`,
         status: typeof item.data.status === 'string' ? item.data.status : 'draft',
-        detail: typeof item.data.staleImpact === 'string' ? item.data.staleImpact : '等待上游事实或任务终态',
+        detail: typeof item.data.staleImpact === 'string' ? item.data.staleImpact : uiText("等待上游事实或任务终态"),
       })))
       const batchesResult = await api<{ items: RenderBatch[] }>('/drama/render-batches')
       const canvasBatches = (batchesResult.items ?? []).filter((batch) => String(batch.canvasId) === String(canvasId))
@@ -206,7 +206,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
         setCandidates([])
       }
     } catch (cause) {
-      setError((cause as Error).message || '读取生产链失败')
+      setError((cause as Error).message || uiText("读取生产链失败"))
     } finally {
       setLoading(false)
     }
@@ -235,7 +235,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
       })
       setConfirmation(prepared)
     } catch (cause) {
-      setError((cause as Error).message || '准备生成确认失败')
+      setError((cause as Error).message || uiText("准备生成确认失败"))
     } finally {
       setBusyAction('')
     }
@@ -271,7 +271,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
       setConfirmation(prepared)
       await refresh()
     } catch (cause) {
-      setError((cause as Error).message || '创建渲染批次失败')
+      setError((cause as Error).message || uiText("创建渲染批次失败"))
     } finally {
       setBusyAction('')
     }
@@ -288,7 +288,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
       )
       setConfirmation(prepared)
     } catch (cause) {
-      setError((cause as Error).message || '准备局部重跑失败')
+      setError((cause as Error).message || uiText("准备局部重跑失败"))
     } finally {
       setBusyAction('')
     }
@@ -311,7 +311,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
       setConfirmation(null)
       await refresh()
     } catch (cause) {
-      setError((cause as Error).message || '提交视频生成失败')
+      setError((cause as Error).message || uiText("提交视频生成失败"))
     } finally {
       setBusyAction('')
     }
@@ -330,7 +330,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
       setConfirmation(null)
       await refresh()
     } catch (cause) {
-      setError((cause as Error).message || '拒绝生成确认失败')
+      setError((cause as Error).message || uiText("拒绝生成确认失败"))
     } finally {
       setBusyAction('')
     }
@@ -339,13 +339,13 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
   const candidateForShot = new Map(candidates.map((candidate) => [candidate.shotId, candidate]))
 
   return (
-    <section className="mt-5 rounded-xl border border-black/8 bg-[#fafafa] p-3" aria-label="短剧生产链">
+    <section className="mt-5 rounded-xl border border-black/8 bg-[#fafafa] p-3" aria-label={uiText("短剧生产链")}>
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-[12px] font-bold text-[#333]">生产链</p>
-          <p className="text-[10px] text-[#888]">关键帧 → 视频 → 音频/字幕 → 合成；stale 只提示局部重跑</p>
+          <p className="text-[12px] font-bold text-[#333]">{uiText("生产链")}</p>
+          <p className="text-[10px] text-[#888]">{uiText("关键帧 → 视频 → 音频/字幕 → 合成；stale 只提示局部重跑")}</p>
         </div>
-        <button type="button" onClick={() => void refresh()} title="刷新生产链" className="rounded-lg p-1.5 text-[#666] hover:bg-black/5">
+        <button type="button" onClick={() => void refresh()} title={uiText("刷新生产链")} className="rounded-lg p-1.5 text-[#666] hover:bg-black/5">
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
@@ -362,7 +362,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
       ) : null}
 
       <div className="mt-2 space-y-1.5">
-        {items.length === 0 ? <p className="text-[11px] text-[#888]">尚无可追踪制品。</p> : items.map((item) => (
+        {items.length === 0 ? <p className="text-[11px] text-[#888]">{uiText("尚无可追踪制品。")}</p> : items.map((item) => (
           <div key={String(item.id)} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5 text-[11px]">
             <span className="truncate text-[#444]">{item.label}</span>
             <span className={item.status === 'stale' ? 'text-amber-700' : 'text-[#888]'}>{item.status} · {item.detail}</span>
@@ -371,46 +371,44 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
       </div>
 
       <div className="mt-3 border-t border-black/6 pt-2">
-        <p className="text-[10px] font-semibold text-[#666]">视频渲染批次</p>
+        <p className="text-[10px] font-semibold text-[#666]">{uiText("视频渲染批次")}</p>
         {desktop ? (
           <p role="status" className="mt-1 text-[11px] text-[#777]">
-            批次只从已接受关键帧、成功本地图片任务和对应视频节点中生成；提交前会显示目标、模型与输入供你确认。
-          </p>
+            {uiText("批次只从已接受关键帧、成功本地图片任务和对应视频节点中生成；提交前会显示目标、模型与输入供你确认。")}</p>
         ) : null}
         {desktop ? <DramaUnavailableRenderCandidates candidates={unavailableCandidates} /> : null}
         {desktop && groups.length > 0 ? (
           <div className="mt-2 space-y-1.5">
             {groups.map((group) => (
               <div key={group.id} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-2 text-[11px]">
-                <span className="min-w-0 truncate text-[#444]">第 {group.episodeNo} 集 · {group.candidates.length} 个可提交镜头</span>
+                <span className="min-w-0 truncate text-[#444]">{uiText("第 ")}{group.episodeNo} {uiText("集 · ")}{group.candidates.length} {uiText("个可提交镜头")}</span>
                 <button
                   type="button"
                   disabled={Boolean(busyAction)}
                   onClick={() => void createBatch(group)}
                   className="shrink-0 rounded-md bg-[#111] px-2 py-1.5 font-semibold text-white disabled:opacity-60"
                 >
-                  {busyAction === group.id ? '准备中…' : '检查并确认'}
+                  {busyAction === group.id ? uiText("准备中…") : uiText("检查并确认")}
                 </button>
               </div>
             ))}
           </div>
         ) : null}
-        {desktop && groups.length === 0 ? <p className="mt-1 text-[11px] text-[#888]">当前没有新的、可由已接入提供方提交的视频镜头。</p> : null}
-        {batches.length === 0 ? <p className="mt-1 text-[11px] text-[#888]">尚无渲染批次。</p> : batches.map((batch) => {
+        {desktop && groups.length === 0 ? <p className="mt-1 text-[11px] text-[#888]">{uiText("当前没有新的、可由已接入提供方提交的视频镜头。")}</p> : null}
+        {batches.length === 0 ? <p className="mt-1 text-[11px] text-[#888]">{uiText("尚无渲染批次。")}</p> : batches.map((batch) => {
           const draftCount = batch.jobs.filter((job) => job.status === 'draft').length
           const failedJobs = batch.jobs.filter((job) => job.status === 'failed')
           const completedCount = batch.jobs.filter((job) => job.status === 'completed').length
           return (
             <div key={batch.id} className="mt-1.5 rounded-lg bg-white px-2 py-1.5 text-[11px]">
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-[#444]">第 {batch.episodeNo} 集 · {batch.jobs.length} 镜头</span>
-                <span className="text-[#666]">{desktop ? statusLabel(batch.status) : batch.status}{desktop ? '' : ` · ${batch.estimatedCost} 点`}</span>
+                <span className="truncate text-[#444]">{uiText("第 ")}{batch.episodeNo} {uiText("集 · ")}{batch.jobs.length} {uiText("镜头")}</span>
+                <span className="text-[#666]">{desktop ? statusLabel(batch.status) : batch.status}{desktop ? '' : uiText("· {0} 点", { 0: batch.estimatedCost })}</span>
               </div>
               <p className="mt-1 text-[10px] text-[#999]">
-                {completedCount}/{batch.jobs.length} 已完成
-                {desktop
-                  ? failedJobs.length ? ` · ${failedJobs.length} 个失败，可逐镜头重跑` : ''
-                  : batch.jobs.some((job) => job.errorCode) ? ' · 存在失败任务，可局部重跑' : ''}
+                {completedCount}/{batch.jobs.length} {uiText("已完成")}{desktop
+                  ? failedJobs.length ? uiText("· {0} 个失败，可逐镜头重跑", { 0: failedJobs.length }) : ''
+                  : batch.jobs.some((job) => job.errorCode) ? uiText("· 存在失败任务，可局部重跑") : ''}
               </p>
               {desktop && draftCount > 0 && ['draft', 'awaiting_approval'].includes(batch.status) ? (
                 <button
@@ -419,7 +417,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
                   onClick={() => void prepareExistingBatch(batch.id)}
                   className="mt-1 rounded-md border border-black/10 px-2 py-1 text-[10px] font-semibold text-[#444] disabled:opacity-60"
                 >
-                  {busyAction === batch.id ? '准备中…' : `检查并提交剩余 ${draftCount} 个镜头`}
+                  {busyAction === batch.id ? uiText("准备中…") : uiText("检查并提交剩余 {0} 个镜头", { 0: draftCount })}
                 </button>
               ) : null}
               {desktop && failedJobs.map((job) => {
@@ -428,7 +426,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
                 return (
                   <div key={job.id} className="mt-1 flex items-center justify-between gap-2 rounded-md border border-red-100 bg-red-50/60 px-2 py-1">
                     <span className="min-w-0 truncate text-[10px] text-red-800">
-                      {candidate ? `第 ${candidate.shotNo} 镜` : '镜头'}失败{job.errorCode ? ` · ${job.errorCode}` : ''}
+                      {candidate ? uiText("第 {0} 镜", { 0: candidate.shotNo }) : uiText("镜头")}{uiText("失败")}{job.errorCode ? ` · ${job.errorCode}` : ''}
                     </span>
                     <button
                       type="button"
@@ -436,7 +434,7 @@ export function DramaProductionPanel({ canvasId, desktop = false }: { canvasId?:
                       onClick={() => void rerunJob(batch.id, job.id)}
                       className="shrink-0 rounded-md border border-red-200 bg-white px-2 py-1 text-[10px] font-semibold text-red-800 disabled:opacity-60"
                     >
-                      {busyAction === jobKey ? '准备中…' : '局部重跑'}
+                      {busyAction === jobKey ? uiText("准备中…") : uiText("局部重跑")}
                     </button>
                   </div>
                 )

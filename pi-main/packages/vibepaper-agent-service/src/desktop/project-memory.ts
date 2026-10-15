@@ -1,13 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { open, lstat, mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import {
-	InMemoryMemoryRepository,
-	MemoryService,
-	type MemoryRepository,
-} from "../application/memory-service.ts";
+import { InMemoryMemoryRepository, type MemoryRepository, MemoryService } from "../application/memory-service.ts";
 import type { MemoryRecord } from "../domain/memory.ts";
 
 const MEMORY_FILE_NAME = "MEMORY.md";
@@ -131,7 +127,7 @@ export class DesktopProjectMemoryRepository implements MemoryRepository {
 
 	private async readRecords(): Promise<MemoryRecord[]> {
 		const { memoryFile } = await this.requireProjectPaths();
-	return await readMarkdownMemoryFile(memoryFile, this.projectId, "PROJECT_MEMORY_FILE_INVALID");
+		return await readMarkdownMemoryFile(memoryFile, this.projectId, "PROJECT_MEMORY_FILE_INVALID");
 	}
 
 	private async writeRecords(records: readonly MemoryRecord[]): Promise<void> {
@@ -239,7 +235,7 @@ export class DesktopGlobalMemoryRepository implements MemoryRepository {
 
 	private async readRecords(): Promise<MemoryRecord[]> {
 		const { memoryFile } = await this.requirePaths();
-			return await readMarkdownMemoryFile(
+		return await readMarkdownMemoryFile(
 			memoryFile,
 			GLOBAL_MEMORY_OWNER_ID,
 			"GLOBAL_MEMORY_FILE_INVALID",
@@ -249,7 +245,13 @@ export class DesktopGlobalMemoryRepository implements MemoryRepository {
 
 	private async writeRecords(records: readonly MemoryRecord[]): Promise<void> {
 		const { memoryDirectory, memoryFile } = await this.requirePaths();
-		await writeMarkdownMemoryFile(memoryDirectory, memoryFile, records, "GLOBAL_MEMORY_FILE_INVALID", GLOBAL_MEMORY_HEADER);
+		await writeMarkdownMemoryFile(
+			memoryDirectory,
+			memoryFile,
+			records,
+			"GLOBAL_MEMORY_FILE_INVALID",
+			GLOBAL_MEMORY_HEADER,
+		);
 	}
 
 	private async requirePaths(): Promise<{ memoryDirectory: string; memoryFile: string }> {
@@ -266,10 +268,12 @@ export class DesktopGlobalMemoryRepository implements MemoryRepository {
 			throw error;
 		});
 		if (!directoryInfo) await mkdir(memoryDirectory, { mode: 0o700 });
-		else if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw new Error("GLOBAL_MEMORY_PATH_INVALID");
+		else if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink())
+			throw new Error("GLOBAL_MEMORY_PATH_INVALID");
 		await requireSafeDirectory(memoryDirectory, userDataDirectory);
 		const resolvedDirectory = await realpath(memoryDirectory);
-		if (relative(userDataDirectory, resolvedDirectory).startsWith("..")) throw new Error("GLOBAL_MEMORY_PATH_INVALID");
+		if (relative(userDataDirectory, resolvedDirectory).startsWith(".."))
+			throw new Error("GLOBAL_MEMORY_PATH_INVALID");
 		const memoryFile = join(memoryDirectory, MEMORY_FILE_NAME);
 		return { memoryDirectory, memoryFile };
 	}
@@ -307,36 +311,49 @@ export class DesktopProjectMemory {
 		return await this.requireMemoryService(scope).export(GLOBAL_MEMORY_OWNER_ID);
 	}
 
-	async createManaged(content: string, scope: DesktopMemoryScope, metadata: {
-		memoryType?: string; confidence?: number; source?: string; expiresAt?: Date;
-	} = {}): Promise<MemoryRecord> {
+	async createManaged(
+		content: string,
+		scope: DesktopMemoryScope,
+		metadata: {
+			memoryType?: string;
+			confidence?: number;
+			source?: string;
+			expiresAt?: Date;
+		} = {},
+	): Promise<MemoryRecord> {
 		const normalized = normalizeMemoryText(content);
-		return await this.mutate(() => this.requireMemoryService(scope).write({
-			userId: scope === "project" ? this.projectId : GLOBAL_MEMORY_OWNER_ID,
-			scope: "long_term",
-			content: normalized,
-			memoryType: metadata.memoryType ?? (scope === "project" ? "project_preference" : "global_preference"),
-			confidence: metadata.confidence ?? 1,
-			source: metadata.source ?? "user_memory_manager",
-			visibility: "user",
-			...(metadata.expiresAt ? { expiresAt: metadata.expiresAt } : {}),
-		}));
+		return await this.mutate(() =>
+			this.requireMemoryService(scope).write({
+				userId: scope === "project" ? this.projectId : GLOBAL_MEMORY_OWNER_ID,
+				scope: "long_term",
+				content: normalized,
+				memoryType: metadata.memoryType ?? (scope === "project" ? "project_preference" : "global_preference"),
+				confidence: metadata.confidence ?? 1,
+				source: metadata.source ?? "user_memory_manager",
+				visibility: "user",
+				...(metadata.expiresAt ? { expiresAt: metadata.expiresAt } : {}),
+			}),
+		);
 	}
 
 	async editManaged(memoryId: string, content: string, scope: DesktopMemoryScope): Promise<MemoryRecord> {
 		const normalized = normalizeMemoryText(content);
-		return await this.mutate(() => this.requireMemoryRepository(scope).replaceContent(
-			memoryId,
-			scope === "project" ? this.projectId : GLOBAL_MEMORY_OWNER_ID,
-			normalized,
-		));
+		return await this.mutate(() =>
+			this.requireMemoryRepository(scope).replaceContent(
+				memoryId,
+				scope === "project" ? this.projectId : GLOBAL_MEMORY_OWNER_ID,
+				normalized,
+			),
+		);
 	}
 
 	async removeManaged(memoryId: string, scope: DesktopMemoryScope): Promise<void> {
-		await this.mutate(() => this.requireMemoryService(scope).remove(
-			memoryId,
-			scope === "project" ? this.projectId : GLOBAL_MEMORY_OWNER_ID,
-		));
+		await this.mutate(() =>
+			this.requireMemoryService(scope).remove(
+				memoryId,
+				scope === "project" ? this.projectId : GLOBAL_MEMORY_OWNER_ID,
+			),
+		);
 	}
 
 	async exportManaged(): Promise<readonly { scope: DesktopMemoryScope; record: MemoryRecord }[]> {
@@ -360,33 +377,35 @@ export class DesktopProjectMemory {
 	async write(content: string, userText: string): Promise<MemoryRecord> {
 		requireExplicitMemoryIntent(userText, "write");
 		const normalized = normalizeMemoryText(content);
-		return await this.mutate(() => this.service.write({
-			userId: this.projectId,
-			scope: "long_term",
-			content: normalized,
-			memoryType: "project_preference",
-			confidence: 1,
-			source: "explicit_user_request",
-			visibility: "user",
-		}));
+		return await this.mutate(() =>
+			this.service.write({
+				userId: this.projectId,
+				scope: "long_term",
+				content: normalized,
+				memoryType: "project_preference",
+				confidence: 1,
+				source: "explicit_user_request",
+				visibility: "user",
+			}),
+		);
 	}
 
 	async edit(memoryId: string, content: string, userText: string): Promise<MemoryRecord> {
 		requireExplicitMemoryIntent(userText, "edit");
 		return await this.mutate(async () => {
-		const active = (await this.list()).find((memory) => memory.id === memoryId);
-		if (!active) throw new Error("NOT_FOUND");
-		const normalized = normalizeMemoryText(content);
-		const validated = await new MemoryService(new InMemoryMemoryRepository()).write({
-			userId: this.projectId,
-			scope: "long_term",
-			content: normalized,
-			memoryType: active.memoryType ?? "project_preference",
-			confidence: active.confidence,
-			source: "explicit_user_request",
-			visibility: "user",
-		});
-		return await this.repository.replaceContent(memoryId, this.projectId, validated.content);
+			const active = (await this.list()).find((memory) => memory.id === memoryId);
+			if (!active) throw new Error("NOT_FOUND");
+			const normalized = normalizeMemoryText(content);
+			const validated = await new MemoryService(new InMemoryMemoryRepository()).write({
+				userId: this.projectId,
+				scope: "long_term",
+				content: normalized,
+				memoryType: active.memoryType ?? "project_preference",
+				confidence: active.confidence,
+				source: "explicit_user_request",
+				visibility: "user",
+			});
+			return await this.repository.replaceContent(memoryId, this.projectId, validated.content);
 		});
 	}
 
@@ -401,7 +420,9 @@ export class DesktopProjectMemory {
 		return this.globalService;
 	}
 
-	private requireMemoryRepository(scope: DesktopMemoryScope): DesktopProjectMemoryRepository | DesktopGlobalMemoryRepository {
+	private requireMemoryRepository(
+		scope: DesktopMemoryScope,
+	): DesktopProjectMemoryRepository | DesktopGlobalMemoryRepository {
 		if (scope === "project") return this.repository;
 		if (!this.globalRepository) throw new Error("GLOBAL_MEMORY_UNAVAILABLE");
 		return this.globalRepository;
@@ -409,7 +430,10 @@ export class DesktopProjectMemory {
 
 	private async mutate<T>(operation: () => Promise<T>): Promise<T> {
 		const result = this.mutationTail.then(operation);
-		this.mutationTail = result.then(() => undefined, () => undefined);
+		this.mutationTail = result.then(
+			() => undefined,
+			() => undefined,
+		);
 		return await result;
 	}
 
@@ -454,7 +478,9 @@ export class DesktopProjectMemory {
 			async execute(_toolCallId, params) {
 				const records = await memory.read(params.query ?? "");
 				return memoryToolResult(
-					records.length ? records.map((record) => `[${record.id}] ${record.content}`).join("\n") : "没有已保存的项目记忆。",
+					records.length
+						? records.map((record) => `[${record.id}] ${record.content}`).join("\n")
+						: "没有已保存的项目记忆。",
 					{ count: records.length },
 				);
 			},
@@ -471,7 +497,10 @@ export class DesktopProjectMemory {
 			executionMode: "sequential",
 			async execute(_toolCallId, params) {
 				const saved = await memory.write(params.content, userText);
-				return memoryToolResult("已保存这项项目偏好。", { memoryId: saved.id, deduplicated: saved.source !== "explicit_user_request" });
+				return memoryToolResult("已保存这项项目偏好。", {
+					memoryId: saved.id,
+					deduplicated: saved.source !== "explicit_user_request",
+				});
 			},
 		};
 	}
@@ -511,12 +540,18 @@ export function allowsMemoryAction(userText: string, action: "write" | "edit" | 
 	const text = userText.trim().toLocaleLowerCase();
 	if (!text || text.length > 20_000 || explicitlyNegatesMemoryAction(text)) return false;
 	if (action === "write") {
-		return /(?:记住|记下来|记录下来|保存(?:一下|这个|这项|为|到)?(?:偏好|记忆|项目记忆)|存为偏好|\bremember\b|save\s+(?:this|that|my|the)\s+(?:preference|memory))/iu.test(text);
+		return /(?:记住|记下来|记录下来|保存(?:一下|这个|这项|为|到)?(?:偏好|记忆|项目记忆)|存为偏好|\bremember\b|save\s+(?:this|that|my|the)\s+(?:preference|memory))/iu.test(
+			text,
+		);
 	}
 	if (action === "edit") {
-		return /(?:修改|更新|编辑|更改|替换).{0,24}(?:记忆|偏好|memory|preference)|(?:记忆|偏好|memory|preference).{0,24}(?:修改|更新|编辑|更改|替换)|update\s+(?:my\s+)?(?:saved\s+)?(?:memory|preference)|edit\s+(?:my\s+)?(?:saved\s+)?(?:memory|preference)/iu.test(text);
+		return /(?:修改|更新|编辑|更改|替换).{0,24}(?:记忆|偏好|memory|preference)|(?:记忆|偏好|memory|preference).{0,24}(?:修改|更新|编辑|更改|替换)|update\s+(?:my\s+)?(?:saved\s+)?(?:memory|preference)|edit\s+(?:my\s+)?(?:saved\s+)?(?:memory|preference)/iu.test(
+			text,
+		);
 	}
-	return /(?:删除|移除|清除|忘记|删掉).{0,24}(?:记忆|偏好|memory|preference)|(?:记忆|偏好|memory|preference).{0,24}(?:删除|移除|清除|忘记|删掉)|(?:delete|remove|forget|clear)\s+(?:my\s+)?(?:saved\s+)?(?:memory|preference)/iu.test(text);
+	return /(?:删除|移除|清除|忘记|删掉).{0,24}(?:记忆|偏好|memory|preference)|(?:记忆|偏好|memory|preference).{0,24}(?:删除|移除|清除|忘记|删掉)|(?:delete|remove|forget|clear)\s+(?:my\s+)?(?:saved\s+)?(?:memory|preference)/iu.test(
+		text,
+	);
 }
 
 function requireExplicitMemoryIntent(userText: string, action: "write" | "edit" | "delete"): void {
@@ -524,14 +559,18 @@ function requireExplicitMemoryIntent(userText: string, action: "write" | "edit" 
 }
 
 function explicitlyNegatesMemoryAction(text: string): boolean {
-	return /(?:不要|别|勿|不必|不用|无需|不需要|don't|do not|never).{0,12}(?:记住|记下来|记录|保存|记忆|偏好|remember|save|memory|preference)/iu.test(text);
+	return /(?:不要|别|勿|不必|不用|无需|不需要|don't|do not|never).{0,12}(?:记住|记下来|记录|保存|记忆|偏好|remember|save|memory|preference)/iu.test(
+		text,
+	);
 }
 
 function normalizeMemoryText(value: string): string {
 	if (typeof value !== "string") throw new Error("INVALID_INPUT");
 	const normalized = singleLine(value).trim();
 	if (!normalized || normalized.length > MAX_MEMORY_TEXT_LENGTH) throw new Error("INVALID_INPUT");
-	if (/(?:\bcpk-|\bsk-)[A-Za-z0-9_-]{16,}|(?:api[ _-]?key|密钥|密码|password|secret|token)\s*[:：=]/iu.test(normalized)) {
+	if (
+		/(?:\bcpk-|\bsk-)[A-Za-z0-9_-]{16,}|(?:api[ _-]?key|密钥|密码|password|secret|token)\s*[:：=]/iu.test(normalized)
+	) {
 		throw new Error("SENSITIVE_MEMORY_REJECTED");
 	}
 	return normalized;
@@ -542,7 +581,10 @@ export function normalizeDesktopMemoryContent(value: string): string {
 }
 
 function singleLine(value: string): string {
-	return value.replace(/[\u0000-\u001f\u007f]+/gu, " ").replace(/\s+/gu, " ").trim();
+	return value
+		.replace(/[\u0000-\u001f\u007f]+/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
 }
 
 function normalizeQuery(value: string): string {
@@ -682,8 +724,10 @@ function parseMemoryRecord(
 		metadata.userId !== ownerId ||
 		metadata.scope !== expectedScope ||
 		(metadata.canvasId !== undefined && (typeof metadata.canvasId !== "string" || metadata.canvasId.length > 128)) ||
-		(metadata.sessionId !== undefined && (typeof metadata.sessionId !== "string" || metadata.sessionId.length > 128)) ||
-		(metadata.expiresAt !== undefined && (typeof metadata.expiresAt !== "string" || !Number.isFinite(Date.parse(metadata.expiresAt)))) ||
+		(metadata.sessionId !== undefined &&
+			(typeof metadata.sessionId !== "string" || metadata.sessionId.length > 128)) ||
+		(metadata.expiresAt !== undefined &&
+			(typeof metadata.expiresAt !== "string" || !Number.isFinite(Date.parse(metadata.expiresAt)))) ||
 		typeof metadata.memoryType !== "string" ||
 		typeof metadata.source !== "string" ||
 		typeof metadata.confidence !== "number" ||
@@ -719,7 +763,10 @@ function parseMemoryRecord(
 	};
 }
 
-function memoryToolResult(text: string, details: unknown): { content: Array<{ type: "text"; text: string }>; details: unknown } {
+function memoryToolResult(
+	text: string,
+	details: unknown,
+): { content: Array<{ type: "text"; text: string }>; details: unknown } {
 	return { content: [{ type: "text", text }], details };
 }
 

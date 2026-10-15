@@ -2,6 +2,9 @@ const path = require('node:path')
 
 /** Increase the artwork's visible size within the OS icon, retaining the original file. */
 function applicationIcon(nativeImage, directory) {
+  // Load the same multi-size ICO as the executable/shortcut. Cropped PNGs can
+  // retain a bitmap stride that Windows' native icon conversion misinterprets.
+  if (process.platform === 'win32') return path.join(directory, 'app-icon.ico')
   const image = nativeImage.createFromPath(path.join(directory, 'app-icon.png'))
   if (image.isEmpty()) return path.join(directory, 'app-icon.ico')
   const { width, height } = image.getSize()

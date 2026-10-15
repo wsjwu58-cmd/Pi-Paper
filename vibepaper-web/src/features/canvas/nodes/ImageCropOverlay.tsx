@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Check, Loader2 } from 'lucide-react'
 import { fetchAuthedBlob } from '@/lib/media'
@@ -45,6 +46,7 @@ export function ImageCropOverlay({
   onClose: () => void
   onConfirm: (artifacts: Awaited<ReturnType<typeof renderCropArtifacts>>) => Promise<void>
 }) {
+  useUiLanguage()
   const imageRef = useRef<HTMLImageElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const interaction = useRef<{
@@ -75,7 +77,7 @@ export function ImageCropOverlay({
         setSourceObjectUrl(objectUrl)
       })
       .catch((cause) => {
-        if (!cancelled) setLoadError(cause instanceof Error ? cause.message : '读取源图片失败。')
+        if (!cancelled) setLoadError(cause instanceof Error ? cause.message : uiText("读取源图片失败。"))
       })
     return () => {
       cancelled = true
@@ -145,7 +147,7 @@ export function ImageCropOverlay({
     if (busy || !validSize || sourceChanged) return
     const image = imageRef.current
     if (!image || image.naturalWidth < 1 || image.naturalHeight < 1) {
-      setError('源图片尚未加载完成。')
+      setError(uiText("源图片尚未加载完成。"))
       return
     }
     setBusy(true)
@@ -161,7 +163,7 @@ export function ImageCropOverlay({
       await onConfirm(artifacts)
       onClose()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '创建裁剪图片失败。')
+      setError(cause instanceof Error ? cause.message : uiText("创建裁剪图片失败。"))
     } finally {
       setBusy(false)
     }
@@ -183,10 +185,10 @@ export function ImageCropOverlay({
           <img
             ref={imageRef}
             src={sourceObjectUrl}
-            alt="待裁剪图片"
+            alt={uiText("待裁剪图片")}
             draggable={false}
             onLoad={(event) => setImageSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
-            onError={() => setLoadError('无法解码这张图片。')}
+            onError={() => setLoadError(uiText("无法解码这张图片。"))}
             className="block h-auto w-full object-contain"
           />
           {imageSize && (
@@ -213,7 +215,7 @@ export function ImageCropOverlay({
                 <span
                   key={handle.id}
                   data-crop-handle={handle.id}
-                  aria-label={`调整裁剪框${handle.label}`}
+                  aria-label={uiText("调整裁剪框{0}", { 0: uiText(handle.label) })}
                   className={`absolute z-10 h-3 w-3 rounded-full border-2 border-[#252529] bg-white shadow ${handle.className}`}
                 />
               ))}
@@ -221,7 +223,7 @@ export function ImageCropOverlay({
           )}
         </div>
       ) : (
-        <div className="flex min-h-28 items-center justify-center gap-2 rounded-lg bg-[#17171a] text-[11px] font-semibold text-white/70"><Loader2 size={14} className="animate-spin" />正在读取本地图片…</div>
+        <div className="flex min-h-28 items-center justify-center gap-2 rounded-lg bg-[#17171a] text-[11px] font-semibold text-white/70"><Loader2 size={14} className="animate-spin" />{uiText("正在读取本地图片…")}</div>
       )}
       {sourceObjectUrl && (
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
@@ -239,13 +241,13 @@ export function ImageCropOverlay({
                 disabled={busy}
                 className={`rounded-full px-3 py-1.5 text-[11px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${mode === value ? 'bg-[#222] text-white' : 'text-[#666] hover:bg-black/5'}`}
               >
-                {label}
+                {uiText(label)}
               </button>
             ))}
           </div>
           <div className="flex items-center gap-2">
             <span className="hidden text-[10px] font-semibold text-[#888] sm:inline">
-              {sourceChanged ? '源图片已变化' : imageSize ? `${imageSize.width} × ${imageSize.height}` : MODE_LABELS[mode]}
+              {sourceChanged ? uiText("源图片已变化") : imageSize ? `${imageSize.width} × ${imageSize.height}` : uiText(MODE_LABELS[mode])}
             </span>
             <button
               type="button"
@@ -253,14 +255,13 @@ export function ImageCropOverlay({
               disabled={busy || !imageSize}
               className="rounded-full px-2 py-1 text-[10px] font-semibold text-[#777] hover:bg-black/5 disabled:opacity-40"
             >
-              重置
-            </button>
+              {uiText("重置")}</button>
             <button type="button" onClick={onClose} disabled={busy}
-              className="rounded-full px-2 py-1 text-[10px] font-semibold text-[#777] hover:bg-black/5 disabled:opacity-40">取消</button>
+              className="rounded-full px-2 py-1 text-[10px] font-semibold text-[#777] hover:bg-black/5 disabled:opacity-40">{uiText("取消")}</button>
             <button
               type="button"
-              aria-label={busy ? '正在保存裁剪结果' : '确认裁剪'}
-              title={sourceChanged ? '源图片已变化，请取消后重新打开' : !validSize ? `裁剪区域太小，无法切成${columns * columns}张图片` : '确认裁剪'}
+              aria-label={busy ? uiText("正在保存裁剪结果") : uiText("确认裁剪")}
+              title={sourceChanged ? uiText("源图片已变化，请取消后重新打开") : !validSize ? uiText("裁剪区域太小，无法切成{0}张图片", { 0: columns * columns }) : uiText("确认裁剪")}
               onClick={() => void confirm()}
               disabled={busy || !validSize || sourceChanged}
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#29292d] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:bg-[#c5c5c9]"
@@ -270,7 +271,7 @@ export function ImageCropOverlay({
           </div>
         </div>
       )}
-      {sourceChanged && sourceObjectUrl && <p className="mt-1 text-[10px] font-semibold text-amber-700">源图片已变化，请取消并重新打开裁剪。</p>}
+      {sourceChanged && sourceObjectUrl && <p className="mt-1 text-[10px] font-semibold text-amber-700">{uiText("源图片已变化，请取消并重新打开裁剪。")}</p>}
       {error && <div role="alert" className="mt-1 rounded-lg bg-red-50 px-2 py-1.5 text-[10px] font-semibold text-red-700">{error}</div>}
     </div>
   )

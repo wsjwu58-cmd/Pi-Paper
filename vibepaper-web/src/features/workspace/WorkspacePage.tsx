@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage, uiLocale } from '@/lib/i18n'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -36,12 +37,14 @@ export interface WorkspaceDesktopAdapter {
 }
 
 export function WorkspacePage({ desktopAdapter }: { desktopAdapter?: WorkspaceDesktopAdapter } = {}) {
+  useUiLanguage()
   if (desktopAdapter) return <DesktopWorkspacePage adapter={desktopAdapter} />
   if (isDesktopRuntime()) return <WorkspacePageDesktop />
   return <WorkspacePageWeb />
 }
 
 function WorkspacePageDesktop() {
+  useUiLanguage()
   const navigate = useNavigate()
   const [projects, setProjects] = useState<DesktopProject[]>([])
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
@@ -53,12 +56,12 @@ function WorkspacePageDesktop() {
     setError('')
     try {
       const bridge = window.vibepaperDesktop
-      if (!bridge) throw new Error('桌面项目接口不可用。')
+      if (!bridge) throw new Error(uiText("桌面项目接口不可用。"))
       const [recent, active] = await Promise.all([bridge.listRecentProjects(), bridge.getActiveProject()])
       setProjects(recent)
       setActiveProjectId(active?.projectId ?? null)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法读取本地项目列表。')
+      setError(cause instanceof Error ? cause.message : uiText("无法读取本地项目列表。"))
     } finally {
       setIsLoading(false)
     }
@@ -73,10 +76,10 @@ function WorkspacePageDesktop() {
     setError('')
     try {
       const bridge = window.vibepaperDesktop
-      if (!bridge) throw new Error('桌面项目接口不可用。')
+      if (!bridge) throw new Error(uiText("桌面项目接口不可用。"))
       enterProject(await bridge.openRecentProject(candidate.projectId))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法打开本地项目。')
+      setError(cause instanceof Error ? cause.message : uiText("无法打开本地项目。"))
       await loadProjects()
     }
   }
@@ -85,7 +88,7 @@ function WorkspacePageDesktop() {
     try {
       enterProject(await window.vibepaperDesktop?.openProject() ?? null)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法打开本地项目。')
+      setError(cause instanceof Error ? cause.message : uiText("无法打开本地项目。"))
     }
   }
   const createProject = async (name: string) => {
@@ -93,14 +96,14 @@ function WorkspacePageDesktop() {
     try {
       enterProject(await window.vibepaperDesktop?.createProject(name) ?? null)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法创建本地项目。')
+      setError(cause instanceof Error ? cause.message : uiText("无法创建本地项目。"))
     }
   }
   const exportProject = async (project: WorkspaceDesktopProject) => {
     setError('')
     try {
       const bridge = window.vibepaperDesktop
-      if (!bridge) throw new Error('桌面画布导出接口不可用。')
+      if (!bridge) throw new Error(uiText("桌面画布导出接口不可用。"))
       const document = await bridge.exportCanvas(project.projectId, project.canvasId)
       const blob = new Blob([JSON.stringify(document, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
@@ -110,13 +113,13 @@ function WorkspacePageDesktop() {
       anchor.click()
       window.setTimeout(() => URL.revokeObjectURL(url), 0)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法导出本地画布。')
+      setError(cause instanceof Error ? cause.message : uiText("无法导出本地画布。"))
     }
   }
 
   const importCanvasDocument = async (document: DesktopCanvasExportDocument) => {
     const bridge = window.vibepaperDesktop
-    if (!bridge) throw new Error('桌面画布导入接口不可用。')
+    if (!bridge) throw new Error(uiText("桌面画布导入接口不可用。"))
     const result = await bridge.importCanvasDocument(document)
     if (result) {
       if (result.warnings.length > 0) toastError(result.warnings.join('；'))
@@ -127,14 +130,14 @@ function WorkspacePageDesktop() {
 
   const renameProject = async (project: WorkspaceDesktopProject, name: string) => {
     const bridge = window.vibepaperDesktop
-    if (!bridge) throw new Error('桌面项目接口不可用。')
+    if (!bridge) throw new Error(uiText("桌面项目接口不可用。"))
     await bridge.renameProject(project.projectId, name)
     await loadProjects()
   }
 
   const deleteProject = async (project: WorkspaceDesktopProject) => {
     const bridge = window.vibepaperDesktop
-    if (!bridge) throw new Error('桌面项目接口不可用。')
+    if (!bridge) throw new Error(uiText("桌面项目接口不可用。"))
     const deleted = await bridge.deleteProject(project.projectId)
     if (!deleted) return false
     await loadProjects()
@@ -157,6 +160,7 @@ function WorkspacePageDesktop() {
 }
 
 function WorkspacePageWeb() {
+  useUiLanguage()
   const nav = useNavigate()
   const qc = useQueryClient()
   const [keyword, setKeyword] = useState('')
@@ -178,7 +182,7 @@ function WorkspacePageWeb() {
     mutationFn: (name: string) => api<CanvasView>('/canvases', { method: 'POST', body: JSON.stringify({ name }) }),
     onSuccess: (c) => {
       void qc.invalidateQueries({ queryKey: ['canvases'] })
-      toastSuccess('画布已创建')
+      toastSuccess(uiText("画布已创建"))
       nav(`/canvas/${sid(c.id)}`)
     },
     onError: (e) => toastError((e as Error).message),
@@ -188,7 +192,7 @@ function WorkspacePageWeb() {
     mutationFn: (id: Id) => api(`/canvases/${sid(id)}`, { method: 'DELETE' }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['canvases'] })
-      toastSuccess('画布已删除')
+      toastSuccess(uiText("画布已删除"))
     },
     onError: (e) => toastError((e as Error).message),
   })
@@ -198,7 +202,7 @@ function WorkspacePageWeb() {
       api<CanvasView>(`/canvases/${sid(id)}`, { method: 'PUT', body: JSON.stringify({ name }) }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['canvases'] })
-      toastSuccess('已重命名')
+      toastSuccess(uiText("已重命名"))
     },
   })
 
@@ -206,7 +210,7 @@ function WorkspacePageWeb() {
     mutationFn: (json: string) => api('/canvases/import', { method: 'POST', body: json }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['canvases'] })
-      toastSuccess('导入成功')
+      toastSuccess(uiText("导入成功"))
     },
     onError: (e) => toastError((e as Error).message),
   })
@@ -227,7 +231,7 @@ function WorkspacePageWeb() {
       a.click()
       URL.revokeObjectURL(a.href)
     } catch (e) {
-      toastError(e instanceof ApiError ? e.message : '导出失败')
+      toastError(e instanceof ApiError ? e.message : uiText("导出失败"))
     }
   }
 
@@ -249,16 +253,15 @@ function WorkspacePageWeb() {
         <div>
           <h1 className="flex items-center gap-2.5 text-[28px] font-black tracking-tight text-[#111]">
             <LayoutGrid size={26} strokeWidth={2.4} />
-            画布管理
-          </h1>
-          <p className="mt-2 text-[14px] text-[#888]">管理您的画布，切换后可继续编辑</p>
+            {uiText("画布管理")}</h1>
+          <p className="mt-2 text-[14px] text-[#888]">{uiText("管理您的画布，切换后可继续编辑")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#aaa]" />
             <Input
               className="h-11 w-48 rounded-xl border-black/8 bg-white pl-9"
-              placeholder="搜索画布"
+              placeholder={uiText("搜索画布")}
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
             />
@@ -271,11 +274,9 @@ function WorkspacePageWeb() {
             onChange={(e) => e.target.files?.[0] && onImportFile(e.target.files[0])}
           />
           <Button variant="primary" leftIcon={<FilePlus2 size={16} />} onClick={() => setCreateOpen(true)}>
-            新建画布
-          </Button>
+            {uiText("新建画布")}</Button>
           <Button variant="secondary" leftIcon={<Upload size={16} />} onClick={() => fileRef.current?.click()}>
-            导入画布
-          </Button>
+            {uiText("导入画布")}</Button>
         </div>
       </div>
 
@@ -286,8 +287,8 @@ function WorkspacePageWeb() {
       ) : sorted.length === 0 ? (
         <div className="rounded-3xl border border-dashed border-black/12 bg-white/60 py-24 text-center">
           <FolderOpen size={40} className="mx-auto mb-3 text-[#ccc]" />
-          <p className="text-[16px] font-bold text-[#444]">还没有画布</p>
-          <p className="mt-1 text-[13px] text-[#999]">点击「新建画布」开始创作</p>
+          <p className="text-[16px] font-bold text-[#444]">{uiText("还没有画布")}</p>
+          <p className="mt-1 text-[13px] text-[#999]">{uiText("点击「新建画布」开始创作")}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
@@ -311,13 +312,12 @@ function WorkspacePageWeb() {
 
                 {isCurrent && (
                   <span className="absolute left-3 top-3 rounded-md bg-[#111] px-2 py-0.5 text-[11px] font-bold text-white">
-                    当前
-                  </span>
+                    {uiText("当前")}</span>
                 )}
 
                 <div className="absolute right-2.5 top-2.5 flex gap-1 opacity-0 transition group-hover:opacity-100">
                   <IconBtn
-                    title="重命名"
+                    title={uiText("重命名")}
                     onClick={(e) => {
                       e.stopPropagation()
                       setRenameTarget(c)
@@ -327,7 +327,7 @@ function WorkspacePageWeb() {
                     <Pencil size={13} />
                   </IconBtn>
                   <IconBtn
-                    title="下载 JSON"
+                    title={uiText("下载 JSON")}
                     onClick={(e) => {
                       e.stopPropagation()
                       void onExport(c)
@@ -336,7 +336,7 @@ function WorkspacePageWeb() {
                     <Download size={13} />
                   </IconBtn>
                   <IconBtn
-                    title="删除"
+                    title={uiText("删除")}
                     danger
                     onClick={(e) => {
                       e.stopPropagation()
@@ -350,7 +350,7 @@ function WorkspacePageWeb() {
                 <div className="absolute bottom-0 left-0 right-0 px-4 pb-3.5">
                   <p className="truncate text-[15px] font-bold text-white drop-shadow">{c.name}</p>
                   <p className="mt-0.5 text-[11px] text-white/70">
-                    {c.updatedAt ? new Date(c.updatedAt).toLocaleString('zh-CN') : ''} · v{c.version}
+                    {c.updatedAt ? new Date(c.updatedAt).toLocaleString(uiLocale()) : ''} · v{c.version}
                   </p>
                 </div>
               </div>
@@ -359,7 +359,7 @@ function WorkspacePageWeb() {
         </div>
       )}
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="新建画布">
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title={uiText("新建画布")}>
         <form
           className="flex flex-col gap-4"
           onSubmit={(e) => {
@@ -371,15 +371,15 @@ function WorkspacePageWeb() {
             }
           }}
         >
-          <Field label="画布名称">
+          <Field label={uiText("画布名称")}>
             <Input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder="例如：赛博朋克短片"
+              placeholder={uiText("例如：赛博朋克短片")}
               autoFocus
             />
           </Field>
-          <Button type="submit">创建并进入</Button>
+          <Button type="submit">{uiText("创建并进入")}</Button>
         </form>
       </Modal>
 
@@ -387,12 +387,12 @@ function WorkspacePageWeb() {
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => deleteTarget && del.mutate(deleteTarget.id)}
-        title="删除画布"
-        message={`确定删除「${deleteTarget?.name ?? ''}」吗？此操作不可恢复。`}
+        title={uiText("删除画布")}
+        message={uiText("确定删除「{0}」吗？此操作不可恢复。", { 0: deleteTarget?.name ?? '' })}
         danger
       />
 
-      <Modal open={!!renameTarget} onClose={() => setRenameTarget(null)} title="重命名画布">
+      <Modal open={!!renameTarget} onClose={() => setRenameTarget(null)} title={uiText("重命名画布")}>
         <form
           className="flex flex-col gap-4"
           onSubmit={(e) => {
@@ -403,10 +403,10 @@ function WorkspacePageWeb() {
             }
           }}
         >
-          <Field label="新名称">
+          <Field label={uiText("新名称")}>
             <Input value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus />
           </Field>
-          <Button type="submit">保存</Button>
+          <Button type="submit">{uiText("保存")}</Button>
         </form>
       </Modal>
     </div>
@@ -414,9 +414,10 @@ function WorkspacePageWeb() {
 }
 
 function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter }) {
+  useUiLanguage()
   const [keyword, setKeyword] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
-  const [newName, setNewName] = useState('我的项目')
+  const [newName, setNewName] = useState(uiText("我的项目"))
   const [renameTarget, setRenameTarget] = useState<WorkspaceDesktopProject | null>(null)
   const [renameName, setRenameName] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceDesktopProject | null>(null)
@@ -439,9 +440,9 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
     try {
       await adapter.onCreateProject(name)
       setCreateOpen(false)
-      setNewName('我的项目')
+      setNewName(uiText("我的项目"))
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : '无法创建本地项目。')
+      setOperationError(cause instanceof Error ? cause.message : uiText("无法创建本地项目。"))
     } finally {
       setBusy(false)
     }
@@ -454,7 +455,7 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
     try {
       await adapter.onOpenExistingProject()
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : '无法打开本地项目。')
+      setOperationError(cause instanceof Error ? cause.message : uiText("无法打开本地项目。"))
     } finally {
       setBusy(false)
     }
@@ -469,7 +470,7 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
     try {
       await adapter.onSelectProject(project)
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : '无法打开本地项目。')
+      setOperationError(cause instanceof Error ? cause.message : uiText("无法打开本地项目。"))
     } finally {
       setBusy(false)
       setOpeningProjectId(null)
@@ -482,15 +483,15 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
     setOperationError('')
     setOperationNotice('')
     try {
-      if (file.size > 32 * 1024 * 1024) throw new Error('画布 JSON 文件不能超过 32 MB。')
+      if (file.size > 32 * 1024 * 1024) throw new Error(uiText("画布 JSON 文件不能超过 32 MB。"))
       const parsed = JSON.parse(await file.text()) as unknown
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON 文件内容无效。')
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(uiText("JSON 文件内容无效。"))
       const result = await adapter.onImportCanvasDocument(parsed as DesktopCanvasExportDocument)
       if (result) {
-        setOperationNotice(result.warnings.length ? `画布已导入。${result.warnings.join('；')}` : '画布已导入。')
+        setOperationNotice(result.warnings.length ? uiText("画布已导入。{0}", { 0: result.warnings.join('；') }) : uiText("画布已导入。"))
       }
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : '无法导入画布 JSON。')
+      setOperationError(cause instanceof Error ? cause.message : uiText("无法导入画布 JSON。"))
     } finally {
       setBusy(false)
       if (importFileRef.current) importFileRef.current.value = ''
@@ -508,9 +509,9 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
     try {
       await adapter.onRenameProject(target, name)
       setRenameTarget(null)
-      setOperationNotice('项目已重命名。')
+      setOperationNotice(uiText("项目已重命名。"))
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : '无法重命名本地项目。')
+      setOperationError(cause instanceof Error ? cause.message : uiText("无法重命名本地项目。"))
     } finally {
       setBusy(false)
     }
@@ -523,9 +524,9 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
     setOperationNotice('')
     try {
       const deleted = await adapter.onDeleteProject(target)
-      if (deleted) setOperationNotice('项目已移至系统回收站。')
+      if (deleted) setOperationNotice(uiText("项目已移至系统回收站。"))
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : '无法删除本地项目。')
+      setOperationError(cause instanceof Error ? cause.message : uiText("无法删除本地项目。"))
     } finally {
       setBusy(false)
     }
@@ -537,26 +538,23 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
         <div>
           <h1 className="flex items-center gap-2.5 text-[28px] font-black tracking-tight text-[#111]">
             <LayoutGrid size={26} strokeWidth={2.4} />
-            画布管理
-          </h1>
-          <p className="mt-2 text-[14px] text-[#888]">选择本地项目继续创作，或创建一个新项目</p>
+            {uiText("画布管理")}</h1>
+          <p className="mt-2 text-[14px] text-[#888]">{uiText("选择本地项目继续创作，或创建一个新项目")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#aaa]" />
             <Input
               className="h-11 w-48 rounded-xl border-black/8 bg-white pl-9"
-              placeholder="搜索项目"
+              placeholder={uiText("搜索项目")}
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
             />
           </div>
           <Button variant="primary" leftIcon={<FilePlus2 size={16} />} onClick={() => setCreateOpen(true)}>
-            新建本地项目
-          </Button>
+            {uiText("新建本地项目")}</Button>
           <Button variant="secondary" leftIcon={<FolderOpen size={16} />} onClick={() => void openExisting()} disabled={busy}>
-            打开已有项目
-          </Button>
+            {uiText("打开已有项目")}</Button>
           {adapter.onImportCanvasDocument && (
             <>
               <input
@@ -567,8 +565,7 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
                 onChange={(event) => { void importCanvasFile(event.target.files?.[0]) }}
               />
               <Button variant="secondary" leftIcon={<Upload size={16} />} onClick={() => importFileRef.current?.click()} disabled={busy}>
-                导入画布 JSON
-              </Button>
+                {uiText("导入画布 JSON")}</Button>
             </>
           )}
         </div>
@@ -582,8 +579,8 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
       ) : filteredProjects.length === 0 ? (
         <div className="rounded-3xl border border-dashed border-black/12 bg-white/60 py-24 text-center">
           <FolderOpen size={40} className="mx-auto mb-3 text-[#ccc]" />
-          <p className="text-[16px] font-bold text-[#444]">{adapter.projects.length ? '没有匹配的本地项目' : '还没有打开过本地项目'}</p>
-          <p className="mt-1 text-[13px] text-[#999]">可以打开已有项目，或新建本地项目开始创作</p>
+          <p className="text-[16px] font-bold text-[#444]">{adapter.projects.length ? uiText("没有匹配的本地项目") : uiText("还没有打开过本地项目")}</p>
+          <p className="mt-1 text-[13px] text-[#999]">{uiText("可以打开已有项目，或新建本地项目开始创作")}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
@@ -603,15 +600,15 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center"><OrigamiIcon /></div>
               )}
-              <div className="absolute left-3 top-3 rounded-md bg-[#111] px-2 py-0.5 text-[11px] font-bold text-white">本地项目</div>
+              <div className="absolute left-3 top-3 rounded-md bg-[#111] px-2 py-0.5 text-[11px] font-bold text-white">{uiText("本地项目")}</div>
               {(adapter.onExportProject || adapter.onRenameProject || adapter.onDeleteProject) && <span className="absolute right-2.5 top-2.5 flex gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
-                {adapter.onRenameProject && <IconBtn title="重命名项目" onClick={(event) => { event.stopPropagation(); setRenameTarget(project); setRenameName(project.name); setOperationError(''); setOperationNotice('') }}>
+                {adapter.onRenameProject && <IconBtn title={uiText("重命名项目")} onClick={(event) => { event.stopPropagation(); setRenameTarget(project); setRenameName(project.name); setOperationError(''); setOperationNotice('') }}>
                   <Pencil size={13} />
                 </IconBtn>}
-                {adapter.onExportProject && <IconBtn title="下载 JSON" onClick={(event) => { event.stopPropagation(); void adapter.onExportProject?.(project).catch((cause) => setOperationError(cause instanceof Error ? cause.message : '无法导出本地画布。')) }}>
+                {adapter.onExportProject && <IconBtn title={uiText("下载 JSON")} onClick={(event) => { event.stopPropagation(); void adapter.onExportProject?.(project).catch((cause) => setOperationError(cause instanceof Error ? cause.message : uiText("无法导出本地画布。"))) }}>
                   <Download size={13} />
                 </IconBtn>}
-                {adapter.onDeleteProject && <IconBtn title={project.projectId === adapter.activeProjectId ? '当前项目不能删除' : '删除项目'} danger disabled={project.projectId === adapter.activeProjectId || busy} onClick={(event) => { event.stopPropagation(); if (project.projectId !== adapter.activeProjectId) setDeleteTarget(project) }}>
+                {adapter.onDeleteProject && <IconBtn title={project.projectId === adapter.activeProjectId ? uiText("当前项目不能删除") : uiText("删除项目")} danger disabled={project.projectId === adapter.activeProjectId || busy} onClick={(event) => { event.stopPropagation(); if (project.projectId !== adapter.activeProjectId) setDeleteTarget(project) }}>
                   <Trash2 size={13} />
                 </IconBtn>}
               </span>}
@@ -619,7 +616,7 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
               <div className="absolute bottom-0 left-0 right-0 px-4 pb-3.5">
                 <p className="truncate text-[15px] font-bold text-white drop-shadow">{project.name}</p>
                 <p className="mt-0.5 text-[11px] text-white/75">
-                  {openingProjectId === project.projectId ? '正在打开本地项目…' : '包含 1 个本地画布 · 点击进入'}
+                  {openingProjectId === project.projectId ? uiText("正在打开本地项目…") : uiText("包含 1 个本地画布 · 点击进入")}
                 </p>
               </div>
             </div>
@@ -627,31 +624,31 @@ function DesktopWorkspacePage({ adapter }: { adapter: WorkspaceDesktopAdapter })
         </div>
       )}
 
-      <Modal open={createOpen} onClose={() => { if (!busy) setCreateOpen(false) }} title="新建本地项目">
+      <Modal open={createOpen} onClose={() => { if (!busy) setCreateOpen(false) }} title={uiText("新建本地项目")}>
         <form className="flex flex-col gap-4" onSubmit={(event) => { void create(event) }}>
-          <Field label="项目名称">
-            <Input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="例如：赛博朋克短片" autoFocus />
+          <Field label={uiText("项目名称")}>
+            <Input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder={uiText("例如：赛博朋克短片")} autoFocus />
           </Field>
-          <p className="text-[12px] leading-5 text-[#777]">创建后会选择本机文件夹并在其中保存一个画布。</p>
-          <Button type="submit" disabled={busy || !newName.trim()}>{busy ? '正在创建…' : '创建并进入'}</Button>
+          <p className="text-[12px] leading-5 text-[#777]">{uiText("创建后会选择本机文件夹并在其中保存一个画布。")}</p>
+          <Button type="submit" disabled={busy || !newName.trim()}>{busy ? uiText("正在创建…") : uiText("创建并进入")}</Button>
         </form>
       </Modal>
-      <Modal open={!!renameTarget} onClose={() => { if (!busy) setRenameTarget(null) }} title="重命名项目">
+      <Modal open={!!renameTarget} onClose={() => { if (!busy) setRenameTarget(null) }} title={uiText("重命名项目")}>
         <form className="flex flex-col gap-4" onSubmit={(event) => { void rename(event) }}>
-          <Field label="项目名称">
+          <Field label={uiText("项目名称")}>
             <Input value={renameName} onChange={(event) => setRenameName(event.target.value)} autoFocus />
           </Field>
-          <Button type="submit" disabled={busy || !renameName.trim()}>{busy ? '正在保存…' : '保存'}</Button>
+          <Button type="submit" disabled={busy || !renameName.trim()}>{busy ? uiText("正在保存…") : uiText("保存")}</Button>
         </form>
       </Modal>
       <ConfirmDialog
         open={!!deleteTarget}
         onClose={() => { if (!busy) setDeleteTarget(null) }}
         onConfirm={() => { if (deleteTarget) void deleteProject(deleteTarget); setDeleteTarget(null) }}
-        title="删除本地项目"
+        title={uiText("删除本地项目")}
         message={deleteTarget?.projectId === adapter.activeProjectId
-          ? '当前打开的项目不能删除。'
-          : `确定删除「${deleteTarget?.name ?? ''}」吗？整个本地项目文件夹会移到系统回收站/废纸篓，可从那里恢复，不会立即物理删除。`}
+          ? uiText("当前打开的项目不能删除。")
+          : uiText("确定删除「{0}」吗？整个本地项目文件夹会移到系统回收站/废纸篓，可从那里恢复，不会立即物理删除。", { 0: deleteTarget?.name ?? '' })}
         danger
       />
     </div>
@@ -671,6 +668,7 @@ function IconBtn({
   danger?: boolean
   disabled?: boolean
 }) {
+  useUiLanguage()
   return (
     <button
       type="button"
@@ -687,6 +685,7 @@ function IconBtn({
 }
 
 function OrigamiIcon() {
+  useUiLanguage()
   return (
     <svg width="72" height="72" viewBox="0 0 72 72" fill="none" aria-hidden className="opacity-70">
       <path

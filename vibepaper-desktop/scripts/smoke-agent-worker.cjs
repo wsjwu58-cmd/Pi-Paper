@@ -4,7 +4,9 @@ const os = require('node:os')
 const path = require('node:path')
 const { Worker } = require('node:worker_threads')
 
-const workerBundle = path.resolve(__dirname, '..', 'dist', 'agent-worker.cjs')
+const workerBundle = process.argv[2]
+  ? path.resolve(process.argv[2], 'dist', 'agent-worker.cjs')
+  : path.resolve(__dirname, '..', 'dist', 'agent-worker.cjs')
 
 function workerSource(bundlePath) {
   return `

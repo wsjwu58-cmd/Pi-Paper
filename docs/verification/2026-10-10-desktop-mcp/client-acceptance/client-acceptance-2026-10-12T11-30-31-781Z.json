@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "testType": "real installed CLI natural-language MCP acceptance against isolated Electron development runtime",
+  "date": "2026-10-12T11:31:48.512Z",
+  "success": false,
+  "clientResults": [
+    {
+      "success": false,
+      "client": "codex",
+      "failureCategory": "ui_state_timeout",
+      "phase": "create-only-this-client-grant",
+      "pageState": {
+        "pathname": "/settings/mcp",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 115
+      },
+      "failureScreenshot": "codex-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 0,
+      "pairedConnectionCount": 0,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": false,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "ui_state_timeout",
+      "startedAt": "2026-10-12T11:30:31.851Z"
+    },
+    {
+      "success": false,
+      "client": "claude-code",
+      "failureCategory": "ui_state_timeout",
+      "phase": "create-only-this-client-grant",
+      "pageState": {
+        "pathname": "/settings/mcp",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 115
+      },
+      "failureScreenshot": "claude-code-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 0,
+      "pairedConnectionCount": 0,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": false,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "ui_state_timeout",
+      "startedAt": "2026-10-12T11:31:10.223Z"
+    }
+  ],
+  "scope": {
+    "realCodexCliTurn": false,
+    "realClaudeCodeTurn": false,
+    "realCloudMediaRequests": 0,
+    "localFixtureGenerationOnly": true,
+    "desktopGenerationConfirmationUsed": false,
+    "authMaterialReadOrCopied": false,
+    "rawClientOutputPersisted": false,
+    "temporaryMcpConfigurationsRemoved": true,
+    "packagedApplicationTested": false
+  }
+}

@@ -1,7 +1,8 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { Link, Navigate, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -44,14 +45,35 @@ import { CanvasWelcome } from './CanvasWelcome'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
 import { applySavedCanvasStaleNodeIds, createCanvasNodePort, deleteCanvasEdgePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
-import { flushCanvasPersistence, registerCanvasPersistence } from './canvasPersistence'
-import type { DesktopCanvas } from '@/desktop/desktop-bridge'
+import {
+  createMcpCanvasFlushResponse,
+  flushCanvasPersistence,
+  isFinalMcpCanvasImeInput,
+  registerCanvasPersistence,
+  settleMcpCanvasFlushRequest,
+  shouldBlockMcpCanvasInput,
+} from './canvasPersistence'
+import type { DesktopCanvas, DesktopMcpCanvasFlushRequest, DesktopMcpEvent, DesktopMcpPendingAction, DesktopMcpProviderInputRequest, DesktopProviderConfiguration } from '@/desktop/desktop-bridge'
+import { providerConfigurationRefreshQueryKeys } from '@/features/providers/providerConfigurationEvents'
+import { canvasMotionDuration, CANVAS_MOTION, markNodeArrival, useLayoutMotion, useSoftValue } from './canvasMotion'
 
 const saveDebounce = 500
 const edgeTypes = { default: GenerationReferenceEdge }
 let nodeClipboard: NodePayload[] = []
+const MCP_TERMINAL_ACTION_STATUSES = new Set([
+  'approved', 'rejected', 'expired', 'timed_out', 'timeout', 'cancelled', 'canceled', 'invalidated', 'submitted', 'submission_unknown', 'submission-unknown',
+  'succeeded', 'completed', 'failed', 'denied',
+])
+
+function upsertMcpGenerationAction(actions: DesktopMcpPendingAction[], action: DesktopMcpPendingAction): DesktopMcpPendingAction[] {
+  if (MCP_TERMINAL_ACTION_STATUSES.has(action.status)) return actions.filter((item) => item.proposalId !== action.proposalId)
+  const index = actions.findIndex((item) => item.proposalId === action.proposalId)
+  if (index < 0) return [...actions, action]
+  return actions.map((item, itemIndex) => itemIndex === index ? action : item)
+}
 
 export function CanvasPage() {
+  useUiLanguage()
   const params = useParams()
   const id = params.id ?? params.canvasId
   const canvasId = sid(id)
@@ -68,7 +90,10 @@ export function CanvasPage() {
 }
 
 function CanvasPageInner({ canvasId }: { canvasId: string }) {
+  useUiLanguage()
+  const navigate = useNavigate()
   const nodes = useCanvasStore((s) => s.nodes)
+  const layoutMotion = useLayoutMotion(nodes)
   const [dragGroupBounds, setDragGroupBounds] = useState<Record<string, CanvasGroupBounds>>({})
   const dragBoundsRef = useRef<Record<string, CanvasGroupBounds>>({})
   const edges = useCanvasStore((s) => s.edges)
@@ -103,10 +128,17 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   } | null>(null)
   const [nodeMenu, setNodeMenu] = useState<{ x: number; y: number; nodeIds: string[] } | null>(null)
   const [edgeMenu, setEdgeMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const addMenuPresence = useSoftValue(addMenu)
+  const nodeMenuPresence = useSoftValue(nodeMenu)
+  const edgeMenuPresence = useSoftValue(edgeMenu)
+  const animatedAddMenu = addMenuPresence.value
+  const animatedNodeMenu = nodeMenuPresence.value
+  const animatedEdgeMenu = edgeMenuPresence.value
   const [readingNodeId, setReadingNodeId] = useState<string | null>(null)
   const readingDialogRef = useRef<HTMLDivElement>(null)
   const readingCloseButtonRef = useRef<HTMLButtonElement>(null)
   const readingNode = nodes.find((node) => node.id === readingNodeId)?.data.node
+  const readingPresence = useSoftValue(readingNode)
   useEffect(() => {
     if (!readingNodeId) return
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -151,12 +183,29 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     downstream: Array<{ id: string; type: string }>
   } | null>(null)
   const { fitView, screenToFlowPosition } = useReactFlow()
+  const queryClient = useQueryClient()
   const saveTimer = useRef<number | null>(null)
   const positionSaveQueue = useRef<Promise<void>>(Promise.resolve())
   const externalSyncPending = useRef(false)
   const externalSyncTimer = useRef<number | null>(null)
   const hydratingRef = useRef(true)
   const [savedVersion, setSavedVersion] = useState<number | null>(null)
+  const [mcpCanvasBarrierPhase, setMcpCanvasBarrierPhase] = useState<'idle' | 'pending' | 'active'>('idle')
+  const mcpCanvasBarrierPhaseRef = useRef<'idle' | 'pending' | 'active'>('idle')
+  const mcpCanvasBarrierRequestsRef = useRef(new Map<string, DesktopMcpCanvasFlushRequest>())
+  const mcpCanvasFlushPromiseRef = useRef<Promise<number> | null>(null)
+  const mcpCanvasInputSurfaceRef = useRef<HTMLDivElement>(null)
+  const mcpActivePointerIdsRef = useRef(new Set<number>())
+  const mcpComposingRef = useRef(false)
+  const mcpAuthoritativeRefreshRef = useRef<{ targetVersion: number; promise: Promise<number> } | null>(null)
+  const mcpAppliedCanvasScopeRef = useRef<string | null>(null)
+  const mcpAppliedCanvasVersionRef = useRef(0)
+  const mcpExactHydrateRef = useRef<string | null>(null)
+  const [mcpGenerationConfirmations, setMcpGenerationConfirmations] = useState<DesktopMcpPendingAction[]>([])
+  const [mcpProviderInput, setMcpProviderInput] = useState<DesktopMcpProviderInputRequest | null>(null)
+  const [mcpProviderInputBusy, setMcpProviderInputBusy] = useState(false)
+  const mcpProviderInputRef = useRef<DesktopMcpProviderInputRequest | null>(null)
+  const mcpCanvasPageMountedRef = useRef(false)
   const skipNextSave = useRef(true)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingUploadPos = useRef<{ x: number; y: number } | null>(null)
@@ -176,6 +225,11 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const detail = loadedCanvas?.detail
   const desktopProjectId = loadedCanvas?.projectId
   const desktopMode = isDesktopRuntime()
+
+  const changeMcpCanvasBarrierPhase = useCallback((phase: 'idle' | 'pending' | 'active') => {
+    mcpCanvasBarrierPhaseRef.current = phase
+    setMcpCanvasBarrierPhase(phase)
+  }, [])
 
   const { data: models } = useQuery({
     queryKey: ['models'],
@@ -225,9 +279,17 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     if (!detail) return
     hydratingRef.current = true
     skipNextSave.current = true
+    const previousCanvas = useCanvasStore.getState().canvas
+    const existingNodeIds = new Set(useCanvasStore.getState().nodes.map((n) => sid(n.id)))
+    const sameCanvas = previousCanvas && sid(previousCanvas.canvas.id) === sid(detail.canvas.id)
+    const exactMcpHydrate = mcpExactHydrateRef.current === `${canvasId}:${detail.canvas.version}`
+    if (exactMcpHydrate) mcpExactHydrateRef.current = null
+    if (sameCanvas && externalSyncPending.current) {
+      for (const node of detail.nodes) if (!existingNodeIds.has(sid(node.id))) markNodeArrival(sid(node.id))
+    }
     setCanvas(detail)
     const flow = buildFlow(detail, selectNode)
-    const merged = mergeHydrateFlow(flow.nodes, useCanvasStore.getState().nodes)
+    const merged = exactMcpHydrate ? flow.nodes : mergeHydrateFlow(flow.nodes, useCanvasStore.getState().nodes)
     setNodes(merged.map((n) => ({ ...n, data: { ...n.data, models: models ?? [] } })))
     setEdges(flow.edges)
     setGroups(detail.groups)
@@ -242,7 +304,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       hydratingRef.current = false
     }, 0)
     // 仅在画布 detail 变化时整表 hydrate；models 单独注入，避免覆盖已编辑的 prompt
-  }, [detail, setCanvas, setNodes, setEdges, setGroups, setStacks, setDirty, selectNode, selectGroup])
+  }, [canvasId, detail, setCanvas, setNodes, setEdges, setGroups, setStacks, setDirty, selectNode, selectGroup])
 
   useEffect(() => {
     if (!models) return
@@ -262,13 +324,15 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     stacks: typeof stacks
     key: string
   } | null>(null)
+  const deletePresence = useSoftValue(deleteConfirm)
+  const animatedDeleteConfirm = deletePresence.value
 
   const persistDesktopChanges = useCallback(async () => {
     if (!window.vibepaperDesktop) return
     while (true) {
       const snapshot = useCanvasStore.getState()
       if (!snapshot.dirty) return
-      if (!snapshot.canvas || !desktopProjectId) throw new Error('没有可保存的本地画布。')
+      if (!snapshot.canvas || !desktopProjectId) throw new Error(uiText("没有可保存的本地画布。"))
       if (desktopSaveInFlight.current) {
         await desktopSaveInFlight.current
         continue
@@ -400,6 +464,385 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     [canvasId, desktopProjectId, flushDesktopEdits],
   )
 
+  useEffect(() => {
+    mcpCanvasPageMountedRef.current = true
+    return () => {
+      mcpCanvasPageMountedRef.current = false
+      mcpProviderInputRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const bridge = window.vibepaperDesktop
+    if (!desktopMode || !bridge || !desktopProjectId) return
+    return bridge.subscribeMcpProviderInput((request) => {
+      if (request.projectId !== desktopProjectId || request.canvasId !== canvasId) return
+      mcpProviderInputRef.current = request
+      setMcpProviderInput(request)
+    })
+  }, [canvasId, desktopMode, desktopProjectId])
+
+  useEffect(() => {
+    if (!desktopMode) return
+    const activePointerIds = mcpActivePointerIdsRef.current
+    let imeCommitTimer: number | null = null
+    let imeCommitFrame: number | null = null
+    let imeCommitPending = false
+    const onCanvasInput = (event: Event) => {
+      const phase = mcpCanvasBarrierPhaseRef.current
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [event.target]
+      const inMcpPage = path.some((target) => target instanceof Element && (
+        target.matches('[data-testid="mcp-canvas-page"], [data-mcp-canvas-edit-portal]')
+        || Boolean(target.closest('[data-testid="mcp-canvas-page"], [data-mcp-canvas-edit-portal]'))
+      ))
+      const editableTarget = event.target instanceof Element && Boolean(event.target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]'))
+      const pointerId = 'pointerId' in event && typeof event.pointerId === 'number' ? event.pointerId : undefined
+      const isActivePointer = pointerId !== undefined && activePointerIds.has(pointerId)
+      const isTypingEvent = ['keydown', 'keyup', 'keypress', 'beforeinput', 'input', 'change', 'paste', 'cut', 'compositionstart', 'compositionupdate', 'compositionend'].includes(event.type)
+      const relevant = inMcpPage || isActivePointer || mcpComposingRef.current || (phase !== 'idle' && isTypingEvent && (editableTarget || phase === 'active'))
+
+      if (event.type === 'pointerdown' && phase === 'idle' && inMcpPage && pointerId !== undefined) {
+        activePointerIds.add(pointerId)
+      }
+      if (event.type === 'compositionstart' && phase === 'idle' && (inMcpPage || editableTarget)) {
+        mcpComposingRef.current = true
+        imeCommitPending = false
+        if (imeCommitTimer !== null) window.clearTimeout(imeCommitTimer)
+        imeCommitTimer = null
+        if (imeCommitFrame !== null) window.cancelAnimationFrame(imeCommitFrame)
+        imeCommitFrame = null
+      }
+
+      if (relevant && shouldBlockMcpCanvasInput({
+        phase,
+        eventType: event.type,
+        pointerId,
+        activePointerIds,
+        composing: mcpComposingRef.current,
+      })) {
+        event.preventDefault()
+        event.stopPropagation()
+        if ('stopImmediatePropagation' in event) event.stopImmediatePropagation()
+      }
+
+      if ((event.type === 'pointerup' || event.type === 'pointercancel') && pointerId !== undefined) {
+        activePointerIds.delete(pointerId)
+      }
+      if (event.type === 'compositionend' && mcpComposingRef.current) {
+        // Browsers may dispatch the final beforeinput/input after compositionend.
+        // Keep the in-flight composition open until the final InputEvent has
+        // passed through React, then release on the next frame. The timeout is
+        // only a bounded fallback for browsers that omit that event.
+        imeCommitPending = true
+        if (imeCommitTimer !== null) window.clearTimeout(imeCommitTimer)
+        imeCommitTimer = window.setTimeout(() => {
+          imeCommitTimer = null
+          imeCommitPending = false
+          mcpComposingRef.current = false
+        }, 250)
+      }
+      if (event.type === 'input' && imeCommitPending) {
+        const inputEvent = event as InputEvent
+        if (isFinalMcpCanvasImeInput({
+          afterCompositionEnd: imeCommitPending,
+          eventType: event.type,
+          isComposing: inputEvent.isComposing,
+          inputType: inputEvent.inputType,
+        })) {
+          imeCommitPending = false
+          if (imeCommitTimer !== null) window.clearTimeout(imeCommitTimer)
+          imeCommitTimer = null
+          if (imeCommitFrame !== null) window.cancelAnimationFrame(imeCommitFrame)
+          imeCommitFrame = window.requestAnimationFrame(() => {
+            imeCommitFrame = null
+            mcpComposingRef.current = false
+          })
+        }
+      }
+    }
+    const inputEvents = [
+      'pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'mousedown', 'mousemove', 'mouseup',
+      'touchstart', 'touchmove', 'touchend', 'touchcancel', 'click', 'auxclick', 'dblclick', 'contextmenu',
+      'wheel', 'keydown', 'keyup', 'keypress', 'beforeinput', 'input', 'change', 'paste', 'cut', 'drop',
+      'drag', 'dragstart', 'dragover', 'compositionstart', 'compositionupdate', 'compositionend',
+    ]
+    for (const type of inputEvents) document.addEventListener(type, onCanvasInput, true)
+    return () => {
+      for (const type of inputEvents) document.removeEventListener(type, onCanvasInput, true)
+      activePointerIds.clear()
+      mcpComposingRef.current = false
+      imeCommitPending = false
+      if (imeCommitTimer !== null) window.clearTimeout(imeCommitTimer)
+      imeCommitTimer = null
+      if (imeCommitFrame !== null) window.cancelAnimationFrame(imeCommitFrame)
+      imeCommitFrame = null
+    }
+  }, [desktopMode])
+
+  useEffect(() => {
+    const bridge = window.vibepaperDesktop
+    if (!desktopMode || !bridge || !desktopProjectId) return
+    let disposed = false
+    const barrierRequests = mcpCanvasBarrierRequestsRef.current
+    const scopeKey = `${desktopProjectId}:${canvasId}`
+    if (mcpAppliedCanvasScopeRef.current !== scopeKey) {
+      mcpAppliedCanvasScopeRef.current = scopeKey
+      mcpAppliedCanvasVersionRef.current = 0
+      mcpAuthoritativeRefreshRef.current = null
+    }
+
+    const matchesActiveCanvas = (projectId?: string, eventCanvasId?: string) => (
+      projectId === desktopProjectId && eventCanvasId === canvasId
+    )
+    const applyAuthoritativeCanvas = (requiredVersion = 0): Promise<number> => {
+      const currentRefresh = mcpAuthoritativeRefreshRef.current
+      if (currentRefresh && currentRefresh.targetVersion >= requiredVersion) return currentRefresh.promise
+      const previousRefresh = currentRefresh?.promise
+      const job = (async () => {
+        if (previousRefresh) await previousRefresh.catch(() => undefined)
+        let activeProject: Awaited<ReturnType<typeof bridge.getActiveProject>> = null
+        let desktopCanvas: DesktopCanvas | null = null
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          ;[activeProject, desktopCanvas] = await Promise.all([
+            bridge.getActiveProject(),
+            bridge.loadCanvas(desktopProjectId, canvasId),
+          ])
+          if (disposed || !activeProject || activeProject.projectId !== desktopProjectId || activeProject.canvasId !== canvasId) {
+            throw new Error(uiText('当前项目或画布已切换。'))
+          }
+          if (desktopCanvas.version >= requiredVersion) break
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 50))
+        }
+        if (!desktopCanvas || desktopCanvas.version < requiredVersion) throw new Error('CANVAS_VERSION_NOT_SETTLED')
+        if (!activeProject || activeProject.projectId !== desktopProjectId || activeProject.canvasId !== canvasId) throw new Error(uiText('当前项目或画布已切换。'))
+        if (desktopCanvas.version < mcpAppliedCanvasVersionRef.current) throw new Error('STALE_CANVAS_SNAPSHOT')
+        const authoritative = desktopCanvasDetail(desktopCanvas, activeProject)
+        const current = useCanvasStore.getState()
+        if (current.dirty) throw new Error(uiText('画布在外部写入期间仍有未保存编辑，已保留本地内容。'))
+
+        hydratingRef.current = true
+        skipNextSave.current = true
+        mcpAppliedCanvasVersionRef.current = authoritative.canvas.version
+        mcpExactHydrateRef.current = `${canvasId}:${authoritative.canvas.version}`
+        setCanvas(authoritative)
+        const flow = buildFlow(authoritative, selectNode)
+        setNodes(flow.nodes.map((node) => ({ ...node, data: { ...node.data, models: models ?? [] } })))
+        setEdges(flow.edges)
+        setGroups(authoritative.groups)
+        selectGroup(null)
+        setStacks(authoritative.stacks)
+        setSavedVersion(authoritative.canvas.version)
+        setDirty(false)
+        queryClient.setQueryData(['canvas', canvasId], { detail: authoritative, projectId: desktopProjectId })
+        window.setTimeout(() => { hydratingRef.current = false }, 0)
+        // Let the exact hydrate render before the input barrier is lifted.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+        return authoritative.canvas.version
+      })()
+      let promise: Promise<number>
+      promise = job.finally(() => {
+        if (mcpAuthoritativeRefreshRef.current?.promise === promise) mcpAuthoritativeRefreshRef.current = null
+      })
+      mcpAuthoritativeRefreshRef.current = { targetVersion: requiredVersion, promise }
+      return promise
+    }
+
+    const releaseBarrier = (requestId: string, projectId: string, settledCanvasId: string) => {
+      if (!settleMcpCanvasFlushRequest(barrierRequests, { requestId, projectId, canvasId: settledCanvasId })) return
+      if (barrierRequests.size === 0) {
+        mcpCanvasFlushPromiseRef.current = null
+        changeMcpCanvasBarrierPhase('idle')
+      } else {
+        changeMcpCanvasBarrierPhase('active')
+      }
+    }
+
+    const onMcpEvent = (event: DesktopMcpEvent) => {
+      if (event.type === 'provider.configuration.changed') {
+        const configuration = queryClient.getQueryData<DesktopProviderConfiguration>(['desktop-provider-configuration'])
+        const knownRevision = configuration?.providers.find((provider) => provider.id === event.providerId)?.revision
+        const queryKeys = providerConfigurationRefreshQueryKeys(event, knownRevision)
+        for (const queryKey of queryKeys) void queryClient.invalidateQueries({ queryKey })
+        if (queryKeys.length) window.dispatchEvent(new Event('vp-desktop-model-catalog-changed'))
+        return
+      }
+      if (event.type === 'pending-action.created' || event.type === 'pending-action.updated') {
+        const action = event.action
+        if (action.kind !== 'generation' || !matchesActiveCanvas(action.projectId, action.canvasId)) return
+        setMcpGenerationConfirmations((current) => upsertMcpGenerationAction(current, action))
+        if (!MCP_TERMINAL_ACTION_STATUSES.has(action.status)) setAgentOpen(true)
+        return
+      }
+      if (event.type === 'task.changed' && matchesActiveCanvas(event.projectId, event.canvasId)) {
+        window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { taskId: event.taskId, status: event.status } }))
+        return
+      }
+      if (event.type === 'canvas.changed' && matchesActiveCanvas(event.projectId, event.canvasId)) {
+        externalSyncPending.current = true
+        void applyAuthoritativeCanvas(event.version).then(() => {
+          externalSyncPending.current = false
+        }).catch((error) => {
+          externalSyncPending.current = false
+          toastError(error instanceof Error ? error.message : uiText('外部画布变更同步失败。'))
+        })
+        return
+      }
+      if (event.type === 'canvas.write-settled'
+        && barrierRequests.has(event.requestId)
+        && matchesActiveCanvas(event.projectId, event.canvasId)) {
+        if (event.status === 'aborted') {
+          releaseBarrier(event.requestId, event.projectId, event.canvasId)
+          if (event.errorCode) toastError(uiText('外部画布写入未完成：{0}', { 0: event.errorCode }))
+          return
+        }
+        void applyAuthoritativeCanvas(event.version ?? 0).then(() => releaseBarrier(event.requestId, event.projectId, event.canvasId)).catch((error) => {
+          toastError(error instanceof Error ? error.message : uiText('外部画布变更同步失败。'))
+          releaseBarrier(event.requestId, event.projectId, event.canvasId)
+        })
+      }
+    }
+
+    const waitForActiveInput = async (timeoutMs: number) => {
+      const started = Date.now()
+      while (mcpActivePointerIdsRef.current.size > 0 || mcpComposingRef.current) {
+        if (disposed || Date.now() - started >= timeoutMs) return false
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 25))
+      }
+      return true
+    }
+
+    const onCanvasFlush = (request: DesktopMcpCanvasFlushRequest) => {
+      void (async () => {
+        const sendFailure = async (errorCode: string) => {
+          await bridge.respondMcpCanvasFlush(createMcpCanvasFlushResponse(request, { status: 'failed', errorCode })).catch(() => undefined)
+        }
+        if (disposed) {
+          await sendFailure('CANVAS_CLOSED')
+          return
+        }
+        const requests = barrierRequests
+        if (!matchesActiveCanvas(request.projectId, request.canvasId) || requests.has(request.requestId) || requests.size >= 8) {
+          await sendFailure('CANVAS_NOT_READY')
+          return
+        }
+        requests.set(request.requestId, request)
+        if (mcpCanvasFlushPromiseRef.current) {
+          if (mcpCanvasBarrierPhaseRef.current === 'idle') changeMcpCanvasBarrierPhase('pending')
+        } else {
+          changeMcpCanvasBarrierPhase('pending')
+          mcpCanvasFlushPromiseRef.current = (async () => {
+            if (!await waitForActiveInput(5_000)) {
+              throw new Error(disposed ? 'CANVAS_CLOSED' : 'CANVAS_INPUT_BUSY')
+            }
+            if (disposed) throw new Error('CANVAS_CLOSED')
+            changeMcpCanvasBarrierPhase('active')
+            await flushDesktopEdits()
+            if (disposed) throw new Error('CANVAS_CLOSED')
+            const snapshot = useCanvasStore.getState()
+            if (snapshot.dirty || !snapshot.canvas) throw new Error('CANVAS_SAVE_INCOMPLETE')
+            return snapshot.canvas.canvas.version
+          })()
+        }
+        try {
+          const persistedVersion = await mcpCanvasFlushPromiseRef.current
+          if (persistedVersion === null) throw new Error('CANVAS_SAVE_INCOMPLETE')
+          // Unmount already returned a closed acknowledgement for this request.
+          // Do not let a late save completion overwrite it with a success ack.
+          if (disposed || requests.get(request.requestId) !== request) return
+          await bridge.respondMcpCanvasFlush(createMcpCanvasFlushResponse(request, { status: 'flushed', persistedVersion }))
+        } catch (error) {
+          if (requests.get(request.requestId) !== request) return
+          const errorCode = error instanceof Error && /^[A-Z0-9_]+$/u.test(error.message) ? error.message : 'CANVAS_SAVE_FAILED'
+          await sendFailure(errorCode)
+          if (errorCode !== 'CANVAS_INPUT_BUSY') toastError(uiText('外部画布写入前保存失败，已保留未保存编辑。'))
+          releaseBarrier(request.requestId, request.projectId, request.canvasId)
+        }
+      })()
+    }
+
+    const unsubscribeEvents = bridge.subscribeMcpEvents(onMcpEvent)
+    const unsubscribeFlush = bridge.subscribeMcpCanvasFlush(onCanvasFlush)
+    void bridge.getMcpPendingActions().then(({ actions }) => {
+      if (disposed) return
+      const relevant = actions.filter((action) => action.kind === 'generation' && matchesActiveCanvas(action.projectId, action.canvasId)
+        && !MCP_TERMINAL_ACTION_STATUSES.has(action.status))
+      setMcpGenerationConfirmations(relevant)
+      if (relevant.length) setAgentOpen(true)
+    }).catch(() => undefined)
+    const currentCanvasVersion = useCanvasStore.getState().canvas?.canvas.version
+    void bridge.setMcpCanvasReady({ projectId: desktopProjectId, canvasId, ready: true, version: currentCanvasVersion }).catch(() => {
+      if (!disposed) toastError(uiText('MCP 画布同步未就绪，请重新打开画布。'))
+    })
+
+    return () => {
+      disposed = true
+      unsubscribeEvents()
+      unsubscribeFlush()
+      for (const pending of barrierRequests.values()) {
+        if (pending.projectId === desktopProjectId && pending.canvasId === canvasId) {
+          void bridge.respondMcpCanvasFlush(createMcpCanvasFlushResponse(pending, { status: 'failed', errorCode: 'CANVAS_CLOSED' })).catch(() => undefined)
+        }
+      }
+      barrierRequests.clear()
+      mcpCanvasFlushPromiseRef.current = null
+      changeMcpCanvasBarrierPhase('idle')
+      void bridge.setMcpCanvasReady({ projectId: desktopProjectId, canvasId, ready: false }).catch(() => undefined)
+    }
+  }, [
+    canvasId, changeMcpCanvasBarrierPhase, desktopMode, desktopProjectId, flushDesktopEdits,
+    models, queryClient, selectGroup, selectNode, setAgentOpen, setCanvas, setDirty, setEdges, setGroups, setNodes, setSavedVersion, setStacks,
+  ])
+
+  const resolveMcpGenerationConfirmation = useCallback(async (proposalId: string, decision: 'approve' | 'reject') => {
+    const bridge = window.vibepaperDesktop
+    if (!bridge) return
+    setMcpGenerationConfirmations((current) => current.map((action) => action.proposalId === proposalId ? { ...action, status: 'submitting' } : action))
+    try {
+      const result = await bridge.resolveMcpPendingAction({ proposalId, decision })
+      setMcpGenerationConfirmations((current) => current.map((action) => action.proposalId === proposalId
+        ? { ...action, status: result.status }
+        : action).filter((action) => !MCP_TERMINAL_ACTION_STATUSES.has(action.status)))
+    } catch (error) {
+      setMcpGenerationConfirmations((current) => current.map((action) => action.proposalId === proposalId ? { ...action, status: 'pending' } : action))
+      toastError(error instanceof Error ? error.message : uiText('无法提交桌面确认。'))
+    }
+  }, [])
+
+  const openMcpProviderConfiguration = useCallback(async () => {
+    const bridge = window.vibepaperDesktop
+    const request = mcpProviderInput
+    if (!bridge || !request || !desktopProjectId || mcpProviderInputBusy) return
+    setMcpProviderInputBusy(true)
+    try {
+      const before = await bridge.getActiveProject()
+      const beforeCanvas = useCanvasStore.getState().canvas
+      if (request.projectId !== desktopProjectId || request.canvasId !== canvasId
+        || before?.projectId !== request.projectId || before.canvasId !== request.canvasId
+        || !beforeCanvas || sid(beforeCanvas.canvas.id) !== request.canvasId) {
+        throw new Error(uiText('当前项目或画布已变化；请让外部 Agent 重新准备配置。'))
+      }
+
+      // The user explicitly chose to open settings. Preserve any current prompt
+      // or node edits before leaving the original canvas route.
+      await flushDesktopEdits()
+
+      const after = await bridge.getActiveProject()
+      const latest = useCanvasStore.getState()
+      if (after?.projectId !== request.projectId || after.canvasId !== request.canvasId
+        || !latest.canvas || sid(latest.canvas.canvas.id) !== request.canvasId || latest.dirty) {
+        throw new Error(uiText('画布仍有未保存编辑或项目已切换；内容已保留，请保存后重试。'))
+      }
+      if (!mcpCanvasPageMountedRef.current || mcpProviderInputRef.current?.proposalId !== request.proposalId) return
+      navigate('/settings/providers', {
+        state: { returnTo: `/canvas/${canvasId}`, mcpProviderInput: request },
+      })
+    } catch (error) {
+      if (mcpCanvasPageMountedRef.current) toastError(error instanceof Error ? error.message : uiText('无法打开提供方配置页；画布内容已保留。'))
+    } finally {
+      if (mcpCanvasPageMountedRef.current) setMcpProviderInputBusy(false)
+    }
+  }, [canvasId, desktopProjectId, flushDesktopEdits, mcpProviderInput, mcpProviderInputBusy, navigate])
+
   const notifyDesktopAgentCanvasChanged = useCallback(() => {
     window.dispatchEvent(new Event('vp-agent-executed'))
   }, [])
@@ -430,6 +873,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       setSavedVersion(created.version)
       if (!wasEditedAgain) setDirty(false)
     }
+    markNodeArrival(sid(created.id))
     return created
   }, [canvasId, desktopProjectId, flushDesktopEdits, setCanvas, setDirty])
 
@@ -557,7 +1001,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       const selectedNodes = currentNodes.filter((node) => node.selected)
       const memberIds = canvasGroupMemberIds(selectedNodes, currentNodes)
       if (memberIds.length < 2) return
-      void createCanvasGroup(memberIds).catch((error) => toastError((error as Error).message || '编组失败'))
+      void createCanvasGroup(memberIds).catch((error) => toastError((error as Error).message || uiText("编组失败")))
     })
   }, [canvasId, mode])
 
@@ -580,7 +1024,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       if (current.nodeIds.length > 1) {
         if (desktopMode) {
           const bridge = window.vibepaperDesktop
-          if (!bridge || !desktopProjectId) throw new Error('本地项目未就绪，无法排列编组。')
+          if (!bridge || !desktopProjectId) throw new Error(uiText("本地项目未就绪，无法排列编组。"))
           const result = await bridge.updateGroup({
             projectId: desktopProjectId,
             canvasId,
@@ -608,7 +1052,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       skipNextSave.current = false
       selectGroup(sid(updated.id))
     } catch (error) {
-      toastError((error as Error).message || '编组排列失败')
+      toastError((error as Error).message || uiText("编组排列失败"))
     }
   }, [canvasId, desktopMode, desktopProjectId, selectGroup, setDirty, setGroups, setNodes])
 
@@ -620,7 +1064,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       } else {
         if (desktopMode) {
           const bridge = window.vibepaperDesktop
-          if (!bridge || !desktopProjectId) throw new Error('本地项目未就绪，无法取消编组。')
+          if (!bridge || !desktopProjectId) throw new Error(uiText("本地项目未就绪，无法取消编组。"))
           await bridge.deleteGroup({ projectId: desktopProjectId, canvasId, groupId: sid(group.id) })
           if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) return
           const active = await bridge.getActiveProject()
@@ -631,36 +1075,36 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         }
         removeCanvasGroupFromStore(group)
       }
-      toastSuccess('已取消编组')
+      toastSuccess(uiText("已取消编组"))
     } catch (error) {
-      toastError((error as Error).message || '取消编组失败')
+      toastError((error as Error).message || uiText("取消编组失败"))
     }
   }, [canvasId, desktopMode, desktopProjectId])
 
   const downloadGroup = useCallback(async (group: GroupPayload) => {
     try {
       if (desktopMode) {
-        if (!desktopProjectId) throw new Error('本地项目未就绪，无法下载编组结果。')
+        if (!desktopProjectId) throw new Error(uiText("本地项目未就绪，无法下载编组结果。"))
         const bridge = window.vibepaperDesktop as (NonNullable<typeof window.vibepaperDesktop> & {
           exportGroupOutputs?: (input: { projectId: string; canvasId: string; groupId: string }) => Promise<{
             status: 'saved' | 'cancelled'
             count?: number
           }>
         }) | undefined
-        if (!bridge?.exportGroupOutputs) throw new Error('桌面编组下载接口尚未就绪。')
+        if (!bridge?.exportGroupOutputs) throw new Error(uiText("桌面编组下载接口尚未就绪。"))
         const projectBeforeFlush = await bridge.getActiveProject()
         if (!projectBeforeFlush || projectBeforeFlush.projectId !== desktopProjectId || sid(projectBeforeFlush.canvasId) !== canvasId) {
-          throw new Error('当前项目或画布已更改，无法下载编组结果。')
+          throw new Error(uiText("当前项目或画布已更改，无法下载编组结果。"))
         }
         await flushCanvasPersistence(desktopProjectId, canvasId)
-        if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) throw new Error('画布已切换，无法下载编组结果。')
+        if (sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) throw new Error(uiText("画布已切换，无法下载编组结果。"))
         const currentProject = await bridge.getActiveProject()
         if (!currentProject || currentProject.projectId !== desktopProjectId || sid(currentProject.canvasId) !== canvasId) {
-          throw new Error('当前项目或画布已更改，无法下载编组结果。')
+          throw new Error(uiText("当前项目或画布已更改，无法下载编组结果。"))
         }
         const result = await bridge.exportGroupOutputs({ projectId: desktopProjectId, canvasId, groupId: sid(group.id) })
         if (result.status === 'cancelled') return
-        toastSuccess(`已保存 ${result.count ?? group.nodeIds.length} 个组内结果`)
+        toastSuccess(uiText("已保存 {0} 个组内结果", { 0: result.count ?? group.nodeIds.length }))
         return
       }
 
@@ -671,10 +1115,10 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         const status = await downloadNodeOutput(candidate)
         if (status === 'saved') saved += 1
       }
-      if (saved === 0) toastError('组内没有可下载的输出内容')
-      else toastSuccess(`已触发下载 ${saved} 个组内结果`)
+      if (saved === 0) toastError(uiText("组内没有可下载的输出内容"))
+      else toastSuccess(uiText("已触发下载 {0} 个组内结果", { 0: saved }))
     } catch (error) {
-      toastError((error as Error).message || '编组下载失败')
+      toastError((error as Error).message || uiText("编组下载失败"))
     }
   }, [canvasId, desktopMode, desktopProjectId])
 
@@ -699,9 +1143,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       try {
         if (window.vibepaperDesktop) {
           await flushDesktopEdits()
-          if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法建立连线。')
+          if (!desktopProjectId) throw new Error(uiText("没有已打开的本地项目，无法建立连线。"))
           const current = useCanvasStore.getState().canvas
-          if (!current) throw new Error('画布尚未加载完成。')
+          if (!current) throw new Error(uiText("画布尚未加载完成。"))
           const result = await window.vibepaperDesktop.connectEdge({
             projectId: desktopProjectId,
             canvasId,
@@ -730,7 +1174,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           setCanvas({ ...latest, canvas: { ...latest.canvas, version: result.version } })
           setSavedVersion(result.version)
           if (!wasEditedAgain) setDirty(false)
-          toastSuccess('连线已建立')
+          toastSuccess(uiText("连线已建立"))
           return
         }
         const edge = await api<{ id: string | number }>(`/canvases/${canvasId}/edges`, {
@@ -751,9 +1195,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             style: { stroke: '#93c5fd', strokeWidth: 1.5 },
           },
         ])
-        toastSuccess('连线已建立')
+        toastSuccess(uiText("连线已建立"))
       } catch (e) {
-        toastError(e instanceof ApiError ? e.message : '连线失败')
+        toastError(e instanceof ApiError ? e.message : uiText("连线失败"))
       }
     },
     [canvasId, desktopProjectId, edges, flushDesktopEdits, setCanvas, setDirty, setEdges],
@@ -775,9 +1219,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       if (sid(current.canvas?.canvas.id) === canvasId) {
         setEdges(current.edges.filter((edge) => sid(edge.id) !== sid(edgeId)))
       }
-      toastSuccess('连线已删除')
+      toastSuccess(uiText("连线已删除"))
     } catch (error) {
-      toastError(error instanceof Error ? error.message : '无法删除连线。')
+      toastError(error instanceof Error ? error.message : uiText("无法删除连线。"))
       if (isDesktopRuntime()) void refetch()
     }
   }, [canvasId, desktopProjectId, persistDesktopChanges, refetch, setEdges])
@@ -808,9 +1252,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     if (window.vibepaperDesktop) {
       try {
         await flushDesktopEdits()
-        if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法删除节点。')
+        if (!desktopProjectId) throw new Error(uiText("没有已打开的本地项目，无法删除节点。"))
         let version = useCanvasStore.getState().canvas?.canvas.version
-        if (version === undefined) throw new Error('画布尚未加载完成。')
+        if (version === undefined) throw new Error(uiText("画布尚未加载完成。"))
         let resultCanvas: DesktopCanvas | null = null
         for (const nodeId of ids) {
           const result = await window.vibepaperDesktop.deleteNode({
@@ -824,7 +1268,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           resultCanvas = result.canvas
         }
         const project = await window.vibepaperDesktop.getActiveProject()
-        if (!project || !resultCanvas) throw new Error('本地删除成功，但无法读取更新后的画布。')
+        if (!project || !resultCanvas) throw new Error(uiText("本地删除成功，但无法读取更新后的画布。"))
         const next = desktopCanvasDetail(resultCanvas, project)
         setCanvas(next)
         const flow = buildFlow(next, selectNode)
@@ -834,7 +1278,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         setStacks(next.stacks)
         setSavedVersion(next.canvas.version)
         if (!useCanvasStore.getState().dirty) setDirty(false)
-        toastSuccess(`已删除 ${ids.length} 个节点`)
+        toastSuccess(uiText("已删除 {0} 个节点", { 0: ids.length }))
       } catch (e) {
         toastError((e as Error).message)
         void refetch()
@@ -851,7 +1295,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         toastError((e as Error).message)
       }
     }
-    toastSuccess(`已删除 ${ids.length} 个节点`)
+    toastSuccess(uiText("已删除 {0} 个节点", { 0: ids.length }))
   }, [canvasId, deleteConfirm, desktopProjectId, edges, flushDesktopEdits, models, nodes, refetch, selectNode, setCanvas, setDirty, setEdges, setGroups, setNodes, setStacks])
 
   const onNodesDelete = useCallback((_deleted: FlowNode[]) => {
@@ -894,7 +1338,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         }
       }
       if (!window.vibepaperDesktop) setDirty(true)
-      toastSuccess(`已创建 ${selected.length} 个副本`)
+      toastSuccess(uiText("已创建 {0} 个副本", { 0: selected.length }))
       setNodeMenu(null)
     },
     [createNodeInCanvas, models, nodes, selectNode, setDirty, setNodes],
@@ -903,7 +1347,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const copyNodes = useCallback(
     (ids: string[]) => {
       nodeClipboard = nodes.filter((n) => ids.includes(sid(n.id))).map((n) => ({ ...n.data.node, params: { ...n.data.node.params } }))
-      toastSuccess(`已复制 ${nodeClipboard.length} 个节点`)
+      toastSuccess(uiText("已复制 {0} 个节点", { 0: nodeClipboard.length }))
       setNodeMenu(null)
     },
     [nodes],
@@ -943,7 +1387,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       }
     }
     if (!window.vibepaperDesktop) setDirty(true)
-    toastSuccess('已粘贴')
+    toastSuccess(uiText("已粘贴"))
   }, [createNodeInCanvas, models, selectNode, setDirty, setNodes])
 
   const onEdgesDelete = useCallback(
@@ -957,7 +1401,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           saveTimer.current = null
         }
         void (async () => {
-          if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法删除连线。')
+          if (!desktopProjectId) throw new Error(uiText("没有已打开的本地项目，无法删除连线。"))
           const current = useCanvasStore.getState()
           if (snapshot?.dirtyBefore && current.canvas) {
             const saved = await saveCanvasPort({
@@ -981,7 +1425,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             await bridge.deleteEdge({ projectId: desktopProjectId, canvasId, edgeId: sid(edge.id) })
           }
         })().catch((error: unknown) => {
-          toastError(error instanceof Error ? error.message : '无法删除本地连线。')
+          toastError(error instanceof Error ? error.message : uiText("无法删除本地连线。"))
           void refetch()
         })
         return
@@ -1032,9 +1476,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           let edgeId: string
           let edgeData: Record<string, unknown> = { valid: true }
           if (window.vibepaperDesktop) {
-            if (!desktopProjectId) throw new Error('没有已打开的本地项目，无法建立连线。')
+            if (!desktopProjectId) throw new Error(uiText("没有已打开的本地项目，无法建立连线。"))
             const current = useCanvasStore.getState().canvas
-            if (!current) throw new Error('画布尚未加载完成。')
+            if (!current) throw new Error(uiText("画布尚未加载完成。"))
             const result = await window.vibepaperDesktop.connectEdge({
               projectId: desktopProjectId,
               canvasId,
@@ -1066,7 +1510,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               data: edgeData,
             },
           ])
-          toastSuccess(connect.direction === 'downstream' ? '已创建下游节点并连线' : '已创建上游节点并连线')
+          toastSuccess(connect.direction === 'downstream' ? uiText("已创建下游节点并连线") : uiText("已创建上游节点并连线"))
         }
         if (!window.vibepaperDesktop) setDirty(true)
       } catch (e) {
@@ -1102,7 +1546,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         },
       ])
       if (!window.vibepaperDesktop) setDirty(true)
-      toastSuccess('素材已导入画布')
+      toastSuccess(uiText("素材已导入画布"))
     },
     [createNodeInCanvas, models, selectNode, setDirty, setNodes],
   )
@@ -1113,7 +1557,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       const point = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       if (e.dataTransfer.files?.length) {
         if (window.vibepaperDesktop) {
-          toastError('桌面版文件拖放导入尚未接入，请使用画布上传入口选择素材。')
+          toastError(uiText("桌面版文件拖放导入尚未接入，请使用画布上传入口选择素材。"))
           return
         }
         void (async () => {
@@ -1142,10 +1586,11 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       ...n,
       position: { x: 120 + (i % 4) * 330, y: 120 + Math.floor(i / 4) * 280 },
     }))
+    layoutMotion.animate(next)
     setNodes(next)
     setDirty(true)
-    toastSuccess('已一键整理')
-  }, [nodes, setNodes, setDirty])
+    toastSuccess(uiText("已一键整理"))
+  }, [nodes, setNodes, setDirty, layoutMotion.animate])
 
   const openAddMenu = useCallback(
     (x: number, y: number, connect?: { nodeId: string; direction: 'upstream' | 'downstream' }) => {
@@ -1176,12 +1621,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       pendingUploadPos.current = { x: flowX, y: flowY }
       if (window.vibepaperDesktop) {
         if (!desktopProjectId) {
-          toastError('没有已打开的本地项目，无法导入素材。')
+          toastError(uiText("没有已打开的本地项目，无法导入素材。"))
           return
         }
         void window.vibepaperDesktop.importLocalAsset(desktopProjectId)
           .then((asset) => asset && addAssetNode(desktopAssetView(asset), flowX, flowY))
-          .catch((error: unknown) => toastError(error instanceof Error ? error.message : '无法导入本地素材。'))
+          .catch((error: unknown) => toastError(error instanceof Error ? error.message : uiText("无法导入本地素材。")))
         setAddMenu(null)
         return
       }
@@ -1257,7 +1702,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               background: 'transparent',
               pointerEvents: 'none',
             },
-            data: { label: `堆叠拼图 · ${s.nodeIds.length} 张（双击展开）` },
+            data: { label: uiText("堆叠拼图 · {0} 张（双击展开）", { 0: s.nodeIds.length }) },
             zIndex: 5,
             draggable: false,
             selectable: false,
@@ -1272,16 +1717,16 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3 bg-[#f2f2f2]">
         <Spinner className="h-8 w-8" />
-        <p className="text-[13px] text-[#888]">正在打开画布…</p>
+        <p className="text-[13px] text-[#888]">{uiText("正在打开画布…")}</p>
       </div>
     )
   }
 
   if (isError || !detail) {
-    const msg = error instanceof Error ? error.message : '画布加载失败'
+    const msg = error instanceof Error ? error.message : uiText("画布加载失败")
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-4 bg-[#f2f2f2] px-6 text-center">
-        <p className="text-[18px] font-bold text-[#111]">无法打开画布</p>
+        <p className="text-[18px] font-bold text-[#111]">{uiText("无法打开画布")}</p>
         <p className="max-w-md text-[14px] text-[#666]">{msg}</p>
         <div className="flex gap-2">
           <button
@@ -1289,14 +1734,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             onClick={() => void refetch()}
             className="h-10 rounded-full bg-[#111] px-5 text-[14px] font-semibold text-white"
           >
-            重试
-          </button>
+            {uiText("重试")}</button>
           <Link
             to="/workspace"
             className="inline-flex h-10 items-center rounded-full border border-black/10 bg-white px-5 text-[14px] font-semibold text-[#333]"
           >
-            返回画布管理
-          </Link>
+            {uiText("返回画布管理")}</Link>
         </div>
       </div>
     )
@@ -1304,10 +1747,26 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
   return (
     <div
-      className="flex h-screen w-screen overflow-hidden bg-[#f2f2f2]"
+      data-testid={desktopMode ? 'mcp-canvas-page' : undefined}
+      className="vp-canvas-motion flex h-screen w-screen overflow-hidden bg-[var(--canvas-background)]"
+      onPointerDownCapture={layoutMotion.cancel}
+      onWheelCapture={layoutMotion.cancel}
       onDrop={onDrop}
       onDragOver={(e) => e.preventDefault()}
     >
+      {desktopMode && mcpProviderInput && (
+        <div className="fixed left-1/2 top-4 z-[250] flex w-[min(720px,calc(100vw-2rem))] -translate-x-1/2 flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-950 shadow-lg" role="status" aria-live="polite" data-testid="mcp-provider-input-banner">
+          <p className="min-w-0 flex-1 leading-5">
+            {uiText('外部 Agent 已准备 {0} 提供方配置。请在原配置页检查公开设置并输入 Key；画布内容会先保存。', { 0: mcpProviderInput.providerId })}
+          </p>
+          <div className="flex shrink-0 gap-2">
+            <button type="button" onClick={() => { mcpProviderInputRef.current = null; setMcpProviderInput(null) }} disabled={mcpProviderInputBusy} className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-900 disabled:opacity-50">
+              {uiText('稍后')}</button>
+            <button type="button" onClick={() => void openMcpProviderConfiguration()} disabled={mcpProviderInputBusy} className="rounded-lg bg-blue-900 px-3 py-2 text-xs font-semibold text-white disabled:cursor-wait disabled:opacity-60">
+              {mcpProviderInputBusy ? uiText('正在保存画布…') : uiText('打开原配置页')}</button>
+          </div>
+        </div>
+      )}
       <div className="relative min-h-0 min-w-0 flex-1">
       <input
         ref={fileInputRef}
@@ -1321,7 +1780,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           pendingUploadPos.current = null
           e.target.value = ''
           if (window.vibepaperDesktop) {
-            if (files.length) toastError('桌面版文件选择请使用本地图片导入入口。')
+            if (files.length) toastError(uiText("桌面版文件选择请使用本地图片导入入口。"))
             return
           }
           void (async () => {
@@ -1339,7 +1798,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         <CanvasToolbar
           mode={mode}
           setMode={setMode}
-          onFitView={() => void fitView()}
+          onFitView={() => void fitView({ duration: canvasMotionDuration(CANVAS_MOTION.viewport) })}
           onAutoLayout={onAutoLayout}
           onAddNode={(t) => void addNode(t)}
           desktopMode={desktopMode}
@@ -1351,10 +1810,16 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       {!desktopMode && <SubscriptionMenu />}
       {!desktopMode && <AccountSidePanels />}
 
-      <div className="relative h-full w-full">
+      <div
+        ref={mcpCanvasInputSurfaceRef}
+        className="relative h-full w-full"
+        data-mcp-canvas-input-surface={desktopMode ? '' : undefined}
+        data-testid={desktopMode ? 'mcp-canvas-input-surface' : undefined}
+        aria-busy={desktopMode && mcpCanvasBarrierPhase === 'active'}
+      >
       {nodes.length === 0 && detail && <CanvasWelcome onCreate={(type) => void addNode(type)} />}
       <ReactFlow
-        nodes={[...stackBadges, ...nodes] as FlowNode[]}
+        nodes={[...stackBadges, ...layoutMotion.nodes] as FlowNode[]}
         edges={edges.map((e) => ({
           ...e,
           className: (() => {
@@ -1382,7 +1847,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             return usableSource ? 'vp-generation-reference-edge' : undefined
           })(),
           style: {
-            stroke: e.selected ? '#111111' : ((e.style?.stroke as string | undefined) ?? '#93c5fd'),
+            stroke: e.selected ? 'var(--canvas-selected-edge)' : ((e.style?.stroke as string | undefined) ?? '#93c5fd'),
             strokeWidth: e.selected ? 2.5 : 1.5,
           },
         })).map((edge) => ({ ...edge, data: { ...edge.data, generationReference: edge.className === 'vp-generation-reference-edge' } }))}
@@ -1494,7 +1959,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               }
               setStacks(stacks.map((item) => sid(item.id) === sid(stack.id) ? { ...item, collapsed: false } : item))
               setDirty(true)
-              toastSuccess('堆叠已展开')
+              toastSuccess(uiText("堆叠已展开"))
               return
             }
             void api(`/canvases/${sid(canvas.canvas.id)}/stacks/${sid(stack.id)}`, {
@@ -1521,7 +1986,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
                   setDirty(true)
                 }
                 setStacks(stacks.map((s) => (sid(s.id) === sid(stack.id) ? { ...s, collapsed: false } : s)))
-                toastSuccess('堆叠已展开')
+                toastSuccess(uiText("堆叠已展开"))
               })
               .catch((e) => toastError((e as Error).message))
           }
@@ -1540,13 +2005,13 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         connectionRadius={28}
         className="vp-dot-grid"
       >
-        <Background gap={20} size={1} color="#c8c8c8" />
+        <Background gap={20} size={1} color="var(--canvas-grid)" />
         <MiniMap pannable zoomable className="!bg-white" nodeStrokeColor="#111" />
         <Controls showInteractive={false} />
         <CanvasGroupView
           groups={groups}
           frozenBounds={dragGroupBounds}
-          nodes={nodes}
+          nodes={layoutMotion.nodes}
           selectedGroupId={selectedGroupId}
           onSelectGroup={selectGroup}
           onMoveGroup={moveGroup}
@@ -1557,41 +2022,45 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       </ReactFlow>
       </div>
 
-      {readingNode && (
-        <div ref={readingDialogRef} className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-8 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="文本阅读" onClick={() => setReadingNodeId(null)} onDoubleClick={(event) => event.stopPropagation()}>
-          <button ref={readingCloseButtonRef} type="button" aria-label="关闭文本阅读" className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full bg-white/20 text-2xl text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white" onClick={() => setReadingNodeId(null)}>×</button>
-          <div role="document" aria-label="文本内容" tabIndex={0} className="h-[80vh] w-[min(1000px,90vw)] overflow-auto rounded-2xl bg-white p-8 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-            <AgentMarkdown text={textNodeContent(readingNode.output?.text, readingNode.params)} className="select-text break-words" variant="document" />
+      {readingPresence.value && (
+        <div ref={readingDialogRef} className="vp-soft-overlay fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-8 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={uiText("文本阅读")}
+          data-open={readingPresence.visible} inert={!readingNode} aria-hidden={!readingNode}
+          onClick={() => setReadingNodeId(null)} onDoubleClick={(event) => event.stopPropagation()}>
+          <button ref={readingCloseButtonRef} type="button" aria-label={uiText("关闭文本阅读")} className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full bg-white/20 text-2xl text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white" onClick={() => setReadingNodeId(null)}>×</button>
+          <div role="document" aria-label={uiText("文本内容")} tabIndex={0} className="h-[80vh] w-[min(1000px,90vw)] overflow-auto rounded-2xl bg-white p-8 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <AgentMarkdown text={textNodeContent(readingPresence.value.output?.text, readingPresence.value.params)} className="select-text break-words" variant="document" />
           </div>
         </div>
       )}
-      {edgeMenu && (
-        <div className="fixed z-[150] rounded-xl border border-black/10 bg-white p-1 shadow-xl" style={{ left: edgeMenu.x, top: edgeMenu.y }}>
+      {animatedEdgeMenu && (
+        <div role="menu" className="vp-soft-popover fixed z-[150] rounded-xl border border-black/10 bg-white p-1 shadow-xl"
+          data-open={edgeMenuPresence.visible} inert={!edgeMenu} aria-hidden={!edgeMenu}
+          style={{ left: animatedEdgeMenu.x, top: animatedEdgeMenu.y }}>
           <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-black/5" onClick={() => {
-            const id = edgeMenu.id
+            const id = animatedEdgeMenu.id
             setEdgeMenu(null)
             void deleteEdgeById(id)
-          }}><Trash2 size={18} />删除连线</button>
+          }}><Trash2 size={18} />{uiText("删除连线")}</button>
         </div>
       )}
-      {addMenu && (
+      {animatedAddMenu && (
         <div
-          className="fixed z-40 w-40 rounded-xl border border-black/10 bg-white p-1.5 shadow-xl"
+          role="menu" data-open={addMenuPresence.visible} inert={!addMenu} aria-hidden={!addMenu}
+          className="vp-soft-popover fixed z-40 w-40 rounded-xl border border-black/10 bg-white p-1.5 shadow-xl"
           style={{
-            left: Math.min(addMenu.x, window.innerWidth - 180),
-            top: Math.min(addMenu.y, window.innerHeight - 320),
+            left: Math.min(animatedAddMenu.x, window.innerWidth - 180),
+            top: Math.min(animatedAddMenu.y, window.innerHeight - 320),
           }}
         >
           <p className="px-2.5 py-1 text-[11px] font-bold text-[#999]">
-            {addMenu.direction === 'upstream' ? '新建上游' : addMenu.direction === 'downstream' ? '新建下游' : '新建节点'}
+            {animatedAddMenu.direction === 'upstream' ? uiText("新建上游") : animatedAddMenu.direction === 'downstream' ? uiText("新建下游") : uiText("新建节点")}
           </p>
           <button
             type="button"
-            onClick={() => uploadAt(addMenu.flowX, addMenu.flowY)}
+            onClick={() => uploadAt(animatedAddMenu.flowX, animatedAddMenu.flowY)}
             className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-[#444] hover:bg-black/[0.04]"
           >
-            <Upload size={14} /> 上传
-          </button>
+            <Upload size={14} /> {uiText("上传")}</button>
           <div className="my-1 border-t border-black/6" />
           {['text', 'image', 'video', 'audio', 'compose', 'director'].map((t) => (
             <button
@@ -1600,10 +2069,10 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               onClick={() => {
                 void addNode(
                   t,
-                  addMenu.flowX,
-                  addMenu.flowY,
-                  addMenu.sourceNodeId
-                    ? { nodeId: addMenu.sourceNodeId, direction: addMenu.direction ?? 'downstream' }
+                  animatedAddMenu.flowX,
+                  animatedAddMenu.flowY,
+                  animatedAddMenu.sourceNodeId
+                    ? { nodeId: animatedAddMenu.sourceNodeId, direction: animatedAddMenu.direction ?? 'downstream' }
                     : undefined,
                 )
                 setAddMenu(null)
@@ -1611,78 +2080,79 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] font-semibold text-[#444] hover:bg-black/[0.04]"
             >
               {t === 'text'
-                ? '文本'
+                ? uiText("文本")
                 : t === 'image'
-                  ? '图片'
+                  ? uiText("图片")
                   : t === 'video'
-                    ? '视频'
+                    ? uiText("视频")
                     : t === 'audio'
-                      ? '音频'
+                      ? uiText("音频")
                       : t === 'compose'
-                        ? '合成'
-                        : '导演台'}
+                        ? uiText("合成")
+                        : uiText("导演台")}
             </button>
           ))}
         </div>
       )}
 
-      {nodeMenu && (
+      {animatedNodeMenu && (
         <div
-          className="fixed z-40 w-44 overflow-hidden rounded-xl border border-black/10 bg-white py-1 shadow-xl"
+          role="menu" data-open={nodeMenuPresence.visible} inert={!nodeMenu} aria-hidden={!nodeMenu}
+          className="vp-soft-popover fixed z-40 w-44 overflow-hidden rounded-xl border border-black/10 bg-white py-1 shadow-xl"
           style={{
-            left: Math.min(nodeMenu.x, window.innerWidth - 190),
-            top: Math.min(nodeMenu.y, window.innerHeight - 160),
+            left: Math.min(animatedNodeMenu.x, window.innerWidth - 190),
+            top: Math.min(animatedNodeMenu.y, window.innerHeight - 160),
           }}
         >
           <button
             type="button"
-            onClick={() => copyNodes(nodeMenu.nodeIds)}
+            onClick={() => copyNodes(animatedNodeMenu.nodeIds)}
             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-semibold text-[#333] hover:bg-black/[0.05]"
           >
             <Copy size={15} className="text-[#666]" />
-            <span className="flex-1 text-left">复制</span>
+            <span className="flex-1 text-left">{uiText("复制")}</span>
             <span className="text-[11px] font-medium text-[#aaa]">⌘C</span>
           </button>
           <button
             type="button"
-            onClick={() => void duplicateNodes(nodeMenu.nodeIds)}
+            onClick={() => void duplicateNodes(animatedNodeMenu.nodeIds)}
             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-semibold text-[#333] hover:bg-black/[0.05]"
           >
             <Files size={15} className="text-[#666]" />
-            <span className="flex-1 text-left">副本</span>
+            <span className="flex-1 text-left">{uiText("副本")}</span>
             <span className="text-[11px] font-medium text-[#aaa]">⌘D</span>
           </button>
           <button
             type="button"
-            onClick={() => requestDeleteNodes(nodeMenu.nodeIds)}
+            onClick={() => requestDeleteNodes(animatedNodeMenu.nodeIds)}
             className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-semibold text-[#333] hover:bg-black/[0.05]"
           >
             <Trash2 size={15} className="text-[#666]" />
-            <span className="flex-1 text-left">删除</span>
+            <span className="flex-1 text-left">{uiText("删除")}</span>
             <span className="text-[11px] font-medium text-[#aaa]">⌫</span>
           </button>
         </div>
       )}
 
-      {deleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
+      {animatedDeleteConfirm && (
+        <div className="vp-soft-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4"
+          role="dialog" aria-modal="true" aria-label={uiText("确认删除节点")} data-open={deletePresence.visible} inert={!deleteConfirm} aria-hidden={!deleteConfirm}>
           <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
-            <p className="text-[16px] font-bold text-[#111]">确认删除节点？</p>
+            <p className="text-[16px] font-bold text-[#111]">{uiText("确认删除节点？")}</p>
             <p className="mt-2 text-[13px] text-[#666]">
-              将删除 {deleteConfirm.nodeIds.length} 个节点及其关联连线。
-            </p>
-            {deleteConfirm.downstream.length > 0 && (
+              {uiText("将删除 ")}{animatedDeleteConfirm.nodeIds.length} {uiText("个节点及其关联连线。")}</p>
+            {animatedDeleteConfirm.downstream.length > 0 && (
               <div className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                <p className="font-bold">影响下游节点：</p>
+                <p className="font-bold">{uiText("影响下游节点：")}</p>
                 <ul className="mt-1 list-disc pl-4">
-                  {deleteConfirm.downstream.slice(0, 8).map((d) => (
+                  {animatedDeleteConfirm.downstream.slice(0, 8).map((d) => (
                     <li key={d.id}>
                       {d.type} · {d.id.slice(-6)}
                     </li>
                   ))}
                 </ul>
-                {deleteConfirm.downstream.length > 8 && (
-                  <p className="mt-1">…等共 {deleteConfirm.downstream.length} 个</p>
+                {animatedDeleteConfirm.downstream.length > 8 && (
+                  <p className="mt-1">{uiText("…等共 ")}{animatedDeleteConfirm.downstream.length} {uiText("个")}</p>
                 )}
               </div>
             )}
@@ -1692,23 +2162,59 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
                 onClick={() => setDeleteConfirm(null)}
                 className="h-9 rounded-full px-4 text-[13px] font-semibold text-[#555] hover:bg-black/[0.04]"
               >
-                取消
-              </button>
+                {uiText("取消")}</button>
               <button
                 type="button"
                 onClick={() => void confirmDeleteNodes()}
                 className="h-9 rounded-full bg-[#111] px-4 text-[13px] font-bold text-white"
               >
-                确认删除
-              </button>
+                {uiText("确认删除")}</button>
             </div>
           </div>
         </div>
       )}
       </div>
+      {desktopMode && mcpCanvasBarrierPhase !== 'idle' && (
+        <div
+          className={`fixed inset-0 z-[300] flex items-start justify-center pt-4 ${mcpCanvasBarrierPhase === 'active' ? 'pointer-events-auto' : 'pointer-events-none'}`}
+          role="status"
+          aria-live="polite"
+          aria-label={uiText('正在同步外部画布更改')}
+          data-testid="mcp-canvas-write-barrier"
+          data-phase={mcpCanvasBarrierPhase}
+        >
+          <span className="rounded-full border border-black/10 bg-white/95 px-4 py-2 text-[12px] font-semibold text-[#444] shadow-lg">
+            {uiText(mcpCanvasBarrierPhase === 'pending' ? '正在保存本地编辑…' : '正在同步外部画布更改…')}
+          </span>
+        </div>
+      )}
       {!desktopMode
         ? <AgentPanel />
-        : agentOpen && desktopProjectId && <AgentPanel desktopAdapter={desktopAgent} />}
+        : desktopProjectId && <AgentPanel
+          desktopAdapter={desktopAgent}
+          externalMcpConfirmations={mcpGenerationConfirmations.map((action) => ({
+            proposalId: action.proposalId,
+            clientName: action.displayName ?? action.clientName ?? uiText('未知 MCP 客户端'),
+            generationItems: action.payload?.length
+              ? action.payload.map((item) => ({
+                target: item.target,
+                model: item.model,
+                input: item.input,
+                overwrite: /覆盖|替换|overwrite/iu.test(item.impact),
+                impact: item.impact,
+              }))
+              : [{
+                target: action.target ?? uiText('未指定目标节点'),
+                model: action.model ?? uiText('未指定模型'),
+                input: action.input ?? '',
+                overwrite: /覆盖|替换|overwrite/iu.test(action.impact ?? ''),
+                impact: action.impact ?? '',
+              }],
+            status: action.status,
+            expiresAt: action.expiresAt,
+          }))}
+          onResolveMcpConfirmation={resolveMcpGenerationConfirmation}
+        />}
       {desktopMode && desktopAgent.settingsDialog}
     </div>
   )

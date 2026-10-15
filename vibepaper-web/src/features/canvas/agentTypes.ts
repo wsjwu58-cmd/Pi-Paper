@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 export interface ExecutionStep {
   id: string
   /** plan=待执行 · result=工具完成 · reasoning=推理 · speech=对用户说话 */
@@ -47,6 +48,7 @@ export interface AgentConfirmation {
     model: string
     input: string
     overwrite: boolean
+    impact?: string
   }>
   /** Approval expiry can be ISO text or a Unix timestamp from the agent API. */
   expiresAt?: string | number
@@ -134,7 +136,7 @@ export interface AgentChatMsg {
   }
 
 export function toolLabel(tool?: string): string {
-  if (!tool) return '操作'
+  if (!tool) return uiText("操作")
   return TOOL_LABELS[tool] || tool
 }
 
@@ -158,7 +160,7 @@ export function stepFromThinking(content: string, idx: number): ExecutionStep {
   return {
     id: `reason-${idx}`,
     kind: 'reasoning',
-    label: '推理过程',
+    label: uiText("推理过程"),
     summary: content.trim(),
   }
 }
@@ -167,7 +169,7 @@ export function stepFromSpeech(content: string, idx: number): ExecutionStep {
   return {
     id: `speech-${idx}`,
     kind: 'speech',
-    label: '回复',
+    label: uiText("回复"),
     summary: content.trim(),
   }
 }

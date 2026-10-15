@@ -112,7 +112,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
   const registeredSchemes = []
   const headerHandlers = []
   const electron = {
-    app: { setName() {}, requestSingleInstanceLock: () => false, quit() {}, getPath: (name) => name === 'temp' ? os.tmpdir() : os.tmpdir() },
+    app: { setName() {}, setPath() {}, requestSingleInstanceLock: () => false, quit() {}, getPath: (name) => name === 'temp' ? os.tmpdir() : os.tmpdir() },
     BrowserWindow: class {},
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showMessageBox: async () => ({}) },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
@@ -128,6 +128,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
   const mainRequire = (name) => {
     if (name === 'electron') return electron
     if (name === './renderer-trust.cjs') return require('../src/renderer-trust.cjs')
+    if (name === './canvas-media.cjs') return require('../src/canvas-media.cjs')
     if (name.startsWith('.')) return {}
     return require(name)
   }

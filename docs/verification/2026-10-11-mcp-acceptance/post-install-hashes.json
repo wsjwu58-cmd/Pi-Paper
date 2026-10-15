@@ -1,0 +1,76 @@
+{
+  "registry": {
+    "displayName": "Pi-Paper 0.1.0",
+    "displayVersion": "0.1.0",
+    "uninstallString": "\"E:\\pp\\Pi-Paper\\Uninstall Pi-Paper.exe\" /currentuser",
+    "installLocation": null
+  },
+  "installedExeVersion": {
+    "fileVersion": "0.1.0",
+    "productVersion": "0.1.0.0",
+    "length": 246027776
+  },
+  "checks": [
+    {
+      "name": "Pi-Paper.exe",
+      "installedSha256": "4FF758EB43B4EADE5969BFE137448DE5CD6BE4BAB172DDC3C33C06F5FE4DB11B",
+      "packagedSha256": "4FF758EB43B4EADE5969BFE137448DE5CD6BE4BAB172DDC3C33C06F5FE4DB11B",
+      "match": true
+    },
+    {
+      "name": "resources/app/package.json",
+      "installedSha256": "5A74C77568FD84B64B2DDF26DF83B1142C68AE610DC28D84F27B3940128D9643",
+      "packagedSha256": "5A74C77568FD84B64B2DDF26DF83B1142C68AE610DC28D84F27B3940128D9643",
+      "match": true
+    },
+    {
+      "name": "resources/app/src/main.cjs",
+      "installedSha256": "13F10E80DC5E8BA66057BFEE6C6DC01506295ED859728B46ED2F926116624ED0",
+      "packagedSha256": "13F10E80DC5E8BA66057BFEE6C6DC01506295ED859728B46ED2F926116624ED0",
+      "match": true
+    },
+    {
+      "name": "resources/app/src/preload.cjs",
+      "installedSha256": "2CDAD9D946F9CE5D7EB1B0C288B4C5A5F01E88BE54FF0123A8199DAA2FB0F7BD",
+      "packagedSha256": "2CDAD9D946F9CE5D7EB1B0C288B4C5A5F01E88BE54FF0123A8199DAA2FB0F7BD",
+      "match": true
+    },
+    {
+      "name": "resources/app/src/mcp-node-entry.cjs",
+      "installedSha256": "E242331BF01E84DFE22710725C89A2648488BFB1C66D7DF8C6211EE11BF3D700",
+      "packagedSha256": "E242331BF01E84DFE22710725C89A2648488BFB1C66D7DF8C6211EE11BF3D700",
+      "match": true
+    },
+    {
+      "name": "resources/app/dist/mcp-launcher.cjs",
+      "installedSha256": "587FCFC9D55475038BE8FF8812E711F6A7ABDA95CA1C2DF89F6C37C337DC64AF",
+      "packagedSha256": "587FCFC9D55475038BE8FF8812E711F6A7ABDA95CA1C2DF89F6C37C337DC64AF",
+      "match": true
+    },
+    {
+      "name": "resources/app/dist/mcp-stdio.cjs",
+      "installedSha256": "683111892D8A7E291FC126A9D12C5B43AAB11C0BD9EA0B720F47851943F12F98",
+      "packagedSha256": "683111892D8A7E291FC126A9D12C5B43AAB11C0BD9EA0B720F47851943F12F98",
+      "match": true
+    },
+    {
+      "name": "resources/app/dist/pi-official-media.cjs",
+      "installedSha256": "D3BF96E5EFA26262532A0679A32D09853F242C50CEDF257BBDCCA4535610AB1C",
+      "packagedSha256": "D3BF96E5EFA26262532A0679A32D09853F242C50CEDF257BBDCCA4535610AB1C",
+      "match": true
+    },
+    {
+      "name": "resources/app/renderer/index.html",
+      "installedSha256": "B1BA852CF984886598F41FE8992987EA679A73C91AE191D547DD33BC45368EDE",
+      "packagedSha256": "B1BA852CF984886598F41FE8992987EA679A73C91AE191D547DD33BC45368EDE",
+      "match": true
+    }
+  ],
+  "allHashesMatch": true,
+  "dailyUserData": {
+    "path": "C:\\Users\\WSJ\\AppData\\Roaming\\VibePaper",
+    "exists": true,
+    "topLevelEntries": 30
+  },
+  "piPaperMainProcess": 0
+}

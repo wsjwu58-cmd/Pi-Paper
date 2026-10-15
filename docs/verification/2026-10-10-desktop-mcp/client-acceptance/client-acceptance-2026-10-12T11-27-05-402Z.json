@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "testType": "real installed CLI natural-language MCP acceptance against isolated Electron development runtime",
+  "date": "2026-10-12T11:27:05.724Z",
+  "success": false,
+  "clientResults": [
+    {
+      "success": false,
+      "client": "codex",
+      "isolatedProfile": true,
+      "failureCategory": "electron_worker_failed",
+      "exportedConfigurationUsed": false,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false
+    },
+    {
+      "success": false,
+      "client": "claude-code",
+      "isolatedProfile": true,
+      "failureCategory": "electron_worker_failed",
+      "exportedConfigurationUsed": false,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false
+    }
+  ],
+  "scope": {
+    "realCodexCliTurn": false,
+    "realClaudeCodeTurn": false,
+    "realCloudMediaRequests": 0,
+    "localFixtureGenerationOnly": true,
+    "desktopGenerationConfirmationUsed": false,
+    "authMaterialReadOrCopied": false,
+    "rawClientOutputPersisted": false,
+    "temporaryMcpConfigurationsRemoved": true,
+    "packagedApplicationTested": false
+  }
+}

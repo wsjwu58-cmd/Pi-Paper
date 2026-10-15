@@ -4,6 +4,12 @@ VibePaper 的单用户桌面版：使用 Electron 运行原 `vibepaper-web` 页�
 
 当前默认分支为 **`feat/desktop-local-migration`**。这是仍在开发和验收的桌面迁移分支，尚未完成全部模块的 1:1 与跨平台安装包验收。工程目录和数据格式继续使用 `vibepaper` / `VibePaper` 标识。
 
+## 界面语言
+
+桌面版支持中文和 English。首次启动跟随系统：中文区域默认中文，其余区域默认英文；Linux 按 `LC_ALL`、`LC_MESSAGES`、`LANG` 的顺序读取消息区域设置，无环境值时读取 Electron 区域设置。可在画布展示、画布顶部或模型配置页选择「跟随系统 / 中文 / English」，立即切换并在重启后保留。应用内原生对话框标题也随选择切换。
+
+语言偏好独立保存于系统用户数据目录的 `ui-settings.json`，不覆盖模型设置。项目名、节点内容、提示词、Skill 和 Agent 实际回复保留原文，切换语言不会修改项目数据。原 Web 路径继续使用中文。实现与截图见 [界面语言验收记录](../docs/verification/2026-10-08-ui-language/README.md)。更新源码后需要重新构建安装包；已有发行二进制不会自动获得此功能。
+
 ## 快速启动
 
 ### 环境与依赖
@@ -78,6 +84,8 @@ npm --prefix vibepaper-desktop start
 
 ## 本地数据、备份与恢复
 
+外部 Codex、Claude Code 调用桌面的新增 MCP 接口，见[连接、模型凭据与生成使用指南](../docs/guides/desktop-mcp.md)。接口默认关闭，连接和提供方配置分别授权；生成仍由桌面用户确认。当前开发状态与已完成的检查见[MCP 审查记录](../docs/verification/2026-10-10-desktop-mcp/README.md)。
+
 ```text
 项目目录/
 └─ .vibepaper/
@@ -106,7 +114,19 @@ npm --prefix vibepaper-desktop start
 
 主窗口使用 `assets/app-icon.png` 的原有图案，通过 `src/application-icon.cjs` 收紧外部留白，提高主体的可见大小；macOS Dock 同样使用运行时图标。替换素材或修改图标代码后需重启。
 
-当前目录没有正式安装包配置。运行时窗口图标不会改写 Electron 可执行文件的内嵌图标或已固定快捷方式的缓存；Windows、macOS、Linux 安装包仍需分别验收。
+安装包配置位于 `electron-builder.cjs`，直接打包原前端构建结果、本地核心、生成 Worker、原 Agent 服务 bundle 和媒体适配；安装包不包含项目、模型凭据或开发依赖。Windows 使用 NSIS（x64），macOS 使用 DMG / ZIP（Intel x64、Apple Silicon arm64），Linux 使用 AppImage / DEB（x64）。产物位于 `release/`，附 SHA256 校验文件。
+
+```powershell
+npm --prefix vibepaper-desktop run dist:win
+# 以下两条分别在 macOS、Linux 构建机器上运行：
+npm --prefix vibepaper-desktop run dist:mac
+npm --prefix vibepaper-desktop run dist:linux
+npm --prefix vibepaper-desktop run verify:packaged
+```
+
+首次构建先为 `pi-main`、`vibepaper-web`、`vibepaper-desktop` 安装锁定依赖，运行 `node vibepaper-desktop/scripts/restore-model-data.cjs`，并构建 Pi telemetry、ai（`build:offline`）、agent-core；可参考 `.github/workflows/desktop-packages.yml`。构建使用 `assets/pi-model-data.snapshot.json` 中当前版本的公开模型目录，无凭据，也不因在线目录变化修改打包版本。该流程在三种原生系统打包并使用包内 Electron 检查 SQLite 画布恢复、Agent Skill 和会话片段重启恢复，不需要平台账号或开发工具随包安装。
+
+当前产物为开发验收包：Windows 尚无发行证书，macOS 使用 ad-hoc 签名，尚未 Apple 公证。安装包构建和 Worker 检查不代表完整 UI、真实供应商生成或三平台安装/卸载验收完成。现有本地 FFmpeg 操作继续读取用户配置或系统 FFmpeg，当前不随安装包分发 FFmpeg；本地模型服务同样需用户配置。
 
 ## 开发验证
 

@@ -1,0 +1,103 @@
+{
+  "checkedAt": "2026-10-13T08:43:46.531Z",
+  "provider": "agnes",
+  "model": "agnes-video-2.5-flash",
+  "officialDocumentation": "https://www.agnes-ai.com/zh-Hans/docs/agnes-video-25-flash",
+  "endpoint": "https://apihub.agnes-ai.com/v1/videos",
+  "method": "POST",
+  "requestParameters": {
+    "model": "agnes-video-2.5-flash",
+    "mode": "text",
+    "seconds": "4",
+    "size": "720P",
+    "aspect_ratio": "16:9",
+    "n": 1,
+    "referenceMediaCount": 0
+  },
+  "attempts": [
+    {
+      "modality": "video",
+      "taskId": "792700e6-0468-4653-8fc9-86b262728c24",
+      "model": "target-agnes-video-2-5-flash",
+      "status": "failed",
+      "errorCode": "CLOUD_REQUEST_FAILED",
+      "providerId": "agnes",
+      "createdAt": "2026-10-11T13:34:32.934Z",
+      "completedAt": "2026-10-11T13:35:25.028Z",
+      "eventTypes": [
+        "created",
+        "running",
+        "failed"
+      ],
+      "desktopConfirmed": true,
+      "httpStatus": 503,
+      "upstreamError": "video queue is full, please retry later",
+      "requestId": "2026101113352410173936e347JoWg",
+      "upstreamVideoIdReceived": false
+    },
+    {
+      "modality": "video",
+      "taskId": "30af402d-39b6-49ae-a9cd-93a82c410794",
+      "model": "target-agnes-video-2-5-flash",
+      "status": "failed",
+      "errorCode": "CLOUD_REQUEST_FAILED",
+      "providerId": "agnes",
+      "createdAt": "2026-10-12T11:28:56.617Z",
+      "completedAt": "2026-10-12T11:29:49.296Z",
+      "eventTypes": [
+        "created",
+        "running",
+        "failed"
+      ],
+      "desktopConfirmed": true,
+      "httpStatus": 503,
+      "upstreamError": "video queue is full, please retry later",
+      "requestId": "202610121129472908615275ffs6A6W",
+      "upstreamVideoIdReceived": false
+    },
+    {
+      "modality": "video",
+      "taskId": "55bffcd0-b59b-4e95-94b0-763937a61c15",
+      "model": "target-agnes-video-2-5-flash",
+      "status": "succeeded",
+      "filename": "agnes-real-video.mp4",
+      "mimeType": "video/mp4",
+      "sizeBytes": 1070236,
+      "sha256": "7a1e6bb89e38b6a763f4eab0d3f5c43dfae2fa8a0344ac5b7cdc71899c927a76",
+      "desktopConfirmed": true,
+      "originalNodeVisible": true,
+      "providerId": "agnes",
+      "createdAt": "2026-10-13T08:30:38.041Z",
+      "completedAt": "2026-10-13T08:39:57.927Z",
+      "eventTypes": [
+        "created",
+        "running",
+        "succeeded"
+      ]
+    }
+  ],
+  "facts": {
+    "queueRejections": 2,
+    "rejectionBeforeVideoIdForFailedAttempts": true,
+    "successfulImageWithSameCredential": true,
+    "laterRealVideoSucceeded": true
+  },
+  "resolution": {
+    "taskId": "55bffcd0-b59b-4e95-94b0-763937a61c15",
+    "createdAt": "2026-10-13T08:30:38.041Z",
+    "completedAt": "2026-10-13T08:39:57.927Z",
+    "elapsedSeconds": 559.886,
+    "sha256": "7a1e6bb89e38b6a763f4eab0d3f5c43dfae2fa8a0344ac5b7cdc71899c927a76",
+    "sizeBytes": 1070236,
+    "modelUnchanged": true,
+    "requestParametersUnchanged": true
+  },
+  "interpretation": "The same Flash model and request parameters later succeeded. This is consistent with a transient supplier queue/capacity condition, not a persistent parameter or credential failure; the internal queue layer remains unknown.",
+  "unresolved": [
+    "No documented public queue-capacity/status endpoint was found.",
+    "The supplier has not explained which internal queue layer was full in the two rejected attempts."
+  ],
+  "otherVideoModelsUsed": false,
+  "imageRegeneratedForRetry": false,
+  "retryBoundary": "The existing legacy worker retries transient HTTP 503; local records retain the final rejection per desktop task and do not prove the HTTP-attempt count."
+}

@@ -20,6 +20,7 @@ import {
 	safeBase64,
 } from "./http.ts";
 import { generateAgnesFlashImage, generateGptImage25, generateGrokImagine } from "./official-images-next-models.ts";
+import { generateZhipuImage } from "./official-images-zhipu.ts";
 import type {
 	OfficialGenerationInput,
 	OfficialGenerationOptions,
@@ -34,6 +35,8 @@ export async function generateOfficialImage(
 	options: OfficialGenerationOptions,
 ): Promise<OfficialGenerationResult> {
 	switch (input.providerId) {
+		case "zhipu":
+			return generateZhipuImage(input, options);
 		case "openai":
 			if (["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"].includes(input.modelId))
 				return generateGptImage25(input, options);

@@ -1,11 +1,13 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { Image as ImageIcon, Video } from 'lucide-react'
 import type { AgentNodeReference } from './agentTypes'
 
 export function AgentNodeReferenceCards({ references }: { references: readonly AgentNodeReference[] }) {
+  useUiLanguage()
   if (references.length === 0) return null
 
   return (
-    <div className="flex max-w-full flex-col gap-1.5" aria-label="本轮参考节点">
+    <div className="flex max-w-full flex-col gap-1.5" aria-label={uiText("本轮参考节点")}>
       {references.map((reference) => (
         <div
           key={reference.nodeId}

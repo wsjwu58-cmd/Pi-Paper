@@ -1,15 +1,17 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, SlidersHorizontal } from 'lucide-react'
 import type { ModelInfo } from '@/lib/types'
 import { ModelBrandIcon } from './ModelBrandIcon'
+import { useSoftPresence } from '@/features/canvas/canvasMotion'
 
 /** 带品牌图标的模型下拉，用于偏好 / 节点编辑器。 */
 export function ModelPicker({
   models,
   value,
   onChange,
-  placeholder = '选择模型',
+  placeholder = uiText("选择模型"),
   dark = false,
   compact = false,
   composer = false,
@@ -30,7 +32,9 @@ export function ModelPicker({
   desktopProviderNames?: Record<string, string>
   onConfigureModels?: () => void
 }) {
+  useUiLanguage()
   const [open, setOpen] = useState(false)
+  const presence = useSoftPresence(open)
   const [activeBrand, setActiveBrand] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -109,7 +113,7 @@ export function ModelPicker({
 
   return (
     <div ref={rootRef} className={`relative ${className}`}>
-      <button ref={triggerRef} type="button" onClick={() => setOpen((v) => !v)} className={triggerClass} aria-label="选择 Agent 思考模型" aria-expanded={open}>
+      <button ref={triggerRef} type="button" onClick={() => setOpen((v) => !v)} className={triggerClass} aria-label={uiText("选择 Agent 思考模型")} aria-expanded={open}>
         {current ? <ModelBrandIcon model={current} size={iconSize} desktop={Boolean(onConfigureModels)} /> : null}
         <span className="min-w-0 flex-1 truncate text-left">
           {current?.displayName || current?.name || value || placeholder}
@@ -120,11 +124,14 @@ export function ModelPicker({
           <span className={`shrink-0 text-[10px] ${dark ? 'text-white/50' : 'text-[#999]'}`}>▾</span>
         )}
       </button>
-      {open && createPortal(
+      {presence.present && createPortal(
         <div
           ref={menuRef}
+          data-open={presence.visible}
+          aria-hidden={!open}
+          inert={!open}
           style={menuPosition}
-          className="fixed z-[1000] overflow-auto rounded-xl border border-[var(--canvas-border)] bg-[var(--canvas-popover)] shadow-xl"
+          className="vp-soft-popover fixed z-[1000] overflow-auto rounded-xl border border-[var(--canvas-border)] bg-[var(--canvas-popover)] shadow-xl"
         >
           {onConfigureModels ? (
             <>
@@ -135,7 +142,7 @@ export function ModelPicker({
                       className={`mb-1 flex w-full items-center gap-1.5 rounded-lg px-2 py-2.5 text-left hover:bg-black/[0.05] ${providerId === selectedBrand ? 'bg-black/[0.06]' : ''}`}>
                       <ModelBrandIcon model={{ name: providerId, provider: providerId, displayName: desktopProviderNames?.[providerId] }} size={17} desktop symbol="settings" />
                       <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-[#555]">
-                        {desktopProviderNames?.[providerId] || providerId}
+                        {uiText(desktopProviderNames?.[providerId] || providerId)}
                       </span>
                       <span className="text-[10px] text-[#999]">{providerModels.length}</span>
                     </button>
@@ -163,7 +170,7 @@ export function ModelPicker({
                         )
                       })}
                 {!desktopGroups.length && (
-                  <p className="px-2 py-4 text-center text-[11px] text-[#888]">尚无已配置且可用的模型</p>
+                  <p className="px-2 py-4 text-center text-[11px] text-[#888]">{uiText("尚无已配置且可用的模型")}</p>
                 )}
                 </div>
               </div>
@@ -176,7 +183,7 @@ export function ModelPicker({
                 className="flex h-10 w-full items-center gap-2 border-t border-[var(--canvas-border)] px-3 text-left text-[11px] font-semibold text-[#555] hover:bg-black/[0.04]"
               >
                 <SlidersHorizontal size={14} />
-                <span>自定义配置</span>
+                <span>{uiText("自定义配置")}</span>
               </button>
             </>
           ) : (
@@ -205,7 +212,7 @@ export function ModelPicker({
                       ) : null}
                     </span>
                     {typeof m.basePrice === 'number' ? (
-                      <span className="shrink-0 text-[10px] font-semibold text-[#888]">{m.basePrice} 点</span>
+                      <span className="shrink-0 text-[10px] font-semibold text-[#888]">{m.basePrice} {uiText("点")}</span>
                     ) : null}
                   </button>
                 )

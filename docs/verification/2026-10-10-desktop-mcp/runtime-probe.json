@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-11",
+  "platform": "win32",
+  "scope": "development Electron binary only",
+  "electron": "44.4.4",
+  "embeddedNode": "24.21.0",
+  "electronRunAsNode": true,
+  "modelRequests": 0,
+  "doesNotProve": ["MCP protocol startup", "packaged application fuses", "macOS", "Linux"]
+}

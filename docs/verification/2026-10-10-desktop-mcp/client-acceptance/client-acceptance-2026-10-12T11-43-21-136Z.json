@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "testType": "real installed CLI natural-language MCP acceptance against isolated Electron development runtime",
+  "date": "2026-10-12T11:45:00.379Z",
+  "success": false,
+  "clientResults": [
+    {
+      "success": false,
+      "client": "codex",
+      "failureCategory": "network_or_provider_blocked",
+      "phase": "real-client-natural-language-mcp-turn",
+      "pageState": {
+        "pathname": "/canvas/7cbe7df1-2edc-4d16-96a9-109a8052d133",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 2
+      },
+      "failureScreenshot": "codex-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 6,
+      "cliExitCode": null,
+      "cliTerminationSignal": null,
+      "cliTrace": {
+        "assistantReplySeen": false,
+        "completedEventSeen": false,
+        "errorEventSeen": true,
+        "toolCallsObserved": []
+      },
+      "diagnosticHints": {
+        "authenticationLike": true,
+        "networkLike": true,
+        "modelLike": false,
+        "configurationLike": false
+      },
+      "safeNetworkDiagnostic": {
+        "errorClass": "timeout_error",
+        "httpStatus": null,
+        "targetHostname": "mcp.neon.tech",
+        "timeout": true
+      },
+      "safeFailureReason": "request_timeout",
+      "cliOAuthEnvironmentProvided": false,
+      "sanitizedProxyEnvironmentProvided": false,
+      "pairedConnectionCount": 1,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": true,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "generation_confirmation_card_timeout",
+      "startedAt": "2026-10-12T11:43:21.233Z"
+    },
+    {
+      "success": false,
+      "client": "claude-code",
+      "failureCategory": "client_turn_failed",
+      "phase": "real-client-natural-language-mcp-turn",
+      "pageState": {
+        "pathname": "/canvas/d0695a16-c707-45cf-84aa-3bba95e3c9ff",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 2
+      },
+      "failureScreenshot": "claude-code-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 5,
+      "cliExitCode": 1,
+      "cliTerminationSignal": null,
+      "cliTrace": {
+        "assistantReplySeen": true,
+        "completedEventSeen": true,
+        "errorEventSeen": true,
+        "toolCallsObserved": []
+      },
+      "diagnosticHints": {
+        "authenticationLike": false,
+        "networkLike": true,
+        "modelLike": false,
+        "configurationLike": false
+      },
+      "safeNetworkDiagnostic": {
+        "errorClass": "http_error",
+        "httpStatus": 402,
+        "targetHostname": null,
+        "timeout": false
+      },
+      "safeFailureReason": "billing_or_quota",
+      "cliOAuthEnvironmentProvided": false,
+      "sanitizedProxyEnvironmentProvided": false,
+      "pairedConnectionCount": 1,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": true,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "generation_proposal_not_created:client_turn_failed",
+      "startedAt": "2026-10-12T11:44:54.778Z"
+    }
+  ],
+  "scope": {
+    "realCodexCliTurn": false,
+    "realClaudeCodeTurn": false,
+    "realCloudMediaRequests": 0,
+    "localFixtureGenerationOnly": true,
+    "desktopGenerationConfirmationUsed": false,
+    "authMaterialReadOrCopied": false,
+    "rawClientOutputPersisted": false,
+    "temporaryMcpConfigurationsRemoved": true,
+    "packagedApplicationTested": false
+  }
+}

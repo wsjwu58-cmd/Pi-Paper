@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "testType": "real installed CLI natural-language MCP acceptance against isolated Electron development runtime",
+  "date": "2026-10-13T08:41:28.647Z",
+  "success": false,
+  "clientResults": [
+    {
+      "success": false,
+      "client": "codex",
+      "failureCategory": "client_turn_failed",
+      "phase": "real-client-natural-language-mcp-turn",
+      "pageState": {
+        "pathname": "/canvas/c187db41-a7eb-4913-aecf-32c6a664bd3d",
+        "readyState": "complete",
+        "bodyPresent": true
+      },
+      "rendererDiagnostics": {
+        "loadFinished": true,
+        "loadFailureCode": null,
+        "consoleErrorCount": 2
+      },
+      "failureScreenshot": "codex-precli-failure.png",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 0,
+      "cliExitCode": 1,
+      "cliTerminationSignal": null,
+      "actualCliTurnCompleted": false,
+      "cliAssistantReplySeen": false,
+      "authorizedConnectionEstablished": false,
+      "toolCallsObserved": [],
+      "generationConfirmationObserved": false,
+      "taskSucceeded": false,
+      "resultRead": false,
+      "cliTrace": {
+        "assistantReplySeen": false,
+        "completedEventSeen": false,
+        "errorEventSeen": false,
+        "toolCallsObserved": [],
+        "distinctToolCount": 0,
+        "toolResultCount": 0,
+        "toolResults": []
+      },
+      "mcpToolResults": [],
+      "diagnosticHints": {
+        "authenticationLike": false,
+        "networkLike": false,
+        "modelLike": false,
+        "configurationLike": false
+      },
+      "safeNetworkDiagnostic": {
+        "errorClass": null,
+        "httpStatus": null,
+        "targetHostname": null,
+        "timeout": false
+      },
+      "safeFailureReason": "client_or_provider_error",
+      "cliOAuthEnvironmentProvided": false,
+      "sanitizedProxyEnvironmentProvided": true,
+      "systemProxyAddressProvided": true,
+      "codexUserConfigFilePresent": true,
+      "codexUserConfigIgnoredByCli": true,
+      "codexUserConfigModified": false,
+      "configuredMcpEntryCount": 4,
+      "excludedOtherMcpCount": 4,
+      "excludedEnabledOtherMcpCount": 4,
+      "pairedConnectionCount": 0,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": true,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "generation_proposal_not_created:client_turn_failed",
+      "startedAt": "2026-10-13T08:41:24.991Z"
+    }
+  ],
+  "scope": {
+    "realCodexCliTurn": false,
+    "realClaudeCodeTurn": false,
+    "actualCliTurnCompleted": false,
+    "authorizedConnectionEstablished": false,
+    "toolCallsObserved": false,
+    "generationConfirmationObserved": false,
+    "taskSucceeded": false,
+    "resultRead": false,
+    "realCloudMediaRequests": 0,
+    "localFixtureGenerationOnly": true,
+    "desktopGenerationConfirmationUsed": false,
+    "authMaterialReadOrCopied": false,
+    "rawClientOutputPersisted": false,
+    "temporaryMcpConfigurationsRemoved": true,
+    "packagedApplicationTested": false
+  }
+}

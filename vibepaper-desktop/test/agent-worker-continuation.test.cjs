@@ -8,7 +8,7 @@ const { pathToFileURL } = require('node:url')
 
 const workerSource = fs.readFileSync(path.resolve(__dirname, '../src/agent-worker.cjs'), 'utf8')
 
-function createStores(projectId) {
+function createStores(projectId, controlMethods = {}) {
   const runs = new Map()
   return {
     projectId,
@@ -24,6 +24,7 @@ function createStores(projectId) {
       getOrCreateApprovalSecret() { return 'test-only-secret' },
       getLoadedSkillIds() { return [] },
       _runs: runs,
+      ...controlMethods,
     },
     sessions: {
       async close() {},
@@ -55,6 +56,13 @@ function createWorkerHarness(options = {}) {
     turnCalls: [],
     generationTaskCalls: 0,
     confirmationActions: [],
+    mcpListCalls: [],
+    mcpAuxiliaryListCalls: 0,
+    mcpExecuteCalls: [],
+    mcpConfirmCalls: [],
+    approvalLookups: [],
+    workerProxyInitializations: 0,
+    restartOrder: [],
     continuationStatus: 'claimed',
     coreRequests: [],
     loadCanvas: async () => ({ canvasId: 'canvas-1', version: 0, nodes: [] }),
@@ -98,9 +106,29 @@ function createWorkerHarness(options = {}) {
     async cancelRun() { return { cancelled: false } }
     handlesAction() { return false }
   }
+  class TestDesktopLocalToolGateway {
+    constructor(client, projectId) {
+      this.client = client
+      this.projectId = projectId
+      this.commandId = null
+    }
+    attachMcpCommand(commandId) { this.commandId = commandId }
+    drainMcpStepResults() {
+      const results = runtime.mcpStepResults ?? []
+      runtime.mcpStepResults = []
+      return results
+    }
+    async getCanvasSummary(_projectId, canvasId) {
+      return this.client.request('agent:core:load-canvas', {
+        projectId: this.projectId,
+        canvasId,
+        ...(this.commandId ? { mcpCommandId: this.commandId } : {}),
+      })
+    }
+  }
   const stubs = {
     'agent-stores.ts': {
-      openDesktopAgentStores: async (projectDirectory) => createStores(projectDirectory),
+      openDesktopAgentStores: async (projectDirectory) => createStores(projectDirectory, options.controlMethods),
     },
     'project-memory.ts': { DesktopProjectMemory: TestProjectMemory },
     'session-fragments.ts': { DesktopSessionFragments: NoopStore },
@@ -122,7 +150,10 @@ function createWorkerHarness(options = {}) {
     },
     'session-run-service.ts': { SessionRunService: options.SessionRunService ?? SessionRunService },
     'approval-service.ts': { ApprovalService: options.ApprovalService ?? NoopStore },
-    'generation-confirmation.ts': { confirmDesktopGenerationAction() {}, recoverDesktopAgentRuns: async () => {} },
+    'generation-confirmation.ts': {
+      confirmDesktopGenerationAction() {},
+      async recoverDesktopAgentRuns() { runtime.restartOrder.push('recovery') },
+    },
     'task-status-sync.ts': {
       async reconcileDesktopAgentTasks(stores, _reader, options) {
         runtime.reconcileCalls.push({ projectId: stores.projectId, options })
@@ -169,7 +200,32 @@ function createWorkerHarness(options = {}) {
       extractDailyMemory() { runtime.dailyMemoryCalls += 1; return undefined },
     },
     'profile-selector.ts': { selectProfile: () => ({ name: 'test-profile' }) },
-    'local-tool-gateway.ts': options.localToolGateway ?? {},
+    'local-tool-gateway.ts': options.localToolGateway ?? { DesktopLocalToolGateway: TestDesktopLocalToolGateway },
+    'mcp-runtime.ts': options.mcpRuntime ?? {
+      listMcpAuxiliaryTools() {
+        runtime.mcpAuxiliaryListCalls += 1
+        return [{ name: 'get_context' }, { name: 'configure_provider' }, { name: 'get_operation' }]
+      },
+      listMcpRuntimeTools(input) {
+        runtime.mcpListCalls.push(input)
+        return [{ name: 'get_canvas_summary' }]
+      },
+      async executeMcpRuntimeTool(input) {
+        runtime.mcpExecuteCalls.push(input)
+        await input.gateway.getCanvasSummary(input.projectId, input.canvasId)
+        return { structuredContent: { ok: true } }
+      },
+      async confirmExternalMcpGeneration(input, _stores, gateway) {
+        runtime.mcpConfirmCalls.push({ input, commandId: gateway.commandId })
+        if (runtime.mcpConfirmError) throw runtime.mcpConfirmError
+        return runtime.mcpConfirmResult ?? {
+          proposalId: input.actionId,
+          status: 'submitted',
+          tasks: [{ taskId: 'task-1', status: 'queued' }],
+        }
+      },
+      async invalidateExternalMcpGeneration(input) { return input.actionIds.length },
+    },
     'runtime-tools.ts': options.runtimeTools ?? {},
     'agnes-model-catalog.cjs': { AGNES_MODELS: {} },
     'agent-local-tools.cjs': {
@@ -193,6 +249,10 @@ function createWorkerHarness(options = {}) {
     'agent-usage.cjs': {},
     'agent-activity.cjs': {},
     'project-agent-skills.cjs': { listProjectAgentSkills: async () => [] },
+    // The Worker test harness keeps proxy setup inert. It cannot open sockets.
+    'worker-network.cjs': {
+      initializeWorkerProxy() { runtime.workerProxyInitializations += 1; return false },
+    },
   }
   const fakeRequire = (request) => {
     const basename = path.basename(request)
@@ -240,6 +300,96 @@ function createWorkerHarness(options = {}) {
   }\n})`, context)
   wrapper(module.exports, fakeRequire, module, context.process)
   return { hooks: module.exports.__testHooks, runtime, parentPort }
+}
+
+function createMcpControlStore(seed = {}) {
+  let proposal = seed.proposal ? { taskIds: [], ...seed.proposal } : null
+  let operation = seed.operation ? { ...seed.operation } : null
+  const calls = { proposalGets: [], operationGets: [], proposalLists: [], proposalUpdates: [], operationUpdates: [], restarts: 0 }
+  return {
+    calls,
+    readProposal() { return proposal ? { ...proposal, taskIds: [...proposal.taskIds] } : null },
+    readOperation() { return operation ? { ...operation } : null },
+    getOrCreateApprovalSecret() { return 'test-only-secret' },
+    getMcpProposal(scope) {
+      calls.proposalGets.push({ ...scope })
+      if (!proposal || proposal.proposalId !== scope.proposalId
+        || proposal.clientId !== scope.clientId || proposal.grantId !== scope.grantId) return undefined
+      return { ...proposal, taskIds: [...proposal.taskIds] }
+    },
+    getMcpOperation(scope) {
+      calls.operationGets.push({ ...scope })
+      if (!operation || operation.operationId !== scope.operationId
+        || operation.clientId !== scope.clientId || operation.grantId !== scope.grantId) return undefined
+      return { ...operation }
+    },
+    listMcpProposals(scope) {
+      calls.proposalLists.push({ ...scope })
+      return proposal && proposal.clientId === scope.clientId && proposal.grantId === scope.grantId
+        && proposal.projectId === scope.projectId && proposal.canvasId === scope.canvasId
+        ? [{ ...proposal, taskIds: [...proposal.taskIds] }] : []
+    },
+    updateMcpProposal(patch) {
+      calls.proposalUpdates.push({ ...patch })
+      if (!proposal || proposal.proposalId !== patch.proposalId
+        || proposal.clientId !== patch.clientId || proposal.grantId !== patch.grantId) throw new Error('MCP_PROPOSAL_NOT_FOUND')
+      proposal = { ...proposal, ...patch, taskIds: patch.taskIds ? [...patch.taskIds] : [...proposal.taskIds] }
+      return { ...proposal, taskIds: [...proposal.taskIds] }
+    },
+    updateMcpOperation(patch) {
+      calls.operationUpdates.push({ ...patch })
+      if (!operation || operation.operationId !== patch.operationId
+        || operation.clientId !== patch.clientId || operation.grantId !== patch.grantId) throw new Error('MCP_OPERATION_NOT_FOUND')
+      operation = { ...operation, ...patch }
+      return { ...operation }
+    },
+    invalidatePendingMcpWorkForRestart() { calls.restarts += 1 },
+  }
+}
+
+function mcpScope(overrides = {}) {
+  return {
+    clientId: 'client-1',
+    grantId: 'grant-1',
+    projectId: 'project-1',
+    canvasId: 'canvas-1',
+    ...overrides,
+  }
+}
+
+function mcpProposal(overrides = {}) {
+  return {
+    proposalId: 'proposal-1',
+    operationId: 'operation-1',
+    clientId: 'client-1',
+    grantId: 'grant-1',
+    projectId: 'project-1',
+    canvasId: 'canvas-1',
+    canvasVersion: 7,
+    approvalActionId: 'approval-1',
+    status: 'awaiting_confirmation',
+    taskIds: [],
+    expiresAt: Date.now() + 60_000,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...overrides,
+  }
+}
+
+function mcpOperation(overrides = {}) {
+  return {
+    operationId: 'operation-1',
+    clientId: 'client-1',
+    grantId: 'grant-1',
+    projectId: 'project-1',
+    canvasId: 'canvas-1',
+    kind: 'prepare_generation',
+    canvasVersion: 7,
+    status: 'awaiting_confirmation',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...overrides,
+  }
 }
 
 function makeClaim(projectId, runId) {
@@ -763,3 +913,226 @@ for (const [scenario, errorCode] of [['output-limit', 'AGENT_MODEL_OUTPUT_LIMIT'
     assert.equal(runtime.generationTaskCalls, 0)
   })
 }
+
+test('MCP tool execution passes its Main command and exact scope through every Gateway request', async () => {
+  const { hooks, runtime } = createWorkerHarness()
+  const control = createMcpControlStore()
+  hooks.setStores({ ...createStores('project-1'), control })
+  const commandId = '123e4567-e89b-12d3-a456-426614174000'
+  const result = await hooks.dispatch('mcp:tool:execute', {
+    ...mcpScope(),
+    toolName: 'get_canvas_summary',
+    arguments: {},
+    canvasVersion: 7,
+    mcpCommandId: commandId,
+    providerRevisions: { providerA: 3 },
+  })
+
+  assert.deepEqual(result.structuredContent, { ok: true })
+  assert.equal(runtime.mcpExecuteCalls.length, 1)
+  const input = runtime.mcpExecuteCalls[0]
+  assert.equal(input.clientId, 'client-1')
+  assert.equal(input.grantId, 'grant-1')
+  assert.equal(input.projectId, 'project-1')
+  assert.equal(input.canvasId, 'canvas-1')
+  assert.equal(input.control, control)
+  assert.equal(JSON.stringify(input.providerRevisions), JSON.stringify({ providerA: 3 }))
+  assert.equal(input.gateway.commandId, commandId)
+  assert.equal(runtime.coreRequests.at(-1).payload.mcpCommandId, commandId)
+  assert.equal(runtime.coreRequests.at(-1).payload.projectId, 'project-1')
+})
+
+test('MCP tool discovery includes the shared auxiliary schemas and Pi runtime schemas', async () => {
+  const { hooks, runtime } = createWorkerHarness()
+  hooks.setStores(createStores('project-1'))
+  const scope = mcpScope()
+  const tools = await hooks.dispatch('mcp:tools:list', {
+    ...scope,
+    canvasVersion: 7,
+    permission: ['provider.read', 'provider.configure'],
+    providerGrants: [{ providerId: 'providerA', credentialFields: ['apiKey'] }],
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(tools.map((tool) => tool.name))), [
+    'get_context', 'configure_provider', 'get_operation', 'get_canvas_summary',
+  ])
+  assert.equal(runtime.mcpAuxiliaryListCalls, 1)
+  assert.equal(runtime.mcpListCalls.length, 1)
+  assert.equal(runtime.mcpListCalls[0].clientId, scope.clientId)
+  assert.equal(runtime.mcpListCalls[0].grantId, scope.grantId)
+  assert.equal(runtime.mcpListCalls[0].projectId, scope.projectId)
+  assert.equal(runtime.mcpListCalls[0].canvasId, scope.canvasId)
+})
+
+test('MCP proposal and operation reads enforce client, grant, project and canvas scope', async () => {
+  const { hooks } = createWorkerHarness()
+  const control = createMcpControlStore({ proposal: mcpProposal(), operation: mcpOperation() })
+  hooks.setStores({ ...createStores('project-1'), control })
+  const scope = mcpScope()
+
+  const actions = await hooks.dispatch('mcp:actions:list', scope)
+  assert.equal(actions.length, 1)
+  assert.equal(actions[0].proposalId, 'proposal-1')
+  assert.equal(actions[0].kind, 'generation')
+  assert.deepEqual(control.calls.proposalLists[0], scope)
+  assert.equal(Object.hasOwn(actions[0], 'clientId'), false)
+  assert.equal(Object.hasOwn(actions[0], 'grantId'), false)
+
+  const proposal = await hooks.dispatch('mcp:proposal:get', { ...scope, proposalId: 'proposal-1', includeScope: true })
+  assert.equal(proposal.clientId, 'client-1')
+  assert.equal(proposal.grantId, 'grant-1')
+  assert.equal(proposal.projectId, 'project-1')
+  assert.equal(proposal.canvasId, 'canvas-1')
+  assert.equal(Object.hasOwn(proposal, 'approvalToken'), false)
+  assert.equal(await hooks.dispatch('mcp:proposal:get', {
+    ...scope, grantId: 'other-grant', proposalId: 'proposal-1', includeScope: true,
+  }), null)
+  assert.equal(await hooks.dispatch('mcp:proposal:get', {
+    ...scope, canvasId: 'other-canvas', proposalId: 'proposal-1', includeScope: true,
+  }), null)
+
+  const operation = await hooks.dispatch('mcp:operation:get', { ...scope, operationId: 'operation-1' })
+  assert.equal(operation.status, 'awaiting_confirmation')
+  assert.equal(Object.hasOwn(operation, 'clientId'), false)
+  assert.equal(await hooks.dispatch('mcp:operation:get', {
+    ...scope, clientId: 'other-client', operationId: 'operation-1',
+  }), null)
+  assert.equal(await hooks.dispatch('mcp:operation:get', {
+    ...scope, canvasId: 'other-canvas', operationId: 'operation-1',
+  }), null)
+  await assert.rejects(
+    hooks.dispatch('mcp:proposal:get', { ...scope, projectId: 'other-project', proposalId: 'proposal-1' }),
+    /AGENT_PROJECT_CHANGED/,
+  )
+})
+
+test('MCP resolution reads the private approval token internally, confirms once and replays from durable state', async () => {
+  const { hooks, runtime } = createWorkerHarness()
+  const control = createMcpControlStore({ proposal: mcpProposal(), operation: mcpOperation() })
+  runtime.approvalRecord = {
+    status: 'pending',
+    action: { approvalToken: 'private-approval-token', binding: { expiresAt: Date.now() + 60_000 } },
+  }
+  class TestApprovalService {
+    constructor(store) { this.store = store }
+    async findApprovalRecord(actionId) {
+      runtime.approvalLookups.push(actionId)
+      return runtime.approvalRecord
+    }
+  }
+  const harness = createWorkerHarness({ ApprovalService: TestApprovalService, runtime })
+  const worker = harness.hooks
+  worker.setStores({ ...createStores('project-1'), control })
+  const commandId = '123e4567-e89b-12d3-a456-426614174000'
+  const request = {
+    ...mcpScope(), proposalId: 'proposal-1', decision: 'approve',
+    currentCanvasVersion: 7, providerRevisions: {}, mcpCommandId: commandId,
+  }
+
+  const first = await worker.dispatch('mcp:action:resolve', request)
+  assert.equal(first.status, 'submitted')
+  assert.equal(Object.hasOwn(first, 'approvalToken'), false)
+  assert.deepEqual(runtime.approvalLookups, ['approval-1'])
+  assert.equal(runtime.mcpConfirmCalls.length, 1)
+  assert.equal(runtime.mcpConfirmCalls[0].input.actionId, 'approval-1')
+  assert.equal(runtime.mcpConfirmCalls[0].input.approvalToken, 'private-approval-token')
+  assert.equal(runtime.mcpConfirmCalls[0].input.accept, true)
+  assert.equal(runtime.mcpConfirmCalls[0].commandId, commandId)
+  assert.equal(runtime.coreRequests.at(-1).payload.mcpCommandId, commandId)
+  assert.equal(control.readProposal().status, 'submitted')
+  assert.deepEqual(control.readProposal().taskIds, ['task-1'])
+  assert.equal(control.readOperation().status, 'submitted')
+
+  const replay = await worker.dispatch('mcp:action:resolve', { ...request, decision: 'reject' })
+  assert.equal(replay.status, 'submitted')
+  assert.equal(runtime.mcpConfirmCalls.length, 1)
+  assert.equal(Object.hasOwn(replay, 'approvalToken'), false)
+})
+
+test('MCP batch partial submission persists safe task IDs and effects without submitting again', async () => {
+  const { runtime } = createWorkerHarness()
+  const control = createMcpControlStore({ proposal: mcpProposal(), operation: mcpOperation() })
+  runtime.approvalRecord = {
+    status: 'pending',
+    action: { approvalToken: 'private-approval-token', binding: { expiresAt: Date.now() + 60_000 } },
+  }
+  runtime.mcpConfirmError = Object.assign(new Error('post-submit batch step failed'), { code: 'SERVICE_TIMEOUT' })
+  runtime.mcpStepResults = [
+    { effect: 'task_submitted', status: 'queued', taskId: 'task-persisted-1' },
+    { effect: 'task_submitted', status: 'uncertain', errorCode: 'SERVICE_TIMEOUT' },
+  ]
+  class TestApprovalService {
+    async findApprovalRecord() { return runtime.approvalRecord }
+  }
+  const harness = createWorkerHarness({ ApprovalService: TestApprovalService, runtime })
+  harness.hooks.setStores({ ...createStores('project-1'), control })
+  const request = {
+    ...mcpScope(), proposalId: 'proposal-1', decision: 'approve',
+    currentCanvasVersion: 7, providerRevisions: {},
+    mcpCommandId: '123e4567-e89b-12d3-a456-426614174000',
+  }
+
+  const first = await harness.hooks.dispatch('mcp:action:resolve', request)
+  assert.equal(first.status, 'submission_unknown')
+  assert.deepEqual(JSON.parse(JSON.stringify(first.taskIds)), ['task-persisted-1'])
+  assert.deepEqual(JSON.parse(JSON.stringify(first.tasks)), [{ taskId: 'task-persisted-1', status: 'queued' }])
+  assert.deepEqual(JSON.parse(JSON.stringify(first.completedSteps)), [
+    { effect: 'task_submitted', status: 'completed', taskId: 'task-persisted-1' },
+  ])
+  assert.equal(first.effects.some((step) => step.status === 'uncertain'), true)
+  assert.equal(control.readProposal().status, 'submission_unknown')
+  assert.deepEqual(control.readProposal().taskIds, ['task-persisted-1'])
+  assert.equal(control.readOperation().status, 'submission_unknown')
+  assert.deepEqual(JSON.parse(JSON.stringify(control.readOperation().result.taskIds)), ['task-persisted-1'])
+  assert.deepEqual(JSON.parse(JSON.stringify(control.readOperation().result.tasks)), [
+    { taskId: 'task-persisted-1', status: 'queued' },
+  ])
+  assert.equal(control.readOperation().result.effects.length, 2)
+  assert.equal(control.readOperation().result.effects[0].status, 'completed')
+  assert.equal(control.readOperation().result.effects[1].status, 'uncertain')
+  assert.equal(runtime.mcpConfirmCalls.length, 1)
+
+  const replay = await harness.hooks.dispatch('mcp:action:resolve', request)
+  assert.equal(replay.status, 'submission_unknown')
+  assert.deepEqual(JSON.parse(JSON.stringify(replay.taskIds)), ['task-persisted-1'])
+  assert.equal(runtime.mcpConfirmCalls.length, 1)
+  assert.equal(JSON.stringify(replay).includes('private-approval-token'), false)
+})
+
+test('MCP reject uses the internal token and records the rejected proposal and operation', async () => {
+  const { hooks, runtime } = createWorkerHarness()
+  const control = createMcpControlStore({ proposal: mcpProposal(), operation: mcpOperation() })
+  runtime.approvalRecord = {
+    status: 'pending',
+    action: { approvalToken: 'private-approval-token', binding: { expiresAt: Date.now() + 60_000 } },
+  }
+  class TestApprovalService {
+    async findApprovalRecord() { return runtime.approvalRecord }
+  }
+  const harness = createWorkerHarness({ ApprovalService: TestApprovalService, runtime })
+  harness.hooks.setStores({ ...createStores('project-1'), control })
+  const result = await harness.hooks.dispatch('mcp:action:resolve', {
+    ...mcpScope(), proposalId: 'proposal-1', decision: 'reject', currentCanvasVersion: 7,
+    providerRevisions: {}, mcpCommandId: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  assert.equal(result.status, 'rejected')
+  assert.equal(runtime.mcpConfirmCalls[0].input.accept, false)
+  assert.equal(runtime.mcpConfirmCalls[0].input.approvalToken, 'private-approval-token')
+  assert.equal(control.readProposal().status, 'rejected')
+  assert.equal(control.readOperation().status, 'rejected')
+})
+
+test('opening an existing project invalidates pending MCP approvals before recovery', async () => {
+  let invalidations = 0
+  const { hooks, runtime } = createWorkerHarness({
+    controlMethods: {
+      invalidatePendingMcpWorkForRestart() {
+        invalidations += 1
+        runtime.restartOrder.push('invalidated')
+      },
+    },
+  })
+  await hooks.dispatch('agent:open', { projectDirectory: 'project-1' })
+  assert.equal(invalidations, 1)
+  assert.deepEqual(runtime.restartOrder, ['invalidated', 'recovery'])
+})

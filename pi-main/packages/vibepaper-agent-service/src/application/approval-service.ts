@@ -4,6 +4,7 @@ import type { ActionBinding, ActionRisk, ConsumedAction, PlannedAction } from ".
 import { nextId } from "../infrastructure/ids.ts";
 
 export type PlanActionInput = {
+	actionId?: string;
 	userId: string;
 	runId?: string;
 	sessionId: string;
@@ -77,7 +78,9 @@ export class ApprovalService {
 			}),
 		);
 		const requiresApproval = input.requiresApproval ?? (input.estimatedCost >= 1 || input.risk === "high");
-		const actionId = nextId();
+		const actionId = input.actionId ?? nextId();
+		if (typeof actionId !== "string" || actionId.length < 1 || actionId.length > 128)
+			throw new Error("APPROVAL_RECORD_INVALID");
 		const base: Omit<PlannedAction, "binding" | "approvalToken"> = {
 			actionId,
 			userId: input.userId,
@@ -159,6 +162,16 @@ export class ApprovalService {
 		const record = await this.repository.find(actionId);
 		if (!record) throw new ApprovalError("CONFIRMATION_REQUIRED", "确认令牌无效或已处理");
 		this.assertStoredToken(record, token);
+	}
+
+	async findPlannedAction(actionId: string): Promise<PlannedAction | undefined> {
+		if (typeof actionId !== "string" || actionId.length < 1 || actionId.length > 128) return undefined;
+		return (await this.repository.find(actionId))?.action;
+	}
+
+	async findApprovalRecord(actionId: string): Promise<ApprovalRecord | undefined> {
+		if (typeof actionId !== "string" || actionId.length < 1 || actionId.length > 128) return undefined;
+		return this.repository.find(actionId);
 	}
 
 	private async consume(

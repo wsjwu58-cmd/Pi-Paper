@@ -112,6 +112,8 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 	private readonly client: DesktopLocalToolClient;
 	private readonly projectId: string;
 	private runScope?: { control: DesktopAgentControlStore; sessionId: string; runId: string };
+	private mcpCommandId?: string;
+	private mcpStepResults: Array<Record<string, string | number>> = [];
 
 	constructor(client: DesktopLocalToolClient, projectId: string) {
 		this.client = client;
@@ -120,6 +122,17 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 
 	attachRun(scope: { control: DesktopAgentControlStore; sessionId: string; runId: string }): void {
 		this.runScope = scope;
+	}
+
+	attachMcpCommand(commandId: string): void {
+		if (!/^[a-f0-9-]{36}$/iu.test(commandId)) throw gatewayError("PERMISSION_DENIED", "MCP 操作上下文无效", 403);
+		this.mcpCommandId = commandId;
+	}
+
+	drainMcpStepResults(): Array<Record<string, string | number>> {
+		const results = this.mcpStepResults;
+		this.mcpStepResults = [];
+		return results;
 	}
 
 	async getCanvasSummary(_userId: string, canvasId: string): Promise<Record<string, unknown>> {
@@ -439,6 +452,7 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 	}
 
 	private async call(method: string, payload: Record<string, unknown>): Promise<unknown> {
+		if (this.mcpCommandId) payload = { ...payload, mcpCommandId: this.mcpCommandId };
 		const scope = this.runScope;
 		const key = stringValue(payload.idempotencyKey);
 		const mutating =
@@ -496,6 +510,20 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 				payload,
 				method.endsWith("delete-nodes") ? 300_000 : method.endsWith("save-canvas") ? 60_000 : 30_000,
 			);
+			if (this.mcpCommandId && mutating && this.mcpStepResults.length < 100) {
+				const step: Record<string, string | number> = { effect: mcpEffectName(method), status: "completed" };
+				if (isRecord(response)) {
+					for (const key of ["version", "canvasVersion", "taskId"] as const) {
+						const value = response[key];
+						if (typeof value === "string" || (typeof value === "number" && Number.isSafeInteger(value)))
+							step[key] = value;
+					}
+					if (typeof response.status === "string") step.taskStatus = response.status;
+					if (isRecord(response.node) && typeof response.node.id === "string") step.nodeId = response.node.id;
+					if (isRecord(response.edge) && typeof response.edge.id === "string") step.edgeId = response.edge.id;
+				}
+				this.mcpStepResults.push(step);
+			}
 			if (operation) {
 				const projected = isRecord(response) ? operationSnapshot(response) : response;
 				scope!.control.transitionOperation(operation.operationId, "succeeded", {
@@ -504,14 +532,33 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 			}
 			return response;
 		} catch (error) {
+			if (this.mcpCommandId && mutating && this.mcpStepResults.length < 100) {
+				this.mcpStepResults.push({
+					effect: mcpEffectName(method),
+					status: "uncertain",
+					errorCode: mapLocalErrorCode(error),
+				});
+			}
 			if (operation) scope!.control.transitionOperation(operation.operationId, "uncertain");
 			if (error instanceof ToolGatewayError) throw error;
-			const raw = error instanceof Error ? error.message : String(error);
-			const code = mapLocalErrorCode(raw);
+			const code = mapLocalErrorCode(error);
 			throw gatewayError(
 				code,
 				safeLocalErrorMessage(code),
-				code === "VERSION_CONFLICT" ? 409 : code === "INVALID_INPUT" ? 400 : 502,
+				[
+					"VERSION_CONFLICT",
+					"CANVAS_VERSION_CONFLICT",
+					"PROVIDER_REVISION_CONFLICT",
+					"IDEMPOTENCY_CONFLICT",
+				].includes(code)
+					? 409
+					: ["PERMISSION_DENIED", "MCP_COMMAND_REVOKED", "MCP_CORE_METHOD_FORBIDDEN"].includes(code)
+						? 403
+						: code === "REQUEST_CANCELLED"
+							? 499
+							: code === "INVALID_INPUT"
+								? 400
+								: 502,
 			);
 		}
 	}
@@ -726,7 +773,53 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function mapLocalErrorCode(message: string): string {
+function mcpEffectName(method: string): string {
+	if (method.endsWith(":create-node")) return "node_created";
+	if (method.endsWith(":update-node")) return "node_updated";
+	if (method.endsWith(":connect-edge")) return "edge_connected";
+	if (method.endsWith(":save-canvas")) return "canvas_saved";
+	if (method.endsWith(":delete-nodes")) return "nodes_deleted";
+	if (method.endsWith(":create-generation-task")) return "task_submitted";
+	return "canvas_effect";
+}
+
+function mapLocalErrorCode(error: unknown): string {
+	const fixedCodes = new Set([
+		"INVALID_INPUT",
+		"MODEL_UNAVAILABLE",
+		"LOCAL_MODEL_CONFIGURATION_MISSING",
+		"LOCAL_MODEL_CONFIGURATION_CHANGED",
+		"LOCAL_MEDIA_SOURCE_INVALID",
+		"UNSUPPORTED_MODALITY",
+		"CLOUD_CREDENTIAL_MISSING",
+		"CLOUD_MODEL_CONFIGURATION_INVALID",
+		"INVALID_IMAGE_COUNT",
+		"AGENT_GENERATION_INPUT_INVALID",
+		"AGENT_GENERATION_MODEL_UNAVAILABLE",
+		"AGENT_GENERATION_TARGET_MISMATCH",
+		"TASK_PROJECT_CONTEXT_CHANGED",
+		"PROVIDER_TYPE_UNSUPPORTED",
+		"UNSUPPORTED_REFERENCE_MEDIA",
+		"PERMISSION_DENIED",
+		"REQUEST_CANCELLED",
+		"PROVIDER_REVISION_CONFLICT",
+		"PROVIDER_REVISION_UNAVAILABLE",
+		"CANVAS_NOT_READY",
+		"CANVAS_VERSION_CONFLICT",
+		"PROJECT_CHANGED",
+		"MCP_COMMAND_REVOKED",
+		"MCP_CORE_METHOD_FORBIDDEN",
+		"IDEMPOTENCY_CONFLICT",
+		"CONFIRMATION_EXPIRED",
+		"CONFIRMATION_REQUIRED",
+		"MODEL_NOT_FOUND",
+		"TASK_NOT_FOUND",
+	]);
+	const coded = isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+	if (coded && fixedCodes.has(coded)) return coded;
+	const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+	const fixedMatch = /(?:^|\[)([A-Z][A-Z0-9_]{1,119})(?:\]|:|$)/u.exec(message)?.[1];
+	if (fixedMatch && fixedCodes.has(fixedMatch)) return fixedMatch;
 	if (/AGENT_CANVAS_CHANGED/u.test(message)) return "VERSION_CONFLICT";
 	if (/AGENT_RENDER_AUDIT_TARGET_INVALID/u.test(message)) return "NOT_FOUND";
 	if (/VERSION_CONFLICT|版本已变化|请刷新|其他会话更新/u.test(message)) return "VERSION_CONFLICT";

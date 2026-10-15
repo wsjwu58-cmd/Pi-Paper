@@ -38,26 +38,46 @@ async function closeStore(store: DesktopAgentSessionStore): Promise<void> {
 
 afterEach(async () => {
 	await Promise.all(openStores.splice(0).map((store) => store.close()));
-	await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+	await Promise.all(
+		temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+	);
 });
 
 describe("desktop Pi session reference metadata", () => {
 	it("retains selected reference identities in model history and compaction without changing visible text", async () => {
 		const { store } = await createStore();
 		const session = await store.createSession("历史参考");
-		await store.appendMessage(session.id, { role: "user", content: "继续这张图", timestamp: Date.now() }, {
-			selectedNodeIds: ["image-source"], nodeReferences: [{
-				nodeId: "image-source", nodeType: "image", title: "人物图", status: "ready",
-			}],
-		});
+		await store.appendMessage(
+			session.id,
+			{ role: "user", content: "继续这张图", timestamp: Date.now() },
+			{
+				selectedNodeIds: ["image-source"],
+				nodeReferences: [
+					{
+						nodeId: "image-source",
+						nodeType: "image",
+						title: "人物图",
+						status: "ready",
+					},
+				],
+			},
+		);
 		expect(JSON.stringify((await store.buildContext(session.id)).messages)).toContain("image-source");
 		const firstTranscriptMessage = (await store.listTranscriptMessages(session.id))[0]?.message;
 		expect(firstTranscriptMessage?.role === "user" ? firstTranscriptMessage.content : undefined).toBe("继续这张图");
-		await store.appendCompaction(session.id, { summary: "用户正在引用人物图继续整理画布。", retainLastMessages: 1, tokensBefore: 100 });
+		await store.appendCompaction(session.id, {
+			summary: "用户正在引用人物图继续整理画布。",
+			retainLastMessages: 1,
+			tokensBefore: 100,
+		});
 		const context = await store.buildContext(session.id);
 		expect(JSON.stringify(context.messages)).toContain("image-source");
 		expect(JSON.stringify(context.messages).match(/NODE_REFERENCES_UNTRUSTED_DATA_BEGIN/g)).toHaveLength(1);
-		await store.appendCompaction(session.id, { summary: "用户正在引用人物图继续整理画布。", retainLastMessages: 0, tokensBefore: 100 });
+		await store.appendCompaction(session.id, {
+			summary: "用户正在引用人物图继续整理画布。",
+			retainLastMessages: 0,
+			tokensBefore: 100,
+		});
 		expect((await store.buildContext(session.id)).messages).toHaveLength(1);
 		expect(await store.listTranscriptMessages(session.id)).toHaveLength(1);
 	});
@@ -65,52 +85,75 @@ describe("desktop Pi session reference metadata", () => {
 	it("writes bounded summary usage receipts without summary content", async () => {
 		const { store } = await createStore();
 		const session = await store.createSession("摘要用量");
-		await store.appendSummaryUsage(session.id, { provider: "agnes", model: "agnes-2.5-flash",
-			usage: { input: 70, output: 10, cacheRead: 3, cacheWrite: 0 } });
+		await store.appendSummaryUsage(session.id, {
+			provider: "agnes",
+			model: "agnes-2.5-flash",
+			usage: { input: 70, output: 10, cacheRead: 3, cacheWrite: 0 },
+		});
 		const entries = await (await store.openSession(session.id)).findEntries({ type: "custom" });
-		expect(entries).toMatchObject([{ customType: "vibepaper_summary_usage", data: {
-			provider: "agnes", usage: { input: 70, output: 10 },
-		} }]);
-		await expect(store.appendSummaryUsage(session.id, { provider: "agnes", model: "test",
-			usage: { input: NaN, output: 0, cacheRead: 0, cacheWrite: 0 } })).rejects.toThrow("AGENT_USAGE_INVALID");
+		expect(entries).toMatchObject([
+			{
+				customType: "vibepaper_summary_usage",
+				data: {
+					provider: "agnes",
+					usage: { input: 70, output: 10 },
+				},
+			},
+		]);
+		await expect(
+			store.appendSummaryUsage(session.id, {
+				provider: "agnes",
+				model: "test",
+				usage: { input: NaN, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+		).rejects.toThrow("AGENT_USAGE_INVALID");
 	});
 	it("persists live tool DTOs with optional undefined fields and restores their results", async () => {
 		const { store } = await createStore();
 		const session = await store.createSession("工具结果落盘");
 		const message: AgentMessage = {
-			role: "toolResult", toolCallId: "call-live", toolName: "create_nodes",
+			role: "toolResult",
+			toolCallId: "call-live",
+			toolName: "create_nodes",
 			content: [{ type: "text", text: "已创建节点" }],
 			details: { nodes: [{ title: "小猫", assetId: undefined }], warning: undefined },
-			isError: false, timestamp: Date.now(),
+			isError: false,
+			timestamp: Date.now(),
 		};
 		await store.appendMessage(session.id, message);
 		const context = await store.buildContext(session.id);
 		expect(context.messages[0]).toMatchObject({ details: { nodes: [{ title: "小猫" }] } });
 		expect(message).toHaveProperty("details.warning", undefined);
-		await expect(store.appendMessage(session.id, { ...message, details: [undefined] }))
-			.rejects.toThrow("contains undefined");
-		await expect(store.appendMessage(session.id, { ...message, details: { count: NaN } }))
-			.rejects.toThrow("non-finite");
+		await expect(store.appendMessage(session.id, { ...message, details: [undefined] })).rejects.toThrow(
+			"contains undefined",
+		);
+		await expect(store.appendMessage(session.id, { ...message, details: { count: NaN } })).rejects.toThrow(
+			"non-finite",
+		);
 		const unsupportedArray = Object.assign(["value"], { hidden: undefined });
-		await expect(store.appendMessage(session.id, { ...message, details: unsupportedArray }))
-			.rejects.toThrow("unsupported properties");
-		await expect(store.appendMessage(session.id, { ...message, details: { [Symbol("hidden")]: undefined } }))
-			.rejects.toThrow("symbol");
+		await expect(store.appendMessage(session.id, { ...message, details: unsupportedArray })).rejects.toThrow(
+			"unsupported properties",
+		);
+		await expect(
+			store.appendMessage(session.id, { ...message, details: { [Symbol("hidden")]: undefined } }),
+		).rejects.toThrow("symbol");
 	});
 	it("restores stable node reference cards after reopening JSONL and drops remote secrets and prompt bodies", async () => {
 		const { projectDirectory, sessionsDirectory, store } = await createStore();
 		const session = await store.createSession("参考历史");
 		const metadata = {
 			selectedNodeIds: ["node-1"],
-			nodeReferences: [{
-				nodeId: "node-1",
-				nodeType: "image",
-				title: "角色参考",
-				status: "ready",
-				previewUrl: "vibe://app/assets/asset-1",
-				textContent: "不要写入素材正文",
-				prompt: "不要写入节点提示词",
-			}],
+			nodeReferences: [
+				{
+					nodeId: "node-1",
+					nodeType: "image",
+					title: "角色参考",
+					status: "ready",
+					previewUrl: "vibe://app/assets/asset-1",
+					textContent: "不要写入素材正文",
+					prompt: "不要写入节点提示词",
+				},
+			],
 			selectedSkillId: "shot-storyboard",
 		} as unknown as DesktopAgentMessageMetadata;
 		const userMessage: AgentMessage = {
@@ -120,13 +163,16 @@ describe("desktop Pi session reference metadata", () => {
 		};
 		const messageId = await store.appendMessage(session.id, userMessage, metadata);
 		const piSession = await store.openSession(session.id);
-		await piSession.appendEntry({
-			type: "compaction",
-			id: randomUUID(),
-			summary: "用户正在基于参考图继续创作。",
-			retainedTail: [userMessage],
-			tokensBefore: 120,
-		}, "main");
+		await piSession.appendEntry(
+			{
+				type: "compaction",
+				id: randomUUID(),
+				summary: "用户正在基于参考图继续创作。",
+				retainedTail: [userMessage],
+				tokensBefore: 120,
+			},
+			"main",
+		);
 		expect(JSON.stringify((await store.buildContext(session.id)).messages)).toContain("node-1");
 		const storedSession = await store.openSession(session.id);
 		const sessionPath = (await storedSession.getMetadata()).path;
@@ -152,13 +198,15 @@ describe("desktop Pi session reference metadata", () => {
 			message: expect.objectContaining({ role: "user" }),
 			metadata: {
 				selectedNodeIds: ["node-1"],
-				nodeReferences: [{
-					nodeId: "node-1",
-					nodeType: "image",
-					title: "角色参考",
-					status: "ready",
-					previewUrl: "vibe://app/assets/asset-1",
-				}],
+				nodeReferences: [
+					{
+						nodeId: "node-1",
+						nodeType: "image",
+						title: "角色参考",
+						status: "ready",
+						previewUrl: "vibe://app/assets/asset-1",
+					},
+				],
 				selectedSkillId: "shot-storyboard",
 			},
 		});
@@ -274,13 +322,15 @@ describe("desktop Pi session reference metadata", () => {
 
 		await store.appendMessage(session.id, userMessage, {
 			selectedNodeIds: ["node-1"],
-			nodeReferences: [{
-				nodeId: "node-1",
-				nodeType: "image",
-				title: "云端链接不保留",
-				status: "ready",
-				previewUrl: "https://cdn.example.test/image.png?signature=secret",
-			}],
+			nodeReferences: [
+				{
+					nodeId: "node-1",
+					nodeType: "image",
+					title: "云端链接不保留",
+					status: "ready",
+					previewUrl: "https://cdn.example.test/image.png?signature=secret",
+				},
+			],
 		});
 		const stored = await store.listMessages(session.id);
 		expect(stored[0]?.metadata?.nodeReferences[0]).not.toHaveProperty("previewUrl");
@@ -294,10 +344,12 @@ describe("desktop Pi session reference metadata", () => {
 			title: `参考 ${index}`,
 			status: "ready",
 		}));
-		await expect(store.appendMessage(session.id, userMessage, {
-			selectedNodeIds: tooManyReferences.map((reference) => reference.nodeId),
-			nodeReferences: tooManyReferences,
-		} as DesktopAgentMessageMetadata)).rejects.toThrow("AGENT_REFERENCE_METADATA_INVALID");
+		await expect(
+			store.appendMessage(session.id, userMessage, {
+				selectedNodeIds: tooManyReferences.map((reference) => reference.nodeId),
+				nodeReferences: tooManyReferences,
+			} as DesktopAgentMessageMetadata),
+		).rejects.toThrow("AGENT_REFERENCE_METADATA_INVALID");
 		expect(await store.listMessages(session.id)).toHaveLength(1);
 	});
 });

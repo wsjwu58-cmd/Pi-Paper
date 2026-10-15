@@ -18,7 +18,26 @@ const AGENT_CORE_METHODS = Object.freeze([
   'agent:core:create-render-review',
 ])
 const ALLOWED_AGENT_CORE_METHODS = new Set(AGENT_CORE_METHODS)
+const AGENT_CORE_ERROR_CODES = new Set([
+  'AGENT_PROJECT_CHANGED', 'AGENT_CANVAS_CHANGED', 'AGENT_RENDER_AUDIT_INPUT_INVALID',
+  'AGENT_RENDER_AUDIT_TARGET_INVALID', 'CANVAS_NOT_READY', 'CANVAS_VERSION_CONFLICT',
+  'CLOUD_CREDENTIAL_MISSING', 'CLOUD_MODEL_CONFIGURATION_INVALID', 'CONFIRMATION_EXPIRED',
+  'CONFIRMATION_REQUIRED', 'IDEMPOTENCY_CONFLICT', 'INVALID_IMAGE_COUNT', 'INVALID_INPUT',
+  'LOCAL_MEDIA_SOURCE_INVALID', 'LOCAL_MODEL_CONFIGURATION_CHANGED',
+  'LOCAL_MODEL_CONFIGURATION_MISSING', 'MCP_COMMAND_REVOKED', 'MCP_CORE_METHOD_FORBIDDEN',
+  'MODEL_UNAVAILABLE', 'NOT_FOUND', 'PERMISSION_DENIED', 'PROJECT_CHANGED',
+  'PROVIDER_REVISION_CONFLICT', 'PROVIDER_REVISION_UNAVAILABLE', 'PROVIDER_TYPE_UNSUPPORTED',
+  'REQUEST_CANCELLED', 'TASK_NOT_FOUND', 'TASK_PROJECT_CONTEXT_CHANGED', 'UNSUPPORTED_MODALITY',
+  'UNSUPPORTED_REFERENCE_MEDIA', 'VERSION_CONFLICT',
+])
 const SHORT_DRAMA_CREATIVE_TYPES = new Set(['script', 'character', 'shot', 'keyframe', 'clip'])
+
+function safeAgentCoreErrorCode(error) {
+  const code = error && typeof error === 'object' && typeof error.code === 'string'
+    ? error.code
+    : error instanceof Error ? error.message : ''
+  return AGENT_CORE_ERROR_CODES.has(code) ? code : 'CANVAS_UNAVAILABLE'
+}
 
 function getAgentCanvasDomain(canvas) {
   const nodes = Array.isArray(canvas?.nodes) ? canvas.nodes : []
@@ -83,6 +102,7 @@ function createAgentLocalToolClient(parentPort, timeoutMs = 30_000) {
 module.exports = {
   AGENT_CORE_METHODS,
   ALLOWED_AGENT_CORE_METHODS,
+  safeAgentCoreErrorCode,
   getAgentCanvasDomain,
   createAgentLocalToolClient,
 }

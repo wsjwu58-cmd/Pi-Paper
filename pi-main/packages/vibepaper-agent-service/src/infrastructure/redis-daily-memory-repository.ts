@@ -14,7 +14,9 @@ export class RedisDailyMemoryRepository implements DailyMemoryRepository {
 		return values.flatMap((value: string) => {
 			try {
 				const parsed = JSON.parse(value) as Partial<DailyMemoryEntry>;
-				return typeof parsed.id === "string" && typeof parsed.userId === "string" && typeof parsed.content === "string"
+				return typeof parsed.id === "string" &&
+					typeof parsed.userId === "string" &&
+					typeof parsed.content === "string"
 					? [
 							{
 								id: parsed.id,

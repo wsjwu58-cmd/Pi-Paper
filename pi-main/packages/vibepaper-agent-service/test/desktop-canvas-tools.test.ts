@@ -338,4 +338,63 @@ describe("original Agent desktop canvas commands", () => {
 			},
 		});
 	});
+
+	it("preserves stable local generation errors and records submitted effects independently of task status", async () => {
+		const localModel = {
+			name: "mcp-review-text",
+			modelType: "text",
+			modalities: ["text"],
+			providerId: "local-openai-compatible",
+			providerType: "local",
+			enabled: true,
+		};
+		const createGateway = (createTask: () => unknown) => {
+			const gateway = new DesktopLocalToolGateway(
+				{
+					request: async (method) => {
+						if (method === "agent:core:list-models") return [localModel];
+						if (method === "agent:core:load-canvas")
+							return {
+								projectId: "p",
+								canvasId: "c",
+								version: 3,
+								nodes: [{ id: "target", type: "text", position: { x: 0, y: 0 }, data: {} }],
+								edges: [],
+							};
+						if (method === "agent:core:create-generation-task") return createTask();
+						throw new Error(`unexpected method: ${method}`);
+					},
+				},
+				"p",
+			);
+			gateway.attachMcpCommand("00000000-0000-4000-8000-000000000001");
+			return gateway;
+		};
+		const input = {
+			userId: "p",
+			canvasId: "c",
+			canvasVersion: 3,
+			nodeId: "target",
+			modelType: "mcp-review-text",
+			modelParams: { prompt: "hello" },
+			idempotencyKey: "confirmed-local-task",
+		};
+
+		const failing = createGateway(() => {
+			throw Object.assign(new Error("生成任务请求无效。"), { code: "INVALID_INPUT" });
+		});
+		await expect(failing.createGenerationTask(input)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+		expect(failing.drainMcpStepResults()).toEqual([
+			{ effect: "task_submitted", status: "uncertain", errorCode: "INVALID_INPUT" },
+		]);
+
+		const submitted = createGateway(() => ({ taskId: "task-1", status: "queued" }));
+		await expect(submitted.createGenerationTask(input)).resolves.toMatchObject({
+			taskId: "task-1",
+			status: "queued",
+		});
+		expect(submitted.drainMcpStepResults()).toEqual([
+			{ effect: "task_submitted", status: "completed", taskId: "task-1", taskStatus: "queued" },
+		]);
+	});
 });

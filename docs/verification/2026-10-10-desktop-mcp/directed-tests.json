@@ -1,0 +1,13 @@
+{
+  "date": "2026-10-11",
+  "platform": "win32",
+  "reviewer": "root",
+  "command": "node --test --test-isolation=none test/mcp-provider-controller.test.cjs test/provider-settings.test.cjs test/provider-task-defaults.test.cjs test/agent-local-tools.test.cjs test/mcp-review-runtime.test.cjs",
+  "workingDirectory": "vibepaper-desktop",
+  "tests": 45,
+  "passed": 45,
+  "failed": 0,
+  "realProviderRequests": 0,
+  "scope": ["provider controller and persistence fixtures", "original targeted regressions", "independent shared-runtime input rejection"],
+  "doesNotProve": ["stdio protocol", "Main integration", "renderer save barrier", "real external clients", "real provider generation", "packaged applications"]
+}

@@ -1,0 +1,174 @@
+{
+  "success": true,
+  "startedAt": "2026-10-15T07:24:25.261Z",
+  "completedAt": "2026-10-15T07:24:37.837Z",
+  "phase": "completed",
+  "platform": "win32",
+  "electron": "44.4.4",
+  "node": "24.21.0",
+  "profile": "E:\\VibePaperProject\\.test-temp\\mcp-media-read-1792049065260\\VibePaper",
+  "projectDirectory": "E:\\VibePaperProject\\.test-temp\\mcp-agnes-1791725635317\\project\\Agnes real account acceptance",
+  "projectId": "71f7721a-cbd8-4f22-acbc-0ff0db1533e2",
+  "canvasId": "7d562672-fdea-47ee-99df-c0884c7f94f2",
+  "taskId": "55bffcd0-b59b-4e95-94b0-763937a61c15",
+  "nodeId": "db823849-ed67-42d1-bff7-022993de8e8d",
+  "providerCredentialAccessed": false,
+  "cloudRequestMade": false,
+  "grant": {
+    "permissions": [
+      "canvas.read",
+      "task.read",
+      "media.read"
+    ],
+    "mediaTypes": [
+      "video"
+    ],
+    "providerGrants": []
+  },
+  "protocol": {
+    "transport": "stdio",
+    "sdkVersion": "1.32.1",
+    "tool": "read_task_output"
+  },
+  "metadata": {
+    "mode": "metadata",
+    "modality": "video",
+    "sizeBytes": 1070236,
+    "contentType": "text"
+  },
+  "preview": {
+    "mode": "preview",
+    "modality": "video",
+    "mimeType": "video/mp4",
+    "resourceUri": "vibepaper://task-output/55bffcd0-b59b-4e95-94b0-763937a61c15/0",
+    "sizeBytes": 1070236,
+    "contentType": "resource",
+    "base64Bytes": 1426984,
+    "sha256": "7a1e6bb89e38b6a763f4eab0d3f5c43dfae2fa8a0344ac5b7cdc71899c927a76"
+  },
+  "persistedOutput": {
+    "relativePath": "generated/55bffcd0-b59b-4e95-94b0-763937a61c15/result.mp4",
+    "sha256": "7a1e6bb89e38b6a763f4eab0d3f5c43dfae2fa8a0344ac5b7cdc71899c927a76",
+    "recordedSha256": "7a1e6bb89e38b6a763f4eab0d3f5c43dfae2fa8a0344ac5b7cdc71899c927a76",
+    "sizeBytes": 1070236
+  },
+  "videoProbe": {
+    "formatDurationSeconds": 4.48,
+    "streamWidth": 1280,
+    "streamHeight": 720,
+    "streams": [
+      {
+        "codecType": "video",
+        "width": 1280,
+        "height": 720,
+        "durationSeconds": 4.458333
+      },
+      {
+        "codecType": "audio",
+        "durationSeconds": 4.48
+      }
+    ]
+  },
+  "originalCanvasVideo": {
+    "visible": true,
+    "ready": true,
+    "visibleStyle": true,
+    "nodeInViewport": true,
+    "videoInViewport": true,
+    "unobscured": true,
+    "videoWidth": 1280,
+    "videoHeight": 720,
+    "duration": 4.48,
+    "currentTime": 0.709848,
+    "paused": true,
+    "readyState": 4,
+    "sourceIsTaskOutput": true,
+    "nodeRect": {
+      "left": 582.5,
+      "top": 233.75,
+      "right": 998.9999389648438,
+      "bottom": 468.03125
+    },
+    "videoRect": {
+      "left": 582.5,
+      "top": 233.75,
+      "right": 998.9999389648438,
+      "bottom": 468.03125
+    },
+    "flowRect": {
+      "left": 0,
+      "top": 0,
+      "right": 1046,
+      "bottom": 884
+    },
+    "playback": {
+      "playedMilliseconds": 711,
+      "currentTime": 0.709819,
+      "presentedFrames": 17,
+      "lastFrame": {
+        "mediaTime": 0.708333,
+        "presentedFrames": 18,
+        "width": 1280,
+        "height": 720
+      }
+    },
+    "screenshot": "mcp-real-video-read-original-canvas.png",
+    "windowVisible": true
+  },
+  "decoding": {
+    "ffprobeExitCode": 0,
+    "ffmpegExitCode": 0,
+    "ffmpegDecodeSucceeded": true
+  },
+  "assertions": {
+    "previewMatchesPersistedFile": true,
+    "persistedFileMatchesTaskStoreDigest": true,
+    "persistedFileMatchesRealAccountEvidence": true,
+    "persistedSizeMatchesTaskStoreAndEvidence": true,
+    "originalCanvasOpen": true,
+    "originalNodeVisible": true,
+    "originalResultDomVisible": true,
+    "originalVideoMetadataLoaded": true,
+    "originalVideoDecoded": true,
+    "originalVideoNodeAndElementInsideCanvasViewport": true,
+    "originalVideoCenterUnobscured": true,
+    "originalVideoPlaybackFramesPresented": true,
+    "ffprobeConfirmedApproximatelyFourSeconds720p": true,
+    "ffmpegDecodedEntirePersistedVideo": true,
+    "existingProjectReopened": true,
+    "newGrantIsReadOnlyForMedia": true
+  },
+  "videoVisibility": {
+    "videoWidth": 1280,
+    "videoHeight": 720,
+    "duration": 4.48,
+    "currentTime": 0.709848,
+    "readyState": 4,
+    "nodeRect": {
+      "left": 582.5,
+      "top": 233.75,
+      "right": 998.9999389648438,
+      "bottom": 468.03125
+    },
+    "videoRect": {
+      "left": 582.5,
+      "top": 233.75,
+      "right": 998.9999389648438,
+      "bottom": 468.03125
+    },
+    "flowRect": {
+      "left": 0,
+      "top": 0,
+      "right": 1046,
+      "bottom": 884
+    }
+  },
+  "bridgeDiagnostics": "VibePaper connection approval: verify code [pairing-code] in the desktop dialog.\n",
+  "screenshot": "mcp-real-video-read-original-canvas.png",
+  "reviewerVisualInspection": {
+    "passed": true,
+    "checkedAt": "2026-10-15T07:27:41.529Z",
+    "screenshot": "mcp-real-video-read-original-canvas.png",
+    "observation": "The original CanvasPage shows the generated blue ceramic cube video frame in the video node, with the real image result also visible."
+  }
+}

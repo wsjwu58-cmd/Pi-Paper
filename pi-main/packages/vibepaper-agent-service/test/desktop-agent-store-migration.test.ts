@@ -85,6 +85,76 @@ describe("desktop Agent control schema backup", () => {
 		expect(directoryNames.some((name) => /\.pre-migration\.sqlite-(?:wal|shm)$/u.test(name))).toBe(false);
 	});
 
+	it("backs up a v10 project and migrates MCP batch provider revisions", async () => {
+		const project = await createProject();
+		const proposalId = randomUUID();
+		const legacyProposal = {
+			proposalId,
+			clientId: randomUUID(),
+			grantId: randomUUID(),
+			operationId: "legacy-batch",
+			projectId: project.projectId,
+			canvasId: "canvas-migration",
+			canvasVersion: 4,
+			modelBindingId: "provider-a/model-a",
+			providerRevision: 2,
+			approvalActionId: randomUUID(),
+			status: "awaiting_confirmation" as const,
+			expiresAt: Date.now() + 60_000,
+		};
+		const initial = await openDesktopAgentStores(project.directory);
+		try {
+			initial.control.createMcpProposal(legacyProposal);
+		} finally {
+			await initial.close();
+		}
+
+		const legacy = new DatabaseSync(project.controlPath);
+		try {
+			legacy.exec(`ALTER TABLE desktop_mcp_proposals DROP COLUMN provider_revisions_json;
+				PRAGMA user_version = 10;`);
+		} finally {
+			legacy.close();
+		}
+
+		const migrated = await openDesktopAgentStores(project.directory);
+		try {
+			const proposal = migrated.control.getMcpProposal({
+				proposalId,
+				clientId: legacyProposal.clientId,
+				grantId: legacyProposal.grantId,
+			});
+			expect(proposal).toMatchObject({ proposalId, status: "awaiting_confirmation", providerRevision: 2 });
+			expect(proposal?.providerRevisions).toBeUndefined();
+			const revisions = { "provider-a": 3, "local-openai-compatible": 7 };
+			const batchProposalId = randomUUID();
+			const saved = migrated.control.createMcpProposal({
+				...legacyProposal,
+				proposalId: batchProposalId,
+				operationId: "migrated-batch",
+				approvalActionId: randomUUID(),
+				providerRevisions: revisions,
+			});
+			expect(saved.providerRevisions).toEqual(revisions);
+		} finally {
+			await migrated.close();
+		}
+
+		const snapshots = (await readdir(project.agentDirectory)).filter((name) =>
+			/^control-v10-[0-9a-f-]{36}\.pre-migration\.sqlite$/u.test(name),
+		);
+		expect(snapshots).toHaveLength(1);
+		const snapshot = new DatabaseSync(join(project.agentDirectory, snapshots[0]!), { readOnly: true });
+		try {
+			expect((snapshot.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(10);
+			expect((snapshot.prepare("PRAGMA integrity_check").get() as { integrity_check: string }).integrity_check).toBe(
+				"ok",
+			);
+		} finally {
+			snapshot.close();
+		}
+	});
+
 	it("retains the verified snapshot when the v5-to-v6 migration fails", async () => {
 		const project = await createProject();
 		const runId = await createV5ControlDatabase(project.controlPath);

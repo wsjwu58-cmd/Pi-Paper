@@ -11,6 +11,7 @@ import {
 } from "./http.ts";
 import { generateDoubaoSpeech } from "./official-audio-doubao.ts";
 import { generateDoubaoV1Speech } from "./official-audio-doubao-v1.ts";
+import { generateElevenMusic } from "./official-audio-eleven-music.ts";
 import { generateFishAudio } from "./official-audio-fish.ts";
 import { generateMiniMaxMusic } from "./official-audio-minimax-music.ts";
 import type { OfficialGenerationInput, OfficialGenerationOptions, OfficialGenerationResult } from "./types.ts";
@@ -36,6 +37,7 @@ export async function generateOfficialAudio(
 		);
 	}
 	if (input.operation === "music") {
+		if (input.providerId === "elevenlabs") return generateElevenMusic(input, options);
 		if (input.providerId !== "minimax")
 			throw new OfficialProviderError(
 				"UNSUPPORTED_OPERATION",
@@ -135,7 +137,7 @@ async function generateElevenLabsSpeech(
 	options: OfficialGenerationOptions,
 ): Promise<OfficialGenerationResult> {
 	rejectUnconsumedReferences(input, "ElevenLabs text-to-speech does not accept source audio references.");
-	if (input.modelId !== "eleven_flash_v2_5" && input.modelId !== "eleven_multilingual_v2") {
+	if (!["eleven_flash_v2_5", "eleven_multilingual_v2", "eleven_v4", "eleven_v4_turbo"].includes(input.modelId)) {
 		throw new OfficialProviderError(
 			"UNSUPPORTED_MODEL",
 			"Only the verified Eleven Flash v2.5 and Multilingual v2 speech models are supported.",
@@ -154,14 +156,26 @@ async function generateElevenLabsSpeech(
 		);
 	}
 	const baseUrl = resolveBaseUrl(options, "https://api.elevenlabs.io/v1", input.providerId);
-	const url = new URL(endpoint(baseUrl, `text-to-speech/${encodeURIComponent(voiceId)}`));
+	const dialogue = input.modelId.startsWith("eleven_v4");
+	if (dialogue && [...input.prompt].length > 10_000)
+		throw new OfficialProviderError(
+			"INVALID_AUDIO_PARAMETER",
+			"Eleven v4 text must contain at most 10000 characters.",
+		);
+	const url = new URL(
+		endpoint(baseUrl, dialogue ? "text-to-dialogue" : `text-to-speech/${encodeURIComponent(voiceId)}`),
+	);
 	url.searchParams.set("output_format", outputFormat);
 	const { bytes, response } = await officialBytes(
 		url,
 		{
 			method: "POST",
 			headers: { "xi-api-key": apiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
-			body: JSON.stringify({ text: input.prompt, model_id: input.modelId }),
+			body: JSON.stringify(
+				dialogue
+					? { inputs: [{ text: input.prompt, voice_id: voiceId }], model_id: input.modelId }
+					: { text: input.prompt, model_id: input.modelId },
+			),
 		},
 		options,
 		apiKey,

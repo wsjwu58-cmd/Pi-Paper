@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import type { ModelInfo } from '@/lib/types'
-import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoDurationOptions, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
+import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoDurationCapability, getVideoDurationOptions, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
 
 const agnesVideo = { name: 'agnes-video-v2.0', provider: 'agnes', modelType: 'video' } as ModelInfo
 
 describe('video node request parameters', () => {
+  it('uses only declared duration ranges and ratio-specific dimensions', () => {
+    expect(getVideoDurationCapability({ acceptedDurations: [5, 10] }, '1080p')).toEqual({ kind: 'discrete', values: [5, 10] })
+    expect(getVideoDurationCapability({ minimumDuration: 4, maximumDuration: 15 }, '720p')).toEqual({ kind: 'range', minimum: 4, maximum: 15, step: 1 })
+    expect(getVideoDurationCapability(undefined, '720p', 6)).toEqual({ kind: 'fixed', value: 6 })
+    expect(getVideoDurationCapability(undefined, '720p')).toBeNull()
+    const model = { constraints: { acceptedSizes: ['1280x1280', '1536x1024'], sizesByAspectRatio: { '3:2': ['1536x1024'] } } } as unknown as ModelInfo
+    expect(resolveNodeResolution('image', model, '1280X1280', true, '3:2')).toEqual({ resKey: '1536X1024', resolution: '1536x1024', size: '1536x1024' })
+  })
   it('limits discrete video duration choices by the selected official resolution', () => {
     const constraints = { acceptedDurations: [4, 6, 8], durationByResolution: { '1080p': [8], '4k': [8] } }
     expect(getVideoDurationOptions(constraints, '720P')).toEqual([4, 6, 8])
@@ -78,11 +86,7 @@ describe('video node request parameters', () => {
       resolution: '1280x720',
       size: '720P',
     })
-    expect(resolveNodeResolution('video', { provider: 'volcengine-ark' } as ModelInfo, '2K', true)).toEqual({
-      resKey: '720P',
-      resolution: '1280x720',
-      size: '1280x720',
-    })
+    expect(resolveNodeResolution('video', { provider: 'volcengine-ark' } as ModelInfo, '2K', true)).toEqual({})
   })
 
   it('uses desktop model constraints instead of fixing all video providers to 720P', () => {

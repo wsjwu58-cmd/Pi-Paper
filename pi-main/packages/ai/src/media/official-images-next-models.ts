@@ -155,7 +155,7 @@ export async function generateGrokImagine(
 	input: OfficialGenerationInput,
 	options: OfficialGenerationOptions,
 ): Promise<OfficialGenerationResult> {
-	if (input.providerId !== "xai" || input.modelId !== "grok-imagine-image")
+	if (input.providerId !== "xai" || !["grok-imagine-image", "grok-imagine-image-2.0"].includes(input.modelId))
 		throw new OfficialProviderError(
 			"UNSUPPORTED_MODEL",
 			"This adapter implements the exact xAI Grok Imagine image model only.",
@@ -174,12 +174,17 @@ export async function generateGrokImagine(
 			"UNSUPPORTED_OPERATION",
 			"This adapter implements Grok Imagine text-to-image generation only.",
 		);
-	if (params.quality !== undefined)
+	if (params.quality !== undefined && input.modelId !== "grok-imagine-image-2.0")
 		throw new OfficialProviderError(
 			"UNSUPPORTED_IMAGE_PARAMETER",
 			"The xAI Grok Imagine v1 route does not expose the Grok Imagine 2.0 quality parameter.",
 		);
 	const count = integerAlias(params, ["count", "n", "num_images"], 1, 4) ?? 1;
+	if (params.quality !== undefined && !["low", "medium", "auto"].includes(String(params.quality)))
+		throw new OfficialProviderError(
+			"INVALID_IMAGE_PARAMETER",
+			"Grok Imagine Image 2.0 quality must be low, medium, or auto.",
+		);
 	const ratio = aliasString(params, ["aspect", "ratio", "aspectRatio", "aspect_ratio"]);
 	if (ratio && !["1:1", "3:2", "2:3", "16:9", "9:16"].includes(ratio))
 		throw new OfficialProviderError(
@@ -200,11 +205,12 @@ export async function generateGrokImagine(
 			method: "POST",
 			headers: jsonHeaders(apiKey),
 			body: JSON.stringify({
-				model: "grok-imagine-image",
+				model: input.modelId,
 				prompt: request.prompt,
 				n: count,
 				...(ratio ? { aspect_ratio: ratio } : {}),
 				...(resolution ? { resolution: resolution.toLowerCase() } : {}),
+				...(params.quality !== undefined ? { quality: params.quality } : {}),
 			}),
 		},
 		options,

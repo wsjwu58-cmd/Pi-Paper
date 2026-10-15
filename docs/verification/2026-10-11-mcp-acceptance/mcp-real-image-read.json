@@ -1,0 +1,91 @@
+{
+  "success": true,
+  "startedAt": "2026-10-12T11:37:52.189Z",
+  "completedAt": "2026-10-12T11:37:54.463Z",
+  "phase": "completed",
+  "platform": "win32",
+  "electron": "44.4.4",
+  "node": "24.21.0",
+  "profile": "E:\\VibePaperProject\\.test-temp\\mcp-media-read-1791805072189\\VibePaper",
+  "projectDirectory": "E:\\VibePaperProject\\.test-temp\\mcp-agnes-1791725635317\\project\\Agnes real account acceptance",
+  "projectId": "71f7721a-cbd8-4f22-acbc-0ff0db1533e2",
+  "canvasId": "7d562672-fdea-47ee-99df-c0884c7f94f2",
+  "taskId": "f43f35ef-d872-489d-9507-5dbe4b8f512b",
+  "nodeId": "4bf09778-dd6b-43b4-a454-21e4eab4de8a",
+  "providerCredentialAccessed": false,
+  "cloudRequestMade": false,
+  "grant": {
+    "permissions": [
+      "canvas.read",
+      "task.read",
+      "media.read"
+    ],
+    "mediaTypes": [
+      "image"
+    ],
+    "providerGrants": []
+  },
+  "protocol": {
+    "transport": "stdio",
+    "sdkVersion": "1.32.1",
+    "tool": "read_task_output"
+  },
+  "metadata": {
+    "mode": "metadata",
+    "modality": "image",
+    "sizeBytes": 853173,
+    "contentType": "text"
+  },
+  "preview": {
+    "mode": "preview",
+    "modality": "image",
+    "mimeType": "image/png",
+    "sizeBytes": 853173,
+    "contentType": "image",
+    "sha256": "3f5641ce429f9c896b530a2875d09a7ffe2df763491085b995e9f896f3b0b716"
+  },
+  "persistedOutput": {
+    "relativePath": "generated/f43f35ef-d872-489d-9507-5dbe4b8f512b/result.png",
+    "sha256": "3f5641ce429f9c896b530a2875d09a7ffe2df763491085b995e9f896f3b0b716",
+    "recordedSha256": "3f5641ce429f9c896b530a2875d09a7ffe2df763491085b995e9f896f3b0b716",
+    "sizeBytes": 853173
+  },
+  "assertions": {
+    "previewMatchesPersistedFile": true,
+    "persistedFileMatchesTaskStoreDigest": true,
+    "persistedFileMatchesRealAccountEvidence": true,
+    "originalCanvasOpen": true,
+    "originalNodeVisible": true,
+    "originalResultDomVisible": true,
+    "imageDecoded": true,
+    "imageNodeAndBoundsInsideCanvasViewport": true,
+    "imageCenterUnobscured": true,
+    "existingProjectReopened": true,
+    "newGrantIsReadOnlyForMedia": true,
+    "originalResultVisible": true
+  },
+  "imageVisibility": {
+    "naturalWidth": 1024,
+    "naturalHeight": 1024,
+    "nodeRect": {
+      "left": 46.99998092651367,
+      "top": 233.75,
+      "right": 463.4999809265137,
+      "bottom": 650.25
+    },
+    "imageRect": {
+      "left": 46.99998092651367,
+      "top": 233.75,
+      "right": 463.4999809265137,
+      "bottom": 650.25
+    },
+    "flowRect": {
+      "left": 0,
+      "top": 0,
+      "right": 1046,
+      "bottom": 884
+    }
+  },
+  "bridgeDiagnostics": "VibePaper connection approval: verify code [pairing-code] in the desktop dialog.\n",
+  "screenshot": "mcp-real-image-read-original-canvas.png"
+}

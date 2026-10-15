@@ -1,0 +1,789 @@
+{
+  "success": true,
+  "styles": [
+    "E:\\pp\\Pi-Paper\\resources\\app\\renderer\\assets\\index-iSCdpPIt.css"
+  ],
+  "results": [
+    {
+      "zoom": 1,
+      "language": "zh",
+      "width": 300,
+      "kind": "generation",
+      "count": 1,
+      "panelWidth": 300,
+      "panelStyle": "300px",
+      "panelComputed": "300px",
+      "cardWidth": 275,
+      "cardScrollWidth": 275,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 1060,
+          "right": 1098,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 1104,
+          "right": 1164,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "zh",
+      "width": 300,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 300,
+      "panelStyle": "300px",
+      "panelComputed": "300px",
+      "cardWidth": 275,
+      "cardScrollWidth": 275,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 1060,
+          "right": 1098,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 1104,
+          "right": 1164,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "zh",
+      "width": 380,
+      "kind": "generation",
+      "count": 24,
+      "panelWidth": 380,
+      "panelStyle": "380px",
+      "panelComputed": "380px",
+      "cardWidth": 355,
+      "cardScrollWidth": 355,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 1060,
+          "right": 1098,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 1104,
+          "right": 1164,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "zh",
+      "width": 380,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 380,
+      "panelStyle": "380px",
+      "panelComputed": "380px",
+      "cardWidth": 355,
+      "cardScrollWidth": 355,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 1060,
+          "right": 1098,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 1104,
+          "right": 1164,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "zh",
+      "width": 720,
+      "kind": "generation",
+      "count": 1,
+      "panelWidth": 720,
+      "panelStyle": "720px",
+      "panelComputed": "720px",
+      "cardWidth": 695,
+      "cardScrollWidth": 695,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 1060,
+          "right": 1098,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 1104,
+          "right": 1164,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "zh",
+      "width": 720,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 720,
+      "panelStyle": "720px",
+      "panelComputed": "720px",
+      "cardWidth": 695,
+      "cardScrollWidth": 695,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 1060,
+          "right": 1098,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 1104,
+          "right": 1164,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "en",
+      "width": 300,
+      "kind": "generation",
+      "count": 1,
+      "panelWidth": 300,
+      "panelStyle": "300px",
+      "panelComputed": "300px",
+      "cardWidth": 275,
+      "cardScrollWidth": 275,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 1015.4271240234375,
+          "right": 1065.8854598999023,
+          "width": 50.458335876464844,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 1071.885498046875,
+          "right": 1164.0000839233398,
+          "width": 92.11458587646484,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "en",
+      "width": 300,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 300,
+      "panelStyle": "300px",
+      "panelComputed": "300px",
+      "cardWidth": 275,
+      "cardScrollWidth": 275,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 1015.4271240234375,
+          "right": 1065.8854598999023,
+          "width": 50.458335876464844,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 1071.885498046875,
+          "right": 1164.0000839233398,
+          "width": 92.11458587646484,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "en",
+      "width": 380,
+      "kind": "generation",
+      "count": 24,
+      "panelWidth": 380,
+      "panelStyle": "380px",
+      "panelComputed": "380px",
+      "cardWidth": 355,
+      "cardScrollWidth": 355,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 1015.4271240234375,
+          "right": 1065.8854598999023,
+          "width": 50.458335876464844,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 1071.885498046875,
+          "right": 1164.0000839233398,
+          "width": 92.11458587646484,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "en",
+      "width": 380,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 380,
+      "panelStyle": "380px",
+      "panelComputed": "380px",
+      "cardWidth": 355,
+      "cardScrollWidth": 355,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 1015.4271240234375,
+          "right": 1065.8854598999023,
+          "width": 50.458335876464844,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 1071.885498046875,
+          "right": 1164.0000839233398,
+          "width": 92.11458587646484,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "en",
+      "width": 720,
+      "kind": "generation",
+      "count": 1,
+      "panelWidth": 720,
+      "panelStyle": "720px",
+      "panelComputed": "720px",
+      "cardWidth": 695,
+      "cardScrollWidth": 695,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 1015.4271240234375,
+          "right": 1065.8854598999023,
+          "width": 50.458335876464844,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 1071.885498046875,
+          "right": 1164.0000839233398,
+          "width": 92.11458587646484,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1,
+      "language": "en",
+      "width": 720,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 720,
+      "panelStyle": "720px",
+      "panelComputed": "720px",
+      "cardWidth": 695,
+      "cardScrollWidth": 695,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 1015.4271240234375,
+          "right": 1065.8854598999023,
+          "width": 50.458335876464844,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 1071.885498046875,
+          "right": 1164.0000839233398,
+          "width": 92.11458587646484,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "zh",
+      "width": 300,
+      "kind": "generation",
+      "count": 1,
+      "panelWidth": 300,
+      "panelStyle": "300px",
+      "panelComputed": "300px",
+      "cardWidth": 274,
+      "cardScrollWidth": 274,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 664.6666870117188,
+          "right": 702.6666870117188,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 708.6666870117188,
+          "right": 768.6666870117188,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "zh",
+      "width": 300,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 300,
+      "panelStyle": "300px",
+      "panelComputed": "300px",
+      "cardWidth": 274,
+      "cardScrollWidth": 274,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 664.6666870117188,
+          "right": 702.6666870117188,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 708.6666870117188,
+          "right": 768.6666870117188,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "zh",
+      "width": 380,
+      "kind": "generation",
+      "count": 24,
+      "panelWidth": 380,
+      "panelStyle": "380px",
+      "panelComputed": "380px",
+      "cardWidth": 354,
+      "cardScrollWidth": 354,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 664.6666870117188,
+          "right": 702.6666870117188,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 708.6666870117188,
+          "right": 768.6666870117188,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "zh",
+      "width": 380,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 380,
+      "panelStyle": "380px",
+      "panelComputed": "380px",
+      "cardWidth": 354,
+      "cardScrollWidth": 354,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 664.6666870117188,
+          "right": 702.6666870117188,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 708.6666870117188,
+          "right": 768.6666870117188,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "zh",
+      "width": 720,
+      "kind": "generation",
+      "count": 1,
+      "panelWidth": 720,
+      "panelStyle": "720px",
+      "panelComputed": "720px",
+      "cardWidth": 694,
+      "cardScrollWidth": 694,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 664.6666870117188,
+          "right": 702.6666870117188,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 708.6666870117188,
+          "right": 768.6666870117188,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "zh",
+      "width": 720,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 720,
+      "panelStyle": "720px",
+      "panelComputed": "720px",
+      "cardWidth": 694,
+      "cardScrollWidth": 694,
+      "buttons": [
+        {
+          "label": "取消",
+          "left": 664.6666870117188,
+          "right": 702.6666870117188,
+          "width": 38,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "确认执行",
+          "left": 708.6666870117188,
+          "right": 768.6666870117188,
+          "width": 60,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "en",
+      "width": 300,
+      "kind": "generation",
+      "count": 1,
+      "panelWidth": 300,
+      "panelStyle": "300px",
+      "panelComputed": "300px",
+      "cardWidth": 274,
+      "cardScrollWidth": 274,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 620.0972290039062,
+          "right": 670.5555610656738,
+          "width": 50.45833206176758,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 676.5555419921875,
+          "right": 768.6666564941406,
+          "width": 92.11111450195312,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "en",
+      "width": 300,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 300,
+      "panelStyle": "300px",
+      "panelComputed": "300px",
+      "cardWidth": 274,
+      "cardScrollWidth": 274,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 620.0972290039062,
+          "right": 670.5555610656738,
+          "width": 50.45833206176758,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 676.5555419921875,
+          "right": 768.6666564941406,
+          "width": 92.11111450195312,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "en",
+      "width": 380,
+      "kind": "generation",
+      "count": 24,
+      "panelWidth": 380,
+      "panelStyle": "380px",
+      "panelComputed": "380px",
+      "cardWidth": 354,
+      "cardScrollWidth": 354,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 620.0972290039062,
+          "right": 670.5555610656738,
+          "width": 50.45833206176758,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 676.5555419921875,
+          "right": 768.6666564941406,
+          "width": 92.11111450195312,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "en",
+      "width": 380,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 380,
+      "panelStyle": "380px",
+      "panelComputed": "380px",
+      "cardWidth": 354,
+      "cardScrollWidth": 354,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 620.0972290039062,
+          "right": 670.5555610656738,
+          "width": 50.45833206176758,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 676.5555419921875,
+          "right": 768.6666564941406,
+          "width": 92.11111450195312,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "en",
+      "width": 720,
+      "kind": "generation",
+      "count": 1,
+      "panelWidth": 720,
+      "panelStyle": "720px",
+      "panelComputed": "720px",
+      "cardWidth": 694,
+      "cardScrollWidth": 694,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 620.0972290039062,
+          "right": 670.5555610656738,
+          "width": 50.45833206176758,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 676.5555419921875,
+          "right": 768.6666564941406,
+          "width": 92.11111450195312,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    },
+    {
+      "zoom": 1.5,
+      "language": "en",
+      "width": 720,
+      "kind": "canvas_delete",
+      "count": 1,
+      "panelWidth": 720,
+      "panelStyle": "720px",
+      "panelComputed": "720px",
+      "cardWidth": 694,
+      "cardScrollWidth": 694,
+      "buttons": [
+        {
+          "label": "Cancel",
+          "left": 620.0972290039062,
+          "right": 670.5555610656738,
+          "width": 50.45833206176758,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        },
+        {
+          "label": "Confirm action",
+          "left": 676.5555419921875,
+          "right": 768.6666564941406,
+          "width": 92.11111450195312,
+          "visible": true,
+          "clickable": true,
+          "disabled": false
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "accept": true,
+      "actionId": "fixture-action",
+      "approvalToken": "fixture-approval"
+    },
+    {
+      "accept": false,
+      "actionId": "fixture-action",
+      "approvalToken": "fixture-approval"
+    }
+  ],
+  "networkRequests": []
+}

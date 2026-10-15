@@ -1,0 +1,26 @@
+Pi check rerun evidence
+Date: 2026-10-11
+Workspace: E:\VibePaperProject\pi-main
+
+Initial restricted run:
+- Command: npm run check
+- Result: failed only at check:browser-smoke.
+- Error: esbuild attempted to spawn its service and received EPERM under the process-spawn sandbox.
+- Original diagnostic log: C:\Users\WSJ\AppData\Local\Temp\pi-browser-smoke-errors.log
+
+Independent browser-smoke rerun:
+- Command: npm run check:browser-smoke
+- Execution: require_escalated after the sandbox EPERM diagnosis.
+- Result: exit code 0.
+- The smoke script writes its temp log only on failure, so this passing run emitted no new error log.
+
+Full rerun:
+- Command: npm run check
+- Execution: require_escalated after the sandbox EPERM diagnosis.
+- Result: exit code 0.
+- Biome, pinned dependency check, TypeScript import check, shrinkwrap and install-lock checks,
+  TypeScript type checking, and browser smoke all completed successfully.
+- Biome reformatted pi-main/packages/vibepaper-agent-service/test/config-nacos-routes.test.ts;
+  that unrelated formatting change was restored from the pre-check Pi snapshot.
+- The MCP change in packages/vibepaper-agent-service/src/desktop/mcp-runtime.ts was retained;
+  the rerun made no formatting change to it.

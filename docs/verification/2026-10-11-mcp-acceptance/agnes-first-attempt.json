@@ -1,0 +1,51 @@
+{
+  "success": false,
+  "phase": "video-generation-upstream-blocked",
+  "recordType": "reconstructed first-attempt summary",
+  "source": "read-only SQLite tasks and task_events; see agnes-real-account.json reconciliation",
+  "startedAt": "2026-10-11T13:33:58.166Z",
+  "completedAt": "2026-10-11T13:35:25.028Z",
+  "results": [
+    {
+      "modality": "image",
+      "taskId": "f43f35ef-d872-489d-9507-5dbe4b8f512b",
+      "model": "target-agnes-image-2-5-flash",
+      "status": "succeeded",
+      "filename": "agnes-real-image.png",
+      "mimeType": "image/png",
+      "sizeBytes": 853173,
+      "sha256": "3f5641ce429f9c896b530a2875d09a7ffe2df763491085b995e9f896f3b0b716",
+      "desktopConfirmed": true,
+      "originalNodeVisible": true,
+      "providerId": "agnes",
+      "createdAt": "2026-10-11T13:33:58.166Z",
+      "completedAt": "2026-10-11T13:34:30.593Z",
+      "eventTypes": [
+        "created",
+        "running",
+        "succeeded"
+      ]
+    },
+    {
+      "modality": "video",
+      "taskId": "792700e6-0468-4653-8fc9-86b262728c24",
+      "model": "target-agnes-video-2-5-flash",
+      "status": "failed",
+      "errorCode": "CLOUD_REQUEST_FAILED",
+      "providerId": "agnes",
+      "createdAt": "2026-10-11T13:34:32.934Z",
+      "completedAt": "2026-10-11T13:35:25.028Z",
+      "eventTypes": [
+        "created",
+        "running",
+        "failed"
+      ],
+      "desktopConfirmed": true,
+      "httpStatus": 503,
+      "upstreamError": "video queue is full, please retry later",
+      "requestId": "2026101113352410173936e347JoWg",
+      "upstreamVideoIdReceived": false
+    }
+  ],
+  "originalCleanupHarnessFailurePreserved": "agnes-cleanup-harness-failure.json"
+}

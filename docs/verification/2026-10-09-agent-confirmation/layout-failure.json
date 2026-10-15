@@ -1,0 +1,30 @@
+{
+  "zoom": 1,
+  "language": "zh",
+  "width": 300,
+  "kind": "generation",
+  "count": 1,
+  "panelWidth": 380,
+  "cardWidth": 8541,
+  "cardScrollWidth": 8541,
+  "buttons": [
+    {
+      "label": "取消",
+      "left": 9246.802734375,
+      "right": 9284.802734375,
+      "width": 38,
+      "visible": false,
+      "clickable": false,
+      "disabled": false
+    },
+    {
+      "label": "确认执行",
+      "left": 9290.802734375,
+      "right": 9350.802734375,
+      "width": 60,
+      "visible": false,
+      "clickable": false,
+      "disabled": false
+    }
+  ]
+}

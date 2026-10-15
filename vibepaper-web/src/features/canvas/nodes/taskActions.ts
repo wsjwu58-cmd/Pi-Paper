@@ -1,3 +1,4 @@
+import { t as uiText } from '@/lib/i18n'
 import { api, apiUrl } from '@/lib/api'
 import { sid } from '@/lib/ids'
 import type { Id, NodePayload } from '@/lib/types'
@@ -35,49 +36,49 @@ export async function submitNodeTask(
 ) {
   if (isDesktopRuntime()) {
     const bridge = window.vibepaperDesktop
-    if (!bridge) throw new Error('桌面本地服务尚未就绪，无法创建生成任务。')
+    if (!bridge) throw new Error(uiText("桌面本地服务尚未就绪，无法创建生成任务。"))
     const canvas = useCanvasStore.getState().canvas
-    if (!canvas) throw new Error('画布尚未加载，无法创建本地任务。')
+    if (!canvas) throw new Error(uiText("画布尚未加载，无法创建本地任务。"))
     const activeProject = await bridge.getActiveProject()
-    if (!activeProject) throw new Error('没有打开的本地项目，无法创建生成任务。')
+    if (!activeProject) throw new Error(uiText("没有打开的本地项目，无法创建生成任务。"))
     const node = useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node
     const modality = node?.type
     if (modality !== 'text' && modality !== 'image' && modality !== 'video' && modality !== 'audio') {
-      throw new Error('此节点类型尚未接入桌面本地生成。')
+      throw new Error(uiText("此节点类型尚未接入桌面本地生成。"))
     }
     if (modality === 'audio') {
       if (desktopOptions?.providerType === 'local' && modelType === 'local-sapi-tts') {
         if (typeof bridge.getLocalAudioModel !== 'function') {
-          throw new Error('桌面本地语音服务尚未接入。')
+          throw new Error(uiText("桌面本地语音服务尚未接入。"))
         }
         const audioModel = await bridge.getLocalAudioModel()
         if (!audioModel?.available || audioModel.modelId !== 'local-sapi-tts') {
-          throw new Error('Windows SAPI 本地语音模型在当前平台不可用。')
+          throw new Error(uiText("Windows SAPI 本地语音模型在当前平台不可用。"))
         }
       } else if (desktopOptions?.providerType !== 'cloud' || !desktopOptions.providerId || !desktopOptions.modelId) {
-        throw new Error('请选择已配置并启用的官方音频模型。')
+        throw new Error(uiText("请选择已配置并启用的官方音频模型。"))
       }
     }
     const rawPrompt = typeof modelParams.prompt === 'string' ? modelParams.prompt.trim() : ''
     const operation = typeof modelParams.operation === 'string' ? modelParams.operation.trim() : ''
     const imageOperationPrompt = modality === 'image' && (operation === '扩图' || operation === 'outpaint_image')
-      ? '扩展画面边缘，保持主体完整'
+      ? uiText("扩展画面边缘，保持主体完整")
       : modality === 'image' && (operation === '超分' || operation === 'upscale_image')
-        ? '提升清晰度与细节'
+        ? uiText("提升清晰度与细节")
         : ''
     const localOperationPrompt = modality === 'image' && operation === '裁剪'
-      ? '对输入图片执行裁剪'
+      ? uiText("对输入图片执行裁剪")
       : modality === 'image' && operation === '三视图'
-        ? '基于输入图片制作三视图'
+        ? uiText("基于输入图片制作三视图")
         : modality === 'video' && operation === '剪辑'
-          ? '按指定起止时间剪辑输入视频'
+          ? uiText("按指定起止时间剪辑输入视频")
           : modality === 'video' && operation === '提帧'
-            ? '从输入视频提取指定时间的画面'
+            ? uiText("从输入视频提取指定时间的画面")
             : modality === 'video' && operation === '超分'
-              ? '将输入视频缩放到指定分辨率'
+              ? uiText("将输入视频缩放到指定分辨率")
               : ''
     const prompt = rawPrompt || imageOperationPrompt || localOperationPrompt
-    if (!prompt) throw new Error('请先填写生成提示词。')
+    if (!prompt) throw new Error(uiText("请先填写生成提示词。"))
 
     const { prompt: _prompt, ...parameters } = modelParams
     const task = await bridge.createGenerationTask({
@@ -93,7 +94,7 @@ export async function submitNodeTask(
       modality,
       parameters,
     })
-    if (!task) throw new Error('本地生成任务没有创建成功。')
+    if (!task) throw new Error(uiText("本地生成任务没有创建成功。"))
     const queued = {
       ...syncExecFields('queued'),
       params: {
@@ -172,17 +173,17 @@ export async function submitNodeTask(
 
 /** Submit the original Compose node through the local FFmpeg task bridge. */
 export async function submitComposeNodeTask(nodeId: Id, inputNodeIds: string[]): Promise<string> {
-  if (!isDesktopRuntime()) throw new Error('本地视频合成接口仅适用于桌面项目。')
+  if (!isDesktopRuntime()) throw new Error(uiText("本地视频合成接口仅适用于桌面项目。"))
   const bridge = window.vibepaperDesktop
-  if (!bridge?.composeVideos) throw new Error('桌面本地视频合成服务尚未就绪。')
+  if (!bridge?.composeVideos) throw new Error(uiText("桌面本地视频合成服务尚未就绪。"))
   const canvas = useCanvasStore.getState().canvas
-  if (!canvas) throw new Error('画布尚未加载，无法创建本地合成任务。')
+  if (!canvas) throw new Error(uiText("画布尚未加载，无法创建本地合成任务。"))
   const activeProject = await bridge.getActiveProject()
-  if (!activeProject) throw new Error('没有打开的本地项目，无法创建本地合成任务。')
+  if (!activeProject) throw new Error(uiText("没有打开的本地项目，无法创建本地合成任务。"))
   const node = useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node
-  if (!node || node.type !== 'compose') throw new Error('合成节点已不存在。')
+  if (!node || node.type !== 'compose') throw new Error(uiText("合成节点已不存在。"))
   if (inputNodeIds.length < 2 || new Set(inputNodeIds).size !== inputNodeIds.length) {
-    throw new Error('合成至少需要 2 个不重复的视频输入。')
+    throw new Error(uiText("合成至少需要 2 个不重复的视频输入。"))
   }
 
   const task = await bridge.composeVideos({
@@ -193,7 +194,7 @@ export async function submitComposeNodeTask(nodeId: Id, inputNodeIds: string[]):
     idempotencyKey: crypto.randomUUID(),
     inputNodeIds,
   })
-  if (!task?.taskId) throw new Error('本地合成任务没有创建成功。')
+  if (!task?.taskId) throw new Error(uiText("本地合成任务没有创建成功。"))
 
   const current = useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node
   useCanvasStore.getState().updateNodePayload(nodeId, {

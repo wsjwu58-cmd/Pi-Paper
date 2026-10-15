@@ -1,3 +1,4 @@
+import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { X, Clapperboard, RotateCcw, Square, Play } from 'lucide-react'
@@ -195,12 +196,12 @@ async function loadDesktopTask(
     status,
     errorCode: task.errorCode ?? undefined,
     errorMessage: task.status === 'interrupted' && task.providerType === 'cloud'
-      ? '云端请求中断，结果未知。请确认结果后再手动重试。'
+      ? uiText("云端请求中断，结果未知。请确认结果后再手动重试。")
       : task.errorMessage || (task.errorCode === 'CLOUD_RATE_LIMITED'
-      ? 'Agnes 请求过于频繁，请稍后重试。'
+      ? uiText("Agnes 请求过于频繁，请稍后重试。")
       : task.errorCode === 'CLOUD_REFERENCE_UNAVAILABLE'
-        ? '本地参考媒体暂不可用于当前模型。'
-        : task.errorCode ? `本地任务失败：${task.errorCode}` : undefined),
+        ? uiText("本地参考媒体暂不可用于当前模型。")
+        : task.errorCode ? uiText("本地任务失败：{0}", { 0: task.errorCode }) : undefined),
     retryable: task.status === 'failed' || (task.status === 'interrupted' && task.providerType === 'local'),
     source: 'desktop',
     outputs,
@@ -213,13 +214,13 @@ async function saveOutputToLibrary(taskId: string | number, url?: string, remote
   try {
     if (isDesktopRuntime()) {
       const bridge = window.vibepaperDesktop
-      if (!bridge?.saveTaskOutputToLibrary) throw new Error('桌面本地素材服务尚未就绪。')
+      if (!bridge?.saveTaskOutputToLibrary) throw new Error(uiText("桌面本地素材服务尚未就绪。"))
       const project = await bridge.getActiveProject()
-      if (!project) throw new Error('没有打开的本地项目，无法存入素材库。')
+      if (!project) throw new Error(uiText("没有打开的本地项目，无法存入素材库。"))
       const asset = await bridge.saveTaskOutputToLibrary(project.projectId, sid(taskId))
-      if (!asset?.assetId) throw new Error('本地音频素材未保存成功。')
+      if (!asset?.assetId) throw new Error(uiText("本地音频素材未保存成功。"))
       window.dispatchEvent(new Event('vp-assets-updated'))
-      toastSuccess('已存入素材库')
+      toastSuccess(uiText("已存入素材库"))
       return
     }
 
@@ -242,7 +243,7 @@ async function saveOutputToLibrary(taskId: string | number, url?: string, remote
       { type: blob.type || 'application/octet-stream' },
     )
     await uploadAsset(file, type)
-    toastSuccess('已存入素材库')
+    toastSuccess(uiText("已存入素材库"))
     window.dispatchEvent(new Event('vp-assets-updated'))
   } catch (e) {
     toastError((e as Error).message)
@@ -263,6 +264,7 @@ function MediaContent({
   /** Preserve the media's dimensions and let the node match its aspect ratio. */
   naturalSize?: boolean
 }) {
+  useUiLanguage()
   const resolvedMeta = { ...meta, outputType: meta?.outputType ?? outputType }
   const raw = resolveMediaUrl(url, resolvedMeta)
   const src = useAuthedMediaUrl(raw)
@@ -283,8 +285,7 @@ function MediaContent({
     if (videoError) {
       return (
         <div className={`${box} flex items-center justify-center ${naturalSize ? '' : 'rounded-xl'} bg-[#1a1a2e] px-3 text-center text-[11px] font-semibold text-[#f87171]`}>
-          视频无法播放，请重新生成
-        </div>
+          {uiText("视频无法播放，请重新生成")}</div>
       )
     }
     const videoSrc = src.startsWith('blob:') || src.includes('#') ? src : `${src}#t=0.001`
@@ -314,6 +315,7 @@ function OutputGrid({
 }: {
   outputs: Array<{ url?: string; outputType?: string; meta?: Record<string, unknown> }>
 }) {
+  useUiLanguage()
   if (outputs.length <= 1) {
     const o = outputs[0]
     return (
@@ -338,6 +340,7 @@ function OutputGrid({
 }
 
 function ImageIconPlaceholder({ compact = false }: { compact?: boolean }) {
+  useUiLanguage()
   return (
     <div className={`flex flex-col items-center text-[#b0b0b8] ${compact ? 'gap-1 py-2' : 'gap-2'}`}>
       <div className={`flex items-center justify-center rounded-2xl bg-white shadow-sm ${compact ? 'h-8 w-8' : 'h-12 w-12'}`}>
@@ -347,7 +350,7 @@ function ImageIconPlaceholder({ compact = false }: { compact?: boolean }) {
           <path d="M3 16l5-4 4 3 4-5 5 6" />
         </svg>
       </div>
-      {!compact && <span className="text-[11px] font-semibold">生成结果将展示在此处</span>}
+      {!compact && <span className="text-[11px] font-semibold">{uiText("生成结果将展示在此处")}</span>}
     </div>
   )
 }
@@ -362,6 +365,7 @@ function TaskHistoryBar({
   tasks: GenerationTask[]
   latest: GenerationTask | null
 }) {
+  useUiLanguage()
   const succeeded = tasks.filter((t) => t.status === 'succeeded' && (t.outputs?.length ?? 0) > 0)
   const busy = latest && ['queued', 'running'].includes(latest.status)
   const failed = latest?.status === 'failed'
@@ -382,16 +386,16 @@ function TaskHistoryBar({
     try {
       if (isDesktopRuntime()) {
         const bridge = window.vibepaperDesktop
-        if (!bridge) throw new Error('本地任务接口不可用。')
+        if (!bridge) throw new Error(uiText("本地任务接口不可用。"))
         const project = await bridge.getActiveProject()
-        if (!project) throw new Error('没有打开的本地项目，无法取消任务。')
+        if (!project) throw new Error(uiText("没有打开的本地项目，无法取消任务。"))
         await bridge.cancelTask(project.projectId, sid(latest.taskId))
       } else {
         await api(`/tasks/${latest.taskId}/cancel`, { method: 'POST' })
       }
       useCanvasStore.getState().updateNodePayload(nodeId, syncExecFields('cancelled'))
       void persistNodeExec(nodeId, syncExecFields('cancelled'))
-      toastSuccess('任务已取消')
+      toastSuccess(uiText("任务已取消"))
       window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId), status: 'cancelled' } }))
     } catch (e) {
       toastError((e as Error).message)
@@ -403,16 +407,16 @@ function TaskHistoryBar({
     if (isDesktopRuntime()) {
       try {
         const bridge = window.vibepaperDesktop
-        if (!bridge) throw new Error('本地任务接口不可用。')
+        if (!bridge) throw new Error(uiText("本地任务接口不可用。"))
         const project = await bridge.getActiveProject()
-        if (!project) throw new Error('没有打开的本地项目，无法重试任务。')
+        if (!project) throw new Error(uiText("没有打开的本地项目，无法重试任务。"))
         const retried = await bridge.retryTask(project.projectId, sid(latest.taskId))
-        if (sid(retried.taskId) !== sid(latest.taskId)) throw new Error('本地重试返回了不同的任务，画布状态未更新。')
+        if (sid(retried.taskId) !== sid(latest.taskId)) throw new Error(uiText("本地重试返回了不同的任务，画布状态未更新。"))
         useCanvasStore.getState().updateNodePayload(nodeId, {
           ...syncExecFields(retried.status),
           currentOutputId: latest.taskId,
         })
-        toastSuccess('已重新提交')
+        toastSuccess(uiText("已重新提交"))
         window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId), status: retried.status } }))
       } catch (e) {
         toastError((e as Error).message)
@@ -426,7 +430,7 @@ function TaskHistoryBar({
         currentOutputId: latest.taskId,
       })
       void persistNodeExec(nodeId, { ...syncExecFields('queued'), currentOutputId: latest.taskId })
-      toastSuccess('已重新提交')
+      toastSuccess(uiText("已重新提交"))
       window.dispatchEvent(new CustomEvent('vp-task-updated', { detail: { nodeId: sid(nodeId), taskId: sid(latest.taskId), status: 'queued' } }))
     } catch {
       try {
@@ -442,7 +446,7 @@ function TaskHistoryBar({
             detail: { nodeId: sid(nodeId), taskId: sid(currentOutputId), status: 'queued' },
           }))
         }
-        toastSuccess('已重新提交')
+        toastSuccess(uiText("已重新提交"))
       } catch (e) {
         toastError((e as Error).message)
       }
@@ -456,12 +460,11 @@ function TaskHistoryBar({
       {failed && (
         <div className="flex flex-wrap items-start gap-x-2 gap-y-1 rounded-lg bg-red-50 px-2 py-1.5 text-[11px] font-semibold text-red-700">
           <span className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]">
-            {latest?.errorMessage || latest?.errorCode || '生成失败'}
+            {latest?.errorMessage || latest?.errorCode || uiText("生成失败")}
           </span>
           {latest?.retryable !== false && (
             <button type="button" onClick={() => void retry()} className="inline-flex shrink-0 items-center gap-0.5 underline">
-              <RotateCcw size={11} /> 重试
-            </button>
+              <RotateCcw size={11} /> {uiText("重试")}</button>
           )}
         </div>
       )}
@@ -471,8 +474,7 @@ function TaskHistoryBar({
           onClick={() => void cancel()}
           className="inline-flex h-7 items-center gap-1 rounded-lg bg-black/5 px-2 text-[11px] font-bold text-[#555] hover:bg-black/10"
         >
-          <Square size={10} /> 取消任务
-        </button>
+          <Square size={10} /> {uiText("取消任务")}</button>
       )}
       {succeeded.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -483,7 +485,7 @@ function TaskHistoryBar({
               <button
                 key={sid(t.taskId)}
                 type="button"
-                title="设为当前输出"
+                title={uiText("设为当前输出")}
                 onClick={() => setCurrent(t.taskId)}
                 className={`h-10 w-10 overflow-hidden rounded-md border-2 ${active ? 'border-[#111]' : 'border-transparent opacity-70 hover:opacity-100'}`}
               >
@@ -504,6 +506,7 @@ function TaskHistoryBar({
 }
 
 function HistoryThumb({ url }: { url: string }) {
+  useUiLanguage()
   const src = useAuthedMediaUrl(url)
   if (!src) return <div className="h-full w-full bg-slate-200" />
   return <img src={src} alt="" className="h-full w-full object-cover" />
@@ -512,7 +515,7 @@ function HistoryThumb({ url }: { url: string }) {
 async function uploadNodeOutput(nodeId: Id, node: NodePayload, file: File) {
   try {
     if (isDesktopRuntime()) {
-      throw new Error('桌面版请使用本地图片导入；视频和音频素材导入尚未接入。')
+      throw new Error(uiText("桌面版请使用本地图片导入；视频和音频素材导入尚未接入。"))
     }
     const canvasId = useCanvasStore.getState().canvas?.canvas.id
     const assetType = node.type === 'audio' ? 'audio' : node.type === 'video' ? 'video' : 'image'
@@ -526,7 +529,7 @@ async function uploadNodeOutput(nodeId: Id, node: NodePayload, file: File) {
         ...(assetType === 'image' ? { thumbnailUrl: asset.url } : {}),
       },
     })
-    toastSuccess('素材已上传')
+    toastSuccess(uiText("素材已上传"))
   } catch (e) {
     toastError((e as Error).message)
   }
@@ -536,7 +539,7 @@ async function importDesktopImageToNode(nodeId: Id, fallbackNode: NodePayload) {
   try {
     const bridge = window.vibepaperDesktop
     const project = await bridge?.getActiveProject()
-    if (!bridge || !project) throw new Error('请先打开本地项目，再导入图片。')
+    if (!bridge || !project) throw new Error(uiText("请先打开本地项目，再导入图片。"))
 
     const asset = await bridge.importImage(project.projectId)
     if (!asset) return
@@ -544,7 +547,7 @@ async function importDesktopImageToNode(nodeId: Id, fallbackNode: NodePayload) {
     const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === sid(nodeId))?.data.node
     if (!current) {
       window.dispatchEvent(new Event('vp-assets-updated'))
-      throw new Error('节点已不存在，图片已导入本地素材库。')
+      throw new Error(uiText("节点已不存在，图片已导入本地素材库。"))
     }
 
     const view = desktopAssetView(asset)
@@ -559,7 +562,7 @@ async function importDesktopImageToNode(nodeId: Id, fallbackNode: NodePayload) {
       },
     })
     window.dispatchEvent(new Event('vp-assets-updated'))
-    toastSuccess('图片已导入本地素材库并应用到节点')
+    toastSuccess(uiText("图片已导入本地素材库并应用到节点"))
   } catch (e) {
     toastError((e as Error).message)
   }
@@ -628,6 +631,7 @@ function SplitNodeEditor({
   latest: GenerationTask | null
   selected: boolean
 }) {
+  useUiLanguage()
   return (
     <NodeEditorDialog
       node={node}
@@ -640,6 +644,7 @@ function SplitNodeEditor({
 }
 
 const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
+  useUiLanguage()
   const nodeId = sid(props.id)
   const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
@@ -738,14 +743,14 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
               data-text-output-area
               className="nodrag nowheel h-full max-h-[108px] w-full resize-none whitespace-pre-wrap bg-transparent px-0 py-0 text-[12px] leading-relaxed text-[#222] outline-none placeholder:text-[#b0b0b8]"
               value={displayOutput}
-              placeholder="生成结果…"
+              placeholder={uiText("生成结果…")}
               onMouseDown={(e) => e.stopPropagation()}
               onChange={(e) => persistOutput(e.target.value)}
             />
           ) : displayOutput ? (
             <div data-text-output-area className="w-full max-h-[120px] overflow-hidden"><AgentMarkdown text={displayOutput} className="!text-[12px] !leading-relaxed" compact /></div>
           ) : (
-            <div data-text-output-area className="px-0 py-0 text-[12px] text-[#b0b0b8]">点击编辑文本</div>
+            <div data-text-output-area className="px-0 py-0 text-[12px] text-[#b0b0b8]">{uiText("点击编辑文本")}</div>
           )
         }
         bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={selected} />}
@@ -756,6 +761,7 @@ const TextNodeView = memo(function TextNodeView(props: NodeProps<FlowNode>) {
 })
 
 const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
+  useUiLanguage()
   const nodeId = sid(props.id)
   const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
@@ -789,7 +795,7 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
           onCropModeSelect={(mode) => {
             const lockedUrl = authedMediaUrl ?? mediaUrl
             if (!lockedUrl?.startsWith('vibe://')) {
-              toastError('桌面本地裁剪需要已保存在当前项目中的图片。')
+              toastError(uiText("桌面本地裁剪需要已保存在当前项目中的图片。"))
               return
             }
             setCropRequest({
@@ -800,7 +806,7 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
                 sourceNodeMediaUrl: nodeMediaUrl(node),
                 outputId: node.currentOutputId,
                 assetId: node.params.assetId as string | number | undefined,
-                sourceName: String(node.params.name ?? node.params.title ?? '图片'),
+                sourceName: String(node.params.name ?? node.params.title ?? uiText("图片")),
               },
             })
           }}
@@ -836,7 +842,7 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
               onClose={() => setCropRequest(null)}
               onConfirm={async (artifacts) => {
                 const created = await saveCropArtifactsAsNodes(cropRequest.source, cropRequest.mode, artifacts)
-                toastSuccess(`已保存 ${created} 张裁剪图片并自动编组`)
+                toastSuccess(uiText("已保存 {0} 张裁剪图片并自动编组", { 0: created }))
               }}
             />
           ) : (
@@ -866,6 +872,7 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
 })
 
 const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
+  useUiLanguage()
   const nodeId = sid(props.id)
   const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
@@ -908,7 +915,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
         topUpload={{
           accept: 'video/*',
           onUpload: (f) => uploadNodeOutput(node.id, node, f),
-          unavailableReason: isDesktopRuntime() ? '桌面本地暂不支持导入视频素材' : undefined,
+          unavailableReason: isDesktopRuntime() ? uiText("桌面本地暂不支持导入视频素材") : undefined,
         }}
         mediaFrame={mediaUrl ? 'natural' : undefined}
         topMinHeight="min-h-[72px]"
@@ -935,6 +942,7 @@ const VideoNodeView = memo(function VideoNodeView(props: NodeProps<FlowNode>) {
 })
 
 const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
+  useUiLanguage()
   const nodeId = sid(props.id)
   const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
@@ -972,13 +980,13 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
         topUpload={{
           accept: 'audio/*',
           onUpload: (f) => uploadNodeOutput(node.id, node, f),
-          unavailableReason: isDesktopRuntime() ? '桌面本地暂不支持导入音频素材' : undefined,
+          unavailableReason: isDesktopRuntime() ? uiText("桌面本地暂不支持导入音频素材") : undefined,
         }}
         topContent={
           mediaUrl || out ? (
             <MediaContent url={out?.url ?? assetFallback} meta={out?.meta as Record<string, unknown>} outputType="audio" />
           ) : (
-            <div className="text-[12px] text-[#b0b0b8]">点击编辑音频</div>
+            <div className="text-[12px] text-[#b0b0b8]">{uiText("点击编辑音频")}</div>
           )
         }
         bottom={<SplitNodeEditor node={node} models={props.data.models ?? []} latest={latest} selected={selected} />}
@@ -992,8 +1000,7 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
                     onClick={() => void saveOutputToLibrary(latest.taskId, out.url)}
                     className="rounded-lg bg-black/5 px-2.5 py-1.5 text-[11px] font-bold text-[#333] hover:bg-black/10"
                   >
-                    存入素材库
-                  </button>
+                    {uiText("存入素材库")}</button>
                 </div>
               ) : null}
               <TaskHistoryBar nodeId={node.id} tasks={tasks} latest={latest} />
@@ -1006,6 +1013,7 @@ const AudioNodeView = memo(function AudioNodeView(props: NodeProps<FlowNode>) {
 })
 
 const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>) {
+  useUiLanguage()
   const nodeId = sid(props.id)
   const selected = useCanvasStore((state) => state.selectedNodeId === nodeId) && !props.dragging
   const node = useNodeData(nodeId)
@@ -1122,7 +1130,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
 
   const doCompose = async () => {
     if (!canCompose) {
-      setErr(readyClips.length < 2 ? '至少需要 2 个就绪的视频输入' : '任务进行中')
+      setErr(readyClips.length < 2 ? uiText("至少需要 2 个就绪的视频输入") : uiText("任务进行中"))
       return
     }
     setBusySubmit(true)
@@ -1143,7 +1151,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
           cost,
         )
       }
-      toastSuccess('合成任务已提交')
+      toastSuccess(uiText("合成任务已提交"))
     } catch (e) {
       const message = (e as Error).message
       setErr(message)
@@ -1187,7 +1195,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
             ) : (
               <div className="flex flex-col items-center gap-1 text-[#b0b0b8]">
                 <Clapperboard size={22} />
-                <span className="text-[11px] font-semibold">连接视频后合成</span>
+                <span className="text-[11px] font-semibold">{uiText("连接视频后合成")}</span>
               </div>
             )}
             {videoInputs.length > 0 && (
@@ -1200,7 +1208,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
         bottom={
           <div className="nodrag nowheel flex flex-col">
             <div className="flex items-center justify-between border-b border-black/6 px-3.5 py-2.5">
-              <span className="text-[13px] font-bold text-[#222]">时间线</span>
+              <span className="text-[13px] font-bold text-[#222]">{uiText("时间线")}</span>
               <div className="flex items-center gap-2 text-[11px] font-semibold text-[#888]">
                 <Play size={12} />
                 <span>
@@ -1211,7 +1219,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
 
             <div className="max-h-[280px] space-y-2 overflow-y-auto px-3 py-2.5">
               {videoInputs.length === 0 && (
-                <p className="py-4 text-center text-[12px] text-[#999]">将至少 2 个视频节点连到本节点</p>
+                <p className="py-4 text-center text-[12px] text-[#999]">{uiText("将至少 2 个视频节点连到本节点")}</p>
               )}
               {videoInputs.map((clip, i) => (
                 <ComposeClipRow key={clip.id} index={i} url={clip.url} status={clip.status} onRemove={() => removeClip(clip.id)} />
@@ -1225,12 +1233,12 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
             <div className="flex items-center gap-2 border-t border-black/6 px-3.5 py-2.5">
               <span className={`flex-1 text-[12px] font-semibold ${canCompose ? 'text-emerald-600' : 'text-[#999]'}`}>
                 {desktopMode && !desktopComposeReady
-                  ? '桌面本地合成服务尚未接入'
+                  ? uiText("桌面本地合成服务尚未接入")
                   : canCompose
-                    ? '可以合成'
+                    ? uiText("可以合成")
                     : readyClips.length < 2
-                      ? `还差 ${2 - readyClips.length} 个就绪视频`
-                      : '请稍候…'}
+                      ? uiText("还差 {0} 个就绪视频", { 0: 2 - readyClips.length })
+                      : uiText("请稍候…")}
               </span>
               {!desktopMode && <span className="text-[11px] font-bold text-[#888]">~{cost}</span>}
               <button
@@ -1239,7 +1247,7 @@ const ComposeNodeView = memo(function ComposeNodeView(props: NodeProps<FlowNode>
                 onClick={() => void doCompose()}
                 className="h-9 min-w-[72px] rounded-xl bg-[#111] px-4 text-[13px] font-bold text-white disabled:cursor-not-allowed disabled:bg-[#ccc]"
               >
-                {busy ? '合成中' : '合成'}
+                {busy ? uiText("合成中") : uiText("合成")}
               </button>
             </div>
           </div>
@@ -1261,6 +1269,7 @@ function ComposeClipRow({
   status: string
   onRemove: () => void
 }) {
+  useUiLanguage()
   const src = useAuthedMediaUrl(url)
   const [duration, setDuration] = useState<number | null>(null)
   const ready = Boolean(url)
@@ -1296,7 +1305,7 @@ function ComposeClipRow({
             ready ? 'bg-emerald-100 text-emerald-700' : badge.cls
           }`}
         >
-          {ready ? '就绪' : badge.text}
+          {ready ? uiText("就绪") : badge.text}
         </span>
         <span className="ml-auto text-[11px] font-semibold text-[#888]">
           {duration != null ? `${duration.toFixed(1)}s` : '—'}
@@ -1304,7 +1313,7 @@ function ComposeClipRow({
         <button
           type="button"
           className="nodrag rounded-md p-0.5 text-[#aaa] hover:bg-black/5 hover:text-[#666]"
-          title="从时间线移除"
+          title={uiText("从时间线移除")}
           onClick={onRemove}
         >
           <X size={13} />
@@ -1316,6 +1325,7 @@ function ComposeClipRow({
 }
 
 function ComposeFilmstrip({ url }: { url?: string }) {
+  useUiLanguage()
   const src = useAuthedMediaUrl(url)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [ready, setReady] = useState(false)

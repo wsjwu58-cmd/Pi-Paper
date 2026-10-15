@@ -10,7 +10,7 @@ async function harness() {
   const mainRequire = createRequire(mainPath)
   const handlers = new Map()
   const electron = {
-    app: { setName() {}, requestSingleInstanceLock: () => false, quit() {} },
+    app: { setName() {}, setPath() {}, getPath: () => 'user-data', requestSingleInstanceLock: () => false, quit() {} },
     protocol: { registerSchemesAsPrivileged() {} },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
   }

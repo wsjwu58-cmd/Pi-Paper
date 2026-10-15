@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "testType": "real installed CLI natural-language MCP acceptance against isolated Electron development runtime",
+  "date": "2026-10-12T11:28:31.052Z",
+  "success": false,
+  "clientResults": [
+    {
+      "success": false,
+      "client": "codex",
+      "failureCategory": "ui_state_timeout",
+      "phase": "launch-isolated-electron-original-canvas",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 0,
+      "pairedConnectionCount": 0,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": false,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "ui_state_timeout",
+      "startedAt": "2026-10-12T11:27:20.490Z"
+    },
+    {
+      "success": false,
+      "client": "claude-code",
+      "failureCategory": "ui_state_timeout",
+      "phase": "launch-isolated-electron-original-canvas",
+      "mcpToolTrace": [],
+      "cliJsonEventCount": 0,
+      "pairedConnectionCount": 0,
+      "localFixtureRequests": 0,
+      "exportedConfigurationUsed": false,
+      "isolatedProfile": true,
+      "rawClientTranscriptSaved": false,
+      "secretsReadOrWrittenToEvidence": false,
+      "errorCode": "ui_state_timeout",
+      "startedAt": "2026-10-12T11:27:55.856Z"
+    }
+  ],
+  "scope": {
+    "realCodexCliTurn": false,
+    "realClaudeCodeTurn": false,
+    "realCloudMediaRequests": 0,
+    "localFixtureGenerationOnly": true,
+    "desktopGenerationConfirmationUsed": false,
+    "authMaterialReadOrCopied": false,
+    "rawClientOutputPersisted": false,
+    "temporaryMcpConfigurationsRemoved": true,
+    "packagedApplicationTested": false
+  }
+}

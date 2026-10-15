@@ -1,0 +1,26 @@
+{
+  "method": "NSIS silent CLI",
+  "manualWizard": false,
+  "args": [
+    "/S",
+    "/D=E:\\pp\\Pi-Paper"
+  ],
+  "installerPath": "E:\\VibePaperProject\\output\\mcp-windows-2026-10-12\\Pi-Paper-0.1.0-win-x64.exe",
+  "installerSha256": "B1A2EDF5A2E5973D4912BBF63EB8C3406F9EEDFC3BFA882B1209C59D5BC4EA9D",
+  "target": "E:\\pp\\Pi-Paper",
+  "startTime": "2026-10-12T19:56:23.5014613+08:00",
+  "endTime": "2026-10-12T19:56:48.1969394+08:00",
+  "processId": 35736,
+  "exitCode": 0,
+  "preInstallRegistry": {
+    "displayName": "Pi-Paper 0.1.0",
+    "displayVersion": "0.1.0",
+    "uninstallString": "\"E:\\pp\\Pi-Paper\\Uninstall Pi-Paper.exe\" /currentuser",
+    "installLocation": null
+  },
+  "dailyUserData": {
+    "path": "C:\\Users\\WSJ\\AppData\\Roaming\\VibePaper",
+    "existedBefore": true,
+    "topLevelEntriesBefore": 30
+  }
+}

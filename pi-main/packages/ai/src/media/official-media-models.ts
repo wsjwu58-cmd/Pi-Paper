@@ -1,5 +1,57 @@
 /** Verified API identities and capabilities of adapters implemented in this repository. */
 export const OFFICIAL_MEDIA_MODELS: Record<string, Record<string, unknown>> = {
+	"Eleven v4": {
+		apiModelId: "eleven_v4",
+		operation: "speech",
+		inputModes: ["text"],
+		requiredCredentials: ["voiceId"],
+		constraints: { maximumPromptCharacters: 10000 },
+	},
+	"Eleven v4 Turbo": {
+		apiModelId: "eleven_v4_turbo",
+		operation: "speech",
+		inputModes: ["text"],
+		requiredCredentials: ["voiceId"],
+		constraints: { maximumPromptCharacters: 10000 },
+	},
+	"Eleven Music 2.5": {
+		apiModelId: "music_v2_5",
+		operation: "music",
+		inputModes: ["text"],
+		defaults: { music_length_ms: 30000 },
+		constraints: {
+			maximumPromptCharacters: 4100,
+			maximumLyricsCharacters: 3500,
+			maximumReferences: 0,
+			accountAccessNotice: "需要供应商音乐 API 账户权限。",
+		},
+	},
+	"Grok Imagine Image 2.0": {
+		apiModelId: "grok-imagine-image-2.0",
+		operation: "generation",
+		inputModes: ["text"],
+		defaults: { size: "1K", ratio: "1:1", quality: "auto" },
+		constraints: {
+			acceptedSizes: ["1K", "2K"],
+			acceptedAspectRatios: ["1:1", "3:2", "2:3", "16:9", "9:16"],
+			maximumReferences: 0,
+			maximumOutputs: 4,
+		},
+	},
+	"MiniMax Music 3.0": {
+		apiModelId: "music-3.0",
+		operation: "music",
+		apiBaseUrl: "https://api.minimax.io/v1",
+		inputModes: ["text"],
+		defaults: { format: "mp3", sample_rate: 44100, bitrate: 256000, lyrics_optimizer: true },
+		unavailableReason: "官方音乐 API 仅向已有付费账户开放；2026-08-20 后的新账户不能开通。",
+		constraints: {
+			maximumPromptCharacters: 2000,
+			maximumLyricsCharacters: 3500,
+			maximumReferences: 0,
+			accountAccessNotice: "仅已有音乐 API 付费账户可用；新账户请先向供应商核实权限。",
+		},
+	},
 	"Wan 2.7": {
 		apiModelId: "wan2.7-t2v",
 		providerId: "alibaba-video",
