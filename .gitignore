@@ -12,6 +12,7 @@ __pycache__/
 dist/
 dist-ssr/
 build/
+/pi-paper-desktop/release/
 /vibepaper-desktop/release/
 target/
 *.class
@@ -64,9 +65,12 @@ Thumbs.db
 # --- Tooling / scratch (not part of product source) ---
 /.test-temp/
 /.playwright-mcp/
-/vibepaper-web/.test-temp/
+/pi-paper-web/.test-temp/
 /learn-claude-code-main/
 /output/
+# Local remnants after the product-directory rename; keep files on disk.
+/vibepaper-desktop/
+/vibepaper-web/
 .codegraph/
 .firecrawl/
 .workbuddy/
@@ -88,7 +92,10 @@ output/pdf/武世杰-后端开发-Agent开发-优化版简历.pdf
 /generation-service/
 /agent-service/
 /deploy/
-/Dockerfile
-/docker-compose.yml
 /nginx.conf
-/.dockerignore
+
+# Desktop packaging and optional Docker runtime
+/pi-paper-desktop/release/
+.npm-cache/
+.test-temp/
+/docker/secrets/

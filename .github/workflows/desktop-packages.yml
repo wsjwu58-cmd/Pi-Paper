@@ -39,7 +39,7 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: |
-            vibepaper-desktop/package-lock.json
+            pi-paper-desktop/package-lock.json
             pi-main/package-lock.json
       - uses: pnpm/action-setup@v4
         with:
@@ -50,23 +50,38 @@ jobs:
         working-directory: pi-main
         run: |
           npm run build --workspace=@earendil-works/pi-telemetry
-          node ../vibepaper-desktop/scripts/restore-model-data.cjs
+          node ../pi-paper-desktop/scripts/restore-model-data.cjs
           npm run build:offline --workspace=@earendil-works/pi-ai
           npm run build --workspace=@earendil-works/pi-agent-core
       - name: Install renderer dependencies
-        working-directory: vibepaper-web
+        working-directory: pi-paper-web
         run: pnpm install --frozen-lockfile
       - name: Install desktop dependencies
-        run: npm ci --prefix vibepaper-desktop
+        run: npm ci --prefix pi-paper-desktop
       - name: Build standalone desktop application
-        run: npm run build:package --prefix vibepaper-desktop
+        run: npm run build:package --prefix pi-paper-desktop
+      - name: Verify language defaults and persistence
+        run: node --test pi-paper-desktop/test/ui-language.test.cjs pi-paper-desktop/test/legacy-credential-read.test.cjs
+      - name: Verify Linux packaged-resource interface language
+        if: matrix.platform == 'linux'
+        working-directory: pi-paper-desktop
+        run: |
+          xvfb-run -a node_modules/.bin/electron scripts/smoke-ui-language.cjs --app-dir=dist/app --no-sandbox
+          xvfb-run -a node_modules/.bin/electron scripts/smoke-ui-language.cjs --app-dir=dist/app --resume --no-sandbox
+      - name: Upload Linux language screenshots and reports
+        if: always() && matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pi-Paper-linux-language-evidence
+          if-no-files-found: warn
+          path: docs/verification/2026-10-08-ui-language/
       - name: Create installers
-        working-directory: vibepaper-desktop
+        working-directory: pi-paper-desktop
         run: npx electron-builder --config electron-builder.cjs --${{ matrix.platform }} --${{ matrix.arch }} --publish never
       - name: Verify packaged Electron runtime
-        run: node vibepaper-desktop/scripts/verify-packaged.cjs
+        run: node pi-paper-desktop/scripts/verify-packaged.cjs
       - name: Generate checksums
-        run: node vibepaper-desktop/scripts/package-checksums.cjs
+        run: node pi-paper-desktop/scripts/package-checksums.cjs
       - name: Upload installers
         if: matrix.platform != 'mac'
         uses: actions/upload-artifact@v4
@@ -74,12 +89,12 @@ jobs:
           name: Pi-Paper-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
           path: |
-            vibepaper-desktop/release/*.exe
-            vibepaper-desktop/release/*.dmg
-            vibepaper-desktop/release/*.zip
-            vibepaper-desktop/release/*.AppImage
-            vibepaper-desktop/release/*.deb
-            vibepaper-desktop/release/SHA256SUMS.txt
+            pi-paper-desktop/release/*.exe
+            pi-paper-desktop/release/*.dmg
+            pi-paper-desktop/release/*.zip
+            pi-paper-desktop/release/*.AppImage
+            pi-paper-desktop/release/*.deb
+            pi-paper-desktop/release/SHA256SUMS.txt
       - name: Upload macOS disk image
         if: matrix.platform == 'mac'
         uses: actions/upload-artifact@v4
@@ -88,8 +103,8 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           path: |
-            vibepaper-desktop/release/*.dmg
-            vibepaper-desktop/release/SHA256SUMS.txt
+            pi-paper-desktop/release/*.dmg
+            pi-paper-desktop/release/SHA256SUMS.txt
       - name: Upload macOS application archive
         if: matrix.platform == 'mac'
         uses: actions/upload-artifact@v4
@@ -98,5 +113,5 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           path: |
-            vibepaper-desktop/release/*.zip
-            vibepaper-desktop/release/SHA256SUMS.txt
+            pi-paper-desktop/release/*.zip
+            pi-paper-desktop/release/SHA256SUMS.txt

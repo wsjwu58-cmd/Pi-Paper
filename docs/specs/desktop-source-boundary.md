@@ -20,7 +20,7 @@ git archive --format=zip --output=legacy-services.zip e3c2bdc4bbc4a0ffbbb5b5af41
 
 ## 桌面运行源码
 
-保留 `vibepaper-desktop/`、原前端 `vibepaper-web/`、原 TypeScript Agent `pi-main/packages/vibepaper-agent-service/` 及其 Pi 依赖、Skills、桌面契约与验收材料。桌面 Agent 复用原 TypeScript Agent，旧根目录 Python `agent-service/` 是另一套历史服务。
+保留 `pi-paper-desktop/`、原前端 `pi-paper-web/`、原 TypeScript Agent `pi-main/packages/vibepaper-agent-service/` 及其 Pi 依赖、Skills、桌面契约与验收材料。桌面 Agent 复用原 TypeScript Agent，旧根目录 Python `agent-service/` 是另一套历史服务。
 
 原前端与 TypeScript Agent 仍包含迁移对照、共享协议和测试代码，不能按名称批量移除。它们的进一步裁剪必须先证明不在桌面源码、构建或功能验收依赖中。现有未提交的 Agent、UI 与安装包改动单独保留。
 
@@ -29,9 +29,15 @@ CI 移除旧 Maven/Python 服务任务，改为桌面分支的 Pi 测试、原�
 ## 本轮验证
 
 - Git 跟踪清单：上述旧服务、部署目录与根部署文件共 426 个文件取消跟踪；本机三个服务的工程文件仍存在。
-- `npm --prefix vibepaper-desktop run test:agent-runtime`：构建通过，Worker 加载项目 Skill，保存、重启后导入会话片段通过。
+- `npm --prefix pi-paper-desktop run test:agent-runtime`：构建通过，Worker 加载项目 Skill，保存、重启后导入会话片段通过。
 - 本地画布校验、裁剪/编组下载与节点导出定向测试：46 项通过。
 - 原 TypeScript Agent 配置校验：2 项通过。
 - 桌面运行源码与测试路径搜索未发现旧服务文件的运行依赖；历史行为目录中的 `agent-service/tests` 为来源说明。
 
 这些验证不替代跨平台安装包、真实模型生成或完整 1:1 迁移验收。
+
+## Pi-Paper 目录与可选容器部署（2026-10-06）
+
+按用户授权，当前顶层目录改名为 `pi-paper-desktop/`、`pi-paper-web/` 和 `pi-paper-architecture-review/`，开发/打包脚本、测试、CI 和当前文档同步使用新路径。已有 `.vibepaper` 项目格式、`VibePaper` 用户目录与 Pi 内部 `vibepaper-agent-service` 包名保留兼容；历史 Git 基线中的文件路径仍按基线查看。
+
+根 `Dockerfile`、`docker-compose.yml`、`.dockerignore` 现在是新编写的单用户 Linux Electron/noVNC 部署文件；旧 Web Docker/Nginx 文件仍只属于上面的历史基线。新部署不恢复 Java、PostgreSQL 或 Redis。部署命令、数据卷、凭据库和验证说明见 [Docker README](../../docker/README.md)。

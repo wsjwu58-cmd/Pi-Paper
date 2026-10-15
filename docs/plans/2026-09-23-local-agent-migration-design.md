@@ -18,7 +18,7 @@
 
 采用 **Pi Agent Core 内存运行态 + 本地 JSONL 完整会话 + 本地 SQLite 控制账本 + 可编辑 Markdown 长期记忆 + 可重建压缩检查点**。不用 Redis、Nacos、Agent 专用 PostgreSQL。内存是加速层，不是恢复依据；JSONL 保留完整消息与工具调用/结果，压缩只改变下一次发给模型的上下文视图。
 
-Agent 的可见面板、消息布局、模型选择、会话和画布协作交互按旧 Web 1:1 迁移；以前端实现而言，直接以原 `vibepaper-web/src/features/canvas/AgentPanel.tsx` 及其消息/事件展示组件为迁移源码，在原代码中接本地适配，不另建平行桌面 Agent 面板。桌面 IPC/Worker 可独立提供受限传输边界，Web 默认路径须保持原契约。本专项的新增范围是上下文压缩、短期记忆、长期记忆与本地恢复，而非重设计对话流程。Agent 提交生成仍走原版系统确认，去掉点数和冻结；普通云端对话在设置处披露发送范围和费用后，由用户选择云端模型并点击发送直接执行，不逐条弹数据发送确认。删除/覆盖等高风险写操作仍沿用风险确认。界面对照见 [桌面 UI 保真清单](../specs/desktop-ui-parity.md)。
+Agent 的可见面板、消息布局、模型选择、会话和画布协作交互按旧 Web 1:1 迁移；以前端实现而言，直接以原 `pi-paper-web/src/features/canvas/AgentPanel.tsx` 及其消息/事件展示组件为迁移源码，在原代码中接本地适配，不另建平行桌面 Agent 面板。桌面 IPC/Worker 可独立提供受限传输边界，Web 默认路径须保持原契约。本专项的新增范围是上下文压缩、短期记忆、长期记忆与本地恢复，而非重设计对话流程。Agent 提交生成仍走原版系统确认，去掉点数和冻结；普通云端对话在设置处披露发送范围和费用后，由用户选择云端模型并点击发送直接执行，不逐条弹数据发送确认。删除/覆盖等高风险写操作仍沿用风险确认。界面对照见 [桌面 UI 保真清单](../specs/desktop-ui-parity.md)。
 
 实现以 `pi-main/packages/vibepaper-agent-service` 的原 TypeScript 模块为共同源代码：`agent-runtime.ts`、`profile-agents.ts`、`runtime-tools.ts`、`CanvasCommandService`、Skill 和上下文服务继续承载原有 Agent 行为。桌面路径在这些模块上增加显式本地策略及本地 Tool Gateway 适配器，替换原 HTTP、PostgreSQL/Redis 与平台计费依赖；Electron Worker 负责进程通信和本地会话生命周期。不得长期维护第二套 CJS 工具 schema、提示词或命令语义。旧 Web 启动路径仍保留其原有业务契约。
 
@@ -204,4 +204,4 @@ SQLite 事务账本负责 `run` 唯一活动约束、单会话事件序号、操
 
 桌面迁移实现进展（2026-09-23）：`pi-main/packages/vibepaper-agent-service/src/desktop/` 已加入存储适配原型：项目级 Agent 写者锁、Pi JSONL 会话读写、`control.sqlite` 的 Run/操作/outbox 持久化与 SQLite outbox 到 JSONL 的补投。`SessionRunService` 支持可选的原子终态接口；该 SQLite 适配器把 Run 终态、事件序号、事件记录和 outbox 放在同一事务中，避免“状态已结束但终态事件/outbox 尚未写入”的崩溃窗口。JSONL 会话目录使用 `projectId` 派生的稳定 CWD 键，项目目录移动后仍可按同一项目身份枚举历史会话；真实项目根目录仅作为 Pi 文件操作执行环境，不写入会话 CWD。该原型还没有接入 `AgentRuntimeDeps`、Electron Worker、Local Tool Gateway、Approval/Memory/Task 端口，也未完成控制库与项目备份集成；不能视为阶段 1–5 已验收。
 
-桌面项目核心已另加本地 TaskStore（`vibepaper-desktop/src/project-store.cjs`，project schema v3），含幂等创建、queued 领取、进程重开转 `interrupted`、事件流水和结果文件 SHA-256 核验；成功任务输出纳入项目备份清单。Agent 的 SQLite `task_links` 仍未与此 TaskStore 对接；Worker 必须先按本地权威任务状态核对恢复结果，再决定是否续跑，禁止盲目重放生成。
+桌面项目核心已另加本地 TaskStore（`pi-paper-desktop/src/project-store.cjs`，project schema v3），含幂等创建、queued 领取、进程重开转 `interrupted`、事件流水和结果文件 SHA-256 核验；成功任务输出纳入项目备份清单。Agent 的 SQLite `task_links` 仍未与此 TaskStore 对接；Worker 必须先按本地权威任务状态核对恢复结果，再决定是否续跑，禁止盲目重放生成。

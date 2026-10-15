@@ -17,11 +17,11 @@
 | `pi-main/packages/vibepaper-agent-service/src/tools/runtime-tools.ts` | 原工具 schema、节点/连线编排、生成准备与提交 | 提炼外部执行上下文/映射，复用业务规则；不照搬内置会话依赖 |
 | `src/application/approval-service.ts`（原 Agent 服务） | 版本、过期、确认消费及幂等消费 | 补外部连接/项目与操作绑定，可信桌面确认后才提交 |
 | `src/desktop/local-tool-gateway.ts`（原 Agent 服务） | 原领域命令到桌面 RPC 的适配 | 分离运行来源和权限，保留原内部调用路径 |
-| `vibepaper-desktop/src/main.cjs` 的 createAgentWorker 内 dispatch | 参数白名单、当前项目、取消、生成目录与 TaskStore 接入 | 移出 Worker 私有闭包，统一授权/确认，不公开私有核心方法 |
-| `vibepaper-desktop/src/local-core.cjs`、`project-store.cjs`、TaskStore | 权威状态、串行写者、CAS 与持久化 | 持续复用，不给 stdio 子进程直接打开 Store |
-| `vibepaper-desktop/src/provider-settings.cjs` | 官方字段、凭据合并、安全存储与检测 | 增加全来源 revision、配置提交/恢复协调、秘密输入脱敏 |
-| `vibepaper-web/src/features/providers/ProviderConfigurationPage.tsx` | 原厂商配置、密码输入、披露与检测状态 | 接待处理公开配置/授权及状态刷新，保持原 Web 分支 |
-| `vibepaper-web/src/features/canvas/canvasPersistence.ts`、CanvasPage | 当前 Renderer flush、保存和载入 | Main 可请求的保存屏障、事件版本去重、未保存编辑保护 |
+| `pi-paper-desktop/src/main.cjs` 的 createAgentWorker 内 dispatch | 参数白名单、当前项目、取消、生成目录与 TaskStore 接入 | 移出 Worker 私有闭包，统一授权/确认，不公开私有核心方法 |
+| `pi-paper-desktop/src/local-core.cjs`、`project-store.cjs`、TaskStore | 权威状态、串行写者、CAS 与持久化 | 持续复用，不给 stdio 子进程直接打开 Store |
+| `pi-paper-desktop/src/provider-settings.cjs` | 官方字段、凭据合并、安全存储与检测 | 增加全来源 revision、配置提交/恢复协调、秘密输入脱敏 |
+| `pi-paper-web/src/features/providers/ProviderConfigurationPage.tsx` | 原厂商配置、密码输入、披露与检测状态 | 接待处理公开配置/授权及状态刷新，保持原 Web 分支 |
+| `pi-paper-web/src/features/canvas/canvasPersistence.ts`、CanvasPage | 当前 Renderer flush、保存和载入 | Main 可请求的保存屏障、事件版本去重、未保存编辑保护 |
 | `useDesktopAgentController.tsx` | 现有内置 Agent 事件刷新节点/任务 | 外部画布事件独立于内置会话订阅，复用原任务 feed |
 | 桌面 build/package 脚本、electron-builder | 当前安装包与独立 Worker 构建 | 打包 stdio 启动器/运行时，避免 GUI 日志污染 stdout |
 

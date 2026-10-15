@@ -22,5 +22,4 @@ describe("production startup and routing contracts", () => {
 		});
 		expect(() => validateStartupConfig(config)).not.toThrow();
 	});
-
 });

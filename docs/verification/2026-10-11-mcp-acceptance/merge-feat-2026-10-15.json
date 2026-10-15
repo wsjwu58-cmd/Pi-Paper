@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-15",
+  "branch": "feat/desktop-local-migration",
+  "localSnapshotCommit": "37a3145",
+  "remoteMergedCommit": "16dbdff",
+  "integration": "Preserve the remote pi-paper-web/pi-paper-desktop directory rename, Docker support, locale fixes and release records; integrate local MCP, provider revisions, original canvas synchronization, confirmation and media reading.",
+  "localRemnants": "Legacy directory files and dependencies remain on disk and are ignored; they are not duplicated in the final source tree.",
+  "regressionDiscovered": "Agent control schema is now 11, while local project backup and restore validation accepted only 1 through 8. Both validators now also accept known schemas 9 through 11; unknown versions remain rejected. The existing plan-backup test now checks the exported current schema constant instead of hard-coding 8.",
+  "checks": {
+    "piFullNpmRunCheck": "passed; no formatter changes",
+    "piProjectAndScopedMemory": { "passed": 19, "failed": 0 },
+    "desktopMcpProviderAndBackup": { "passed": 101, "failed": 0, "skipped": 0, "log": "merge-feat-regression.log" },
+    "webCanvasPersistenceAndProviderEvents": { "passed": 10, "failed": 0 },
+    "webProductionBuild": "passed; existing large chunk and plugin timing warnings",
+    "webLint": "exit 0; existing hook, fast-refresh and related warnings remain",
+    "desktopWorkerBuild": "passed; existing CJS import.meta warnings",
+    "desktopWorkerSmoke": "passed; Skill and session-fragment persistence across restart",
+    "cjsSyntaxFiles": 117,
+    "stagedSecretPatternScanBeforeMergeCommit": "passed; no actual credentials or files above 20 MiB found"
+  },
+  "scope": "Merge regression only; does not claim new real client/provider generation or manual installer/uninstaller acceptance. Historical evidence remains tied to its original source/runtime."
+}

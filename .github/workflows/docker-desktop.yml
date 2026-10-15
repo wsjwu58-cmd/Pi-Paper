@@ -1,0 +1,46 @@
+name: Docker desktop
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/desktop-local-migration, 'codex/pi-paper-docker-*']
+  pull_request:
+    branches: [feat/desktop-local-migration]
+permissions:
+  contents: read
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Prepare local secrets
+        run: node docker/create-secrets.cjs --quiet
+      - name: Validate and build container
+        run: |
+          docker compose config --quiet
+          docker compose build
+      - name: Start desktop
+        run: docker compose up -d --wait --wait-timeout 180
+      - name: Install browser verification dependencies
+        run: |
+          npm install --prefix /tmp/pi-paper-browser --no-package-lock --no-save playwright@1.63.0
+          node /tmp/pi-paper-browser/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Verify native runtime, noVNC and restart
+        env:
+          NODE_PATH: /tmp/pi-paper-browser/node_modules
+        run: node docker/smoke-desktop.cjs
+      - name: Container logs
+        if: always()
+        run: docker compose logs --no-color
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-desktop-screenshot
+          path: .test-temp/docker-desktop.png
+          if-no-files-found: ignore
+      - name: Stop desktop
+        if: always()
+        run: docker compose down

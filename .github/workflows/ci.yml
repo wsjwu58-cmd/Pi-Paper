@@ -32,7 +32,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Build Pi core packages
-        run: npm run build:offline
+        run: |
+          node ../pi-paper-desktop/scripts/restore-model-data.cjs
+          npm run build:offline
       - name: Biome lint
         run: npx biome check packages/vibepaper-agent-service/src packages/vibepaper-agent-service/test
       - name: Typecheck
@@ -49,7 +51,7 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: vibepaper-web
+        working-directory: pi-paper-web
 
     steps:
       - name: Checkout
@@ -65,7 +67,7 @@ jobs:
         with:
           node-version: '22.19.0'
           cache: pnpm
-          cache-dependency-path: vibepaper-web/pnpm-lock.yaml
+          cache-dependency-path: pi-paper-web/pnpm-lock.yaml
 
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
@@ -88,14 +90,16 @@ jobs:
           cache: npm
           cache-dependency-path: |
             pi-main/package-lock.json
-            vibepaper-desktop/package-lock.json
+            pi-paper-desktop/package-lock.json
       - name: Install Pi and desktop dependencies
         run: |
           npm --prefix pi-main ci --ignore-scripts
-          npm --prefix vibepaper-desktop ci --ignore-scripts
+          npm --prefix pi-paper-desktop ci --ignore-scripts
       - name: Build Pi dependencies
-        run: npm --prefix pi-main run build:offline
+        run: |
+          node pi-paper-desktop/scripts/restore-model-data.cjs
+          npm --prefix pi-main run build:offline
       - name: Desktop Worker smoke
-        run: npm --prefix vibepaper-desktop run test:agent-runtime
+        run: npm --prefix pi-paper-desktop run test:agent-runtime
       - name: Local canvas and export tests
-        run: node --test vibepaper-desktop/test/project-store-canvas-validation.test.cjs vibepaper-desktop/test/canvas-media.test.cjs vibepaper-desktop/test/node-export.test.cjs
+        run: node --test pi-paper-desktop/test/project-store-canvas-validation.test.cjs pi-paper-desktop/test/canvas-media.test.cjs pi-paper-desktop/test/node-export.test.cjs

@@ -207,10 +207,10 @@ operationId 是客户端可持有的重试标识，作用域含可信 clientId �
 
 | 边界 | 代码入口 |
 | --- | --- |
-| SDK stdio 与启动环境 | `vibepaper-desktop/src/mcp-node-entry.cjs`、`mcp-stdio.cjs`、`mcp-launcher.cjs`；导出配置使用 `ELECTRON_RUN_AS_NODE=1` 启动内置 Node，安装包显式保留 runAsNode fuse，普通 GUI 入口不作为 stdio 交付路径 |
-| 连接、设备授权与受限 Main RPC | `vibepaper-desktop/src/mcp-main-service.cjs`、`mcp-control-store.cjs`，由 `main.cjs` 创建与关闭 |
+| SDK stdio 与启动环境 | `pi-paper-desktop/src/mcp-node-entry.cjs`、`mcp-stdio.cjs`、`mcp-launcher.cjs`；导出配置使用 `ELECTRON_RUN_AS_NODE=1` 启动内置 Node，安装包显式保留 runAsNode fuse，普通 GUI 入口不作为 stdio 交付路径 |
+| 连接、设备授权与受限 Main RPC | `pi-paper-desktop/src/mcp-main-service.cjs`、`mcp-control-store.cjs`，由 `main.cjs` 创建与关闭 |
 | 共享 TypeScript schema、原工具与项目账本 | `pi-main/packages/vibepaper-agent-service/src/desktop/mcp-runtime.ts`、`control-store.ts`、`local-tool-gateway.ts`，由原 `agent-worker.cjs` 承载 |
-| 提供方写入与恢复 | `vibepaper-desktop/src/mcp-provider-controller.cjs`、`provider-settings.cjs`，继续使用原官方目录、字段与系统加密能力 |
+| 提供方写入与恢复 | `pi-paper-desktop/src/mcp-provider-controller.cjs`、`provider-settings.cjs`，继续使用原官方目录、字段与系统加密能力 |
 | 原 UI 同步与确认 | 原 `CanvasPage`、`AgentPanel`、`ProviderConfigurationPage`、受限 Preload；新增 `/settings/mcp` 只负责本次授权的连接管理 |
 
 文本分页、多输出索引和受限图片/视频读取已实现；协议、路径安全和授权专项测试通过。真实 PNG/Flash MP4 经 Main/Local Core/SDK 返回的字节与 TaskStore、本地文件及验收副本摘要一致；原视频节点播放和 FFmpeg 全片解码已验证。真实客户端、账号生成及安装包的最新逐项状态见 [2026-10-11 验收记录](../verification/2026-10-11-mcp-acceptance/README.md)。用户本轮要求先测 Windows，macOS/Linux 没有测试机器，保持未验收；Claude Code 真实会话由用户取消本轮验收。

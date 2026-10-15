@@ -9,7 +9,7 @@ import { DesktopProjectMemory } from "../src/desktop/project-memory.ts";
 import { createDramaAgent } from "../src/pi/drama-agent.ts";
 
 const { createLocalProjectStore } = createRequire(import.meta.url)(
-	"../../../../vibepaper-desktop/src/project-store.cjs",
+	"../../../../pi-paper-desktop/src/project-store.cjs",
 );
 
 let temporaryRoot: string;

@@ -1,7 +1,7 @@
 # VibePaper 执行计划
 
-> **编制日期**：2026-07-30  
-> **对齐**：PRD V2.1 §4.3 / §15 · 技术概要 · `docs/specs/V1.0-engineering-spec.md` · `AGENTS.md`  
+> **编制日期**：2026-07-30
+> **对齐**：PRD V2.1 §4.3 / §15 · 技术概要 · `docs/specs/V1.0-engineering-spec.md` · `AGENTS.md`
 > **原则**：先基础设施与计费闭环，再创作主路径，再 Agent，最后 P1/P2；每阶段有可演示增量与验收门槛。
 
 ---
@@ -42,7 +42,7 @@ flowchart LR
 
 | ID | 任务 | 产出 | 负责人建议 |
 |----|------|------|------------|
-| E-01 | 仓库结构：`vibepaper-web` · `vibepaper-services/*` · `generation-service` · `agent-service` · `deploy/compose` | 目录与 README | Tech Lead |
+| E-01 | 仓库结构：`pi-paper-web` · `vibepaper-services/*` · `generation-service` · `agent-service` · `deploy/compose` | 目录与 README | Tech Lead |
 | E-02 | Docker Compose：PG×N / Redis / Nacos / RocketMQ / MinIO | `docker compose up` 文档 | DevOps/Backend |
 | E-03 | Java parent POM + `vibepaper-common`（错误体、Snowflake、安全上下文） | 可启动 gateway 空路由 | Java |
 | E-04 | Python `uv` 工程模板 + FastAPI health + Alembic | `/health` | Python |

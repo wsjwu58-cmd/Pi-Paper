@@ -274,9 +274,9 @@ Run: `cd pi-main && npx vitest run packages/vibepaper-agent-service/test/session
 - Create: `pi-main/packages/vibepaper-agent-service/src/application/run-event-stream.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/application/agent-runtime.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/api/app.ts`
-- Modify: `vibepaper-web/src/features/canvas/AgentPanel.tsx`
+- Modify: `pi-paper-web/src/features/canvas/AgentPanel.tsx`
 - Test: `pi-main/packages/vibepaper-agent-service/test/agent-streaming-cancel.test.ts`
-- Test: `vibepaper-web/src/features/canvas/agentStreamClient.test.ts`
+- Test: `pi-paper-web/src/features/canvas/agentStreamClient.test.ts`
 
 **Interfaces:**
 - Produces: `GET /api/v1/agent/sessions/{sessionId}/events?afterSeq=N`、`POST /runs/{runId}/cancel`；复用 Pi `subscribe()/abort()/waitForIdle()`。
@@ -400,7 +400,7 @@ session 使用量来自已完成 run 和 Billing 实际费用汇总，不用模�
 - Create: `pi-main/packages/vibepaper-agent-service/src/domain/tool-policy.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/tools/drama-tools.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/tools/skill-tools.ts`
-- Generate: `vibepaper-web/src/api/generated/agentToolManifest.ts`
+- Generate: `pi-paper-web/src/api/generated/agentToolManifest.ts`
 - Test: `pi-main/packages/vibepaper-agent-service/test/tool-manifest.test.ts`
 
 **Interfaces:**
@@ -427,7 +427,7 @@ interface ToolManifestEntry {
 - Create: `pi-main/packages/vibepaper-agent-service/src/application/instruction-precedence.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/application/agent-runtime.ts`
 - Create: `pi-main/packages/vibepaper-agent-service/src/pi/profile-agents.ts`
-- Modify: `vibepaper-web/src/features/canvas/AgentPanel.tsx`
+- Modify: `pi-paper-web/src/features/canvas/AgentPanel.tsx`
 - Test: `pi-main/packages/vibepaper-agent-service/test/profile-selector.test.ts`
 
 **Interfaces:**
@@ -510,12 +510,12 @@ interface ToolManifestEntry {
 ### Task 16: 前端统一事件 reducer、时间线和错误可见性
 
 **Files:**
-- Create: `vibepaper-web/src/features/canvas/agentEventEnvelope.ts`
-- Modify: `vibepaper-web/src/features/canvas/agentEventHandlers.ts`
-- Modify: `vibepaper-web/src/features/canvas/agentTypes.ts`
-- Modify: `vibepaper-web/src/features/canvas/AgentPanel.tsx`
-- Modify: `vibepaper-web/src/features/canvas/AgentExecutionRecord.tsx`
-- Test: `vibepaper-web/src/features/canvas/agentEventHandlers.test.ts`
+- Create: `pi-paper-web/src/features/canvas/agentEventEnvelope.ts`
+- Modify: `pi-paper-web/src/features/canvas/agentEventHandlers.ts`
+- Modify: `pi-paper-web/src/features/canvas/agentTypes.ts`
+- Modify: `pi-paper-web/src/features/canvas/AgentPanel.tsx`
+- Modify: `pi-paper-web/src/features/canvas/AgentExecutionRecord.tsx`
+- Test: `pi-paper-web/src/features/canvas/agentEventHandlers.test.ts`
 
 **Interfaces:**
 - Consumes Task 6 `AgentEventEnvelope`，只对 `assistant_delta` 做追加，以 `run_completed` 校准最终消息。
@@ -536,8 +536,8 @@ interface ToolManifestEntry {
 - Create: `pi-main/packages/vibepaper-agent-service/src/api/schemas/drama.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/api/app.ts`
 - Create: `pi-main/packages/vibepaper-agent-service/src/api/openapi.ts`
-- Generate: `vibepaper-web/src/api/generated/agent.ts`
-- Modify: `vibepaper-web/package.json`
+- Generate: `pi-paper-web/src/api/generated/agent.ts`
+- Modify: `pi-paper-web/package.json`
 - Test: `pi-main/packages/vibepaper-agent-service/test/openapi-contract.test.ts`
 
 **Interfaces:**
@@ -551,8 +551,8 @@ interface ToolManifestEntry {
 ### Task 18: 节点参考闭环真实浏览器验收
 
 **Files:**
-- Create: `vibepaper-web/e2e/agent-node-references.spec.ts`
-- Update if defect found: `vibepaper-web/src/features/canvas/AgentNodeReferenceCards.tsx`
+- Create: `pi-paper-web/e2e/agent-node-references.spec.ts`
+- Update if defect found: `pi-paper-web/src/features/canvas/AgentNodeReferenceCards.tsx`
 - Update: `docs/audits/pi-agent-remediation-tracker.md`
 
 **Interfaces:**
@@ -620,7 +620,7 @@ interface ToolManifestEntry {
 - Create: `pi-main/packages/vibepaper-agent-service/src/application/skill-governance-service.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/tools/skill-tools.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/api/app.ts`
-- Modify: `vibepaper-web/src/features/canvas/AgentPanel.tsx`
+- Modify: `pi-paper-web/src/features/canvas/AgentPanel.tsx`
 - Test: `pi-main/packages/vibepaper-agent-service/test/skill-governance.test.ts`
 
 **Interfaces:**
@@ -636,9 +636,9 @@ interface ToolManifestEntry {
 **Files:**
 - Create: `pi-main/packages/vibepaper-agent-service/src/application/session-service.ts`
 - Modify: `pi-main/packages/vibepaper-agent-service/src/api/app.ts`
-- Modify: `vibepaper-web/src/features/canvas/AgentPanel.tsx`
+- Modify: `pi-paper-web/src/features/canvas/AgentPanel.tsx`
 - Test: `pi-main/packages/vibepaper-agent-service/test/session-lifecycle.test.ts`
-- Test: `vibepaper-web/e2e/agent-session-lifecycle.spec.ts`
+- Test: `pi-paper-web/e2e/agent-session-lifecycle.spec.ts`
 
 **Interfaces:**
 - Produces cursor pagination；`PATCH /sessions/{id}`、`:archive`、`:restore`、DELETE、`:copy-to-canvas`。
@@ -752,10 +752,10 @@ interface PlanStep { id:string; tool:string; dependsOn:string[]; status:string; 
 ### Task 30: 短剧生产前端纵切
 
 **Files:**
-- Modify: `vibepaper-web/src/features/canvas/DramaAssetsTab.tsx`
-- Create: `vibepaper-web/src/features/canvas/DramaProductionPanel.tsx`
-- Create: `vibepaper-web/src/features/canvas/DramaAuditPanel.tsx`
-- Test: `vibepaper-web/e2e/drama-three-shot-production.spec.ts`
+- Modify: `pi-paper-web/src/features/canvas/DramaAssetsTab.tsx`
+- Create: `pi-paper-web/src/features/canvas/DramaProductionPanel.tsx`
+- Create: `pi-paper-web/src/features/canvas/DramaAuditPanel.tsx`
+- Test: `pi-paper-web/e2e/drama-three-shot-production.spec.ts`
 
 **Interfaces:**
 - Displays: StoryBible、Scene/ShotSpec、ReferencePack、Keyframe、Video、Audio/Subtitle、Composite、AuditReport 和 stale impact。
@@ -855,7 +855,7 @@ interface PlanStep { id:string; tool:string; dependsOn:string[]; status:string; 
 ```bash
 cd pi-main && npx vitest run packages/vibepaper-agent-service/test
 cd pi-main && npx tsgo -p packages/vibepaper-agent-service/tsconfig.build.json --noEmit
-cd vibepaper-web && pnpm test && pnpm exec tsc -b --pretty false && pnpm lint
+cd pi-paper-web && pnpm test && pnpm exec tsc -b --pretty false && pnpm lint
 cd generation-service && uv run pytest -q && uv run ruff check . && uv run mypy src
 cd vibepaper-services && mvn test
 ```

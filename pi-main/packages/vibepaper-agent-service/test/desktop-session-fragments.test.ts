@@ -11,7 +11,7 @@ import { DesktopSessionFragments } from "../src/desktop/session-fragments.ts";
 import { DesktopAgentSessionStore } from "../src/desktop/session-store.ts";
 
 const require = createRequire(import.meta.url);
-const { buildAgentUsage } = require("../../../../vibepaper-desktop/src/agent-usage.cjs") as {
+const { buildAgentUsage } = require("../../../../pi-paper-desktop/src/agent-usage.cjs") as {
 	buildAgentUsage: (
 		entries: unknown[],
 		sessionId: string,
