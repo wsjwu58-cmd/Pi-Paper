@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-16",
+  "sourceCommit": "141dd277849b7e13237836c8a22a382854be0366",
+  "headAfterBuild": "ed824e074fd60a6c31c95e9795acda4c65c4f885",
+  "productSourceChangedBetweenTheseCommits": false,
+  "installerSha256": "f113cd34b2ed212e8c15820bbf4895ebc60fe0cc1152771d2e0883365c591f9b",
+  "installerBytes": 120341708,
+  "output": "output/mcp-windows-2026-10-16-evening/Pi-Paper-0.1.0-win-x64.exe",
+  "buildPassed": true,
+  "packagedSmokePassed": true,
+  "packagedSmokeScope": "Packaged Electron Node mode only: renderer resources, local MCP fixture, 24 providers/93 models, SQLite persistence across restart, Worker Skill and project fragment save/import across restart",
+  "manualInstallerAccepted": false,
+  "installedRuntimeAccepted": false,
+  "authorizedDisclosureCardUiFixIncluded": true,
+  "sharedProviderToolDiscoverySchemaFixIncluded": false,
+  "rootIndependentlyVerifiedInstallerSha256": true,
+  "priorInstallerPreserved": true,
+  "note": "No installer, uninstaller or GUI app launched for this build. Manual evidence for the earlier 858fbbe installer retains its original identity. Subsequent shared tool-schema edits are not part of this frozen package."
+}

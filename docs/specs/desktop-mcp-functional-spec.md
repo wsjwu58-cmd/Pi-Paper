@@ -123,6 +123,10 @@ sourceRef 由可信连接设置注册，绑定连接、providerId、字段和有
 
 Agent 从 `list_provider_configuration` 获取 `credentialSources`、`allowedCredentialFields` 和 `credentialInputModes`。来源目录只含 sourceRef、厂商、字段、来源类型、环境变量名及过期时间，绝不含变量值；限定当前连接、厂商及有效配置授权。仅有读取权限时，这三个数组为空。引用过期或授权变更后重新读取目录，不能猜测引用或使用其他连接的引用。
 
+共享工具 schema 须列出已支持的公开配置字段 `providerId`（可选且须与外层一致）、`baseUrl`、`enabledModelIds`、`defaultModelIds`、`modelDefaults`、`timeoutSeconds`（10–600），模型绑定及参数能力从该提供方目录读取。工具说明须明确字段名到授权 sourceRef 的映射规则，不能要求外部 Agent 猜测配置格式。
+
+`configure_provider` 返回 `awaiting_disclosure` 时尚未保存配置，写入账本也可能尚未创建，此时 `get_provider_operation` 返回 `not_found` 不表示写入失败。桌面披露授权后由外部 Agent 继续配置；同一配置的重放复用操作标识和参数，只有 `saved` 表示保存成功。重新连接的凭据引用仍须从新连接目录取得；任何结果不确定的写入先查询权威状态，不盲重放。
+
 不用 MCP **form** elicitation 收集 API Key。若后续采用 URL elicitation，须协商客户端能力且只返回无秘密的一次性受控输入地址；首期仍可回到原配置页完成，不把客户端是否支持 elicitation 作为配置前提。
 
 ### 5.3 保存、校验与恢复

@@ -224,7 +224,7 @@ export function listMcpAuxiliaryTools(): McpDesktopToolDefinition[] {
 		auxiliaryTool(
 			"list_provider_configuration",
 			"读取提供方配置",
-			"读取授权提供方的公开配置、凭据字段是否已配置及可用模型，不返回密钥。",
+			"先读取此提供方的公开配置、当前 revision、可用模型和凭据授权信息；不会返回密钥。credentialSources 中的 sourceRef 可用于同一 providerId 和 fieldName 的 authorized_env 配置，不能把环境变量名或密钥值当 sourceRef。",
 			object(
 				{
 					providerId: { type: "string", minLength: 1, maxLength: 80 },
@@ -235,14 +235,78 @@ export function listMcpAuxiliaryTools(): McpDesktopToolDefinition[] {
 		auxiliaryTool(
 			"configure_provider",
 			"配置模型提供方",
-			"安全配置授权提供方；秘密只写入加密凭据存储，桌面输入路径不会把密钥发给此客户端。",
+			"先调用 list_provider_configuration 获取当前 provider.revision、模型目录、allowedCredentialFields 和 credentialSources。publicConfig 只接受下方列出的非秘密配置；模型 ID 必须取该提供方返回的 models[].id。使用 authorized_env 时，将每个授权凭据字段映射到同一提供方、同一 fieldName 的 credentialSources[].sourceRef，不要传环境变量名或密钥值。若返回 status=awaiting_disclosure，配置尚未保存且提供方操作账本可能尚未创建；等待原桌面披露授权后，使用完全相同的 providerId、expectedRevision、operationId、publicConfig 和 credentialInput 再调用本工具。复用原 operationId；此时 get_provider_operation 返回 not_found 是预期状态。只有 status=saved 才表示配置已保存。秘密只写入加密凭据存储，桌面输入路径不会把密钥发给此客户端。",
 			object(
 				{
 					providerId: { type: "string", minLength: 1, maxLength: 80 },
-					expectedRevision: { type: "integer", minimum: 0 },
-					operationId: { type: "string", minLength: 1, maxLength: MAX_OPERATION_ID_LENGTH },
-					publicConfig: { type: "object", additionalProperties: true },
+					expectedRevision: {
+						type: "integer",
+						minimum: 0,
+						description: "使用 list_provider_configuration 返回的 provider.revision；披露授权后重放配置时保持不变。",
+					},
+					operationId: {
+						type: "string",
+						minLength: 1,
+						maxLength: MAX_OPERATION_ID_LENGTH,
+						description: "为这次配置写入生成稳定且唯一的操作标识；从 awaiting_disclosure 续接时必须复用同一值。",
+					},
+					publicConfig: {
+						type: "object",
+						additionalProperties: false,
+						description: "可选的非秘密配置补丁。模型 ID 和每个模型可用参数从 list_provider_configuration 返回的目录读取；省略字段保留当前值或提供方默认值。",
+						properties: {
+							providerId: {
+								type: "string",
+								minLength: 1,
+								maxLength: 80,
+								description: "可选；若提供，必须与 configure_provider 的同级 providerId 完全相同，通常省略即可。",
+							},
+							baseUrl: {
+								type: "string",
+								maxLength: 2048,
+								description: "提供方官方 HTTPS 地址；使用 provider.baseUrl 或 allowedHosts 中列出的主机。",
+							},
+							enabledModelIds: {
+								type: "array",
+								maxItems: 200,
+								uniqueItems: true,
+								items: { type: "string", minLength: 1, maxLength: 256 },
+								description: "要启用的模型 ID；必须来自此提供方返回的 models[].id。",
+							},
+							defaultModelIds: {
+								type: "object",
+								maxProperties: 4,
+								propertyNames: { enum: ["text", "image", "video", "audio"] },
+								additionalProperties: { type: "string", minLength: 1, maxLength: 256 },
+								description: "按模态设置默认模型 ID；每个 ID 必须属于已启用且模态匹配的 models[].id。",
+							},
+							modelDefaults: {
+								type: "object",
+								maxProperties: 200,
+								additionalProperties: {
+									type: "object",
+									maxProperties: 5,
+									properties: {
+										ratio: { type: "string" },
+										size: { type: "string" },
+										resolution: { type: "string" },
+										duration: { type: "integer" },
+										generate_audio: { type: "boolean" },
+									},
+									additionalProperties: false,
+								},
+								description: "按目录中的模型 ID 设置默认参数；参数名和值必须符合该模型返回的 defaults 和 constraints。",
+							},
+							timeoutSeconds: {
+								type: "integer",
+								minimum: 10,
+								maximum: 600,
+								description: "请求超时秒数，范围为 10 到 600。",
+							},
+						},
+					},
 					credentialInput: {
+						description: "只通过此凭据输入字段选择授权来源；不要将秘密放入 publicConfig。",
 						oneOf: [
 							object(
 								{
@@ -261,7 +325,13 @@ export function listMcpAuxiliaryTools(): McpDesktopToolDefinition[] {
 									sourceRefs: {
 										type: "object",
 										minProperties: 1,
-										additionalProperties: { type: "string", minLength: 1, maxLength: 256 },
+										description: "按凭据字段名映射 list_provider_configuration 返回的同提供方、同字段 credentialSources[].sourceRef。",
+										additionalProperties: {
+											type: "string",
+											minLength: 1,
+											maxLength: 256,
+											description: "该字段获授权的 sourceRef；不是环境变量名或密钥值。",
+										},
 									},
 								},
 								["source", "sourceRefs"],
@@ -288,7 +358,7 @@ export function listMcpAuxiliaryTools(): McpDesktopToolDefinition[] {
 		auxiliaryTool(
 			"get_provider_operation",
 			"查询提供方配置操作",
-			"查询本连接发起的凭据写入状态，不返回秘密。",
+			"查询当前授权客户端已经开始的凭据写入状态，不返回秘密。只有披露获批后再次调用 configure_provider 才会开始该写入操作；此前 configure_provider 返回 awaiting_disclosure 时，操作账本可能尚未创建，not_found 是预期结果，应先等待桌面披露授权并用原参数和 operationId 续接配置。",
 			object(
 				{
 					providerId: { type: "string", minLength: 1, maxLength: 80 },

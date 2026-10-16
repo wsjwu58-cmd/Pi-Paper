@@ -4,6 +4,7 @@
 
 | 构建 | 本机文件 | SHA256 | 证据 |
 | --- | --- | --- | --- |
+| 2026-10-16 晚间，产品源码 `141dd277849b7e13237836c8a22a382854be0366` | `output/mcp-windows-2026-10-16-evening/Pi-Paper-0.1.0-win-x64.exe` | `f113cd34b2ed212e8c15820bbf4895ebc60fe0cc1152771d2e0883365c591f9b` | [构建及 Node 载荷检查](windows-build-2026-10-16-evening.json)；120,341,708 bytes，包含已授权披露卡终态修复，尚未手工安装 |
 | 2026-10-16，源码 `858fbbeb14d0438d4700859514c14f419faf3247` | `output/mcp-windows-2026-10-16/Pi-Paper-0.1.0-win-x64.exe` | `07b308f606fe5b47e34e9bbc11477cc4d5b4b6804b4c2f98e7a7c2a1db35243e` | [构建及载荷检查](windows-build-2026-10-16.json)、[交互式重装及重开](windows-manual-lifecycle-20261016.json)；120,341,693 bytes，含授权环境变量导出修复 |
 | 2026-10-15，源码 `6491cd8805d358bba05c8ebc443252940b8c2c2d` | `output/mcp-windows-2026-10-15/Pi-Paper-0.1.0-win-x64.exe` | `cca3e3051bc4f3654691c0e92abdc00b31fa48e36770e73a84a052b2114a88ed` | [构建摘要](windows-manual-build.json)、[手工安装及运行](windows-manual-lifecycle.json)；120,341,655 bytes |
 | 2026-10-12，历史构建 | `output/mcp-windows-2026-10-12/Pi-Paper-0.1.0-win-x64.exe` | `b1a2edf5a2e5973d4912bbf63eb8c3406f9eedfc3bfa882b1209c59d5bc4ea9d` | [历史升级记录](windows-installed-upgrade.json) |
