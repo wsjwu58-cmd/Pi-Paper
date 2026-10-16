@@ -1,0 +1,25 @@
+# 2026-10-16 Windows 卸载追踪诊断
+
+## 可确认的事实
+
+- 用户确认本次手工卸载最终显示“卸载完成页”。追踪 JSON 本身不包含页面截图或 UI 状态，因此此项来自用户确认。
+- [进程追踪记录](windows-uninstall-process-trace-20261016-111922-f3ed569f.json)在卸载前后均读到 `E:\pp\Pi-Paper\Pi-Paper.exe`、`Uninstall Pi-Paper.exe`、HKCU 卸载键和 `Software\6d7bc0c1-d3cd-50da-9feb-41d1166b5a3e` 安装键存在；HKLM 对应键不存在。HKCU 注册命令仍指向该目录并带 `/currentuser`。
+- PID 5204 的 `Uninstall Pi-Paper.exe` 由 CIM 精确进程名轮询识别，ExecutablePath 与注册命令目标相符；约 0.3 秒后通过 CIM 查询不到该 PID。其后观测到子进程 `Un_A.exe`（TEMP 路径）及两个 `powershell.exe` 子进程；这些进程随后也通过 CIM 查询不到。它们的退出码均未捕获，`Un_A.exe` 未通过注册卸载器 SHA256 或命令行匹配验证。
+- 记录的最终判定是进程树不再可见且文件/注册表快照稳定 30 秒，不是 NSIS 退出码或“卸载成功”信号。WMI StartTrace、StopTrace 均不可用，追踪没有捕获原生退出事件或 `ExitStatus`。
+
+## 源码与打包配置
+
+- 当前 [electron-builder 配置](../../../pi-paper-desktop/electron-builder.cjs)使用 NSIS、交互式向导（`oneClick: false`）、可改安装目录，并设置 `perMachine: false`、`deleteAppDataOnUninstall: false`；未配置自定义 NSIS include/script。本次实际卸载命令的 `/currentuser` 标志及 HKCU 快照表明被观察的是当前用户注册。
+- 本地锁定的 electron-builder / app-builder-lib 版本为 26.15.3。其 stock [卸载模板](../../../pi-paper-desktop/node_modules/app-builder-lib/templates/nsis/uninstaller.nsh)先执行卸载 section 和文件清理，section 末尾依次尝试删除 `${UNINSTALL_REGISTRY_KEY}` 与 `${INSTALL_REGISTRY_KEY}`（第 250–254 行）。在配置的当前用户模式下，这些键应落在当前用户上下文。`deleteAppDataOnUninstall: false` 控制模板中 `%APPDATA%` 删除分支，不会跳过这两条注册表删除命令。交互式模板包含卸载完成页（[assistedInstaller.nsh](../../../pi-paper-desktop/node_modules/app-builder-lib/templates/nsis/assistedInstaller.nsh)，第 74–81 行）。
+
+## 结论与证据缺口
+
+目前没有证据能确定具体根因。用户看到完成页、卸载器进程及其已观测子进程消失，与卸载操作结束相符；但追踪显示安装文件和两个 HKCU 键原样保留。若运行的确是当前 stock 模板生成的卸载器并执行到卸载 section 末尾，这与模板预期的文件和注册表清理结果不一致。完成页本身不能证明对应文件删除及 `DeleteRegKey` 操作已经成功。
+
+本次记录的注册卸载器 SHA256 为 `4820461a4d1a8b875569561f6524eb938dbf6a8963cb17ee689001a69260d656`。本机候选安装包的 SHA256 与已记录的 2026-10-15 手工安装包一致，但追踪没有记录安装包来源；且候选包内卸载器无法完整静态提取，因此仍不能将这两个卸载器哈希对应起来。WMI 事件订阅失败、没有退出码，TEMP 子进程及两个 PowerShell 子进程也没有经过内容/命令行验证；因此无法判断实际运行二进制是否与当前源码配置一致、是否走完相同清理路径，或清理命令是否生效。现有证据支持“卸载 UI 已结束但目标状态未清理”，不支持宣称根因已证实。
+
+## 候选安装包静态提取核对
+
+- `output/mcp-windows-2026-10-15/Pi-Paper-0.1.0-win-x64.exe` 的 SHA256 为 `CCA3E3051BC4F3654691C0E92ABDC00B31FA48E36770E73A84A052B2114A88ED`，与 `windows-manual-build.json` 记录的安装包哈希一致；`windows-manual-lifecycle.json` 将该安装包记录为手工安装向导验收所用包。
+- 本机仅找到 7-Zip 9.10 beta。它能识别 NSIS 并列出嵌入的 `Uninstall Pi-Paper.exe` 条目，但按条目提取未得到文件；对新建的唯一 `.test-temp` 目录全量提取时，7-Zip 对该条目报告 `Data Error`。留下的 131,072 字节文件 SHA256 为 `8CAD09D238D2EA14CF948EAED1DF7790302D9C15EFF6CE21715BBD0877399EA4`，不是可用于比较的完整提取物。`bsdtar` 可列出安装载荷，但列表中没有卸载器条目。本机没有发现其他 7-Zip 或 makensis 工具；未安装新工具，也未运行任何安装器或卸载器。
+- 因提取物不完整，不能用其差异解释现场残留，也不能检查本次实际运行卸载器内的编译后 NSIS 控制流。此前静态阅读的 stock 模板只说明源配置预期行为，不能替代对现场二进制的验证。

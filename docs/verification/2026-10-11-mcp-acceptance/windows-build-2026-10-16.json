@@ -5,9 +5,12 @@
   "installerBytes": 120341693,
   "output": "output/mcp-windows-2026-10-16/Pi-Paper-0.1.0-win-x64.exe",
   "buildPassed": true,
-  "manualInstallerAccepted": false,
-  "installedRuntimeAccepted": false,
+  "manualInstallerAccepted": true,
+  "installedRuntimeAccepted": true,
   "packagedSmokePassed": true,
   "packagedSmokeScope": "Packaged Electron Node runtime; standalone MCP fixture entry; 24 providers/93 models; SQLite persistence across restart; Worker Skill and fragment reopen. This is not manual installation or GUI acceptance.",
-  "authorizedEnvExportPresentInPayload": true
+  "authorizedEnvExportPresentInPayload": true,
+  "manualInstallerScope": "Observed interactive reinstall/upgrade scope/progress/finish, with user operating intermediate pages; directory page not observed this run; no registry-clean install claim.",
+  "installedRuntimeScope": "Isolated original workspace and real media canvas; normal window close; successful normal local restart and second close. A restricted restart failed with 0x80000003 and remains separately recorded.",
+  "lifecycleEvidence": "windows-manual-lifecycle-20261016.json"
 }

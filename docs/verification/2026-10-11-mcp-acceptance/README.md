@@ -82,4 +82,8 @@ MCP 媒体默认返回元数据；显式 preview 且有 task.read/media.read/对
 
 卸载程序被 Computer Use 以 `product policy blocks this app` 拒绝操作，交由用户手工完成，未换用其他 UI 自动化绕过。用户明确确认卸载完成后、再次启动安装器前，程序/卸载器文件已不存在，但仍观察到一个 HKCU 卸载项及安装位置项；已记录[当时状态](windows-manual-uninstall-final-state.json)，不能用重装后正常存在的注册项替代该时间点。标准 NSIS 模板本有删除注册项的成功路径，尚无实际卸载进程/退出码证据证明未清理的具体原因，未盲改产品模板。手工安装向导已补验；卸载完全清理和签名可信度仍不计通过。
 
-10-16 从已推送的 `858fbbe` 另构建[新 Windows 安装器](windows-build-2026-10-16.json)，载荷包含授权环境变量导出修复。包内 Electron Node 检查通过：MCP node 入口本地 fixture、24 个提供方/93 个模型目录、SQLite 重启持久化及 Worker Skill/片段恢复。此检查独立于安装向导和 GUI，新构建的手工安装及安装后界面尚未补验；10-15 的实际通过证据保留原构建身份。
+10-16 从已推送的 `858fbbe` 另构建[新 Windows 安装器](windows-build-2026-10-16.json)，载荷包含授权环境变量导出修复。包内 Electron Node 检查通过：MCP node 入口本地 fixture、24 个提供方/93 个模型目录、SQLite 重启持久化及 Worker Skill/片段恢复。随后完成[本次交互式重装与运行核对](windows-manual-lifecycle-20261016.json)：审查者观察当前用户选项、安装进度和完成页，用户操作中间页面，审查者取消自动运行并结束向导；本次未观察目录页，且已有 HKCU 注册，不能计为注册项全空的首次安装。已安装 Main 与新载荷一致，MCP service 摘要为 `020b3ac8aae595df95e56f972f03e95dd64490b9cebf6bc07fa7767068162c6d`，不可与 Main 文件摘要混用。10-15 的完整向导证据保留原构建身份。
+
+新安装程序使用隔离 profile 从原 Workspace 打开已有真实媒体项目，图片和视频在原节点中可见；Alt+F4 正常关闭，受限 shell 首次重开出现 Windows 异常 `0x80000003`，保留[异常截图](windows-20261016-reopen-error.jpg)。改用正常本地进程上下文启动后，同一 profile 的 Workspace、同一项目和两个媒体节点均正常，再次 Alt+F4 关闭；见[重开截图](windows-20261016-installed-reopen.jpg)。这证明正常本地重开可用，不能据此确认首次异常的具体根因。本轮未调用云端生成，卸载尝试、重装及运行后对照私有基线的日常 1,737 个文件均无新增、缺失或内容变化。
+
+10-16 用户第三次手工卸载明确报告看见完成页，但重装前[只读追踪](windows-uninstall-process-trace-20261016-111922-f3ed569f.json)仍见主程序、卸载器和两个 HKCU 键存在。已观测卸载进程及子进程后来从 CIM 查询消失，WMI 原生启停追踪不可用，未捕获退出码，也未完整验证临时卸载器身份；稳定 30 秒不能当作 NSIS 成功返回。此状态与前两轮“文件消失、注册项残留”分别保留，不相互覆盖。[诊断记录](windows-uninstall-process-trace-20261016-diagnosis.md)核对 stock 模板包含文件及注册项删除路径，但根因未证实，卸载验收仍未通过；未手工删注册项或绕过自动化限制运行卸载。

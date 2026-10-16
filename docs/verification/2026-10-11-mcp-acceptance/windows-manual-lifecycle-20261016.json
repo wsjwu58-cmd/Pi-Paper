@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-16",
+  "sourceCommit": "858fbbeb14d0438d4700859514c14f419faf3247",
+  "installerSha256": "07b308f606fe5b47e34e9bbc11477cc4d5b4b6804b4c2f98e7a7c2a1db35243e",
+  "installationDirectory": "E:\\pp\\Pi-Paper",
+  "manualInstaller": {
+    "passedForObservedReinstallScope": true,
+    "method": "Interactive Windows installer; user and Windows Computer Use; no silent-install switches",
+    "scopePageObserved": true,
+    "currentUserSelected": true,
+    "directoryPageObservedByReviewer": false,
+    "intermediateNextAndInstallPerformedBy": "user; input guard detected physical input, next observation already showed progress",
+    "progressObserved": true,
+    "finishPageObserved": true,
+    "runAfterFinishUncheckedByReviewer": true,
+    "finishClickedByReviewer": true,
+    "wizardClosed": true,
+    "existingDirectoryPreserved": true,
+    "installedMainMatchesPayload": true,
+    "installedMainSha256": "726c3cb1e94a3e413a4fdd3d80320fa2c370a439d826e800d9299b906738c2a8",
+    "installedMcpServiceMatchesPayload": true,
+    "installedMcpServiceSha256": "020b3ac8aae595df95e56f972f03e95dd64490b9cebf6bc07fa7767068162c6d",
+    "screenshots": [
+      "windows-20261016-install-options.jpg",
+      "windows-20261016-install-progress.jpg",
+      "windows-20261016-install-finish-no-run.jpg"
+    ],
+    "caveat": "Existing per-user registration was detected: reinstall/upgrade, not a registry-clean first installation. Directory page was not observed by reviewer in this run; the prior 10-15 build has separate directory-page evidence."
+  },
+  "manualUninstaller": {
+    "fullyAccepted": false,
+    "performedBy": "user",
+    "userReportedFinalPage": "uninstall completed page",
+    "finalPageScreenshotCaptured": false,
+    "mainExecutablePresentBeforeReinstall": true,
+    "uninstallerPresentBeforeReinstall": true,
+    "hkcuUninstallKeyPresentBeforeReinstall": true,
+    "hkcuInstallLocationKeyPresentBeforeReinstall": true,
+    "observedProcessesLaterAbsent": true,
+    "completeProcessTreeVerified": false,
+    "nativeExitCodesCaptured": false,
+    "wmiStartStopTracingAvailable": false,
+    "rootCauseConfirmed": false,
+    "trace": "windows-uninstall-process-trace-20261016-111922-f3ed569f.json",
+    "diagnosis": "windows-uninstall-process-trace-20261016-diagnosis.md",
+    "limitation": "Computer Use refused uninstall automation. User operated manually; no alternate automation or silent uninstall bypass was used. CIM absence and 30-second state stability do not prove a successful NSIS exit."
+  },
+  "installedRuntimeRecheck": {
+    "isolatedProfile": ".test-temp/windows-installed-20261016-current",
+    "workspaceOpened": true,
+    "existingAcceptanceProjectReopened": true,
+    "realImageAndVideoVisibleInOriginalNodes": true,
+    "originalProcessNormallyClosed": true,
+    "originalPid": 3176,
+    "restrictedRestart": {
+      "pid": 28240,
+      "passed": false,
+      "windowsException": "0x80000003",
+      "screenshot": "windows-20261016-reopen-error.jpg",
+      "rootCauseConfirmed": false
+    },
+    "normalLocalRestart": {
+      "pid": 5112,
+      "passed": true,
+      "sameProfile": true,
+      "workspaceEntryObserved": true,
+      "sameProjectOpened": true,
+      "realImageAndVideoVisible": true,
+      "normallyClosed": true
+    },
+    "caveat": "The successful retry changed the process sandbox context. This shows normal local startup works; it does not prove the exact cause of the restricted-launch exception.",
+    "cloudGenerationRequested": false,
+    "screenshots": [
+      "windows-20261016-installed-workspace.jpg",
+      "windows-20261016-installed-media-canvas.jpg",
+      "windows-20261016-installed-reopen.jpg"
+    ]
+  },
+  "userData": {
+    "profile": "%APPDATA%\\VibePaper",
+    "baselineFiles": 1737,
+    "allFileContentsPreservedAfterUninstallAttempt": true,
+    "allFileContentsPreservedAfterReinstall": true,
+    "allFileContentsPreservedAfterRuntime": true,
+    "manifestPrivateAndIgnored": true,
+    "credentialsDecoded": false,
+    "reports": [
+      "windows-manual-20261016-uninstall-data.json",
+      "windows-manual-20261016-reinstall-data.json",
+      "windows-manual-20261016-runtime-data.json"
+    ]
+  },
+  "finalState": "New installation retained at original directory; isolated installed-app test windows closed; daily user profile was never launched for these creation tests."
+}
