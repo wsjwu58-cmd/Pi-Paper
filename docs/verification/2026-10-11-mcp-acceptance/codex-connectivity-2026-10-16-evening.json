@@ -1,0 +1,20 @@
+{
+  "date": "2026-10-16",
+  "timeContext": "Asia/Shanghai evening continuation",
+  "diagnostic": "codex-cli-connectivity",
+  "turnCompleted": true,
+  "errorEventSeen": false,
+  "assistantMessageObserved": true,
+  "toolEventObserved": false,
+  "exitCode": 0,
+  "timedOut": false,
+  "processSpawnError": false,
+  "httpStatusCodes": [],
+  "mediaKeyProvided": false,
+  "electronStarted": false,
+  "mcpServerConfigured": false,
+  "rawOutputSaved": false,
+  "promptSaved": false,
+  "environmentValuesSaved": false,
+  "scope": "Real minimal model turn only; does not prove MCP provider configuration or media generation"
+}

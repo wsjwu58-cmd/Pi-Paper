@@ -23,3 +23,9 @@
 - `output/mcp-windows-2026-10-15/Pi-Paper-0.1.0-win-x64.exe` 的 SHA256 为 `CCA3E3051BC4F3654691C0E92ABDC00B31FA48E36770E73A84A052B2114A88ED`，与 `windows-manual-build.json` 记录的安装包哈希一致；`windows-manual-lifecycle.json` 将该安装包记录为手工安装向导验收所用包。
 - 本机仅找到 7-Zip 9.10 beta。它能识别 NSIS 并列出嵌入的 `Uninstall Pi-Paper.exe` 条目，但按条目提取未得到文件；对新建的唯一 `.test-temp` 目录全量提取时，7-Zip 对该条目报告 `Data Error`。留下的 131,072 字节文件 SHA256 为 `8CAD09D238D2EA14CF948EAED1DF7790302D9C15EFF6CE21715BBD0877399EA4`，不是可用于比较的完整提取物。`bsdtar` 可列出安装载荷，但列表中没有卸载器条目。本机没有发现其他 7-Zip 或 makensis 工具；未安装新工具，也未运行任何安装器或卸载器。
 - 因提取物不完整，不能用其差异解释现场残留，也不能检查本次实际运行卸载器内的编译后 NSIS 控制流。此前静态阅读的 stock 模板只说明源配置预期行为，不能替代对现场二进制的验证。
+
+## 下一次观察能力准备（尚未重跑卸载）
+
+在私有 `.test-temp` 中准备了持有 `System.Diagnostics.Process` 句柄的只读观察器。进程被发现后核对 PID、StartTime 和可执行文件路径，再开启退出观察；进程退出后通过持有的句柄读取退出码，并转为 UInt32。原始命令行不写入报告，不操作注册项或安装文件。
+
+审查者独立启动一个无害 PowerShell 子进程，让其自行以 255 退出，持有的句柄在退出后仍能读取相同 StartTime、`ExitCode=255`、`UInt32=255`；测试通过。该测试没有运行卸载器，不能补记实际卸载退出码。实际卸载观察器尚未运行；若短命进程在发现或附上句柄前已退出，仍会丢失退出码，报告须保留这一限制。

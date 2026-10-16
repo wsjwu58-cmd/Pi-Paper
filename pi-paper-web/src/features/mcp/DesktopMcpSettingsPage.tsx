@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Check, Clipboard, PlugZap, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
 import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { desktopProviderLabel } from '@/desktop/providerModels'
+import { isPendingProviderDisclosure, isTerminalMcpActionStatus } from './mcpActionStatuses'
 import type {
   DesktopMcpClientGrantInput,
   DesktopMcpCredentialInputMode,
@@ -15,10 +16,6 @@ import type {
 
 const bridge = window.vibepaperDesktop
 const DISCLOSURE_VERSION = 'desktop-mcp-provider-disclosure-v1'
-const terminalActionStatuses = new Set([
-  'approved', 'rejected', 'expired', 'timed_out', 'timeout', 'cancelled', 'canceled', 'invalidated', 'submitted', 'submission_unknown', 'submission-unknown',
-  'succeeded', 'completed', 'failed', 'denied',
-])
 const permissionOptions: Array<{ id: DesktopMcpPermission; label: string; note: string }> = [
   { id: 'canvas.read', label: '读取画布', note: '读取授权画布摘要、节点和素材元数据。' },
   { id: 'canvas.write', label: '编辑画布', note: '创建或修改授权画布中的节点、连线和布局。' },
@@ -106,7 +103,7 @@ export function DesktopMcpSettingsPage() {
     void load()
     const unsubscribe = bridge?.subscribeMcpEvents((event: DesktopMcpEvent) => {
       if (event.type === 'pending-action.created' || event.type === 'pending-action.updated') {
-        setActions((current) => terminalActionStatuses.has(event.action.status)
+        setActions((current) => isTerminalMcpActionStatus(event.action.status)
           ? current.filter((item) => item.proposalId !== event.action.proposalId)
           : [event.action, ...current.filter((item) => item.proposalId !== event.action.proposalId)])
       }
@@ -133,8 +130,7 @@ export function DesktopMcpSettingsPage() {
     && (!providerScopeNeeded || selectedProviderDrafts.length > 0)
     && (!permissions.includes('media.read') || mediaTypes.length > 0)
     && !invalidProviderInput)
-  const grantableActions = actions.filter((action) => action.kind === 'provider_disclosure'
-    && !terminalActionStatuses.has(action.status))
+  const grantableActions = actions.filter(isPendingProviderDisclosure)
 
   const setPermission = (permission: DesktopMcpPermission, enabled: boolean) => {
     setPermissions((current) => enabled

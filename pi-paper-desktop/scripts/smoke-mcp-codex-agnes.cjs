@@ -21,7 +21,7 @@ const evidenceDirectory = path.join(root, 'docs/verification/2026-10-11-mcp-acce
 const temporaryBase = path.join(root, '.test-temp')
 const secretEnvName = 'VIBEPAPER_ACCEPTANCE_AGNES_KEY'
 const safeStatuses = new Set([
-  'aborted', 'authenticated', 'awaiting_confirmation', 'awaiting_disclosure', 'cancelled', 'completed', 'connected', 'disconnected', 'error', 'expired',
+  'aborted', 'authenticated', 'authorized', 'awaiting_confirmation', 'awaiting_disclosure', 'cancelled', 'completed', 'connected', 'disconnected', 'error', 'expired',
   'failed', 'invalidated', 'not_found', 'passed', 'pending', 'proposed', 'queued', 'rejected', 'running', 'success',
   'saved', 'submitted', 'submitting', 'succeeded', 'unsupported', 'uncertain', 'waiting_confirmation',
 ])
@@ -47,6 +47,11 @@ const safeErrorCodes = new Set([
   'CLOUD_CREDENTIAL_INVALID', 'PROVIDER_GENERATION_FAILED', 'PROVIDER_REQUEST_FAILED', 'TASK_FAILED',
   'TASK_OUTPUT_INVALID', 'PROVIDER_TEST_FAILED', 'PROVIDER_SAVE_FAILED', 'OPERATOR_MEDIA_GATE_CANCELLED',
   'OPERATOR_MEDIA_GATE_TIMEOUT', 'OPERATOR_MEDIA_GATE_UNAVAILABLE',
+  'PROVIDER_DISCLOSURE_REJECTED', 'PROVIDER_DISCLOSURE_UNRESOLVED', 'PROVIDER_DISCLOSURE_AMBIGUOUS',
+  'MCP_CANVAS_REENTRY_TIMEOUT', 'PROVIDER_TEST_NOT_UNSUPPORTED',
+  'GENERATION_CONFIRMATION_REJECTED', 'GENERATION_CONFIRMATION_UNRESOLVED',
+  'GENERATION_ACTION_AMBIGUOUS', 'EXISTING_MEDIA_TASK_TIMEOUT',
+  'GENERATION_SUBMISSION_UNCERTAIN',
 ])
 const safeJsonRpcErrorCodes = new Set([-32700, -32600, -32601, -32602, -32603])
 const safeHttpStatusCodes = new Set([
@@ -250,7 +255,18 @@ function parseCodexConfig(configText) {
   return server
 }
 
-function buildCodexOverride(server, fixtureRoot) {
+function toolsForCodexStage(stage) {
+  const readOnlyTools = allowedTools.filter((name) => ![
+    'create_nodes', 'connect_nodes', 'prepare_generation', 'configure_provider', 'test_provider_connection',
+  ].includes(name))
+  if (['configuration', 'configuration-resume'].includes(stage)) {
+    return [...readOnlyTools, 'configure_provider', 'test_provider_connection']
+  }
+  if (['image', 'video'].includes(stage)) return [...readOnlyTools, 'create_nodes', 'connect_nodes', 'prepare_generation']
+  return readOnlyTools
+}
+
+function buildCodexOverride(server, fixtureRoot, stage) {
   const env = { ...server.env, APPDATA: fixtureRoot }
   for (const name of [
     'OPENAI_API_KEY', 'CODEX_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
@@ -260,7 +276,7 @@ function buildCodexOverride(server, fixtureRoot) {
   ]) env[name] = ''
   const envToml = Object.entries(env).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(',')
   const argsToml = server.args.map((value) => JSON.stringify(value)).join(',')
-  const toolsToml = allowedTools.map((value) => JSON.stringify(value)).join(',')
+  const toolsToml = toolsForCodexStage(stage).map((value) => JSON.stringify(value)).join(',')
   const serverValue = `{command=${JSON.stringify(server.command)},args=[${argsToml}],env={${envToml}},env_vars=[${JSON.stringify(secretEnvName)}],enabled_tools=[${toolsToml}],required=true,startup_timeout_sec=150,default_tools_approval_mode="auto",tools={prepare_generation={approval_mode="approve"},configure_provider={approval_mode="approve"},test_provider_connection={approval_mode="approve"}}}`
   return {
     override: `mcp_servers.vibepaper=${serverValue}`,
@@ -935,6 +951,11 @@ async function workerMain() {
   let pairedConnections = 0
   let providerDisclosureObserved = false
   let providerDisclosureConfirmed = false
+  let providerDisclosureCardObserved = false
+  let providerDisclosureDecisionStatus = null
+  let providerDisclosureCandidateCount = 0
+  let configurationContinuationAttempted = false
+  let canvasReadyAfterDisclosureReturn = null
   let generationConfirmationsObserved = 0
   let generationConfirmationsConfirmed = 0
   let providerConfigured = false
@@ -957,7 +978,7 @@ async function workerMain() {
 
   function safeCliTurnSummaries() {
     return cliTurns.map((turn) => ({
-      stage: ['configuration', 'image', 'video', 'readback'].includes(turn.stage) ? turn.stage : 'unknown',
+      stage: ['configuration', 'configuration-resume', 'image', 'image-query', 'video', 'video-query', 'readback'].includes(turn.stage) ? turn.stage : 'unknown',
       exitCode: Number.isInteger(turn.exitCode) ? turn.exitCode : null,
       terminationSignal: [null, 'SIGINT', 'SIGTERM', 'SIGKILL', 'spawn-error'].includes(turn.terminationSignal)
         ? turn.terminationSignal : null,
@@ -1046,6 +1067,10 @@ async function workerMain() {
         jsonRpcErrorCode: null, unknownJsonRpcErrorCode: false } }
     }
     const originalCreateServer = http.createServer
+    const safeToolNameFromPrefix = (prefix) => {
+      const match = prefix.match(/^\s*\{\s*"method"\s*:\s*"tools\/call"\s*,\s*"params"\s*:\s*\{\s*"name"\s*:\s*"([a-z_]+)"/u)
+      return match && allowedTools.includes(match[1]) ? match[1] : null
+    }
     const createServerWithSafeDiagnostics = function (...serverArgs) {
       const listenerIndex = serverArgs.findIndex((argument) => typeof argument === 'function')
       if (listenerIndex < 0) return Reflect.apply(originalCreateServer, this, serverArgs)
@@ -1056,6 +1081,31 @@ async function workerMain() {
         if (!isRpc) return Reflect.apply(originalListener, this, [request, response])
         let chunks = []
         let bytes = 0
+        let requestPrefix = Buffer.alloc(256)
+        let requestPrefixLength = 0
+        let requestToolName = null
+        const originalEmit = request.emit
+        request.emit = function (eventName, ...eventArgs) {
+          if (eventName === 'data' && requestPrefix && requestPrefixLength < requestPrefix.length) {
+            const chunk = eventArgs[0]
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ''))
+            const copied = Math.min(buffer.length, requestPrefix.length - requestPrefixLength)
+            buffer.copy(requestPrefix, requestPrefixLength, 0, copied)
+            requestPrefixLength += copied
+            if (!Buffer.isBuffer(chunk)) buffer.fill(0)
+          } else if (eventName === 'end' && requestPrefix) {
+            requestToolName = safeToolNameFromPrefix(requestPrefix.subarray(0, requestPrefixLength).toString('utf8'))
+            requestPrefix.fill(0)
+            requestPrefix = null
+            request.emit = originalEmit
+          }
+          return Reflect.apply(originalEmit, this, [eventName, ...eventArgs])
+        }
+        request.once('close', () => {
+          if (requestPrefix) requestPrefix.fill(0)
+          requestPrefix = null
+          if (request.emit !== originalEmit) request.emit = originalEmit
+        })
         const originalWrite = response.write
         const originalEnd = response.end
         const collect = (chunk) => {
@@ -1079,7 +1129,7 @@ async function workerMain() {
             const rawHttpStatusCode = Number.isInteger(response.statusCode) ? response.statusCode : null
             const httpStatusCode = safeHttpStatusCodes.has(rawHttpStatusCode) ? rawHttpStatusCode : null
             const unknownHttpStatusCode = rawHttpStatusCode !== null && httpStatusCode === null
-            mcpDiagnostics.rpcResponses.push({ httpStatusCode, errorCode: publicResponse.errorCode,
+            mcpDiagnostics.rpcResponses.push({ toolName: requestToolName, httpStatusCode, errorCode: publicResponse.errorCode,
               status: publicResponse.status, isError: publicResponse.isError,
               unknownPublicErrorCode: publicResponse.unknownPublicErrorCode,
               jsonRpcErrorCode: publicResponse.jsonRpcErrorCode,
@@ -1089,7 +1139,13 @@ async function workerMain() {
             mcpDiagnostics.unknownHttpStatusCodeObserved ||= unknownHttpStatusCode
             if (publicResponse.errorCode) mcpDiagnostics.errorCodes.add(publicResponse.errorCode)
             if (publicResponse.jsonRpcErrorCode !== null) mcpDiagnostics.jsonRpcErrorCodes.add(publicResponse.jsonRpcErrorCode)
-            if (publicResponse.status === 'unsupported') providerConnectionTestStatus = 'unsupported'
+            if (requestToolName === 'test_provider_connection') {
+              if (publicResponse.status && ['unsupported', 'connected', 'failed', 'error'].includes(publicResponse.status)) {
+                providerConnectionTestStatus = publicResponse.status
+              } else if (publicResponse.errorCode === 'PROVIDER_TEST_UNSUPPORTED') {
+                providerConnectionTestStatus = 'unsupported'
+              }
+            }
             const media = hashMedia(body)
             if (media) recordMedia(media)
           } catch { /* Diagnostics intentionally retain only public summaries. */ }
@@ -1172,38 +1228,181 @@ async function workerMain() {
     throw Object.assign(new Error('UI_STATE_TIMEOUT'), { code: 'UI_STATE_TIMEOUT' })
   }
 
-  async function waitForHumanCard(kind, ordinal = 1) {
-    const selector = kind === 'provider'
-      ? '[data-testid^="mcp-pending-"] button:not(:disabled)'
-      : '[data-testid="mcp-generation-confirmation"] button:not(:disabled)'
-    const label = kind === 'provider' ? 'PROVIDER_DISCLOSURE' : `GENERATION_CONFIRMATION_${ordinal}`
-    const before = kind === 'provider'
-      ? 'Boolean(document.querySelector("[data-testid^=mcp-pending-]"))'
-      : 'Boolean(document.querySelector("[data-testid=mcp-generation-confirmation]"))'
-    const after = kind === 'provider'
-      ? '!document.querySelector("[data-testid^=mcp-pending-]")'
-      : '!document.querySelector("[data-testid=mcp-generation-confirmation]")'
-    await waitFor(`Boolean(document.querySelector(${JSON.stringify(selector)}))`, kind === 'provider' ? 8 * 60_000 : 35 * 60_000)
-    if (kind === 'provider') providerDisclosureObserved = true
-    else generationConfirmationsObserved += 1
+  async function readProviderDisclosureSummary() {
+    return evaluate(`(async () => {
+      const response = await window.vibepaperDesktop.getMcpPendingActions()
+      const actions = Array.isArray(response) ? response : (response?.actions || [])
+      const matching = actions.filter((action) => action?.kind === 'provider_disclosure'
+        && action.clientName === 'codex' && action.displayName === 'Codex Agnes full-chain acceptance'
+        && action.projectId === ${JSON.stringify(opened.project.projectId)}
+        && action.canvasId === ${JSON.stringify(opened.project.canvasId)}
+        && (action.providerConfig?.providerId === 'agnes' || action.providerId === 'agnes'))
+      const allowed = new Set(['awaiting_disclosure', 'authorized', 'rejected', 'expired', 'invalidated'])
+      const counts = { awaiting_disclosure: 0, authorized: 0, rejected: 0, expired: 0, invalidated: 0, other: 0 }
+      for (const action of matching) {
+        const status = allowed.has(action.status) ? action.status : 'other'
+        counts[status] += 1
+      }
+      return { candidateCount: matching.length, counts }
+    })()`)
+  }
+
+  async function navigateWithinRenderer(route) {
+    await evaluate(`(() => {
+      history.pushState({}, '', ${JSON.stringify(route)})
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      return true
+    })()`)
+  }
+
+  async function waitForProviderDisclosureResolution() {
+    const configureRequestedDisclosure = mcpDiagnostics.rpcResponses.some((entry) =>
+      entry.toolName === 'configure_provider' && entry.status === 'awaiting_disclosure')
+    const initialWaitMs = configureRequestedDisclosure ? 12 * 60_000 : 5_000
+    const deadline = Date.now() + initialWaitMs
+    let settingsRouteOpened = false
+    let waitingStatusSent = false
+    let sawMatchingAction = false
+    while (Date.now() < deadline) {
+      const summary = await readProviderDisclosureSummary().catch(() => null)
+      if (summary && Number.isSafeInteger(summary.candidateCount)) {
+        providerDisclosureCandidateCount = summary.candidateCount
+        if (summary.candidateCount > 0) {
+          sawMatchingAction = true
+          providerDisclosureObserved = true
+        }
+        if (summary.candidateCount > 1) {
+          providerDisclosureDecisionStatus = 'ambiguous'
+          throw Object.assign(new Error('PROVIDER_DISCLOSURE_AMBIGUOUS'), { code: 'PROVIDER_DISCLOSURE_AMBIGUOUS' })
+        }
+        if (summary.counts.rejected > 0 || summary.counts.expired > 0 || summary.counts.invalidated > 0) {
+          providerDisclosureDecisionStatus = summary.counts.rejected > 0 ? 'rejected'
+            : summary.counts.expired > 0 ? 'expired' : 'invalidated'
+          throw Object.assign(new Error('PROVIDER_DISCLOSURE_REJECTED'), { code: 'PROVIDER_DISCLOSURE_REJECTED' })
+        }
+        if (summary.candidateCount === 1 && summary.counts.authorized === 1) {
+          providerDisclosureDecisionStatus = 'authorized'
+          providerDisclosureConfirmed = true
+          status('PROVIDER_DISCLOSURE_AUTHORIZED_BY_PUBLIC_PENDING_STATE')
+          return true
+        }
+        if (summary.candidateCount === 1 && summary.counts.awaiting_disclosure === 1) {
+          providerDisclosureDecisionStatus = 'awaiting_disclosure'
+          if (!settingsRouteOpened) {
+            await navigateWithinRenderer('/settings/mcp')
+            await waitFor('location.pathname === "/settings/mcp" && Boolean(document.querySelector("[data-testid=mcp-settings-page]"))')
+            settingsRouteOpened = true
+          }
+          const cardVisible = await evaluate('Boolean(document.querySelector("[data-testid^=\\"mcp-pending-\\"]"))').catch(() => false)
+          if (cardVisible) providerDisclosureCardObserved = true
+          if (!waitingStatusSent) {
+            waitingStatusSent = true
+            status('WAITING_FOR_PROVIDER_DISCLOSURE_IN_MCP_SETTINGS')
+          }
+        }
+      }
+      if (!configureRequestedDisclosure && !sawMatchingAction && Date.now() + 500 >= deadline) {
+        providerDisclosureDecisionStatus = null
+        return false
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    if (sawMatchingAction || configureRequestedDisclosure) {
+      providerDisclosureDecisionStatus ||= 'not_found'
+      throw Object.assign(new Error('PROVIDER_DISCLOSURE_UNRESOLVED'), { code: 'PROVIDER_DISCLOSURE_UNRESOLVED' })
+    }
+    return false
+  }
+
+  async function returnToOriginalCanvasAfterDisclosure() {
+    const route = `/canvas/${opened.project.canvasId}`
+    try {
+      await navigateWithinRenderer(route)
+      await waitFor(`location.pathname === ${JSON.stringify(route)} && Boolean(document.querySelector('[data-testid=mcp-canvas-page] .react-flow'))`)
+      await waitFor(`window.vibepaperDesktop.getMcpState().then((state) => state.canvasReady === true
+        && state.activeCanvas?.projectId === ${JSON.stringify(opened.project.projectId)}
+        && state.activeCanvas?.canvasId === ${JSON.stringify(opened.project.canvasId)})`)
+      canvasReadyAfterDisclosureReturn = true
+      status('ORIGINAL_CANVAS_READY_AFTER_PROVIDER_DISCLOSURE')
+    } catch {
+      canvasReadyAfterDisclosureReturn = false
+      throw Object.assign(new Error('MCP_CANVAS_REENTRY_TIMEOUT'), { code: 'MCP_CANVAS_REENTRY_TIMEOUT' })
+    }
+  }
+
+  async function readScopedGenerationActions() {
+    return evaluate(`(async () => {
+      const response = await window.vibepaperDesktop.getMcpPendingActions()
+      const actions = Array.isArray(response) ? response : (response?.actions || [])
+      return actions.filter((action) => action?.kind === 'generation'
+        && action.clientId === ${JSON.stringify(grantClientId)}
+        && action.projectId === ${JSON.stringify(opened.project.projectId)}
+        && action.canvasId === ${JSON.stringify(opened.project.canvasId)})
+        .map((action) => ({ proposalId: action.proposalId, status: action.status }))
+    })()`)
+  }
+
+  async function waitForHumanCard(_kind, ordinal = 1) {
+    const selector = '[data-testid="mcp-generation-confirmation"] button:not(:disabled)'
+    const label = `GENERATION_CONFIRMATION_${ordinal}`
+    const after = '!document.querySelector("[data-testid=mcp-generation-confirmation]")'
+    await waitFor(`Boolean(document.querySelector(${JSON.stringify(selector)}))`, 35 * 60_000)
+    const pending = (await readScopedGenerationActions()).filter((action) => action.status === 'awaiting_confirmation')
+    if (pending.length !== 1) throw Object.assign(new Error('GENERATION_ACTION_AMBIGUOUS'), { code: 'GENERATION_ACTION_AMBIGUOUS' })
+    generationConfirmationsObserved += 1
     status(`WAITING_FOR_${label}_IN_ORIGINAL_DESKTOP`)
-    await waitFor(after, kind === 'provider' ? 12 * 60_000 : 35 * 60_000)
-    if (kind === 'provider') providerDisclosureConfirmed = true
-    else generationConfirmationsConfirmed += 1
-    status(`DESKTOP_CONFIRMED_${label}`)
-    return before
+    await waitFor(after, 35 * 60_000)
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline) {
+      const resolved = (await readScopedGenerationActions()).find((action) => action.proposalId === pending[0].proposalId)
+      if (resolved && ['rejected', 'cancelled', 'expired', 'invalidated', 'denied'].includes(resolved.status)) {
+        throw Object.assign(new Error('GENERATION_CONFIRMATION_REJECTED'), { code: 'GENERATION_CONFIRMATION_REJECTED' })
+      }
+      if (resolved && ['submission_unknown', 'submission-unknown'].includes(resolved.status)) {
+        throw Object.assign(new Error('GENERATION_SUBMISSION_UNCERTAIN'), { code: 'GENERATION_SUBMISSION_UNCERTAIN' })
+      }
+      if (resolved?.status === 'submitted') {
+        generationConfirmationsConfirmed += 1
+        status(`DESKTOP_CONFIRMED_${label}`)
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+    throw Object.assign(new Error('GENERATION_CONFIRMATION_UNRESOLVED'), { code: 'GENERATION_CONFIRMATION_UNRESOLVED' })
+  }
+
+  async function settleExistingMediaTask(modality) {
+    const deadline = Date.now() + 35 * 60_000
+    let noTaskDeadline = Date.now() + 30_000
+    const taskCountKey = `${modality}TaskCount`
+    const taskStatusKey = `${modality}TaskStatus`
+    while (Date.now() < deadline) {
+      const canvas = await inspectFinalCanvas()
+      latestCanvasSummary = canvas
+      if (canvas[taskCountKey] > 1) throw Object.assign(new Error('GENERATION_ACTION_AMBIGUOUS'), { code: 'GENERATION_ACTION_AMBIGUOUS' })
+      if (canvas[taskCountKey] === 1) {
+        if (['succeeded', 'failed', 'cancelled'].includes(canvas[taskStatusKey])) return canvas
+      } else {
+        const pending = (await readScopedGenerationActions()).filter((action) => action.status === 'awaiting_confirmation')
+        if (pending.length > 1) throw Object.assign(new Error('GENERATION_ACTION_AMBIGUOUS'), { code: 'GENERATION_ACTION_AMBIGUOUS' })
+        if (pending.length === 1) {
+          await waitForHumanCard('generation', generationConfirmationsObserved + 1)
+          noTaskDeadline = Date.now() + 30_000
+          continue
+        }
+        if (Date.now() >= noTaskDeadline) break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    throw Object.assign(new Error('EXISTING_MEDIA_TASK_TIMEOUT'), { code: 'EXISTING_MEDIA_TASK_TIMEOUT' })
   }
 
   async function waitForInteractionAndExit(turn, stage) {
-    let providerHandled = false
     let generationOrdinal = 0
     const deadline = Date.now() + 37 * 60_000
     while (Date.now() < deadline) {
       if (window && !window.isDestroyed() && !window.webContents.isLoading()) {
-        if (!providerHandled && await evaluate('Boolean(document.querySelector("[data-testid^=mcp-pending-] button:not(:disabled)"))').catch(() => false)) {
-          providerHandled = true
-          await waitForHumanCard('provider')
-        } else if (await evaluate('Boolean(document.querySelector("[data-testid=mcp-generation-confirmation] button:not(:disabled)"))').catch(() => false)) {
+        if (await evaluate('Boolean(document.querySelector("[data-testid=\\"mcp-generation-confirmation\\"] button:not(:disabled)"))').catch(() => false)) {
           generationOrdinal += 1
           await waitForHumanCard('generation', generationOrdinal)
         }
@@ -1262,7 +1461,7 @@ async function workerMain() {
 
   async function startCodexTurn(stage, prompt) {
     const server = parseCodexConfig(clientConfig)
-    const { override, bridgeAppDataIsolated } = buildCodexOverride(server, runRoot)
+    const { override, bridgeAppDataIsolated } = buildCodexOverride(server, runRoot, stage)
     const executable = resolveCodexExecutable()
     const { environment, systemProxyAddressProvided } = buildCodexEnvironment(secretValue)
     const codexCliAppDataPreserved = environment.APPDATA === process.env.APPDATA
@@ -1329,9 +1528,6 @@ async function workerMain() {
     cliChild = null
     if (result.exitCode !== 0 || !result.turnCompleted) {
       throw Object.assign(new Error(`CODEX_TURN_FAILED_${stage.toUpperCase()}`), { code: 'CODEX_TURN_FAILED' })
-    }
-    if (stage === 'configuration' && result.trace.toolStatuses.test_provider_connection) {
-      providerConnectionTestStatus = result.trace.toolStatuses.test_provider_connection
     }
     status(`CODEX_STAGE_${stage.toUpperCase()}_COMPLETED`)
     return result
@@ -1429,10 +1625,9 @@ async function workerMain() {
     })()`)
   }
 
-  async function assertConfiguredModels() {
+  async function readConfiguredModelSnapshot() {
     const state = await evaluate('window.vibepaperDesktop.getProviderConfiguration()')
     const provider = state.providers.find((item) => item.id === 'agnes')
-    if (!provider?.configured) throw Object.assign(new Error('AGNES_PROVIDER_NOT_CONFIGURED'), { code: 'AGNES_PROVIDER_NOT_CONFIGURED' })
     const expectedModels = [
       { modality: 'image', label: 'Agnes Image 2.5 Flash' },
       { modality: 'video', label: 'Agnes Video 2.5 Flash' },
@@ -1444,8 +1639,17 @@ async function workerMain() {
         && provider.defaultModelIds?.[modality] === model.id)
       return { modality, label, enabled }
     })
+    return { provider, configuredModels }
+  }
+
+  async function assertConfiguredModels() {
+    const { provider, configuredModels } = await readConfiguredModelSnapshot()
+    if (!provider?.configured) throw Object.assign(new Error('AGNES_PROVIDER_NOT_CONFIGURED'), { code: 'AGNES_PROVIDER_NOT_CONFIGURED' })
     if (configuredModels.some((entry) => !entry.enabled)) {
       throw Object.assign(new Error('AGNES_MODELS_NOT_ENABLED'), { code: 'AGNES_MODELS_NOT_ENABLED' })
+    }
+    if (providerConnectionTestStatus !== 'unsupported') {
+      throw Object.assign(new Error('PROVIDER_TEST_NOT_UNSUPPORTED'), { code: 'PROVIDER_TEST_NOT_UNSUPPORTED' })
     }
     return { provider, configuredModels }
   }
@@ -1503,18 +1707,25 @@ async function workerMain() {
       '请执行可用的连接检测；若系统明确返回不支持，请如实报告“不支持检测”，不要把它说成鉴权成功。若原桌面出现数据发送披露卡，请等待桌面用户确认后继续。此阶段只配置和检测，不提交图片或视频生成。',
       '只根据当前画布和模型目录的信息操作，不运行命令、不读取文件、不复述任何凭据。用简短中文报告配置状态、检测状态和显示型号。',
     ].join('\n'),
+    configureResume: [
+      '请重新读取当前授权画布、Agnes 提供方配置、可用模型目录和刚才的配置操作状态。桌面用户已批准当前提供方披露；先核对操作是否已保存或仍在等待处理。仅在尚未保存且操作状态明确允许继续时完成这次配置，不重复已成功保存的内容。',
+      '使用当前配置公开的授权本地凭据来源；不要索要、读取或展示密钥正文。按目录启用并设置默认图片型号“Agnes Image 2.5 Flash”和视频型号“Agnes Video 2.5 Flash”，参数为图片 1K、1:1，视频文本模式、4 秒、720P、16:9。',
+      '只执行不创建生成任务的连接检测；如结果为不支持，请明确报告“不支持检测”，不得说成鉴权成功。不要创建节点、图片、视频或任何媒体任务，不运行命令，不读取文件。',
+    ].join('\n'),
     image: [
       '请重新读取当前画布、Agnes 提供方配置和已有任务，完成本阶段的图片创作；已经存在的节点或已提交任务不要重复创建或再次提交。',
       '在画布里创建一个文字参考节点，内容描述蓝色陶瓷方块置于白色影棚背景、柔和自然阴影、无文字，并命名为“蓝色陶瓷方块参考说明”；再创建一个图片目标节点，命名为“蓝色陶瓷方块海报”，只连接该文字参考节点到图片目标节点一次。只对图片目标节点使用“Agnes Image 2.5 Flash”生成一张 1K、1:1 图片。',
       '桌面若出现该生成的确认卡，请等待桌面用户明确确认后继续查询这次任务直到成功，再通过授权预览读取已保存图片，并核对它显示在原目标节点。若提交结果不确定，先查询现有操作和任务，不得重新提交；若有明确失败，请如实报告并结束本阶段，不要重试。',
       '不要生成视频，不要输出任何内部标识或凭据。结束时简要报告显示型号、任务状态、预览读取及原节点显示状态。',
     ].join('\n'),
+    imageQuery: '请只查询当前授权画布上已经提交的图片任务并读取其已保存的授权图片预览，核对原图片节点结果。不要创建或修改任何节点，不要准备或提交生成，不要重新生成或重试；如任务失败请如实报告。不要运行命令、读取文件或输出内部标识与凭据。',
     video: [
       '请重新读取当前画布、Agnes 提供方配置和已有任务，完成本阶段的视频创作；先查询已有内容，绝不要重复图片生成，也不要重复已提交的视频任务。',
       '在画布中新增独立的视频节点，内容为蓝色陶瓷方块在白色影棚背景中缓慢旋转、固定镜头、无文字；不使用参考图片或其他媒体输入。只使用“Agnes Video 2.5 Flash”，文本模式，4 秒、720P、16:9，生成一条视频。',
       '桌面若出现该生成的确认卡，请等待桌面用户明确确认后继续查询这次任务直到成功，再通过授权预览读取已保存视频资源，并核对它显示在原视频节点。若提交结果不确定，先查询现有操作和任务，不得重新提交；若有明确失败，请如实报告并结束本阶段，不要重试。',
       '不要生成图片，不要输出任何内部标识或凭据。结束时简要报告显示型号、任务状态、预览读取及原节点显示状态。',
     ].join('\n'),
+    videoQuery: '请只查询当前授权画布上已经提交的视频任务并读取其已保存的授权视频预览，核对原视频节点结果。不要创建或修改任何节点，不要准备或提交生成，不要重新生成或重试；如任务失败请如实报告。不要运行命令、读取文件或输出内部标识与凭据。',
     readback: [
       '请重新读取当前画布、可用模型配置和已有任务，核对本次 Agnes 图片与视频结果，不要创建节点或提交任何生成。',
       '分别读取已成功图片和视频任务的授权预览，确认模型显示名称、结果类型和完成状态；检查图片与视频确实显示在各自原节点。只使用当前已存在的任务，若任何结果失败或不确定就如实说明，不要重试。',
@@ -1606,6 +1817,18 @@ async function workerMain() {
     await setupApplication()
     phase = 'codex-natural-language-provider-configuration'
     await runCodexStage('configuration', prompts.configure)
+    const disclosureAuthorized = await waitForProviderDisclosureResolution()
+    if (disclosureAuthorized) {
+      await returnToOriginalCanvasAfterDisclosure()
+      const beforeResume = await readConfiguredModelSnapshot()
+      const modelsReady = Boolean(beforeResume.provider?.configured
+        && beforeResume.configuredModels.every((entry) => entry.enabled))
+      if (!modelsReady || providerConnectionTestStatus !== 'unsupported') {
+        configurationContinuationAttempted = true
+        phase = 'codex-natural-language-provider-configuration-resume'
+        await runCodexStage('configuration-resume', prompts.configureResume)
+      }
+    }
     const configured = await assertConfiguredModels()
     providerConfigured = true
     configurationVerified = configured.provider.configured && configured.configuredModels.every((entry) => entry.enabled)
@@ -1613,21 +1836,27 @@ async function workerMain() {
     paidMediaAuthorizedByOperator = await waitForOperatorContinue()
     phase = 'codex-natural-language-image-generation'
     await runCodexStage('image', prompts.image)
-    let canvas = await inspectFinalCanvas()
+    let canvas = await settleExistingMediaTask('image')
     latestCanvasSummary = canvas
     if (canvas.createdImageNodeCount !== 1 || !canvas.imageReferencePresent || !canvas.imageTargetPresent
       || canvas.imageReferenceToTargetEdgeCount !== 1 || canvas.imageTaskCount !== 1
       || !canvas.imageTaskSuccess || canvas.imageTaskOutputCount !== 1) {
       throw Object.assign(new Error('IMAGE_CHAIN_ASSERTION_FAILED'), { code: 'IMAGE_CHAIN_ASSERTION_FAILED' })
     }
+    if (!mcpDiagnostics.mediaReads.some((entry) => entry.modality === 'image')) {
+      await runCodexStage('image-query', prompts.imageQuery)
+    }
     imageResult = await waitForMediaNode(canvas.imageNodeId, 'image')
     phase = 'codex-natural-language-video-generation'
     await runCodexStage('video', prompts.video)
-    canvas = await inspectFinalCanvas()
+    canvas = await settleExistingMediaTask('video')
     latestCanvasSummary = canvas
     if (!canvas.videoTargetPresent || canvas.videoTaskCount !== 1 || !canvas.videoTaskSuccess || canvas.videoTaskOutputCount !== 1
       || canvas.edgesTouchingAcceptanceNodes !== 1) {
       throw Object.assign(new Error('VIDEO_CHAIN_ASSERTION_FAILED'), { code: 'VIDEO_CHAIN_ASSERTION_FAILED' })
+    }
+    if (!mcpDiagnostics.mediaReads.some((entry) => entry.modality === 'video')) {
+      await runCodexStage('video-query', prompts.videoQuery)
     }
     videoResult = await waitForMediaNode(canvas.videoNodeId, 'video')
     phase = 'codex-natural-language-media-readback'
@@ -1671,7 +1900,12 @@ async function workerMain() {
       providerConnectionTestStatus: providerConnectionTestStatus || 'not_observed',
       pairedConnectionCount: pairedConnections,
       providerDisclosureObserved,
+      providerDisclosureCardObserved,
       providerDisclosureConfirmed,
+      providerDisclosureDecisionStatus: providerDisclosureDecisionStatus || 'not_observed',
+      providerDisclosureCandidateCount,
+      configurationContinuationAttempted,
+      canvasReadyAfterDisclosureReturn,
       generationConfirmationsObserved,
       generationConfirmationsConfirmed,
       paidMediaAuthorizedByOperator,
@@ -1758,7 +1992,12 @@ async function workerMain() {
       providerConnectionTestStatus: providerConnectionTestStatus || 'not_observed',
       pairedConnectionCount: pairedConnections,
       providerDisclosureObserved,
+      providerDisclosureCardObserved,
       providerDisclosureConfirmed,
+      providerDisclosureDecisionStatus: providerDisclosureDecisionStatus || 'not_observed',
+      providerDisclosureCandidateCount,
+      configurationContinuationAttempted,
+      canvasReadyAfterDisclosureReturn,
       generationConfirmationsObserved,
       generationConfirmationsConfirmed,
       paidMediaAuthorizedByOperator,

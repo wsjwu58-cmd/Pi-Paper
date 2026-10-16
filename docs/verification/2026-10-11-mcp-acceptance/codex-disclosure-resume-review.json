@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-16",
+  "scope": "Source review and isolated QA simulations; not a real provider/media acceptance pass",
+  "productionChange": "Only awaiting_disclosure actions remain actionable in the existing MCP settings page; authorized is treated as processed",
+  "frontendTargetedTests": { "passed": 2, "failed": 0 },
+  "frontendBuildPassed": true,
+  "frontendBuildWarning": "Existing large-chunk warning",
+  "harnessSyntaxCheckPassed": true,
+  "providerDisclosureAuthority": "Original desktop public pending-action status matched to the client, project, canvas and Agnes provider; only authorized permits continuation",
+  "providerDisclosureNavigation": "Existing /settings/mcp page, human decision, original canvas restored and canvasReady verified before a new natural-language configuration turn",
+  "connectionDetectionGate": "Requires Main response associated with test_provider_connection to explicitly report unsupported for Agnes; no generation-based authentication probe",
+  "mediaWaitSimulations": {
+    "passed": 10,
+    "approvedProposalThenQueuedTaskSucceeds": true,
+    "missingTaskTimesOut": true,
+    "duplicateTaskRejected": true,
+    "failedTaskReturnsWithoutRetry": true,
+    "submittedActionCountsAsConfirmed": true,
+    "rejectedActionDoesNotCountAsConfirmed": true,
+    "domDisappearanceWithPendingActionDoesNotCountAsConfirmed": true,
+    "nonWorkerApprovedStatusNotAccepted": true,
+    "uncertainSubmissionStops": true,
+    "queryStagesExposeReadOnlyTools": true,
+    "configurationCannotGenerate": true,
+    "realUiOrProviderUsed": false
+  },
+  "mediaContinuationPolicy": "Only read existing scoped confirmation actions and TaskStore tasks; query-only natural-language turns expose read-only enabled_tools and read persisted results. Creation prompts are not replayed; only submitted counts as a confirmed proposal",
+  "credentialsUsedByTheseChecks": false,
+  "paidTasksSubmittedByTheseChecks": 0,
+  "installedBuildIncludesThisUiFix": false
+}
