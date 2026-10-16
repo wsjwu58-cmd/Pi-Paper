@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "success": false,
+  "phase": "electron-worker",
+  "errorCode": "ELECTRON_WORKER_FAILED",
+  "cliExitCodes": [],
+  "providerConfigurationSaved": false,
+  "imageTaskStatus": null,
+  "videoTaskStatus": null,
+  "secretInputTransport": "stdin",
+  "postExitPlaintextKeyFound": false,
+  "credentialHygiene": {
+    "suppliedByTemporaryEnvironment": true,
+    "suppliedViaStdin": true,
+    "environmentRemovedBeforeHarnessWork": true,
+    "postExitPlaintextScanCompleted": true,
+    "plaintextFound": false,
+    "credentialsClearedViaDesktopIpc": false,
+    "testGrantRevoked": false,
+    "rawClientTranscriptSaved": false,
+    "promptSaved": false,
+    "apiKeySavedInEvidence": false,
+    "mcpBootstrapSaved": false
+  },
+  "finishedAt": "2026-10-16T03:01:25.973Z"
+}

@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "scope": "codex-agnes-aborted-run-2026-10-16T03-00-40-076Z",
+  "status": "failed",
+  "credentialsClean": false,
+  "grantClean": false,
+  "providerBefore": null,
+  "providerAfter": null,
+  "credentialClearAttempted": false,
+  "credentialClearSucceeded": false,
+  "credentialAlreadyClear": false,
+  "credentialErrorCode": "CLEANUP_IPC_FAILED",
+  "fixtureClientMatchCount": 0,
+  "fixtureClientCandidateCount": 0,
+  "fixtureClientWasAlreadyRevoked": false,
+  "grantRevokeAttempted": false,
+  "grantRevokeSucceeded": false,
+  "grantErrorCode": null,
+  "originalAcceptanceReportPreserved": true,
+  "safety": {
+    "isolatedProfileUsed": true,
+    "windowShown": false,
+    "showRequestsSuppressed": 0,
+    "dialogsAutoApproved": false,
+    "dialogCalls": {
+      "messageBox": 0,
+      "messageBoxSync": 0,
+      "openDialog": 0,
+      "openDialogSync": 0,
+      "saveDialog": 0,
+      "saveDialogSync": 0,
+      "errorBox": 0
+    },
+    "codexLaunched": false,
+    "generationSubmitted": false,
+    "taskStoreAccessed": false,
+    "decryptedCredentialRead": false,
+    "secretWritten": false,
+    "clientOrProjectIdsWritten": false
+  },
+  "finishedAt": "2026-10-16T03:12:04.029Z"
+}

@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "scope": "codex-agnes-aborted-run-2026-10-16T03-00-40-076Z",
+  "stage": "write-cleanup-report",
+  "status": "completed",
+  "failure": null,
+  "credentialsClean": true,
+  "grantClean": true,
+  "providerBefore": {
+    "providerFound": true,
+    "configured": false,
+    "configuredFieldCount": 0,
+    "revision": 0
+  },
+  "providerAfter": {
+    "providerFound": true,
+    "configured": false,
+    "configuredFieldCount": 0,
+    "revision": 0
+  },
+  "credentialClearAttempted": false,
+  "credentialClearSucceeded": true,
+  "credentialAlreadyClear": true,
+  "credentialErrorCode": null,
+  "credentialErrorName": null,
+  "credentialErrorStage": null,
+  "fixtureClientMatchCount": 1,
+  "fixtureClientCandidateCount": 1,
+  "fixtureClientWasAlreadyRevoked": false,
+  "grantRevokeAttempted": true,
+  "grantRevokeSucceeded": true,
+  "grantErrorCode": null,
+  "grantErrorName": null,
+  "grantErrorStage": null,
+  "originalAcceptanceReportPreserved": true,
+  "safety": {
+    "isolatedProfileUsed": true,
+    "windowShown": false,
+    "showRequestsSuppressed": 0,
+    "dialogsAutoApproved": false,
+    "dialogCalls": {
+      "messageBox": 0,
+      "messageBoxSync": 0,
+      "openDialog": 0,
+      "openDialogSync": 0,
+      "saveDialog": 0,
+      "saveDialogSync": 0,
+      "errorBox": 0
+    },
+    "codexLaunched": false,
+    "generationSubmitted": false,
+    "taskStoreAccessed": false,
+    "decryptedCredentialRead": false,
+    "secretWritten": false,
+    "clientOrProjectIdsWritten": false
+  },
+  "finishedAt": "2026-10-16T03:15:05.241Z"
+}

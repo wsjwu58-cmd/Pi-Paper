@@ -1,0 +1,13 @@
+{
+  "date": "2026-10-16",
+  "sourceCommit": "858fbbeb14d0438d4700859514c14f419faf3247",
+  "installerSha256": "07b308f606fe5b47e34e9bbc11477cc4d5b4b6804b4c2f98e7a7c2a1db35243e",
+  "installerBytes": 120341693,
+  "output": "output/mcp-windows-2026-10-16/Pi-Paper-0.1.0-win-x64.exe",
+  "buildPassed": true,
+  "manualInstallerAccepted": false,
+  "installedRuntimeAccepted": false,
+  "packagedSmokePassed": true,
+  "packagedSmokeScope": "Packaged Electron Node runtime; standalone MCP fixture entry; 24 providers/93 models; SQLite persistence across restart; Worker Skill and fragment reopen. This is not manual installation or GUI acceptance.",
+  "authorizedEnvExportPresentInPayload": true
+}
