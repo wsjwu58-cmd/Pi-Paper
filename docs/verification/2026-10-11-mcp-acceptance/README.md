@@ -14,7 +14,7 @@
 | 真实 Claude Code | 用户取消本轮验收 | 历史配对已完成，但模型 HTTP 402；不将配对或 SDK fixture 计作真实会话通过，不再请求账户或重试 |
 | MCP 实际图片读取 | 通过 | [读取记录](mcp-real-image-read.json)、[重开原节点截图](mcp-real-image-read-original-canvas.png)；新无凭据 profile，实际 Main/Local Core IPC + SDK，853,173 bytes 与 TaskStore 摘要一致 |
 | MCP 实际视频读取 | 真实 Flash MP4 通过 | [真实读取记录](mcp-real-video-read.json)、[原视频节点截图](mcp-real-video-read-original-canvas.png)；新无凭据 profile，经 Main/Local Core/SDK 返回 1,070,236 bytes，摘要匹配；FFmpeg 全片解码与原节点播放 17 帧通过。早期[本地 MP4 fixture](mcp-local-video-read.json)另存 |
-| Windows NSIS 安装包 | 静默升级及新构建手工安装向导通过；卸载注册清理仍有缺口 | 历史[升级记录](windows-installed-upgrade.json)保留。6491cd8 新构建的[手工生命周期记录](windows-manual-lifecycle.json)覆盖当前用户/目录/安装/完成页、新安装程序重开原媒体画布及正常关闭重开；用户手工卸载后程序文件移除，日常 1,737 个文件内容始终一致，但重装前仍见 HKCU 注册项，未判卸载完全通过 |
+| Windows NSIS 安装包 | 交互式重装及正常本地启动/关闭/重开通过；卸载清理未通过 | 历史[升级记录](windows-installed-upgrade.json)与[10-15 完整向导](windows-manual-lifecycle.json)保留。858fbbe 新构建的[10-16 记录](windows-manual-lifecycle-20261016.json)覆盖观察到的当前用户/进度/完成页，中间由用户操作，本次未观察目录页；受限重开失败另存，正常本地重开原媒体画布成功。第三次用户看到卸载完成页后，程序文件和 HKCU 键仍在；日常 1,737 个文件内容保持一致 |
 | 本轮凭据清理与秘密扫描 | 通过，范围限定本轮隔离资料 | [记录](credential-hygiene.json)；原 IPC 清除测试凭据并撤销测试授权，10-13 退出后扫描 97 个测试 profile/证据文件无明文 Key；保留项目及输出 |
 | macOS/Linux | 本轮未验收 | 用户没有机器，并指定先测 Windows |
 
@@ -65,6 +65,10 @@
 10-16 后续[03:00 UTC 运行](codex-agnes-acceptance-2026-10-16T03-00-40-076Z.json)在配对阶段因用户按 Escape 停止 Computer Use，root 随即停止所拥有的验收进程。原自动记录使用通用 `ELECTRON_WORKER_FAILED`，不能将该代码认定为产品崩溃；退出后的明文 Key 扫描通过，当时未完成 IPC 撤销。其[独立事后清理](codex-abort-cleanup-completed.json)随后用原 Main/Renderer 和原 IPC 确认 Agnes 未配置、凭据字段为零，并精确撤销唯一匹配的测试授权；没有启动 Codex、提交生成或读取解密 Key。清理脚本[首次启动失败](codex-abort-cleanup-attempt1.json)发生在读取配置前，原记录仅有通用错误码。修正 QA 异步检查后协议注册过晚的时序风险、改为同步预注册后重试完成，两个记录及原验收失败记录均保留。
 
 用户再次继续后的[03:06 UTC 运行](codex-agnes-acceptance-2026-10-16T03-06-20-022Z.json)仍未收到桌面配对批准，连接等待结束后退出；无工具调用、无配置写入、无媒体任务，IPC 清理、授权撤销和明文扫描通过。暂不继续自动重试配对。
+
+10-16 用户在电脑前继续后，[03:35 UTC 运行](codex-agnes-acceptance-2026-10-16T03-35-24-721Z.json)实际收到一次原生配对批准，真实 Codex 调用了公开配置、模型、画布读取及提供方配置等工具，Main RPC 已返回 `awaiting_disclosure`。尚未保存凭据或启用模型，媒体任务为零，退出前原 IPC 清理、授权撤销及退出后明文 Key 扫描通过。此次已排除“配对未批准”；失败不能继续归入配对或模型网络错误。
+
+审查源码发现，提供方披露卡实际由既有 `/settings/mcp` 的 `DesktopMcpSettingsPage` 显示，原画布只订阅生成确认。QA 始终在画布页查找 `mcp-pending-*`，真实模型回合正常结束并等待用户操作后，脚本立即断言配置已保存并退出。因此该次 `AGNES_PROVIDER_NOT_CONFIGURED` 是实际未完成配置的结果，未证明配置业务保存失败。后续须由现有设置页完成用户披露，再让真实 Codex 自然语言续接并核验公开配置；本次原失败记录保持不变，不能改记全链路通过。
 
 10-15 另复跑现有 `mcp-review-main.test.cjs`，12/12 通过，包含撤销后立即拒绝活跃连接、CAS/保存屏障、重启确认失效和断线配对取消。这是原 128 项集合中定向复跑的 12 项，不累加计数，也不能代替修正后真实 CLI 清理断言的重跑。首次受限环境在测试运行器创建子进程时遭 EPERM，允许本地子进程后的复跑通过；两份 QA 脚本语法检查和视频/安装器交付摘要复核也通过。
 
