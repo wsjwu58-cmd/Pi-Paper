@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 1,
+  "testType": "real Codex CLI natural-language Agnes image and video MCP acceptance",
+  "success": false,
+  "phase": "codex-natural-language-provider-configuration",
+  "errorCode": "AGNES_PROVIDER_NOT_CONFIGURED",
+  "provider": "Agnes",
+  "configuredModels": [],
+  "providerConfigurationSaved": false,
+  "providerModelsEnabled": false,
+  "providerConnectionTestStatus": "not_observed",
+  "pairedConnectionCount": 1,
+  "providerDisclosureObserved": false,
+  "providerDisclosureConfirmed": false,
+  "generationConfirmationsObserved": 0,
+  "generationConfirmationsConfirmed": 0,
+  "paidMediaAuthorizedByOperator": false,
+  "toolNamesObserved": [
+    "configure_provider",
+    "get_context",
+    "list_models",
+    "list_provider_configuration"
+  ],
+  "toolCallCounts": {
+    "list_models": 1,
+    "get_context": 1,
+    "list_provider_configuration": 1,
+    "configure_provider": 1
+  },
+  "toolResultStatuses": {
+    "get_context": "completed",
+    "list_provider_configuration": "completed",
+    "list_models": "completed",
+    "configure_provider": "failed"
+  },
+  "toolResultIsError": {},
+  "cliToolErrorCodes": [],
+  "toolFailureFlags": {
+    "timeout": false,
+    "unknownSourceRef": false,
+    "environmentValueMissing": false,
+    "credentialSourceUnavailable": false,
+    "validationFailure": false,
+    "approvalDenied": false,
+    "transportFailure": false,
+    "otherFailure": true
+  },
+  "cliErrorEventFlags": {
+    "timeout": false,
+    "unknownSourceRef": false,
+    "environmentValueMissing": false,
+    "credentialSourceUnavailable": false,
+    "validationFailure": false,
+    "approvalDenied": false,
+    "transportFailure": false,
+    "otherFailure": true
+  },
+  "mainWorkerToolCallCounts": {
+    "list_models": 1
+  },
+  "publicRpcResponses": [
+    {
+      "httpStatusCode": 200,
+      "errorCode": null,
+      "status": null,
+      "isError": false,
+      "unknownPublicErrorCode": false
+    },
+    {
+      "httpStatusCode": 200,
+      "errorCode": null,
+      "status": null,
+      "isError": false,
+      "unknownPublicErrorCode": false
+    },
+    {
+      "httpStatusCode": 200,
+      "errorCode": null,
+      "status": null,
+      "isError": false,
+      "unknownPublicErrorCode": false
+    },
+    {
+      "httpStatusCode": 200,
+      "errorCode": null,
+      "status": null,
+      "isError": false,
+      "unknownPublicErrorCode": false
+    }
+  ],
+  "unknownPublicErrorCodeObserved": false,
+  "safeMcpErrorCodes": [],
+  "cliTurnCount": 1,
+  "cliExitCodes": [
+    0
+  ],
+  "cliTurnCompletedCount": 1,
+  "cliTurnSummaries": [
+    {
+      "stage": "configuration",
+      "exitCode": 0,
+      "terminationSignal": null,
+      "turnCompleted": true,
+      "errorEventSeen": true,
+      "systemProxyAddressProvided": true,
+      "codexCliAppDataPreserved": true,
+      "mcpBridgeAppDataIsolated": true,
+      "eventTypeCounts": {
+        "thread.started": 1,
+        "turn.started": 1,
+        "item.completed": 7,
+        "item.started": 4,
+        "turn.completed": 1
+      },
+      "assistantMessageFlags": {
+        "messageObserved": true,
+        "noToolsAvailable": false,
+        "needsKey": false,
+        "awaitingUserAction": false
+      },
+      "toolFailureFlags": {
+        "timeout": false,
+        "unknownSourceRef": false,
+        "environmentValueMissing": false,
+        "credentialSourceUnavailable": false,
+        "validationFailure": false,
+        "approvalDenied": false,
+        "transportFailure": false,
+        "otherFailure": true
+      },
+      "cliErrorEventFlags": {
+        "timeout": false,
+        "unknownSourceRef": false,
+        "environmentValueMissing": false,
+        "credentialSourceUnavailable": false,
+        "validationFailure": false,
+        "approvalDenied": false,
+        "transportFailure": false,
+        "otherFailure": true
+      },
+      "stderrDiagnostics": {
+        "mcpStartupFailure": false,
+        "mcpHandshakeFailure": false,
+        "mcpHandshakeTimeout": false,
+        "mcpConfigurationFailure": false,
+        "mcpSchemaFailure": false,
+        "authenticationFailure": false,
+        "networkFailure": false,
+        "quotaOrBillingFailure": false
+      },
+      "toolNames": [
+        "configure_provider",
+        "get_context",
+        "list_models",
+        "list_provider_configuration"
+      ],
+      "toolStatuses": {
+        "get_context": "completed",
+        "list_provider_configuration": "completed",
+        "list_models": "completed",
+        "configure_provider": "failed"
+      },
+      "toolIsErrors": {},
+      "errorCodes": []
+    }
+  ],
+  "mcpPreviewReadCalls": 0,
+  "mcpMediaReads": [],
+  "imageTaskStatus": null,
+  "videoTaskStatus": null,
+  "imageTaskErrorCode": null,
+  "videoTaskErrorCode": null,
+  "imageTaskCount": 0,
+  "videoTaskCount": 0,
+  "imageTaskOutputCount": null,
+  "videoTaskOutputCount": null,
+  "imageTaskOutputFingerprint": null,
+  "videoTaskOutputFingerprint": null,
+  "taskStoreSuccessfulMediaTaskCount": 0,
+  "taskStoreSubmittedMediaTaskCount": 0,
+  "actualProviderHttpRequestCount": null,
+  "actualProviderHttpRequestCountRecorded": false,
+  "mcpPreviewMatchesTaskStore": {
+    "image": null,
+    "video": null
+  },
+  "imageOriginalNode": null,
+  "videoOriginalNode": null,
+  "credentialsClearedViaDesktopIpc": true,
+  "testGrantRevoked": true,
+  "rawClientTranscriptSaved": false,
+  "promptSaved": false,
+  "apiKeySavedInEvidence": false,
+  "mcpBootstrapSaved": false,
+  "startedAt": "2026-10-15T13:14:09.086Z",
+  "internalPhase": "codex-natural-language-provider-configuration",
+  "secretInputTransport": "stdin",
+  "postExitPlaintextKeyFound": false,
+  "credentialHygiene": {
+    "suppliedByTemporaryEnvironment": true,
+    "suppliedViaStdin": true,
+    "environmentRemovedBeforeHarnessWork": true,
+    "postExitPlaintextScanCompleted": true,
+    "plaintextFound": false,
+    "credentialsClearedViaDesktopIpc": true,
+    "testGrantRevoked": true,
+    "rawClientTranscriptSaved": false,
+    "promptSaved": false,
+    "apiKeySavedInEvidence": false,
+    "mcpBootstrapSaved": false
+  },
+  "finishedAt": "2026-10-15T13:15:03.396Z"
+}

@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-15",
+  "scope": "Codex MCP configuration export of authorized environment variable names",
+  "productionFile": "pi-paper-desktop/src/mcp-main-service.cjs",
+  "behavior": {
+    "onlyAuthorizedNamesForwarded": true,
+    "duplicateNamesRemoved": true,
+    "noMappingOmitsEnvVars": true,
+    "secretValuesExported": false
+  },
+  "independentVerification": {
+    "command": "node --test pi-paper-desktop/test/mcp-review-main.test.cjs",
+    "tests": 13,
+    "passed": 13,
+    "failed": 0,
+    "skipped": 0
+  },
+  "limits": "This targeted source regression does not prove that the real Codex provider configuration or official media generation flow has passed. The previously tested Windows installer was built from 6491cd8, before this export fix."
+}

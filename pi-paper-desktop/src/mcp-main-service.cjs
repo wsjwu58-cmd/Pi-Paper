@@ -236,6 +236,7 @@ function createMcpMainService(options) {
         if (!authorizedEnvNames.has(normalized)) authorizedEnvNames.set(normalized, name)
       }
     }
+    const authorizedEnvironmentVariables = [...authorizedEnvNames.values()]
     const args = [
       nodeEntry,
       '--mcp-stdio', '--mcp-instance-file', instanceFile,
@@ -247,6 +248,8 @@ function createMcpMainService(options) {
       '[mcp_servers.vibepaper]',
       `command = ${JSON.stringify(process.execPath)}`,
       `args = ${JSON.stringify(args)}`,
+      ...(authorizedEnvironmentVariables.length
+        ? [`env_vars = ${JSON.stringify(authorizedEnvironmentVariables)}`] : []),
       'startup_timeout_sec = 150',
       '',
       '[mcp_servers.vibepaper.env]',

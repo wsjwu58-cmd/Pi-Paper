@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-15",
+  "sourceCommit": "6491cd8805d358bba05c8ebc443252940b8c2c2d",
+  "installerSha256": "cca3e3051bc4f3654691c0e92abdc00b31fa48e36770e73a84a052b2114a88ed",
+  "installationDirectory": "E:\\pp\\Pi-Paper",
+  "manualInstaller": {
+    "passed": true,
+    "method": "Windows Computer Use @oai/sky; no silent-install switches",
+    "scopePageObserved": true,
+    "currentUserSelected": true,
+    "directoryPageObserved": true,
+    "existingDirectoryPreserved": true,
+    "installClicked": true,
+    "progressObserved": true,
+    "finishPageObserved": true,
+    "runAfterFinishUnchecked": true,
+    "finishClicked": true,
+    "wizardClosed": true,
+    "installedMainMatchesNewPayload": true,
+    "installedMainSha256": "726c3cb1e94a3e413a4fdd3d80320fa2c370a439d826e800d9299b906738c2a8",
+    "screenshots": [
+      "windows-manual-install-options.png",
+      "windows-manual-install-directory.png",
+      "windows-manual-install-progress.png",
+      "windows-manual-install-finish.png",
+      "windows-manual-install-finish-no-run.png"
+    ],
+    "scopeCaveat": "The installer identified an existing per-user registration, so this is a visible reinstall/upgrade wizard, not proof of a registry-clean first installation."
+  },
+  "manualUninstaller": {
+    "fullyAccepted": false,
+    "performedBy": "user; completion explicitly confirmed in chat",
+    "automationLimitation": "Windows Computer Use refused to launch the uninstaller with product policy blocks this app. No alternate UI automation or silent uninstall was used to bypass that restriction.",
+    "installedExecutableRemoved": true,
+    "uninstallerFileRemoved": true,
+    "registryEntriesObservedBeforeReinstall": 1,
+    "registryScope": "HKCU",
+    "registryKey": "6d7bc0c1-d3cd-50da-9feb-41d1166b5a3e",
+    "registryRemovalAccepted": false,
+    "rootCauseConfirmed": false,
+    "sourceReview": "The stock electron-builder NSIS template contains registry deletion at the end of the uninstall section. Data retention configuration does not intentionally retain installation registration. The exact uninstaller process and its exit result were not captured, so no production workaround was added.",
+    "finalObservation": "windows-manual-uninstall-final-state.json",
+    "furtherDiagnosis": "Capture the actual registered uninstall command, matching executable hash and completed process outcome before reinstalling; verify both per-user installation and uninstall keys are gone."
+  },
+  "userData": {
+    "profile": "%APPDATA%\\VibePaper",
+    "baselineFiles": 1737,
+    "allFileContentsPreservedAfterUpgrade": true,
+    "allFileContentsPreservedAfterConfirmedUninstall": true,
+    "allFileContentsPreservedAfterFinalReinstall": true,
+    "manifestPrivateAndIgnored": true,
+    "credentialValuesDecoded": false,
+    "reports": [
+      "windows-manual-upgrade-data.json",
+      "windows-manual-uninstall-final-data.json",
+      "windows-manual-reinstall-final-data.json"
+    ]
+  },
+  "installedRuntimeRecheck": {
+    "isolatedProfile": ".test-temp/windows-manual-runtime-20261015",
+    "workspaceOpened": true,
+    "existingAcceptanceProjectReopened": true,
+    "realImageAndVideoVisibleInOriginalNodes": true,
+    "normalWindowCloseAndRestartPassed": true,
+    "sameProjectAvailableAfterRestart": true,
+    "realVideoVisibleAfterRestart": true,
+    "dailyProfileFilesStillExactlyPreserved": true,
+    "cloudGenerationRequested": false,
+    "screenshots": [
+      "windows-manual-installed-workspace.png",
+      "windows-manual-installed-media-canvas.png",
+      "windows-manual-installed-reopen.png"
+    ],
+    "harnessRecovery": "An initial background-hidden launch did not expose a targetable window. Only that owned isolated process tree was terminated; subsequent interactive Normal-window launch, Alt+F4 close and restart succeeded. The hidden-launch attempt is not counted as a successful normal lifecycle."
+  },
+  "finalState": "Application restored to the original installation directory; isolated test window closed. Daily user profile was not launched or used for test creation."
+}

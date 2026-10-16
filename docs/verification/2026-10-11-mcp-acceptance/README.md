@@ -14,7 +14,7 @@
 | 真实 Claude Code | 用户取消本轮验收 | 历史配对已完成，但模型 HTTP 402；不将配对或 SDK fixture 计作真实会话通过，不再请求账户或重试 |
 | MCP 实际图片读取 | 通过 | [读取记录](mcp-real-image-read.json)、[重开原节点截图](mcp-real-image-read-original-canvas.png)；新无凭据 profile，实际 Main/Local Core IPC + SDK，853,173 bytes 与 TaskStore 摘要一致 |
 | MCP 实际视频读取 | 真实 Flash MP4 通过 | [真实读取记录](mcp-real-video-read.json)、[原视频节点截图](mcp-real-video-read-original-canvas.png)；新无凭据 profile，经 Main/Local Core/SDK 返回 1,070,236 bytes，摘要匹配；FFmpeg 全片解码与原节点播放 17 帧通过。早期[本地 MP4 fixture](mcp-local-video-read.json)另存 |
-| Windows NSIS 安装包 | 实际静默升级、注册核对、已安装运行及重开通过 | [升级记录](windows-installed-upgrade.json)、[重开画布截图](installed-canvas-after-reopen.png)；用户授权后更新 `E:\pp\Pi-Paper`，9 个关键文件摘要匹配最终载荷，包内 Node stdio、原生配对、2 节点/1 连线及幂等/UI 同步通过；手工安装向导和卸载未验收 |
+| Windows NSIS 安装包 | 静默升级及新构建手工安装向导通过；卸载注册清理仍有缺口 | 历史[升级记录](windows-installed-upgrade.json)保留。6491cd8 新构建的[手工生命周期记录](windows-manual-lifecycle.json)覆盖当前用户/目录/安装/完成页、新安装程序重开原媒体画布及正常关闭重开；用户手工卸载后程序文件移除，日常 1,737 个文件内容始终一致，但重装前仍见 HKCU 注册项，未判卸载完全通过 |
 | 本轮凭据清理与秘密扫描 | 通过，范围限定本轮隔离资料 | [记录](credential-hygiene.json)；原 IPC 清除测试凭据并撤销测试授权，10-13 退出后扫描 97 个测试 profile/证据文件无明文 Key；保留项目及输出 |
 | macOS/Linux | 本轮未验收 | 用户没有机器，并指定先测 Windows |
 
@@ -52,6 +52,12 @@
 
 原 image 节点 DOM 诊断以提示词文本匹配导致零匹配，已改为使用仅保留在内存中的节点关联与元素矩形；此 QA 改动同样未重跑。Codex 自然语言配置真实图片/视频凭据、官方媒体完整回合、客户端原生媒体预览和已安装包内真实客户端全链路仍未验收。此前 10-13 中途额度拒绝和 10-15 本地 fixture 脚本错误均保留历史记录，不与此次真实任务完成混为一谈。
 
+10-15 增加隔离的 Codex→Agnes 分阶段脚本。首次[配置阶段记录](codex-agnes-acceptance-2026-10-15T12-52-54-132Z.json)中 CLI 正常结束，但未调用 MCP、未配对、未保存配置，图片和视频任务均为零；清理与退出后明文 Key 扫描通过。复核发现 QA 错把 CLI 自身的 APPDATA 改为测试目录，且测试窗口未显式显示；这两项已修复，但不能仅凭观察认定首次零调用的根因。临时 MCP 配置另加入必需启动、60 秒启动超时及仅转发授权环境变量名的配置，stderr/assistant 内容仅在内存分类为固定诊断标志，不保留原文。后续真实结果独立记录，不回写首次失败。
+
+第二次[配置阶段记录](codex-agnes-acceptance-2026-10-15T13-03-44-754Z.json)已完成真实用户原生配对批准，Codex 读取画布、模型和 Agnes 公开配置；配置工具调用失败，未出现提供方披露卡，未保存凭据、未创建图片/视频任务。CLI 的安全诊断含网络类标志，尚不足以判定具体失败原因；不能把 CLI 正常退出当作配置通过。原 IPC 凭据清理、授权撤销与退出后明文 Key 扫描均通过。
+
+第三次[带安全分类的记录](codex-agnes-acceptance-2026-10-15T13-14-09-012Z.json)确认三个读取调用成功；配置调用失败时未观察到对应 Main `/rpc`，因此失败位于桌面业务处理前，具体原因仍不明。第四次[客户端许可配置复测](codex-agnes-acceptance-2026-10-15T13-18-50-155Z.json)的模型回合退出码为 1，没有调用工具，stderr 仅分类为网络错误；这次不能用于判断配置工具许可是否已解决。两次均未保存提供方凭据、未提交媒体任务，退出后清理与明文 Key 扫描通过。独立修复的[Codex 授权环境变量导出回归](codex-environment-export-review.json)为源码测试证据，不替代真实配置通过。
+
 10-15 另复跑现有 `mcp-review-main.test.cjs`，12/12 通过，包含撤销后立即拒绝活跃连接、CAS/保存屏障、重启确认失效和断线配对取消。这是原 128 项集合中定向复跑的 12 项，不累加计数，也不能代替修正后真实 CLI 清理断言的重跑。首次受限环境在测试运行器创建子进程时遭 EPERM，允许本地子进程后的复跑通过；两份 QA 脚本语法检查和视频/安装器交付摘要复核也通过。
 
 ## 验收方式与限制
@@ -62,4 +68,8 @@ MCP 媒体默认返回元数据；显式 preview 且有 task.read/media.read/对
 
 测试项目和 profile 使用 `.test-temp` 唯一目录。用户明确批准后，使用最终 NSIS 安装器 `/S /D=E:\pp\Pi-Paper` 更新既有 Windows 安装，退出码 0；已安装可执行文件和 8 个关键资源的 SHA256 与最终载荷一致。安装前后注册项一致且指向现有安装；版本号仍为 0.1.0，不能仅凭版本号判定升级。实际已安装程序以标准 `--user-data-dir` 隔离创作测试，从原 Workspace 进入 Canvas，正常关闭重启后同一画布仍有 2 节点和 1 连线。日常用户数据目录仍存在，顶层条目数保持 30；未删除或测试写入日常项目。
 
-原生安装向导控制的 Orca UI runtime 返回 `runtime_open_timeout`，使用本地 electron-builder NSIS 模板支持的静默模式完成授权升级。因此静默安装、注册核对和已安装程序运行有实际证据；手工向导页面/选项、卸载和签名可信度仍未验收。供复核的安装器与摘要在 [交付目录](../../../output/mcp-windows-2026-10-12/README.md)。
+原生安装向导控制的 Orca UI runtime 返回 `runtime_open_timeout`，使用本地 electron-builder NSIS 模板支持的静默模式完成授权升级。因此该历史轮次的静默安装、注册核对和已安装程序运行有实际证据；当时手工向导页面/选项、卸载和签名可信度仍未验收。供复核的本机安装器位置与摘要见[构建清单](windows-installer-builds.md)。
+
+上述为 10-12 历史边界。10-15 在 `6491cd8` 源码上重新构建安装器，SHA256 `cca3e3051bc4f3654691c0e92abdc00b31fa48e36770e73a84a052b2114a88ed`。本次 Windows Computer Use 可用，实际操作当前用户、目录选择、安装及完成页，取消完成后自动启动并关闭向导。原目录已恢复，新 Main 与载荷摘要一致；使用新隔离 profile 打开已有验收项目，原节点真实图片和视频可见，Alt+F4 正常退出后重开仍可打开同一画布。见[手工记录](windows-manual-lifecycle.json)和[重开截图](windows-manual-installed-reopen.png)。日常用户资料未用于创作测试，升级、用户确认卸载、重装和运行后均对照同一私有基线：1,737 个文件无新增、缺失或内容变化。
+
+卸载程序被 Computer Use 以 `product policy blocks this app` 拒绝操作，交由用户手工完成，未换用其他 UI 自动化绕过。用户明确确认卸载完成后、再次启动安装器前，程序/卸载器文件已不存在，但仍观察到一个 HKCU 卸载项及安装位置项；已记录[当时状态](windows-manual-uninstall-final-state.json)，不能用重装后正常存在的注册项替代该时间点。标准 NSIS 模板本有删除注册项的成功路径，尚无实际卸载进程/退出码证据证明未清理的具体原因，未盲改产品模板。手工安装向导已补验；卸载完全清理和签名可信度仍不计通过。

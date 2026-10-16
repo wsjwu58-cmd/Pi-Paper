@@ -113,7 +113,7 @@ flowchart LR
 
 | 方式 | 行为与边界 |
 | --- | --- |
-| `authorized_env`（优先） | 用户在连接设置授权 providerId/field 到特定环境变量的映射。Agent 仅提交 sourceRef；桥接读取其启动环境中该精确变量并提交 Main。变量值不放入配置片段、命令参数或响应，变量名/映射不是秘密。进程启动后新增变量须重启桥接；缺失明确报错 |
+| `authorized_env`（优先） | 用户在连接设置授权 providerId/field 到特定环境变量的映射。Agent 仅提交 sourceRef；桥接读取其启动环境中该精确变量并提交 Main。变量值不放入配置片段、命令参数或响应，变量名/映射不是秘密。Codex 导出配置仅将已授权的环境变量名列入 `env_vars`，按名称去重；没有授权映射时不输出该项。进程启动后新增变量须重启桥接；缺失明确报错 |
 | `desktop_input` | Agent 准备公开配置，原配置页接受用户输入；完成后返回配置状态。兼容没有安全输入能力的 MCP 客户端，不强依赖 URL elicitation |
 | `inline` | 用户明确把 Key 交给外部 Agent 并授权提交时，工具接受一次性 `credentials` 字段。传输层在任何请求记录前识别秘密，不向 VibePaper 日志/JSONL/账本写原文；响应不回显。外部聊天、模型上下文、客户端工具日志可能已保存原文，VibePaper 无法保证其删除或脱敏 |
 

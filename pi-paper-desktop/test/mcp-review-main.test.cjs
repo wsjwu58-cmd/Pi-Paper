@@ -168,9 +168,39 @@ test('client config has separate usable Codex TOML and Claude Code JSON', async 
   const f = await fixture(t)
   assert.match(f.created.config.codex, /\[mcp_servers\.vibepaper\]/u)
   assert.match(f.created.config.codex, /startup_timeout_sec\s*=\s*150/u)
+  assert.doesNotMatch(f.created.config.codex, /\benv_vars\s*=/u)
   assert.equal(JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper.env.ELECTRON_RUN_AS_NODE, '1')
   assert(JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper)
   assert(!f.created.config.codex.includes('accessToken'))
+})
+
+test('Codex config forwards only deduplicated authorized environment variable names', async (t) => {
+  const providerSettings = {
+    snapshot: async () => ({ providers: [
+      { id: 'fixture-provider', name: 'Fixture', revision: 0, credentialFields: [{ name: 'apiKey' }] },
+      { id: 'fixture-provider-secondary', name: 'Fixture secondary', revision: 0, credentialFields: [{ name: 'apiKey' }] },
+    ], models: [] }),
+  }
+  const f = await fixture(t, { getProviderSettings: () => providerSettings }, { providerConfig: true })
+  const sharedEnvironmentVariable = 'VIBEPAPER_REVIEW_CREDENTIAL'
+  const created = await f.invoke('client:create', {
+    clientName: 'codex', displayName: 'Codex authorized environment review',
+    permissions: ['provider.read', 'provider.configure'],
+    providerGrants: ['fixture-provider', 'fixture-provider-secondary'].map((providerId) => ({
+      providerId,
+      credentialFields: ['apiKey'],
+      credentialInputModes: ['authorized_env'],
+      authorizedEnv: [{ fieldName: 'apiKey', envVariableName: sharedEnvironmentVariable }],
+    })),
+    mediaTypes: [], disclosureVersion: 'desktop-mcp-provider-disclosure-v1', accepted: true,
+  })
+  assert.match(created.config.codex, /env_vars\s*=\s*\["VIBEPAPER_REVIEW_CREDENTIAL"\]/u)
+  assert.equal(created.config.codex.match(/\bVIBEPAPER_REVIEW_CREDENTIAL\b/gu)?.length, 2)
+  assert(!created.config.codex.includes('UNGRANTED_REVIEW_CREDENTIAL'))
+  assert(!created.config.codex.includes('credentialValue'))
+  const claudeConfig = JSON.parse(created.config.claudeCode).mcpServers.vibepaper
+  assert.equal(claudeConfig.args.filter((argument) => argument === '--mcp-env-name').length, 1)
+  assert(claudeConfig.args.includes(sharedEnvironmentVariable))
 })
 
 test('restarting the device store invalidates unfinished desktop authorization actions', async (t) => {
