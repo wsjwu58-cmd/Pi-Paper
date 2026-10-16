@@ -52,6 +52,11 @@ const safeErrorCodes = new Set([
   'GENERATION_CONFIRMATION_REJECTED', 'GENERATION_CONFIRMATION_UNRESOLVED',
   'GENERATION_ACTION_AMBIGUOUS', 'EXISTING_MEDIA_TASK_TIMEOUT',
   'GENERATION_SUBMISSION_UNCERTAIN',
+  'PROVIDER_CONFIGURE_FORBIDDEN', 'PROVIDER_READ_FORBIDDEN', 'PROVIDER_DISCLOSURE_DENIED',
+  'PROVIDER_DISCLOSURE_UNAVAILABLE', 'PROVIDER_FIELD_FORBIDDEN', 'PROVIDER_INPUT_MODE_FORBIDDEN',
+  'PROVIDER_INPUT_REQUIRED', 'PROVIDER_STATE_INCOMPLETE', 'PROVIDER_DEFAULT_INVALID',
+  'PROVIDER_ENDPOINT_INVALID', 'PROVIDER_MODELS_INVALID', 'PROVIDER_SETTINGS_INVALID',
+  'PROVIDER_SETTINGS_MIGRATION_FAILED', 'PROVIDER_UNAVAILABLE', 'MODEL_UNAVAILABLE', 'CREDENTIAL_READ_FAILED',
 ])
 const safeJsonRpcErrorCodes = new Set([-32700, -32600, -32601, -32602, -32603])
 const safeHttpStatusCodes = new Set([
@@ -1708,9 +1713,9 @@ async function workerMain() {
       '只根据当前画布和模型目录的信息操作，不运行命令、不读取文件、不复述任何凭据。用简短中文报告配置状态、检测状态和显示型号。',
     ].join('\n'),
     configureResume: [
-      '请重新读取当前授权画布、Agnes 提供方配置、可用模型目录和刚才的配置操作状态。桌面用户已批准当前提供方披露；先核对操作是否已保存或仍在等待处理。仅在尚未保存且操作状态明确允许继续时完成这次配置，不重复已成功保存的内容。',
-      '使用当前配置公开的授权本地凭据来源；不要索要、读取或展示密钥正文。按目录启用并设置默认图片型号“Agnes Image 2.5 Flash”和视频型号“Agnes Video 2.5 Flash”，参数为图片 1K、1:1，视频文本模式、4 秒、720P、16:9。',
-      '只执行不创建生成任务的连接检测；如结果为不支持，请明确报告“不支持检测”，不得说成鉴权成功。不要创建节点、图片、视频或任何媒体任务，不运行命令，不读取文件。',
+      '桌面用户已批准 Agnes 的数据发送披露，系统核对当前仍未保存本次密钥和默认模型。请完成尚未保存的配置：先重新读取当前 Agnes 公开配置、可用型号和本轮授权凭据来源。若已有完整配置则保留并核验。',
+      '本轮已授权通过本地凭据来源写入密钥，请使用公开配置返回的来源引用完成保存；保存动作无需读取或显示密钥正文。请把来源关联到对应密钥字段，并启用及设置默认图片型号“Agnes Image 2.5 Flash”和视频型号“Agnes Video 2.5 Flash”，参数按目录配置为图片 1K、1:1，视频文本模式、4 秒、720P、16:9。',
+      '请先完成保存并重新读取公开配置确认，再执行不创建生成任务的连接检测；如结果为不支持，请明确报告“不支持检测”，不得说成鉴权成功。不要索要密钥正文，不要创建节点、图片、视频或任何媒体任务，不运行命令，不读取文件。',
     ].join('\n'),
     image: [
       '请重新读取当前画布、Agnes 提供方配置和已有任务，完成本阶段的图片创作；已经存在的节点或已提交任务不要重复创建或再次提交。',
