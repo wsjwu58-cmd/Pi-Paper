@@ -52,6 +52,7 @@ const safeErrorCodes = new Set([
   'GENERATION_CONFIRMATION_REJECTED', 'GENERATION_CONFIRMATION_UNRESOLVED',
   'GENERATION_ACTION_AMBIGUOUS', 'EXISTING_MEDIA_TASK_TIMEOUT',
   'GENERATION_SUBMISSION_UNCERTAIN',
+  'QA_MEDIA_SCOPE_EXCEEDED',
   'PROVIDER_CONFIGURE_FORBIDDEN', 'PROVIDER_READ_FORBIDDEN', 'PROVIDER_DISCLOSURE_DENIED',
   'PROVIDER_DISCLOSURE_UNAVAILABLE', 'PROVIDER_FIELD_FORBIDDEN', 'PROVIDER_INPUT_MODE_FORBIDDEN',
   'PROVIDER_INPUT_REQUIRED', 'PROVIDER_STATE_INCOMPLETE', 'PROVIDER_DEFAULT_INVALID',
@@ -88,6 +89,7 @@ const envAllowlist = [
   'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'SYSTEMDRIVE', 'TEMP', 'TMP', 'COMSPEC', 'CODEX_HOME',
 ]
 const codexDiagnosticMode = process.argv.includes('--diagnose-codex')
+const executorPreauthorizedOneImageAndVideo = process.argv.includes('--allow-one-image-and-video')
 let originalSecret = codexDiagnosticMode ? undefined : process.env[secretEnvName]
 delete process.env[secretEnvName]
 
@@ -825,6 +827,14 @@ async function runController() {
   process.once('SIGTERM', handleParentTermination)
   let operatorInterface = null
   const requestPaidStageApproval = async () => {
+    // The caller must have the user's authorization for this explicit scope.
+    // The original desktop disclosure and every generation confirmation still
+    // require the human user; this controls only the extra QA executor gate.
+    if (executorPreauthorizedOneImageAndVideo && child.stdin?.writable) {
+      console.log('QA_STATUS EXECUTOR_PREAUTHORIZED_ONE_IMAGE_AND_VIDEO')
+      child.stdin.write('continue\n')
+      return true
+    }
     if (!process.stdin.isTTY || !child.stdin?.writable) {
       child.stdin?.end('cancel\n')
       return false
@@ -844,8 +854,13 @@ async function runController() {
         if (!approved) child.stdin?.end()
         resolve(approved)
       }
-      interfaceHandle.question('配置和启用型号已核验。检查桌面状态后，输入 continue 才会开始最多一次图片和一次视频生成；其他输入将停止：',
-        (answer) => finish(answer.trim().toLowerCase() === 'continue'))
+      const ask = () => interfaceHandle.question('配置和启用型号已核验。输入 continue 开始最多一次图片和一次视频生成，输入 cancel 停止：',
+        (answer) => {
+          const decision = answer.trim().toLowerCase()
+          if (!decision) return ask()
+          finish(decision === 'continue')
+        })
+      ask()
       interfaceHandle.once('close', () => { if (!settled) finish(false) })
     })
   }
@@ -899,6 +914,7 @@ async function runController() {
   const final = {
     ...summary,
     secretInputTransport,
+    executorPreauthorizedOneImageAndVideo,
     postExitPlaintextKeyFound: plaintextKeyFound,
     credentialHygiene: {
       suppliedByTemporaryEnvironment: true,
@@ -920,6 +936,36 @@ async function runController() {
   console.log(`Evidence: ${reportPath}`)
   console.log(`Retained isolated project: ${projectDirectory}`)
   if (!final.success || plaintextKeyFound !== false) process.exitCode = 1
+}
+
+function createAcceptanceMediaSubmissionGuard() {
+  const proposals = new Map()
+  const attemptedModalities = new Set()
+  const scopeKeys = ['projectId', 'canvasId', 'clientId', 'grantId']
+  const reject = () => { throw Object.assign(new Error('QA_MEDIA_SCOPE_EXCEEDED'), { code: 'QA_MEDIA_SCOPE_EXCEEDED' }) }
+  return async function guardedRequest(invoke, method, payload) {
+    if (method === 'mcp:action:resolve' && payload?.decision === 'approve') {
+      const prepared = proposals.get(payload.proposalId)
+      if (!prepared || scopeKeys.some((key) => prepared[key] !== payload[key])
+        || attemptedModalities.has(prepared.modality)) reject()
+      // Reserve before dispatch, including uncertain or failed submissions. Never retry paid work.
+      attemptedModalities.add(prepared.modality)
+    }
+    const result = await invoke()
+    if (method === 'mcp:tool:execute' && payload?.toolName === 'prepare_generation') {
+      const content = result?.structuredContent
+      if (content?.status !== 'awaiting_confirmation') return result
+      const items = content.items
+      const label = items?.[0]?.model
+      const modality = label === 'Agnes Image 2.5 Flash' ? 'image'
+        : label === 'Agnes Video 2.5 Flash' ? 'video' : null
+      if (typeof content.proposalId !== 'string' || !Array.isArray(items) || items.length !== 1 || !modality
+        || attemptedModalities.has(modality)) reject()
+      // Retain only scope and modality, never prompt, key, input parameters or approval token.
+      proposals.set(content.proposalId, { ...Object.fromEntries(scopeKeys.map((key) => [key, payload[key]])), modality })
+    }
+    return result
+  }
 }
 
 async function workerMain() {
@@ -1015,6 +1061,7 @@ async function workerMain() {
     const serviceModule = require('../src/mcp-main-service.cjs')
     const originalFactory = serviceModule.createMcpMainService
     const workerProxies = new WeakMap()
+    const guardMediaSubmission = createAcceptanceMediaSubmissionGuard()
     const recordMedia = (summary) => {
       if (!summary || !['image', 'video'].includes(summary.modality)
         || !['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/quicktime', 'video/webm'].includes(summary.mimeType)
@@ -1182,7 +1229,7 @@ async function workerMain() {
                   mcpDiagnostics.calls[payload.toolName] = (mcpDiagnostics.calls[payload.toolName] || 0) + 1
                   if (!mcpDiagnostics.toolNames.includes(payload.toolName)) mcpDiagnostics.toolNames.push(payload.toolName)
                 }
-                return Reflect.apply(originalRequest, target, args)
+                return guardMediaSubmission(() => Reflect.apply(originalRequest, target, args), method, payload)
               }
               const value = Reflect.get(target, property, target)
               return typeof value === 'function' ? value.bind(target) : value
@@ -1208,7 +1255,15 @@ async function workerMain() {
     const options = args.length === 1 ? args[0] : args[1]
     const buttons = Array.isArray(options?.buttons) ? options.buttons : []
     const approveIndex = buttons.findIndex((label) => /批准|允许|approve|allow/iu.test(label))
-    if (approveIndex >= 0) status('NATIVE_PAIRING_WAITING')
+    if (approveIndex >= 0) {
+      const owner = args.length > 1 && args[0]?.webContents ? args[0] : window
+      if (owner && !owner.isDestroyed()) {
+        if (owner.isMinimized()) owner.restore()
+        owner.show()
+        owner.focus()
+      }
+      status('NATIVE_PAIRING_WAITING')
+    }
     const result = await originalDialogShow(...args)
     if (approveIndex >= 0 && result?.response === approveIndex) pairedConnections += 1
     return result

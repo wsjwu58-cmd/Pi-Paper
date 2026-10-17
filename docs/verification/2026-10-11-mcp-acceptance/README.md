@@ -10,7 +10,7 @@
 | Pi 完整工程检查 | 通过 | [复核记录](pi-check-rerun.txt)；首次受限运行的 esbuild spawn EPERM 在允许本地子进程后消失；恢复无关格式化修改 |
 | Agnes 图片真实生成 | 通过 | [真实账号记录](agnes-real-account.json)、[生成结果](agnes-real-image.png)、[原节点截图](agnes-image-result-on-original-canvas.png) |
 | Agnes Video 2.5 Flash | 第三次真实生成通过 | [账号记录](agnes-real-account.json)、[真实 MP4](agnes-real-video.mp4)、[历史队列诊断与恢复](agnes-video-queue-diagnosis.json)；4 秒/720P 请求，1,070,236 bytes，约 9 分钟生成，模型与参数未更换 |
-| 真实 Codex | 本地生成完整回合经审查通过；自动脚本末尾误判保留 | [审查结论](codex-real-session-review.json)、[10-15 原始记录](client-acceptance-2026-10-15T07-41-19-174Z.json)、[原节点结果](codex-result-on-original-canvas.png)；真实 CLI 完成配对、2 图片节点/1 连线、桌面确认、本地文本任务及结果读取。原 JSON 保留 false：最后撤销断言把历史行保留误当撤销失败；不是云端图片/视频全链路通过 |
+| 真实 Codex | 自然语言官方凭据配置及本地生成分别通过；官方媒体完整回合未通过 | [配置审查](codex-provider-configuration-real-review.json)确认真实写入加密凭据、启用两种默认型号、原桌面披露与明确不支持检测；[历史本地生成](codex-real-session-review.json)另存。配置运行在额外 QA 执行者关卡退出，原失败记录保留，媒体任务为零；不是官方图片/视频完整回合通过 |
 | 真实 Claude Code | 用户取消本轮验收 | 历史配对已完成，但模型 HTTP 402；不将配对或 SDK fixture 计作真实会话通过，不再请求账户或重试 |
 | MCP 实际图片读取 | 通过 | [读取记录](mcp-real-image-read.json)、[重开原节点截图](mcp-real-image-read-original-canvas.png)；新无凭据 profile，实际 Main/Local Core IPC + SDK，853,173 bytes 与 TaskStore 摘要一致 |
 | MCP 实际视频读取 | 真实 Flash MP4 通过 | [真实读取记录](mcp-real-video-read.json)、[原视频节点截图](mcp-real-video-read-original-canvas.png)；新无凭据 profile，经 Main/Local Core/SDK 返回 1,070,236 bytes，摘要匹配；FFmpeg 全片解码与原节点播放 17 帧通过。早期[本地 MP4 fixture](mcp-local-video-read.json)另存 |
@@ -77,6 +77,10 @@
 晚间[11:35 UTC 真实运行](codex-agnes-acceptance-2026-10-16T11-35-50-715Z.json)完成两次原生配对，原设置页披露卡已显示，公开状态确认 `authorized`，返回原画布后 `canvasReady` 为真。配置续接回合完成读取并调用检测，但没有再次调用配置保存，检测明确返回 `CLOUD_CREDENTIAL_MISSING`；模型正常结束不代表配置成功。该次未保存凭据、未提交图片或视频任务，原 IPC 清理、授权撤销及退出后明文扫描通过。已据此把续接自然语言改为先使用当前公开的授权来源完成尚未保存的配置，再核验和检测；没有给模型注入内部工具名、操作 ID 或密钥正文。原失败记录保留。
 
 进一步补全原 TypeScript Agent 服务共享的提供方工具发现契约，明确公开配置 schema、授权 sourceRef、披露后续接及保存状态；没有另写 Main 工具定义或改变权限。定向共享测试 1/1、Agent 服务 TypeScript 构建、重新编译 Worker 与 Worker smoke 通过。无 Key 的 Agnes 目录只有四个模型，公开投影约 2.8k 字符，凭据来源元数据在 20k 文本上限内，未把本例归因于响应截断。工具契约改动的真实客户端结果仍须独立复测。
+
+随后[11:53 UTC 真实运行](codex-agnes-acceptance-2026-10-16T11-53-33-820Z.json)完成两个真实 Codex 配对及原桌面披露，原画布恢复后，Codex 自然语言续接实际完成加密凭据保存、图片/视频默认型号启用与检测，Main 明确返回 `unsupported`。审查者[接受这段配置链路](codex-provider-configuration-real-review.json)，不把检测称作独立鉴权成功。原总结果仍为 false：额外 QA 执行者费用关卡提前结束，未提交任何媒体任务；审查者没有发送取消，具体 stdin 事件未被记录，不能归因于用户取消或已确定的空行原因。退出后的凭据清理、授权撤销和明文扫描均通过。
+
+为继续用户已授权的一张图片、一条 Flash 视频验收，QA 增加显式 `--allow-one-image-and-video` 执行范围，仅在配置核验后通过额外执行者关卡；原桌面披露与每次生成确认仍由用户完成。默认交互路径忽略空行，并保留明确停止选项。四种执行者关卡模拟及原十种等待/权限模拟通过，不替代真实媒体生成。
 
 10-15 另复跑现有 `mcp-review-main.test.cjs`，12/12 通过，包含撤销后立即拒绝活跃连接、CAS/保存屏障、重启确认失效和断线配对取消。这是原 128 项集合中定向复跑的 12 项，不累加计数，也不能代替修正后真实 CLI 清理断言的重跑。首次受限环境在测试运行器创建子进程时遭 EPERM，允许本地子进程后的复跑通过；两份 QA 脚本语法检查和视频/安装器交付摘要复核也通过。
 

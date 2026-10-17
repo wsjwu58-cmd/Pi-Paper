@@ -35,3 +35,5 @@
 上述“尚未运行”描述保留准备时点。随后用户手工完成卸载，[新追踪](windows-uninstall-process-trace-20261016-194833-932af3fc.json)持有并核对 PID、StartTime 与路径的句柄，捕获注册路径下卸载器、其 `Un_A.exe` 子进程及两个 PowerShell 子进程退出码均为 UInt32 `0`。另一个短命 conhost 子进程仅确认消失，没有退出码；WMI 启停事件仍不可用，不宣称捕获完整进程树。
 
 在全部已观测进程退出并稳定 30 秒后，主程序、卸载器及两个 HKCU 键仍存在，HKLM 对应键不存在。用户报告已在完成页结束；退出码 `0` 不替代最终文件和注册状态验证，卸载依然未通过。新的晚间私有基线及[卸载后数据核对](windows-manual-20261016-evening-uninstall-data.json)均为 1,737 文件，内容无新增、缺失或变化。此轮没有手工删除文件或注册项；实际目标目录、shell context 与执行到的 section 仍待进一步证据，不能凭源码路径认定根因。
+
+审查者随后[核对实际注册目录](windows-uninstall-target-check-20261016-evening.json)：HKCU 的 Registry32/Registry64 视图均有非空 `InstallLocation`，都匹配原安装目录，安装目录也不是 reparse point。锁定的 builder 按当前 appId 推导出的 GUID 与被观察键一致；当前源码中不能证实 GUID 错配。追踪里的 `/currentuser` 来自已注册命令摘要，不是本次实际进程参数的捕获，不能混用。上述结果仍不能证明现场 NSIS 的有效 `$INSTDIR`、shell context 或 section 执行路径。

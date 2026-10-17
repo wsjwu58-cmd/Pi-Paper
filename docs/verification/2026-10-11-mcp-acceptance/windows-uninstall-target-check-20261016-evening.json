@@ -1,0 +1,15 @@
+{
+  "date": "2026-10-16",
+  "scope": "Read-only state check after the evening manual uninstall, before any reinstall",
+  "installationDirectoryIsReparsePoint": false,
+  "currentUserRegistryViews": [
+    { "view": "Registry32", "installKeyPresent": true, "installLocationNonempty": true, "installLocationMatchesExpected": true },
+    { "view": "Registry64", "installKeyPresent": true, "installLocationNonempty": true, "installLocationMatchesExpected": true }
+  ],
+  "expectedInstallationDirectory": "E:\\pp\\Pi-Paper",
+  "applicationGuidMatchesBuilderDerivedGuid": true,
+  "guid": "6d7bc0c1-d3cd-50da-9feb-41d1166b5a3e",
+  "registeredCommandFlagsAreNotActualProcessArguments": true,
+  "actualNsisInstDirAndShellContextObserved": false,
+  "conclusion": "Empty or mismatched InstallLocation in the current-user 32/64-bit views is not supported by this observation. The actual running NSIS variables and cleanup section remain unobserved; uninstall is not accepted."
+}
