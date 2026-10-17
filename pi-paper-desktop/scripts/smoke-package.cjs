@@ -4,7 +4,7 @@ const http = require('node:http')
 const os = require('node:os')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
-const { randomUUID } = require('node:crypto')
+const { randomBytes, randomUUID } = require('node:crypto')
 const { Worker } = require('node:worker_threads')
 
 async function smokePackagedMcpNodeEntry(root, directory) {
@@ -20,6 +20,7 @@ async function smokePackagedMcpNodeEntry(root, directory) {
   assert.equal(entry.resolveLauncherPath(), path.join(root, 'dist', 'mcp-launcher.cjs'))
   const instanceId = randomUUID()
   const connectionId = randomUUID()
+  const bridgeSecret = randomBytes(32).toString('base64url')
   const accessToken = 'package-smoke-local-fixture-token-0123456789'
   const requests = []
   const fixtureErrors = []
@@ -44,6 +45,9 @@ async function smokePackagedMcpNodeEntry(root, directory) {
       requests.push({ route: request.url, body, authorization: request.headers.authorization })
       let result
       if (request.url === '/bootstrap') {
+        if (body.bridgeSecret !== bridgeSecret || body.shortCode !== undefined) {
+          fixtureErrors.push('Packaged bridge must use the private instance credential without a pairing code.')
+        }
         result = { instanceId, connectionId, accessToken, expiresAt: Date.now() + 60_000, credentialSources: [] }
       } else if (request.url === '/rpc' && body.method === 'tools/list') {
         result = { tools: [tool] }
@@ -76,6 +80,9 @@ async function smokePackagedMcpNodeEntry(root, directory) {
   await fs.writeFile(instanceFilePath, `${JSON.stringify({
     schemaVersion: 1, instanceId, host: '127.0.0.1', port: server.address().port,
     protocolVersion: 1, pid: process.pid,
+  })}\n`, { flag: 'wx', mode: 0o600 })
+  await fs.writeFile(path.join(instanceDirectory, 'mcp-bridge-auth.json'), `${JSON.stringify({
+    schemaVersion: 1, instanceId, secret: bridgeSecret,
   })}\n`, { flag: 'wx', mode: 0o600 })
 
   let child
@@ -172,6 +179,8 @@ async function smokePackagedMcpNodeEntry(root, directory) {
     assert.equal(requests[1].body.method, 'tools/list')
     assert.equal(requests[2].body.method, 'tools/call')
     assert.ok(requests.slice(1).every((item) => item.authorization === `Bearer ${accessToken}`))
+    assert.equal(stderr.includes(bridgeSecret), false)
+    assert.equal(stderr.includes('verify code'), false)
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) child.kill()
     await new Promise((resolve) => server.close(() => resolve()))

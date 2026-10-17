@@ -1,3 +1,5 @@
+const nsisUninstallDiagnostics = process.env.VIBEPAPER_NSIS_UNINSTALL_DIAGNOSTICS_TEST_ONLY === '1'
+
 module.exports = {
   appId: 'com.vibepaper.desktop',
   productName: 'Pi-Paper',
@@ -28,6 +30,7 @@ module.exports = {
     createStartMenuShortcut: true,
     shortcutName: 'Pi-Paper',
     deleteAppDataOnUninstall: false,
+    ...(nsisUninstallDiagnostics ? { include: 'uninstall-diagnostics.nsh' } : {}),
   },
   mac: {
     icon: 'assets/app-icon.icns',

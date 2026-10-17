@@ -4,6 +4,8 @@
 
 新策略 [103 项 MCP 回归](client-confirmation-tests-20261017.log)通过。[真实 Codex 配置运行](codex-agnes-acceptance-2026-10-17T12-06-32-275Z.json)确认原 Main 返回配置 `saved`、检测 `unsupported`，没有原生批准窗口或媒体任务；凭据清除、授权撤销及退出后明文扫描通过。其原始诊断含未分类事件标记，未保存原文，不能据此补推错误原因；配置通过依据是实际 RPC 与权威配置状态。生成弹窗、完整官方媒体链路及更新后的安装包另行验收，见[新策略记录](client-confirmation-policy-20261017.json)。
 
+[10-17 Windows 构建](windows-build-20261017-client-confirmation.json)已产生独立正式配置包与显式开启的卸载诊断包。正式包的包内 Node/MCP fixture、Worker 与持久化重开检查通过；新包的安装向导、安装后 GUI 和卸载仍未验收。诊断包只记录固定阶段与布尔状态，不改 stock 清理流程，已编译、尚未安装运行；不把它计作卸载修复或通过。早期包内 smoke 因旧鉴权 fixture 失败，更新 fixture 后在同一载荷复测通过，原情况如实记录。
+
 2026-10-11 开始，2026-10-16 接续。以下按实际证据分别判定，完整产品验收仍未完成。用户指定使用 Agnes Video 2.5 Flash，并要求先测 Windows；没有 macOS/Linux 测试机器。Claude Code 真实会话按用户最新要求取消本轮验收。
 
 10-15 按用户要求整合 GitHub `feat/desktop-local-migration` 的既有改动，当前源码目录为 `pi-paper-web` / `pi-paper-desktop`。原验收 JSON、截图与运行路径保留，不回写成新目录下的实测。合并中修复了 Agent 控制库 schema 11 被旧备份校验拒绝的问题；[合并复核记录](merge-feat-2026-10-15.json)另列 101 项桌面、19 项记忆恢复及 10 项前端回归，计数不与历史集合累加。
