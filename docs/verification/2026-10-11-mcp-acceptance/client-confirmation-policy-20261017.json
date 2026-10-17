@@ -26,7 +26,7 @@
     "lostResponseAfterTaskDispatchMustBeReconciledWithoutReplay": true
   },
   "acceptanceBoundaries": {
-    "newPolicyRealCodexConfiguration": "pending separate run",
+    "newPolicyRealCodexConfiguration": "passed; codex-agnes-acceptance-2026-10-17T12-06-32-275Z.json; zero native approval dialogs and zero media tasks",
     "newPolicyRealCodexGenerationPopup": "pending",
     "newPolicyOfficialMediaFullChain": "pending",
     "newPolicyWindowsInstalledPackage": "pending",

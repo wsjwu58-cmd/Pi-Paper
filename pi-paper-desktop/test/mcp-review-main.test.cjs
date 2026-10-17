@@ -418,6 +418,7 @@ test('client config has separate usable Codex TOML and Claude Code JSON', async 
   assert.match(f.created.config.codex, /\[mcp_servers\.vibepaper\]/u)
   assert.match(f.created.config.codex, /startup_timeout_sec\s*=\s*150/u)
   assert.match(f.created.config.codex, /default_tools_approval_mode\s*=\s*"approve"/u)
+  assert.match(f.created.config.codex, /tool_timeout_sec\s*=\s*660/u)
   assert.doesNotMatch(f.created.config.codex, /\benv_vars\s*=/u)
   assert.equal(JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper.env.ELECTRON_RUN_AS_NODE, '1')
   assert(JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper)

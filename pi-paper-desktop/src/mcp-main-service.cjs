@@ -258,6 +258,7 @@ function createMcpMainService(options) {
       `command = ${JSON.stringify(process.execPath)}`,
       `args = ${JSON.stringify(args)}`,
       'default_tools_approval_mode = "approve"',
+      'tool_timeout_sec = 660',
       ...(authorizedEnvironmentVariables.length
         ? [`env_vars = ${JSON.stringify(authorizedEnvironmentVariables)}`] : []),
       'startup_timeout_sec = 150',
