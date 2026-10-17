@@ -1,7 +1,8 @@
 'use strict'
 
 const path = require('node:path')
-const { randomInt, randomUUID } = require('node:crypto')
+const fsConstants = require('node:fs').constants
+const { createHash, randomUUID } = require('node:crypto')
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js')
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js')
 const {
@@ -13,13 +14,16 @@ const {
 } = require('@modelcontextprotocol/sdk/types.js')
 
 const INSTANCE_SCHEMA_VERSION = 1
+const BRIDGE_AUTH_SCHEMA_VERSION = 1
 const PROTOCOL_VERSION = 1
 const MAX_INSTANCE_BYTES = 4 * 1024
+const MAX_BRIDGE_AUTH_BYTES = 4 * 1024
 const MAX_HTTP_RESPONSE_BYTES = 12 * 1024 * 1024
 const MAX_MCP_IMAGE_OUTPUT_BYTES = 4 * 1024 * 1024
 const MAX_MCP_VIDEO_OUTPUT_BYTES = 8 * 1024 * 1024
 const BOOTSTRAP_TIMEOUT_MS = 123_000
 const RPC_TIMEOUT_MS = 310_000
+const ELICITATION_TIMEOUT_MS = 120_000
 const CLOSE_TIMEOUT_MS = 2_000
 const REQUEST_CANCELLED_ERROR_CODE = -32800
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
@@ -35,6 +39,9 @@ const ERROR_MESSAGES = Object.freeze({
   CANVAS_NOT_READY: 'Open the authorized canvas in VibePaper before connecting.',
   MCP_DISABLED: 'External Agent access is disabled in VibePaper.',
   CONNECTION_NOT_APPROVED: 'The desktop did not approve this connection.',
+  MCP_BRIDGE_AUTH_INVALID: 'The local MCP bridge authorization is invalid. Restart VibePaper and reconnect.',
+  CLIENT_CONFIRMATION_UNSUPPORTED: 'This MCP client does not support form confirmation required for generation.',
+  GENERATION_CONFIRMATION_UNRESOLVED: 'Generation confirmation was not completed. No generation task was submitted.',
   UNAUTHORIZED: 'The desktop connection is no longer authorized.',
   PROJECT_CHANGED: 'The authorized project or canvas changed.',
   PERMISSION_DENIED: 'The requested capability is not authorized.',
@@ -105,6 +112,13 @@ function fixedInstancePath(appDataPath) {
   return path.join(appDataPath, 'VibePaper', 'mcp-instance.json')
 }
 
+function fixedBridgeAuthPath(appDataPath) {
+  if (typeof appDataPath !== 'string' || appDataPath.length === 0 || !path.isAbsolute(appDataPath)) {
+    throw new BridgeFailure('MCP_LAUNCH_CONFIGURATION_INVALID')
+  }
+  return path.join(appDataPath, 'VibePaper', 'mcp-bridge-auth.json')
+}
+
 function samePath(left, right) {
   const a = path.resolve(left)
   const b = path.resolve(right)
@@ -140,6 +154,67 @@ async function readInstanceFile(instanceFilePath, appDataPath, fsImpl = require(
   } catch (error) {
     if (error instanceof BridgeFailure) throw error
     throw new BridgeFailure('DESKTOP_NOT_RUNNING', { cause: error })
+  }
+}
+
+function validateBridgeAuth(auth) {
+  if (!exactKeys(auth, ['schemaVersion', 'instanceId', 'secret'])
+    || auth.schemaVersion !== BRIDGE_AUTH_SCHEMA_VERSION
+    || !UUID_RE.test(auth.instanceId)
+    || typeof auth.secret !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(auth.secret)) {
+    throw new BridgeFailure('MCP_BRIDGE_AUTH_INVALID')
+  }
+  const decoded = Buffer.from(auth.secret, 'base64url')
+  try {
+    if (decoded.length !== 32 || decoded.toString('base64url') !== auth.secret) {
+      throw new BridgeFailure('MCP_BRIDGE_AUTH_INVALID')
+    }
+  } finally {
+    decoded.fill(0)
+  }
+  return auth
+}
+
+async function readBridgeAuthFile(authFilePath, appDataPath, fsImpl = require('node:fs/promises')) {
+  const expected = fixedBridgeAuthPath(appDataPath)
+  if (typeof authFilePath !== 'string' || !samePath(authFilePath, expected)) {
+    throw new BridgeFailure('MCP_LAUNCH_CONFIGURATION_INVALID')
+  }
+  let handle
+  let bytes
+  let parsed
+  try {
+    const before = await fsImpl.lstat(expected)
+    if (before.isSymbolicLink() || !before.isFile() || before.size < 2 || before.size > MAX_BRIDGE_AUTH_BYTES) {
+      throw new BridgeFailure('MCP_BRIDGE_AUTH_INVALID')
+    }
+    if (process.platform !== 'win32') {
+      if ((before.mode & 0o777) !== 0o600 || typeof process.getuid !== 'function' || before.uid !== process.getuid()) {
+        throw new BridgeFailure('MCP_BRIDGE_AUTH_INVALID')
+      }
+    }
+    const flags = fsConstants.O_RDONLY | (process.platform === 'win32' ? 0 : (fsConstants.O_NOFOLLOW || 0))
+    handle = await fsImpl.open(expected, flags)
+    const opened = await handle.stat()
+    if (!opened.isFile() || opened.size < 2 || opened.size > MAX_BRIDGE_AUTH_BYTES
+      || before.dev !== opened.dev || before.ino !== opened.ino) {
+      throw new BridgeFailure('MCP_BRIDGE_AUTH_INVALID')
+    }
+    if (process.platform !== 'win32'
+      && ((opened.mode & 0o777) !== 0o600 || opened.uid !== process.getuid())) {
+      throw new BridgeFailure('MCP_BRIDGE_AUTH_INVALID')
+    }
+    bytes = await handle.readFile()
+    if (bytes.length > MAX_BRIDGE_AUTH_BYTES) throw new BridgeFailure('MCP_BRIDGE_AUTH_INVALID')
+    parsed = JSON.parse(bytes.toString('utf8'))
+    return { ...validateBridgeAuth(parsed) }
+  } catch (error) {
+    if (error instanceof BridgeFailure) throw error
+    throw new BridgeFailure('MCP_BRIDGE_AUTH_INVALID', { cause: error })
+  } finally {
+    bytes?.fill(0)
+    if (parsed && typeof parsed === 'object' && typeof parsed.secret === 'string') parsed.secret = ''
+    try { await handle?.close() } catch { /* no diagnostics for credential file cleanup */ }
   }
 }
 
@@ -226,6 +301,66 @@ function scrubValue(value, secretValues, depth = 0, key = '') {
   }
   if (value === null || ['boolean', 'number'].includes(typeof value)) return value
   return undefined
+}
+
+function stripGenerationConfirmation(value, depth = 0) {
+  if (depth > 24) return '[omitted]'
+  if (Array.isArray(value)) return value.slice(0, 500).map((item) => stripGenerationConfirmation(item, depth + 1))
+  if (!isPlainObject(value)) return value
+  const safe = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === 'generationConfirmation' || key === 'challenge' || key === 'challengeToken') continue
+    safe[key] = stripGenerationConfirmation(entry, depth + 1)
+  }
+  return safe
+}
+
+function displayConfirmationValue(value) {
+  let rendered
+  if (typeof value === 'string') rendered = value
+  else {
+    try { rendered = JSON.stringify(value) } catch { throw new BridgeFailure('MCP_RESPONSE_INVALID') }
+  }
+  if (typeof rendered !== 'string' || rendered.length === 0) return '(none)'
+  return rendered.length > 4_000 ? `${rendered.slice(0, 4_000)}…` : rendered
+}
+
+function validateGenerationConfirmation(value, now) {
+  if (!exactKeys(value, ['proposalId', 'challengeToken', 'expiresAt', 'items'])
+    || typeof value.proposalId !== 'string' || value.proposalId.length < 1 || value.proposalId.length > 200
+    || typeof value.challengeToken !== 'string' || value.challengeToken.length < 16 || value.challengeToken.length > 512
+    || !Number.isSafeInteger(value.expiresAt) || value.expiresAt <= now
+    || !Array.isArray(value.items) || value.items.length < 1 || value.items.length > 100) {
+    throw new BridgeFailure('MCP_RESPONSE_INVALID')
+  }
+  const items = value.items.map((item) => {
+    if (!exactKeys(item, ['target', 'model', 'input', 'overwrite'])
+      || item.target === undefined || item.model === undefined || item.input === undefined
+      || typeof item.overwrite !== 'boolean') {
+      throw new BridgeFailure('MCP_RESPONSE_INVALID')
+    }
+    return {
+      target: displayConfirmationValue(item.target),
+      model: displayConfirmationValue(item.model),
+      input: displayConfirmationValue(item.input),
+      overwrite: item.overwrite,
+    }
+  })
+  return { proposalId: value.proposalId, challengeToken: value.challengeToken, expiresAt: value.expiresAt, items }
+}
+
+function generationConfirmationMessage(items) {
+  const details = items.map((item, index) => [
+    `Item ${index + 1}`,
+    `Target: ${item.target}`,
+    `Model: ${item.model}`,
+    `Input: ${item.input}`,
+    `Overwrite existing content: ${item.overwrite ? 'Yes' : 'No'}`,
+  ].join('\n')).join('\n\n')
+  return [
+    'Confirm this generation request. If the selected model is cloud-hosted, the listed input may be sent to its provider and provider fees may apply.',
+    details,
+  ].join('\n\n')
 }
 
 function decodeBoundedBase64(value, maxBytes) {
@@ -463,6 +598,7 @@ function createMcpStdioBridge(options = {}) {
   const {
     instanceFilePath,
     appDataPath,
+    authFilePath = fixedBridgeAuthPath(appDataPath),
     clientId,
     grantId,
     stdin = process.stdin,
@@ -473,7 +609,7 @@ function createMcpStdioBridge(options = {}) {
     fsImpl = require('node:fs/promises'),
     now = Date.now,
     randomId = randomUUID,
-    randomCode = () => String(randomInt(0, 1_000_000)).padStart(6, '0'),
+    elicitationTimeoutMs = ELICITATION_TIMEOUT_MS,
     processLike = process,
     transportOverride,
   } = options
@@ -486,11 +622,17 @@ function createMcpStdioBridge(options = {}) {
   if (typeof instanceFilePath !== 'string' || !samePath(instanceFilePath, expectedInstancePath)) {
     throw new BridgeFailure('MCP_LAUNCH_CONFIGURATION_INVALID')
   }
+  const expectedAuthPath = fixedBridgeAuthPath(appDataPath)
+  if (typeof authFilePath !== 'string' || !samePath(authFilePath, expectedAuthPath)
+    || !Number.isSafeInteger(elicitationTimeoutMs) || elicitationTimeoutMs < 1) {
+    throw new BridgeFailure('MCP_LAUNCH_CONFIGURATION_INVALID')
+  }
 
   const server = new Server({ name: 'vibepaper-desktop-mcp', version: '0.1.0' }, { capabilities: { tools: {} } })
   const transport = transportOverride || new StdioServerTransport(stdin, stdout, { maxBufferSize: 1024 * 1024 })
   let instance = null
   let session = null
+  let authFingerprint = null
   let credentialSources = []
   let bootstrapPromise = null
   let bootstrapFailureCode = null
@@ -579,41 +721,62 @@ function createMcpStdioBridge(options = {}) {
 
   async function loadCurrentInstance() {
     const current = await readInstanceFile(instanceFilePath, appDataPath, fsImpl)
-    if (instance && current.instanceId !== instance.instanceId) {
+    const auth = await readBridgeAuthFile(authFilePath, appDataPath, fsImpl)
+    if (auth.instanceId !== current.instanceId) {
+      auth.secret = ''
+      throw new BridgeFailure('MCP_BRIDGE_AUTH_INVALID')
+    }
+    const fingerprint = createHash('sha256').update(auth.secret).digest('hex')
+    if (instance && (current.instanceId !== instance.instanceId || authFingerprint !== fingerprint)) {
+      if (session) session.accessToken = ''
       session = null
       credentialSources = []
       bootstrapFailureCode = null
     }
     instance = current
-    return current
+    authFingerprint = fingerprint
+    return auth
   }
 
   async function bootstrap() {
     if (closed) throw new BridgeFailure('UNAUTHORIZED')
+    let authorization
     try {
-      await loadCurrentInstance()
+      authorization = await loadCurrentInstance()
     } catch (error) {
+      if (session) session.accessToken = ''
       session = null
       credentialSources = []
+      authFingerprint = null
       throw error
     }
-    if (session && session.expiresAt > now() && session.instanceId === instance?.instanceId) return session
-    if (bootstrapFailureCode) throw new BridgeFailure(bootstrapFailureCode)
-    if (bootstrapPromise) return bootstrapPromise
+    if (session && session.expiresAt > now() && session.instanceId === instance?.instanceId) {
+      authorization.secret = ''
+      return session
+    }
+    if (bootstrapFailureCode) {
+      authorization.secret = ''
+      throw new BridgeFailure(bootstrapFailureCode)
+    }
+    if (bootstrapPromise) {
+      authorization.secret = ''
+      return bootstrapPromise
+    }
 
     bootstrapPromise = (async () => {
-      await loadCurrentInstance()
-      const shortCode = randomCode()
-      if (!/^\d{6}$/u.test(shortCode)) throw new BridgeFailure('MCP_LAUNCH_CONFIGURATION_INVALID')
-      writeStderr(stderr, `VibePaper connection approval: verify code ${shortCode} in the desktop dialog.`)
-      const payload = { clientId, grantId, clientInfo: normalizeClientInfo(server), shortCode }
+      const payload = { clientId, grantId, clientInfo: normalizeClientInfo(server), bridgeSecret: authorization.secret }
+      authorization.secret = ''
       let result
       try {
-        result = await post('/bootstrap', payload, { timeoutMs: BOOTSTRAP_TIMEOUT_MS })
+        const pending = post('/bootstrap', payload, { timeoutMs: BOOTSTRAP_TIMEOUT_MS })
+        payload.bridgeSecret = ''
+        result = await pending
       } catch (error) {
         if (error.retryable && error.code === 'DESKTOP_NOT_RUNNING') throw error
         bootstrapFailureCode = error.code
         throw error
+      } finally {
+        payload.bridgeSecret = ''
       }
       if (!isPlainObject(result) || !exactKeys(result, ['instanceId', 'connectionId', 'accessToken', 'expiresAt', 'credentialSources'])
         || result.instanceId !== instance.instanceId || typeof result.connectionId !== 'string' || !UUID_RE.test(result.connectionId)
@@ -641,9 +804,108 @@ function createMcpStdioBridge(options = {}) {
 
   async function callMain(method, params, prepared = null, signal) {
     const live = await bootstrap()
+    return callMainOnSession(method, params, live, prepared, signal)
+  }
+
+  async function callMainOnSession(method, params, live, prepared = null, signal) {
+    if (signal?.aborted) throw new BridgeFailure('REQUEST_CANCELLED')
+    if (closed || !live || session !== live || live.expiresAt <= now() || live.instanceId !== instance?.instanceId) {
+      throw new BridgeFailure('UNAUTHORIZED')
+    }
     const payload = { method, params }
     if (prepared && Object.keys(prepared.credentialValues).length > 0) payload.credentialValues = prepared.credentialValues
     return post('/rpc', payload, { token: live.accessToken, timeoutMs: RPC_TIMEOUT_MS, signal })
+  }
+
+  function clientSupportsFormElicitation() {
+    const capabilities = server.getClientCapabilities?.()
+    return Boolean(capabilities?.elicitation?.form)
+  }
+
+  async function assertGenerationSession(live, signal) {
+    if (signal?.aborted) throw new BridgeFailure('REQUEST_CANCELLED')
+    let authorization
+    try {
+      authorization = await loadCurrentInstance()
+    } catch (error) {
+      throw new BridgeFailure('GENERATION_CONFIRMATION_UNRESOLVED', { cause: error })
+    } finally {
+      if (authorization) authorization.secret = ''
+    }
+    if (signal?.aborted) throw new BridgeFailure('REQUEST_CANCELLED')
+    if (closed || session !== live || !live || live.expiresAt <= now()
+      || live.instanceId !== instance?.instanceId) {
+      throw new BridgeFailure('GENERATION_CONFIRMATION_UNRESOLVED')
+    }
+  }
+
+  async function rejectPendingGeneration(confirmation, live) {
+    if (!confirmation?.challengeToken || closed || !live) return
+    try {
+      await assertGenerationSession(live)
+      const pending = callMainOnSession('generation/confirm', {
+        proposalId: confirmation.proposalId,
+        challengeToken: confirmation.challengeToken,
+        decision: 'reject',
+      }, live)
+      confirmation.challengeToken = ''
+      await pending
+    } catch {
+      confirmation.challengeToken = ''
+    }
+  }
+
+  async function confirmGeneration(result, signal, live) {
+    if ((result?.structuredContent?.status ?? result?.status) !== 'awaiting_confirmation') {
+      throw new BridgeFailure('MCP_RESPONSE_INVALID')
+    }
+    let confirmation
+    try {
+      confirmation = validateGenerationConfirmation(result.generationConfirmation, now())
+    } finally {
+      if (isPlainObject(result.generationConfirmation)
+        && typeof result.generationConfirmation.challengeToken === 'string') {
+        result.generationConfirmation.challengeToken = ''
+      }
+    }
+    let elicitation
+    try {
+      if (!clientSupportsFormElicitation()) throw new BridgeFailure('CLIENT_CONFIRMATION_UNSUPPORTED')
+      await assertGenerationSession(live, signal)
+      elicitation = await server.elicitInput({
+        mode: 'form',
+        message: generationConfirmationMessage(confirmation.items),
+        requestedSchema: {
+          type: 'object',
+          properties: { confirm: { type: 'boolean', title: '确认提交本次生成' } },
+          required: ['confirm'],
+        },
+      }, { signal, timeout: elicitationTimeoutMs })
+    } catch (error) {
+      await rejectPendingGeneration(confirmation, live)
+      if (signal?.aborted) throw new BridgeFailure('REQUEST_CANCELLED', { cause: error })
+      if (error?.code === 'GENERATION_CONFIRMATION_UNRESOLVED') throw error
+      throw new BridgeFailure('GENERATION_CONFIRMATION_UNRESOLVED', { cause: error })
+    }
+
+    try {
+      await assertGenerationSession(live, signal)
+      const accepted = elicitation?.action === 'accept'
+        && isPlainObject(elicitation.content) && elicitation.content.confirm === true
+      const pending = callMainOnSession('generation/confirm', {
+        proposalId: confirmation.proposalId,
+        challengeToken: confirmation.challengeToken,
+        decision: accepted ? 'approve' : 'reject',
+      }, live, null, signal)
+      confirmation.challengeToken = ''
+      const resolved = await pending
+      if (!isPlainObject(resolved) || !Array.isArray(resolved.content)) {
+        throw new BridgeFailure('MCP_RESPONSE_INVALID')
+      }
+      return resolved
+    } finally {
+      confirmation.challengeToken = ''
+    }
   }
 
   function toolDefinitions() {
@@ -669,6 +931,7 @@ function createMcpStdioBridge(options = {}) {
     const name = typeof params?.name === 'string' ? params.name : ''
     const signal = extra?.signal
     let prepared = null
+    let generationSession = null
     try {
       // Load the connection's current sourceRefs before resolving any secret.
       // This also makes a direct first call work when no tools/list preceded it.
@@ -677,16 +940,34 @@ function createMcpStdioBridge(options = {}) {
       if (name !== 'configure_provider' && args.credentialInput !== undefined) {
         throw new BridgeFailure('CREDENTIAL_SOURCE_INVALID')
       }
+      if (name === 'prepare_generation' && !clientSupportsFormElicitation()) {
+        throw new BridgeFailure('CLIENT_CONFIRMATION_UNSUPPORTED')
+      }
       prepared = name === 'configure_provider'
         ? prepareCredentialCall(args, { credentialSources, env, now, randomId })
         : { arguments: args, credentialValues: {}, secretValues: [], inlineCredentialObject: null }
-      const result = name === 'configure_provider' && Array.isArray(prepared.inlineCredentialFields)
-        ? await callProviderWithCredentialPreflight(callMain, prepared, signal)
-        : await callMain('tools/call', { name, arguments: prepared.arguments }, prepared, signal)
+      let result
+      if (name === 'configure_provider' && Array.isArray(prepared.inlineCredentialFields)) {
+        result = await callProviderWithCredentialPreflight(callMain, prepared, signal)
+      } else if (name === 'prepare_generation') {
+        generationSession = await bootstrap()
+        result = await callMainOnSession('tools/call', { name, arguments: prepared.arguments }, generationSession, prepared, signal)
+      } else {
+        result = await callMain('tools/call', { name, arguments: prepared.arguments }, prepared, signal)
+      }
+      if (name === 'prepare_generation') {
+        const status = result?.structuredContent?.status ?? result?.status
+        if (status === 'awaiting_confirmation' && !Object.prototype.hasOwnProperty.call(result, 'generationConfirmation')) {
+          throw new BridgeFailure('MCP_RESPONSE_INVALID')
+        }
+        if (Object.prototype.hasOwnProperty.call(result || {}, 'generationConfirmation')) {
+          result = await confirmGeneration(result, signal, generationSession)
+        }
+      }
       if (!isPlainObject(result) || !Array.isArray(result.content)) throw new BridgeFailure('MCP_RESPONSE_INVALID')
       const sanitized = name === 'read_task_output'
-        ? sanitizeTaskOutputResult(result, prepared.secretValues)
-        : scrubValue(result, prepared.secretValues)
+        ? sanitizeTaskOutputResult(stripGenerationConfirmation(result), prepared.secretValues)
+        : scrubValue(stripGenerationConfirmation(result), prepared.secretValues)
       return CallToolResultSchema.parse(sanitized)
     } catch (error) {
       if (signal?.aborted || error?.code === 'REQUEST_CANCELLED') {
@@ -696,6 +977,7 @@ function createMcpStdioBridge(options = {}) {
     } finally {
       if (prepared) clearSensitiveCall(prepared)
       else clearInlineCredentialArguments(args)
+      generationSession = null
     }
   }
 
@@ -709,6 +991,7 @@ function createMcpStdioBridge(options = {}) {
     const closing = session
     session = null
     credentialSources = []
+    authFingerprint = null
     if (!closing || closing.expiresAt <= now()) return
     try {
       await post('/close', { connectionId: closing.connectionId }, {
@@ -747,7 +1030,7 @@ function createMcpStdioBridge(options = {}) {
   transport.onerror = () => writeStderr(stderr, '[vibepaper-mcp] MCP transport error.')
   server.onerror = () => writeStderr(stderr, '[vibepaper-mcp] MCP protocol error.')
   server.oninitialized = () => {
-    // Pair only after protocol initialization. Tool requests also join this promise.
+    // Authenticate only after protocol initialization. Tool requests also join this promise.
     void bootstrap().catch((error) => {
       if (error.code !== 'DESKTOP_NOT_RUNNING') {
         const code = safeCode(error.code)
@@ -781,12 +1064,17 @@ module.exports = {
   BridgeFailure,
   callProviderWithCredentialPreflight,
   createMcpStdioBridge,
+  fixedBridgeAuthPath,
   fixedInstancePath,
   prepareCredentialCall,
+  readBridgeAuthFile,
   readInstanceFile,
   runMcpStdioBridge,
   safeCode,
   sanitizeTaskOutputResult,
+  stripGenerationConfirmation,
   scrubValue,
+  validateBridgeAuth,
   validateCredentialSources,
+  validateGenerationConfirmation,
 }

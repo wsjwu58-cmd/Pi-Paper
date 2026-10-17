@@ -50,7 +50,6 @@ async function fixture(t, options = {}) {
   const service = createMcpMainService({
     userDataDirectory: path.join(root, 'user-data', 'VibePaper'),
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
-    dialog: { showMessageBox: async () => ({ response: 0 }) },
     assertTrustedSender: () => {},
     getActiveContext: async () => ({ ...context }),
     getWorker: () => ({ request: async () => ({ tools: [] }) }),
@@ -77,6 +76,8 @@ async function fixture(t, options = {}) {
     await fs.rm(root, { recursive: true, force: true })
   })
   const instance = await service.start()
+  const bridgeAuth = JSON.parse(await fs.readFile(
+    path.join(root, 'user-data', 'VibePaper', 'mcp-bridge-auth.json'), 'utf8'))
   const invoke = (name, input) => handlers.get(`desktop:mcp:${name}`)({}, input)
   await invoke('canvas-ready:set', { projectId, canvasId, version: 1, ready: true })
   await invoke('enabled:set', true)
@@ -86,7 +87,7 @@ async function fixture(t, options = {}) {
   const grant = service.getStore().getClient(client.clientId)
   const bootstrapResponse = await openPostJson(instance.port, '/bootstrap', {
     clientId: client.clientId, grantId: grant.grantId,
-    clientInfo: { name: 'output-fixture', version: '1' }, shortCode: '123456',
+    clientInfo: { name: 'output-fixture', version: '1' }, bridgeSecret: bridgeAuth.secret,
   }).promise
   const session = bootstrapResponse.body
   assert.equal(bootstrapResponse.status, 200)

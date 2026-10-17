@@ -1,12 +1,14 @@
 # 桌面本地 MCP 功能规格
 
+> **2026-10-17 最新交互契约：** 用户要求仅在生成时于外部 Agent 客户端确认。以下历史桌面短码配对、提供方披露批准卡和桌面外部生成确认描述不再是目标行为。已启用 MCP 且建立项目/画布/提供方范围后，连接使用受限本地凭证自动鉴权；凭据配置、只读测试及普通写入不弹人工确认。云端披露作为信息及范围记录保存。生成由桥接发起 MCP form elicitation；客户端不支持、拒绝、取消或超时均不生成。Main 签发会话绑定、单次使用、有时限的提案挑战，并在收到匹配结果后沿用原 ApprovalService/TaskStore 提交；桥接不得提供给模型可直接批准的工具。确认宿主属于用户信任的客户端，无法在服务端证明客户端 UI 的人工点击。内置 Agent 的确认不受影响。新协议与真实客户端验收另行记录，历史证据不得改写为新流程通过。
+
 日期：2026-10-10；实现与验收接续：2026-10-15。状态：**受限媒体读取、真实 Agnes 图片/指定 Flash 视频、Windows 实际静默升级及已安装程序重开已验证；真实 Codex 本地生成完整回合经审查通过，原自动记录末尾 QA 误判保留；真实客户端官方媒体全链路仍缺，Claude Code 真实会话本轮由用户取消。**
 
 依据：[AGENTS.md](../../AGENTS.md)、[Agent 功能规格](desktop-agent-functional-spec.md)、[提供方数据契约](desktop-provider-data-contract.md)。实施见[实施计划](../plans/2026-10-10-desktop-mcp-implementation-plan.md)。本文定义新增外部接口，不代表原 Web 模块或任何官方模型已通过 1:1/真实账号验收。
 
 ## 1. 已确认的产品范围
 
-用户选择“桌面应用运行时，外部 Agent 直接操作授权画布；生成在桌面确认”。支持本机 Codex、Claude Code 等标准 MCP 客户端。外部 Agent 可协助填写图片、视频厂商的官方凭据、启用已实现模型并提交生成提案。其他已实现模态可复用相同任务通道，但本期图片/视频配置与生成是必须验收的纵向链路。
+用户选择桌面应用运行时，外部 Agent 直接操作所选范围的画布；2026-10-17 更新为仅生成在外部 Agent 客户端确认。支持本机 Codex、Claude Code 等标准 MCP 客户端。外部 Agent 可协助填写图片、视频厂商的官方凭据、启用已实现模型并提交生成提案。其他已实现模态可复用相同任务通道，但本期图片/视频配置与生成是必须验收的纵向链路。
 
 首期要求原画布创作页打开并且保存/同步服务就绪。窗口关闭、仅在导航页、应用退出或项目切换期间不得开始新的画布写入和生成提交；最小化不等于关闭。已提交任务沿用既有桌面生命周期，不因 MCP 断线或关闭客户端而自动取消；应用退出后的任务恢复沿用 TaskStore。首期不新增窗口关闭后持续创作的后台服务。
 
@@ -29,7 +31,7 @@ flowchart LR
 | 组件 | 职责与约束 |
 | --- | --- |
 | MCP 桥接 | 初始化、能力发现、工具 schema/响应转换、客户端上下文；不持有项目写者锁，不打开第二份 Store |
-| Main 共享入口 | 验证连接授权、项目、画布、取消、版本和系统确认；协调保存/事件、配置和任务泵 |
+| Main 共享入口 | 验证连接凭证、范围、项目/画布、取消、版本及客户端 form 单次挑战；协调保存/事件、配置和任务泵 |
 | 原 TypeScript Agent 服务 | 复用工具 schema、CanvasCommandService、ApprovalService 与业务服务；提炼可由外部调用的执行上下文 |
 | Local Core | 权威画布、素材、命令账本、TaskStore、SQLite 串行写入及恢复 |
 | 提供方服务 | 复用 provider-settings、provider-network 与 Pi 目录/适配器；Key 仅在受控进程解密及使用 |
@@ -41,11 +43,11 @@ flowchart LR
 
 ### 3.1 stdio 与安装交付
 
-- 每个客户端启动轻量 stdio 桥接；多个桥接连接同一个桌面 Main。首期以 Tools 为兼容基线，不强依赖 Resources、Sampling、Elicitation 或协议任务扩展。
+- 每个客户端启动轻量 stdio 桥接；多个桥接连接同一个桌面 Main。读取、编辑、配置以 Tools 为兼容基线；外部生成要求客户端协商支持 MCP form elicitation。Resources、Sampling 与协议任务扩展不作为前置。
 - 用官方 MCP SDK 管理协议协商、schema 与响应；实现时锁定并验证 SDK 版本。stdout 仅写 MCP 消息，诊断走已脱敏 stderr。
 - 桥接通过用户数据目录内受限的实例发现信息定位随机 loopback 端口；发现文件包含实例标识、端口和协议版本，不公开模型 Key 或长期连接令牌。Main 重启后更新实例信息，清理陈旧信息。
-- 本地配对在桌面记录连接的授权范围，配置片段只含可执行路径、连接标识和非秘密参数。**首期每个新的 stdio 桥接进程需要一次桌面连接批准**：Main 展示已配置授权范围和可核对的随机短码，客户端 stderr 展示同一短码；来访 clientInfo 仅为未验证声明。批准后随机会话令牌仅在受控通信与内存中交接，绑定 grant、当前实例与有效期，连接关闭/撤销/重启即失效。不能凭公开 grantId、客户端名称或同用户 pipe ACL 自动签发令牌。
-- 同一存活会话内不逐次弹连接批准；外部客户端重启桥接后需再批准连接。持久自动鉴权恢复属于后续优化，本期不声称已交付。批准前不得访问项目/配置数据；未决配对限数、限速、可拒绝且有超时。请求鉴权必须发生在任何业务读取、日志序列化与执行前；启动超时与客户端配置需覆盖连接批准等待。
+- 桌面记录客户端的项目、画布、媒体与提供方范围，配置片段只含可执行路径、连接标识和非秘密参数。桥接从固定用户数据路径 `mcp-bridge-auth.json` 读取当前 Main 实例的随机连接凭证，在受控 bootstrap 中自动鉴权；不显示短码或桌面连接批准。该文件与公开发现文件分开，不进入项目备份、配置片段、命令参数、日志或外部工具响应。读取拒绝符号链接、超限内容、过期实例及不安全的 POSIX 所有者/权限；Windows 使用原用户数据目录边界，不能宣称未做的 ACL 验证已通过。
+- bootstrap 同时验证实例凭证、存活 grant、MCP 启用状态及当前项目/画布。随机会话令牌仅在内存交接，绑定 grant、当前实例及有效期；连接关闭/撤销/重启即失效，重连重新自动鉴权。公开 grantId、客户端名称与 roots 不能授予权限。请求鉴权先于业务读取与执行；连接数、请求数、大小和时限仍受限制。
 - 内部 loopback RPC 是私有通信，首期不承诺对外 HTTP MCP。HTTP 实现只绑定 `127.0.0.1`，校验 Host、存在时的 Origin、请求大小和时限，禁止代理转发与重定向，设置独立连接/请求上限。连接凭证不是模型 API Key。
 - 安装包提供 stdio 启动器及兼容运行时，不依赖全局 Node、npx 下载或仓库当前工作目录；含空格路径及 Windows/macOS/Linux 分别验收。启动器不复用正常 GUI 标准输出作为 MCP 输出。
 - 桌面未运行时明确返回 `DESKTOP_NOT_RUNNING`；首期不自动启动后台桌面或创建/打开项目。MCP 协议初始化可以成功后报告应用不可用，具体行为在 SDK smoke 中固定。
@@ -58,7 +60,7 @@ flowchart LR
 | --- | --- |
 | `canvas.read` | 授权项目/画布的摘要、节点、素材元数据 |
 | `canvas.write` | 授权项目/画布内的低风险领域命令 |
-| `generation.propose` | 准备生成提案、查询本人提案；实际提交另需桌面系统确认 |
+| `generation.propose` | 准备生成提案、查询本人提案；实际提交另需客户端 form 确认 |
 | `task.read` | 授权画布内任务状态与文本结果；图片/视频元数据另需 media.read 与对应 mediaTypes |
 | `media.read` | 用户授权的具体媒体类别与受限预览/结果读取，独立披露 |
 | `provider.read` | 提供方公开字段、模型能力、配置/检测状态；无秘密 |
@@ -82,7 +84,7 @@ flowchart LR
 | `list_models` | 可选模态过滤 | 稳定 bindingId、真实能力、参数约束、启用状态和不可用原因；不含凭据 |
 | `create_nodes` / `update_node_config` | 原 schema，明确参考关系；写入 operationId/版本 | 真实节点及完成步骤；遵循原领域规则 |
 | `connect_nodes` / `layout_nodes` | 明确端点/原布局参数；operationId/版本 | 真实边/布局；不推断多参考到多目标的笛卡尔积 |
-| `prepare_generation` | 目标、bindingId、参数、明确参考；operationId/expectedVersion | 持久化提案，通常 `awaiting_confirmation`；不在此直接生成 |
+| `prepare_generation` | 目标、bindingId、参数、明确参考；operationId/expectedVersion | 持久化提案；桥接在同次调用中请求客户端 form 确认，批准后沿原任务通道提交，返回状态/任务；拒绝、取消或不支持均不提交 |
 | `get_operation` | operationId 或 proposalId | 本连接可查询的权威执行/确认状态、任务关联与错误 |
 | `check_task_status` | taskId | 状态、错误、结果元数据；成功以文件已落盘且可读取为准 |
 | `read_task_output` | taskId、outputIndex（0–3，默认 0）、mode（metadata/preview）、文本 offset/limit | 文本分页；图片/视频默认元数据，显式 preview 返回受限媒体内容；不给任意目录读取能力 |
@@ -103,11 +105,11 @@ flowchart LR
 1. 用户在桌面授权某个连接的 `provider.configure`，限定厂商与可写凭据字段；读取公开目录不获得写权限。
 2. 用户在 Codex/Claude Code 提出“帮我配置图片/视频模型”，Agent 查询官方 credentialFields、已实现绑定及参数约束。
 3. Agent 选择用户要求的模型和参数，提交 `configure_provider`。可填写新 Key、替换 Key，或不提供秘密以保留原凭据；不支持回读已有秘密。
-4. 已有有效供应商披露授权时保存配置；缺少授权时在原配置页展示待处理配置，桌面用户接受披露后才启用云端能力。原字段默认密码黑点，眼睛按钮只显示本次输入。
+4. 在已配置的厂商/字段范围内直接保存配置，并记录供应商、发送内容与费用说明；不弹待批准披露卡。原字段默认密码黑点，眼睛按钮只显示本次输入。
 5. 返回 `saved` 后可调用安全鉴权检测；只有真实请求成功返回 `connected`。`unsupported`、网络失败、鉴权失败、未检测均独立展示。`saved` 不等于 Key 有效或账户拥有模型权限。
-6. Agent 创建/配置目标节点并准备生成；用户在桌面确认目标、模型、输入及覆盖影响后提交任务。Agent 查询状态，结果回显原节点。
+6. Agent 创建/配置目标节点并准备生成；客户端 form 显示目标、模型、输入及覆盖影响，用户批准后提交任务。Agent 查询状态，结果回显原节点。
 
-提供方授权须复用原配置页的供应商、发送类型、参考上传与可能费用披露。配置接受和生成确认是独立事件；已授权范围内的保存/普通安全探测不反复弹确认，新增发送范围时才重新取得相应授权。外部 Agent 不能通过自报同意代替桌面授权。
+提供方信息须复用原配置页的供应商、发送类型、参考上传与可能费用说明。保存和普通安全探测不弹确认；提供方/字段超出已配置的客户端范围则拒绝，不能由工具参数自行扩大。生成确认是独立的客户端事件。
 
 ### 5.2 凭据输入方式
 
@@ -125,7 +127,7 @@ Agent 从 `list_provider_configuration` 获取 `credentialSources`、`allowedCre
 
 共享工具 schema 须列出已支持的公开配置字段 `providerId`（可选且须与外层一致）、`baseUrl`、`enabledModelIds`、`defaultModelIds`、`modelDefaults`、`timeoutSeconds`（10–600），模型绑定及参数能力从该提供方目录读取。工具说明须明确字段名到授权 sourceRef 的映射规则，不能要求外部 Agent 猜测配置格式。
 
-`configure_provider` 返回 `awaiting_disclosure` 时尚未保存配置，写入账本也可能尚未创建，此时 `get_provider_operation` 返回 `not_found` 不表示写入失败。桌面披露授权后由外部 Agent 继续配置；同一配置的重放复用操作标识和参数，只有 `saved` 表示保存成功。重新连接的凭据引用仍须从新连接目录取得；任何结果不确定的写入先查询权威状态，不盲重放。
+新流程不返回要求用户批准的 `awaiting_disclosure`；供应商披露范围由 Main 在配置调用中记录。只有 `saved` 表示保存成功。同一配置重放复用操作标识和参数；重新连接的凭据引用从新连接目录取得，任何结果不确定的写入先查询权威状态，不盲重放。历史版本的 `awaiting_disclosure` 证据保留原含义。
 
 不用 MCP **form** elicitation 收集 API Key。若后续采用 URL elicitation，须协商客户端能力且只返回无秘密的一次性受控输入地址；首期仍可回到原配置页完成，不把客户端是否支持 elicitation 作为配置前提。
 
@@ -143,11 +145,13 @@ Agent 从 `list_provider_configuration` 获取 `credentialSources`、`allowedCre
 
 提案状态：`awaiting_confirmation → submitting → submitted`，另有 `rejected / expired / invalidated / failed`。提交结果不确定时返回 `submission_unknown`，查询现有账本/关联继续协调，不盲重发。`submitted` 仅表示本地任务已耐久创建；任务独立使用 `queued → running → succeeded | failed | cancelled`。
 
-确认记录绑定连接、项目、画布版本、目标、模型绑定及提供方配置 revision、完整参数及参考内容版本/哈希、操作摘要和有效期；复用原 ApprovalService 验证/消费语义，补足外部来源绑定。配置 revision 变化使受影响的未确认提案失效。普通 MCP 客户端不能访问批准令牌或调用批准方法。桌面可信确认通道消费令牌后，共享服务以同一提案稳定幂等键提交任务，支持确认已消费但任务关联尚未写入的恢复查询。拒绝/过期/版本变化/重启均不产生新提交；已提交任务只按权威状态恢复。
+确认记录绑定连接、项目、画布版本、目标、模型绑定及提供方配置 revision、完整参数及参考内容版本/哈希、操作摘要和有效期；复用原 ApprovalService 验证/消费语义。Main 为桥接签发单次挑战，桥接使用客户端 form elicitation 收集本次生成决定，再经私有 `generation/confirm` RPC 送回。挑战不进入模型工具参数、响应、会话或持久化账本，不提供模型可调用的批准工具。Main 消费挑战并复核会话/授权/版本/有效期/取消状态后才提交；结果不确定时不重放。客户端是用户信任的确认宿主，服务端不能证明宿主内部确由人点击。已提交任务按权威状态恢复。
 
-外部确认复用既有确认卡视觉与原 Modal，在画布页展示请求来源；无需先创建内置 Agent 会话，也不运行内置模型来显示确认。不添加独立创作面板，具体宿主位置在原组件中适配并记录截图。
+外部确认在 Codex 等客户端显示目标、模型、输入、覆盖影响和云端可能费用；只接受明确确认，不采集秘密。桌面不再显示第二张外部生成确认卡。内置 Agent 的原确认卡保持不变。不支持 form 的客户端明确返回能力错误，不能降级成自动批准。
 
-MCP 工具调用不能无限等待用户确认或长视频任务。返回提案/operationId 并查询；可选进度通知只作提示，不能依赖通知判定成功。
+客户端确认有时限。提交前在提供方解析等异步步骤之后再次校验会话/范围/取消，并紧接着同步派发原 Local Core 的 `task:create`；这是提交边界。此前断线、取消或超时不提交新任务。进入提交后断线可能丢失结果，须查询账本，不能承诺跨进程插入时刻的回滚，也不能重发上游。长视频任务返回提案/operationId 后查询，不让工具无限等待生成。
+
+提案内容由原 Worker 的不可变 ApprovalService action/binding、签名 actionHash 和操作 digest 验证；Main 的挑战关联同一个 proposalId 和 canvasVersion，不把提示词再复制到设备账本。该绑定与一次性会话挑战分别测试，不能把客户端传入的确认摘要当作权威参数。
 
 外部写入前通过 Main 向原 Renderer 请求保存屏障，带项目、画布和唯一请求标识；flush 等待当前序列及持久化响应完成，期间排队后续编辑，避免新编辑混入旧保存。保存失败、窗口关闭或身份变化均拒绝外部写入，不强制覆盖。屏障完成后检查 expectedVersion；过期返回冲突，重新读取后提交新操作。不能以客户端 snapshot 声称权威版本。
 
@@ -165,6 +169,8 @@ MCP 工具调用不能无限等待用户确认或长视频任务。返回提案/
 | --- | --- |
 | ClientGrant | grantId、clientId、permissions、providerIds/credentialFieldNames、credentialInputModes、projectId/canvasId、mediaTypes、disclosureVersion、issuedAt/expiresAt/revokedAt；grantId是范围记录身份，不是鉴权秘密 |
 | McpConnection | connectionId、clientId、instanceId、grantId、protocolVersion、connectedAt/expiresAt；会话令牌只在内存，不进持久记录；连接名仅作显示，不作权限 |
+| BridgeInstanceAuthentication | 固定 `userData/mcp-bridge-auth.json`，schemaVersion=1、instanceId、随机 secret；Main 原子创建并按实例轮换，桥接只读固定路径；独立于公开发现文件，不导出或加入备份 |
+| GenerationConfirmationChallenge | proposalId、challengeToken 的受控内存校验值、connectionId/clientId/grantId/projectId/canvasId、canvasVersion、expiresAt；单次消费，断线/取消/重启失效；只在 Main 与桥接私有通道交接，不提供给模型 |
 | CredentialSource | sourceRef、clientId、providerId、fieldName、sourceKind、envVariableName（仅 env）、expiresAt；秘密值不进入此记录 |
 | McpOperation | operationId、clientId、grantId、source=external_mcp、projectId/canvasId（配置可无）、kind、payloadDigest、status、result/errorCode、createdAt/updatedAt；不持久化原始凭据请求 |
 | GenerationProposal | proposalId、operationId、clientId、projectId/canvasId、canvasVersion、modelBindingId、providerRevision、normalizedInputs、referenceDigests、approvalId、expiresAt、status、taskIds；不含 Key 或可供客户端批准的 token |
@@ -180,7 +186,7 @@ operationId 是客户端可持有的重试标识，作用域含可信 clientId �
 
 ## 8. 错误与验收契约
 
-稳定错误码至少包括：`DESKTOP_NOT_RUNNING`、`WORKSPACE_NOT_READY`、`AUTHENTICATION_REQUIRED`、`PERMISSION_DENIED`、`PROJECT_CHANGED`、`CANVAS_VERSION_CONFLICT`、`CANVAS_SAVE_FAILED`、`IDEMPOTENCY_CONFLICT`、`CONFIRMATION_REQUIRED`、`CONFIRMATION_EXPIRED`、`CONFIGURATION_REVISION_CONFLICT`、`PROVIDER_CONSENT_REQUIRED`、`CREDENTIAL_SOURCE_UNAVAILABLE`、`SECURE_STORAGE_UNAVAILABLE`、`MODEL_UNAVAILABLE`。保留原领域码并映射公开信息；错误响应不回显 Key、任意本机路径或供应商原文。
+稳定错误码包括运行不可用、授权/版本/幂等/确认失效、凭据来源和安全存储错误；新增客户端未协商 form 的 `CLIENT_CONFIRMATION_UNSUPPORTED`。具体公开码以实现映射与测试为准；错误响应不回显 Key、挑战、连接秘密、任意本机路径或供应商原文。
 
 | 场景 | 必须观测到的结果 |
 | --- | --- |
@@ -190,11 +196,11 @@ operationId 是客户端可持有的重试标识，作用域含可信 clientId �
 | 密钥与权限 | 无配置权限不能写；sourceRef 不能读其他变量；响应、普通账本、日志、JSONL、导出、配置片段无秘密 |
 | 配置部分失败/重试/并发 | 不虚报保存；不完整 revision 不生成；同键查回结果，异内容冲突；原配置页编辑受相同版本控制 |
 | 鉴权检测 | 有效/无效/超时/unsupported 真实区分，不自动收费；无真实 Key 时仅记录 fixture |
-| 生成确认 | 单个/批量桌面确认；拒绝、过期、重启、模型/参考/版本变化不提交；`confirmed:true` 不能批准 |
+| 生成确认 | 单个/批量客户端 form 确认；不支持、拒绝、取消、过期、重启、模型/参考/版本变化不提交；`confirmed:true` 不能批准 |
 | 三参考三目标 | 仅三条正确的一对一参考关系，原画布即时可见 |
 | 并发编辑 | 用户未保存提示词/拖拽不丢失；冲突可见；成功外部修改不被旧快照覆盖 |
 | 断线/响应丢失/进程中断 | 不重复节点/任务/上游提交；先查权威账本；客户端退出不伪称取消供应商任务 |
-| 真图片/真视频生成 | 用户授权真实账号，桌面确认后创建任务，文件可读、原节点可见；fixture 不替代此证据 |
+| 真图片/真视频生成 | 用户授权真实账号，客户端确认后创建任务，文件可读、原节点可见；fixture 不替代此证据 |
 | 安装包 | 三平台可启动桥接；无全局 Node；含空格路径；安全存储失败明确，无明文回退 |
 
 真实 Key 验收由用户在授权输入链路提供，不在文档/测试 fixture 保存；截图/录屏隐藏秘密。外部客户端自己的 inline 会话保存风险单独披露，不冒称由 VibePaper 的日志脱敏解决。
@@ -225,3 +231,5 @@ operationId 是客户端可持有的重试标识，作用域含可信 clientId �
 - [MCP Elicitation 规范](https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation)：form 不收集敏感凭据，URL 模式需能力协商。
 - [Codex MCP 文档](https://developers.openai.com/codex/mcp/)：stdio/Streamable HTTP 与连接配置。
 - [Claude Code MCP 文档](https://code.claude.com/docs/en/mcp)：本地 stdio、HTTP 与配置范围。
+
+2026-10-17 已读取 [Codex App Server 的 MCP elicitation 说明](https://learn.chatgpt.com/docs/app-server#mcp-server-elicitation-requests)：客户端收到表单请求后返回 accept/content 或 decline/cancel。另读取 [Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)核对服务级工具许可配置；应用只生成自身连接片段，不修改用户或组织的整体许可策略。协议支持不等于已完成当前桌面客户端弹窗验收。

@@ -1,5 +1,6 @@
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
+const { createHash } = require('node:crypto')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const http = require('node:http')
@@ -14,11 +15,37 @@ async function fixture(t, overrides = {}, behavior = {}) {
   let service
   let flushStatus = 'flushed'
   let executions = 0
+  let submissions = 0
+  let resolveCalls = 0
+  let dialogCalls = 0
+  let proposal = null
   const completedOperations = new Map()
   const worker = { request: async (method, input) => {
     if (method === 'mcp:tools:list') return [{ name: 'create_nodes', inputSchema: { type: 'object' } }]
     if (method === 'mcp:actions:list') return []
     if (method === 'mcp:operation:get') return completedOperations.get(input.operationId) || null
+    if (method === 'mcp:proposal:get') {
+      if (!proposal || proposal.proposalId !== input.proposalId || proposal.clientId !== input.clientId
+        || proposal.grantId !== input.grantId) return null
+      return { ...proposal }
+    }
+    if (method === 'mcp:action:resolve') {
+      resolveCalls += 1
+      if (!proposal || proposal.proposalId !== input.proposalId || proposal.clientId !== input.clientId
+        || proposal.grantId !== input.grantId) throw Object.assign(new Error('ACTION_NOT_FOUND'), { code: 'ACTION_NOT_FOUND' })
+      if (proposal.status === 'submitted' || proposal.status === 'rejected') {
+        return { proposalId: proposal.proposalId, status: proposal.status,
+          ...(proposal.taskIds.length ? { tasks: proposal.taskIds.map((taskId) => ({ taskId, status: 'queued' })) } : {}) }
+      }
+      if (input.decision === 'reject') {
+        proposal.status = 'rejected'
+        return { proposalId: proposal.proposalId, status: 'rejected' }
+      }
+      submissions += 1
+      proposal.status = 'submitted'
+      proposal.taskIds = ['review-task-1']
+      return { proposalId: proposal.proposalId, status: 'submitted', tasks: [{ taskId: 'review-task-1', status: 'queued' }] }
+    }
     if (method === 'mcp:tool:execute') {
       if (behavior.idempotentWorker && completedOperations.has(input.arguments.operationId)) {
         const previous = completedOperations.get(input.arguments.operationId)
@@ -26,9 +53,17 @@ async function fixture(t, overrides = {}, behavior = {}) {
         return { structuredContent: previous.publicResult }
       }
       executions += 1
-      if (behavior.prepareProposal && input.toolName === 'prepare_generation') return {
-        structuredContent: { status: 'awaiting_confirmation', proposalId: 'review-proposal' },
-        proposal: { proposalId: 'review-proposal', confirmationItems: [{ target: 'Review target', model: 'Fixture', input: 'Fixture' }] },
+      if (behavior.prepareProposal && input.toolName === 'prepare_generation') {
+        const expiresAt = Date.now() + (behavior.proposalTtlMs ?? 60_000)
+        proposal = { proposalId: 'review-proposal', kind: 'generation', operationId: input.arguments.operationId,
+          status: 'awaiting_confirmation', canvasVersion: input.canvasVersion, expiresAt, taskIds: [],
+          clientId: input.clientId, grantId: input.grantId, projectId: input.projectId, canvasId: input.canvasId }
+        const confirmationItems = [{ target: 'Review target', model: 'Fixture', input: 'Fixture prompt', overwrite: false }]
+        return {
+          structuredContent: { status: 'awaiting_confirmation', proposalId: proposal.proposalId, expiresAt,
+            items: confirmationItems },
+          proposal: { proposalId: proposal.proposalId, confirmationItems },
+        }
       }
       if (input.toolName === 'create_nodes') context.version += 1
       const result = { status: 'completed', version: context.version }
@@ -42,7 +77,7 @@ async function fixture(t, overrides = {}, behavior = {}) {
   service = createMcpMainService({
     userDataDirectory: directory,
     ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
-    dialog: { showMessageBox: async () => ({ response: 0 }) },
+    dialog: { showMessageBox: async () => { dialogCalls += 1; return { response: 0 } } },
     assertTrustedSender: () => {}, getActiveContext: async () => ({ ...context }),
     getWorker: () => worker, getProviderSettings: () => ({
       snapshot: async () => ({ providers: behavior.providerConfig ? [{ id: 'fixture-provider', name: 'Fixture',
@@ -55,6 +90,7 @@ async function fixture(t, overrides = {}, behavior = {}) {
       send: (channel, payload) => {
         events.push({ channel, payload })
         if (channel === 'desktop:mcp:canvas-flush') queueMicrotask(() => {
+          if (behavior.deferFlush) return
           if (behavior.dirtySave) context.version += 1
           handlers.get('desktop:mcp:canvas-flush:respond')({}, { requestId: payload.requestId,
             projectId: payload.projectId, canvasId: payload.canvasId, status: flushStatus,
@@ -64,6 +100,7 @@ async function fixture(t, overrides = {}, behavior = {}) {
     } }), ...overrides,
   })
   const instance = await service.start()
+  const authRecord = JSON.parse(await fs.readFile(path.join(directory, 'mcp-bridge-auth.json'), 'utf8'))
   t.after(async () => { await service.stop() })
   const invoke = (suffix, input) => handlers.get(`desktop:mcp:${suffix}`)({}, input)
   await invoke('canvas-ready:set',
@@ -85,15 +122,49 @@ async function fixture(t, overrides = {}, behavior = {}) {
     })
     outgoing.on('error', reject); outgoing.end(raw)
   })
-  const bootstrap = await request('/bootstrap', { clientId: grant.clientId, grantId: grant.grantId,
-    clientInfo: { name: 'review', version: '1' }, shortCode: '123456' })
+  const bootstrapFor = (target = grant, secret = authRecord.secret) => request('/bootstrap', {
+    clientId: target.clientId, grantId: target.grantId,
+    clientInfo: { name: 'review', version: '1' }, bridgeSecret: secret,
+  })
+  const bootstrap = await bootstrapFor()
   assert.equal(bootstrap.status, 200)
   const authorization = { authorization: `Bearer ${bootstrap.body.accessToken}` }
-  const call = (name, args) => request('/rpc', { method: 'tools/call', params: { name, arguments: args } }, authorization)
+  const call = (name, args, auth = authorization) => request('/rpc', { method: 'tools/call', params: { name, arguments: args } }, auth)
+  const confirm = (proposalId, challengeToken, decision = 'approve', auth = authorization) => request('/rpc', {
+    method: 'generation/confirm', params: { proposalId, challengeToken, decision },
+  }, auth)
   return { invoke, request, call, events, context, created, grant, authorization,
-    service, instance,
-    setFlushStatus: (value) => { flushStatus = value }, executionCount: () => executions }
+    service, instance, authRecord, bootstrapFor, confirm, session: bootstrap.body,
+    setFlushStatus: (value) => { flushStatus = value }, executionCount: () => executions,
+    submissionCount: () => submissions, resolutionCount: () => resolveCalls,
+    dialogCallCount: () => dialogCalls,
+    setFlushDelay: (value) => { behavior.deferFlush = value },
+    respondFlush: (payload, status = 'flushed') => {
+      if (status === 'flushed') context.version = payload.expectedVersion
+      handlers.get('desktop:mcp:canvas-flush:respond')({}, { requestId: payload.requestId,
+        projectId: payload.projectId, canvasId: payload.canvasId, status,
+        ...(status === 'flushed' ? { persistedVersion: context.version } : { errorCode: 'REVIEW_SAVE_FAILED' }) })
+    },
+  }
 }
+
+test('concurrent starts on one Main instance share one bridge credential and listener', async (t) => {
+  const directory = await fs.mkdtemp(path.resolve(__dirname, '../../.test-temp/mcp-main-start-'))
+  const service = createMcpMainService({
+    userDataDirectory: directory,
+    ipcMain: { handle: () => {} },
+    assertTrustedSender: () => {},
+    getActiveContext: async () => null,
+    getProviderSettings: () => null,
+    getMainWindow: () => null,
+  })
+  t.after(async () => { await service.stop(); await fs.rm(directory, { recursive: true, force: true }) })
+  const [first, second] = await Promise.all([service.start(), service.start()])
+  assert.deepEqual(first, second)
+  const record = JSON.parse(await fs.readFile(path.join(directory, 'mcp-bridge-auth.json'), 'utf8'))
+  assert.equal(record.instanceId, first.instanceId)
+  assert.equal(first.host, '127.0.0.1')
+})
 
 test('external write settles the exact renderer flush request', async (t) => {
   const f = await fixture(t)
@@ -128,16 +199,194 @@ test('saving dirty renderer changes rejects stale external CAS and releases the 
   assert.equal(settled?.payload.requestId, flush.payload.requestId)
 })
 
-test('generation proposal releases the flush barrier while retaining desktop confirmation', async (t) => {
+test('generation preparation returns a client confirmation challenge without a desktop card', async (t) => {
   const f = await fixture(t, {}, { prepareProposal: true })
   const result = await f.call('prepare_generation', { operationId: 'review-generation', expectedVersion: 1,
     generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
   assert.equal(result.body.isError, undefined)
   assert.equal(result.body.structuredContent.status, 'awaiting_confirmation')
-  assert(f.events.some((event) => event.payload.type === 'pending-action.created' && event.payload.action.kind === 'generation'))
+  assert.equal(result.body.generationConfirmation.proposalId, result.body.structuredContent.proposalId)
+  assert.equal(result.body.generationConfirmation.items[0].target, 'Review target')
+  assert.equal(result.body.generationConfirmation.items[0].overwrite, false)
+  assert.equal(typeof result.body.generationConfirmation.challengeToken, 'string')
+  assert.equal(f.events.some((event) => event.payload.type === 'pending-action.created'
+    && event.payload.action.kind === 'generation'), false)
   const flush = f.events.find((event) => event.channel === 'desktop:mcp:canvas-flush')
   const settled = f.events.find((event) => event.payload.type === 'canvas.write-settled')
   assert.equal(settled?.payload.requestId, flush.payload.requestId)
+})
+
+test('bridge bootstrap rejects a bad secret and connects with the private per-instance credential', async (t) => {
+  const f = await fixture(t)
+  assert.deepEqual(Object.keys(f.authRecord).sort(), ['instanceId', 'schemaVersion', 'secret'])
+  assert.equal(f.authRecord.schemaVersion, 1)
+  assert.equal(f.authRecord.instanceId, f.instance.instanceId)
+  assert.match(f.authRecord.secret, /^[A-Za-z0-9_-]{43}$/u)
+  const bad = await f.bootstrapFor(f.grant, 'x'.repeat(43))
+  assert.equal(bad.status, 401)
+  const good = await f.bootstrapFor()
+  assert.equal(good.status, 200)
+  assert.equal(f.dialogCallCount(), 0)
+  const instanceFile = await fs.readFile(f.service.getInstanceFile(), 'utf8')
+  assert.equal(instanceFile.includes(f.authRecord.secret), false)
+  assert.equal(JSON.stringify(f.created.config).includes(f.authRecord.secret), false)
+})
+
+test('generation confirmation rejects wrong tokens and another live client session', async (t) => {
+  const f = await fixture(t, {}, { prepareProposal: true })
+  const prepared = await f.call('prepare_generation', { operationId: 'review-generation-scope', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
+  const confirmation = prepared.body.generationConfirmation
+  const wrongToken = await f.confirm(confirmation.proposalId, 'x'.repeat(43))
+  assert.equal(wrongToken.body.isError, true)
+  assert.equal(wrongToken.body.structuredContent.errorCode, 'GENERATION_CONFIRMATION_INVALID')
+
+  const secondGrantResult = await f.invoke('client:create', { clientName: 'codex', permissions: ['generation.propose'],
+    providerGrants: [], mediaTypes: [], disclosureVersion: 'desktop-mcp-provider-disclosure-v1', accepted: true })
+  const secondGrant = f.service.getStore().getClient(secondGrantResult.clientId)
+  const secondBootstrap = await f.bootstrapFor(secondGrant)
+  const crossSession = await f.confirm(confirmation.proposalId, confirmation.challengeToken, 'approve',
+    { authorization: `Bearer ${secondBootstrap.body.accessToken}` })
+  assert.equal(crossSession.body.isError, true)
+  assert.equal(crossSession.body.structuredContent.errorCode, 'GENERATION_CONFIRMATION_INVALID')
+  assert.equal(f.submissionCount(), 0)
+})
+
+test('generation confirmation submits once and an exact replay returns the prior task state', async (t) => {
+  const f = await fixture(t, {}, { prepareProposal: true })
+  const prepared = await f.call('prepare_generation', { operationId: 'review-generation-once', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
+  const confirmation = prepared.body.generationConfirmation
+  const first = await f.confirm(confirmation.proposalId, confirmation.challengeToken, 'approve')
+  assert.equal(first.body.isError, undefined)
+  assert.equal(first.body.structuredContent.status, 'submitted')
+  assert.deepEqual(first.body.structuredContent.tasks, [{ taskId: 'review-task-1', status: 'queued' }])
+  const replay = await f.confirm(confirmation.proposalId, confirmation.challengeToken, 'approve')
+  assert.equal(replay.body.isError, undefined)
+  assert.equal(replay.body.structuredContent.status, 'submitted')
+  assert.deepEqual(replay.body.structuredContent.tasks, first.body.structuredContent.tasks)
+  assert.equal(f.submissionCount(), 1)
+  assert.equal(f.resolutionCount(), 1)
+})
+
+test('generation rejection is one use and never submits a task', async (t) => {
+  const f = await fixture(t, {}, { prepareProposal: true })
+  const prepared = await f.call('prepare_generation', { operationId: 'review-generation-reject', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
+  const confirmation = prepared.body.generationConfirmation
+  const first = await f.confirm(confirmation.proposalId, confirmation.challengeToken, 'reject')
+  assert.equal(first.body.structuredContent.status, 'rejected')
+  const replay = await f.confirm(confirmation.proposalId, confirmation.challengeToken, 'approve')
+  assert.equal(replay.body.structuredContent.status, 'rejected')
+  assert.equal(f.submissionCount(), 0)
+  assert.equal(f.resolutionCount(), 1)
+})
+
+test('renderer action resolution cannot approve an external client proposal', async (t) => {
+  const f = await fixture(t, {}, { prepareProposal: true })
+  const prepared = await f.call('prepare_generation', { operationId: 'review-generation-renderer', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
+  await assert.rejects(f.invoke('actions:resolve', { proposalId: prepared.body.generationConfirmation.proposalId, decision: 'approve' }),
+    (error) => error.code === 'MCP_CLIENT_CONFIRMATION_REQUIRED')
+  assert.equal(f.submissionCount(), 0)
+})
+
+test('expired generation confirmation is rejected before task submission', async (t) => {
+  const f = await fixture(t, {}, { prepareProposal: true, proposalTtlMs: 80 })
+  const prepared = await f.call('prepare_generation', { operationId: 'review-generation-expired', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  const result = await f.confirm(prepared.body.generationConfirmation.proposalId,
+    prepared.body.generationConfirmation.challengeToken, 'approve')
+  assert.equal(result.body.isError, true)
+  assert.equal(result.body.structuredContent.errorCode, 'ACTION_EXPIRED')
+  assert.equal(f.submissionCount(), 0)
+})
+
+test('canvas version and project changes invalidate the generation confirmation', async (t) => {
+  const f = await fixture(t, {}, { prepareProposal: true })
+  const prepared = await f.call('prepare_generation', { operationId: 'review-generation-version', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
+  f.context.version += 1
+  const versionConflict = await f.confirm(prepared.body.generationConfirmation.proposalId,
+    prepared.body.generationConfirmation.challengeToken, 'approve')
+  assert.equal(versionConflict.body.isError, true)
+  assert.equal(versionConflict.body.structuredContent.errorCode, 'CANVAS_VERSION_CONFLICT')
+  assert.equal(f.submissionCount(), 0)
+
+  const other = await fixture(t, {}, { prepareProposal: true })
+  const otherPrepared = await other.call('prepare_generation', { operationId: 'review-generation-project', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
+  other.context.projectId = 'another-project'
+  const projectConflict = await other.confirm(otherPrepared.body.generationConfirmation.proposalId,
+    otherPrepared.body.generationConfirmation.challengeToken, 'approve')
+  assert.equal(projectConflict.body.isError, true)
+  assert.equal(other.submissionCount(), 0)
+})
+
+test('disconnecting while the renderer save barrier is pending cancels generation before Worker submission', async (t) => {
+  const f = await fixture(t, {}, { prepareProposal: true })
+  const prepared = await f.call('prepare_generation', { operationId: 'review-generation-cancel', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
+  f.setFlushDelay(true)
+  const confirmation = prepared.body.generationConfirmation
+  const priorFlushCount = f.events.filter((event) => event.channel === 'desktop:mcp:canvas-flush').length
+  const body = JSON.stringify({ method: 'generation/confirm', params: {
+    proposalId: confirmation.proposalId, challengeToken: confirmation.challengeToken, decision: 'approve',
+  } })
+  const outgoing = http.request({ host: '127.0.0.1', port: f.instance.port, path: '/rpc', method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), ...f.authorization } })
+  const disconnected = new Promise((resolve) => outgoing.once('error', resolve))
+  outgoing.end(body)
+  for (let attempt = 0; attempt < 50 && f.events.filter((event) => event.channel === 'desktop:mcp:canvas-flush').length <= priorFlushCount; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  const flush = f.events.filter((event) => event.channel === 'desktop:mcp:canvas-flush')[priorFlushCount]
+  assert(flush, 'the confirmation must reach the Main save barrier before disconnect')
+  outgoing.destroy()
+  await disconnected
+  f.respondFlush(flush.payload)
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  assert.equal(f.submissionCount(), 0)
+  assert.equal(f.resolutionCount(), 0)
+
+  f.setFlushDelay(false)
+  const reconnected = await f.bootstrapFor()
+  const reconnectedAuth = { authorization: `Bearer ${reconnected.body.accessToken}` }
+  const retried = await f.call('prepare_generation', { operationId: 'review-generation-cancel', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] }, reconnectedAuth)
+  assert.notEqual(retried.body.generationConfirmation.challengeToken, confirmation.challengeToken)
+  const oldChallenge = await f.confirm(confirmation.proposalId, confirmation.challengeToken, 'approve', reconnectedAuth)
+  assert.equal(oldChallenge.body.structuredContent.errorCode, 'GENERATION_CONFIRMATION_INVALID')
+  const freshChallenge = await f.confirm(retried.body.generationConfirmation.proposalId,
+    retried.body.generationConfirmation.challengeToken, 'approve', reconnectedAuth)
+  assert.equal(freshChallenge.body.structuredContent.status, 'submitted')
+  assert.equal(f.submissionCount(), 1)
+})
+
+test('generation Core authorization rejects a session revoked during provider revision lookup', async (t) => {
+  let markEntered
+  let releaseLookup
+  const entered = new Promise((resolve) => { markEntered = resolve })
+  const revisionLookup = new Promise((resolve) => { releaseLookup = resolve })
+  const f = await fixture(t, { getProviderRevisions: () => { markEntered(); return revisionLookup } })
+  const accessToken = f.authorization.authorization.slice('Bearer '.length)
+  const commandId = 'review-generation-command'
+  f.service.getActiveCommands().set(commandId, {
+    commandId, connectionId: f.session.connectionId,
+    sessionTokenHash: createHash('sha256').update(accessToken).digest('hex'),
+    clientId: f.created.clientId, grantId: f.grant.grantId,
+    projectId: f.context.projectId, canvasId: f.context.canvasId,
+    permission: 'generation.propose', providerRevisions: { 'fixture-provider': 1 },
+    expiresAt: Date.now() + 60_000, revoked: false,
+  })
+  const authorization = f.service.authorizeAgentCoreRequest(commandId, 'agent:core:create-generation-task', {
+    projectId: f.context.projectId, canvasId: f.context.canvasId, providerId: 'fixture-provider',
+  })
+  await entered
+  await f.invoke('client:revoke', f.created.clientId)
+  releaseLookup({ 'fixture-provider': 1 })
+  await assert.rejects(authorization, (error) => error.code === 'PERMISSION_DENIED')
 })
 
 test('Main tools reject extra fields instead of silently dropping them', async (t) => {
@@ -168,10 +417,12 @@ test('client config has separate usable Codex TOML and Claude Code JSON', async 
   const f = await fixture(t)
   assert.match(f.created.config.codex, /\[mcp_servers\.vibepaper\]/u)
   assert.match(f.created.config.codex, /startup_timeout_sec\s*=\s*150/u)
+  assert.match(f.created.config.codex, /default_tools_approval_mode\s*=\s*"approve"/u)
   assert.doesNotMatch(f.created.config.codex, /\benv_vars\s*=/u)
   assert.equal(JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper.env.ELECTRON_RUN_AS_NODE, '1')
   assert(JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper)
   assert(!f.created.config.codex.includes('accessToken'))
+  assert.equal(f.dialogCallCount(), 0)
 })
 
 test('Codex config forwards only deduplicated authorized environment variable names', async (t) => {
@@ -244,31 +495,11 @@ test('a completed external operation replays after the canvas version advances',
   assert.equal(f.executionCount(), 1)
 })
 
-test('disconnecting during native pairing prevents a late approval from creating a live connection', async (t) => {
-  let calls = 0
-  let finishApproval
-  let notifyDialog
-  const entered = new Promise(resolve => { notifyDialog = resolve })
-  const f = await fixture(t, { dialog: { showMessageBox: async () => {
-    if (++calls === 1) return { response: 0 }
-    notifyDialog()
-    return new Promise(resolve => { finishApproval = resolve })
-  } } })
-  const created = await f.invoke('client:create', { clientName: 'other', permissions: ['canvas.read'],
-    providerGrants: [], mediaTypes: [], disclosureVersion: 'desktop-mcp-provider-disclosure-v1', accepted: true })
-  const grant = f.service.getStore().getClient(created.clientId)
-  const bytes = JSON.stringify({ clientId: grant.clientId, grantId: grant.grantId,
-    clientInfo: { name: 'disconnected-review', version: '1' }, shortCode: '456789' })
-  const outgoing = http.request({ host: '127.0.0.1', port: f.instance.port, path: '/bootstrap', method: 'POST',
-    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(bytes) } })
-  const disconnected = new Promise(resolve => outgoing.once('error', resolve))
-  outgoing.end(bytes)
-  await entered
-  outgoing.destroy()
-  await disconnected
-  finishApproval({ response: 0 })
-  await new Promise(resolve => setImmediate(resolve))
-  await new Promise(resolve => setImmediate(resolve))
-  const state = await f.service.getState()
-  assert.equal(state.clients.find(client => client.clientId === grant.clientId).connected, false)
+test('stopping Main removes only its own private bridge credential', async (t) => {
+  const f = await fixture(t)
+  await f.service.stop()
+  await assert.rejects(fs.access(path.join(path.dirname(f.service.getInstanceFile()), 'mcp-bridge-auth.json')),
+    (error) => error.code === 'ENOENT')
+  await assert.rejects(fs.access(f.service.getInstanceFile()), (error) => error.code === 'ENOENT')
+  assert.equal(f.dialogCallCount(), 0)
 })

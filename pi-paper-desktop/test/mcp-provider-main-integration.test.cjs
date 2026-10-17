@@ -114,7 +114,7 @@ async function createFixture(t) {
   const service = createMcpMainService({
     userDataDirectory,
     ipcMain: { handle: (channel, callback) => handlers.set(channel, callback) },
-    dialog: { showMessageBox: async () => ({ response: 0 }) },
+    dialog: { showMessageBox: async () => { throw new Error('ordinary MCP operations must not request desktop approval') } },
     assertTrustedSender: () => {},
     getActiveContext: async () => ({ ...context }),
     getWorker: () => worker,
@@ -205,7 +205,6 @@ async function createFixture(t) {
     stdin: new (require('node:stream').PassThrough)(),
     stderr: { write: (line) => stderrLines.push(line) },
     processLike: new EventEmitter(),
-    randomCode: () => '482906',
   })
   client = new Client({ name: 'provider-main-integration', version: '1.0.0' })
   running = bridge.start()
@@ -256,16 +255,16 @@ function configureArgs(providerId, operationId, expectedRevision, credentialInpu
   return { providerId, operationId, expectedRevision, publicConfig: publicConfig(providerId), credentialInput }
 }
 
-async function approveDisclosure(fixture, providerId) {
-  const { actions } = await fixture.invoke('actions:list')
+async function assertRecordedDisclosure(fixture, providerId) {
+  const actions = fixture.service.getStore().listActions({ clientId: fixture.created.clientId,
+    projectId: PROJECT_ID, canvasId: CANVAS_ID })
   const action = actions.find((entry) => entry.kind === 'provider_disclosure'
-    && entry.providerId === providerId && entry.status === 'awaiting_disclosure')
-  assert(action, `missing pending disclosure for ${providerId}`)
+    && entry.payload.providerId === providerId && entry.status === 'authorized')
+  assert(action, `missing recorded disclosure for ${providerId}`)
   assert.equal(action.projectId, PROJECT_ID)
   assert.equal(action.canvasId, CANVAS_ID)
-  assert.equal(action.providerConfig.modalities.includes(providerId === 'fixture-image' ? 'image' : 'video'), true)
-  const resolved = await fixture.invoke('actions:resolve', { proposalId: action.proposalId, decision: 'approve' })
-  assert.deepEqual(resolved, { proposalId: action.proposalId, status: 'authorized' })
+  assert.equal(action.payload.providerConfig.modalities.includes(providerId === 'fixture-image' ? 'image' : 'video'), true)
+  assert.equal(actions.some((entry) => ['awaiting_disclosure', 'awaiting_pairing'].includes(entry.status)), false)
   return action
 }
 
@@ -335,12 +334,10 @@ test('Main, SQLite provider ledger, secure settings, and SDK stdio keep image/vi
   const imageArgs = configureArgs('fixture-image', 'fixture-image-env-save', 0, {
     source: 'authorized_env', sourceRefs: { apiKey: imageSource.sourceRef },
   })
-  const imagePending = await fixture.client.callTool({ name: 'configure_provider', arguments: imageArgs })
-  assert.equal(imagePending.structuredContent.status, 'awaiting_disclosure')
-  await approveDisclosure(fixture, 'fixture-image')
   const imageSaved = await fixture.client.callTool({ name: 'configure_provider', arguments: imageArgs })
   assert.equal(imageSaved.structuredContent.status, 'saved')
   assert.equal(imageSaved.structuredContent.revision, 1)
+  await assertRecordedDisclosure(fixture, 'fixture-image')
   assertProviderConfigurationChanged(fixture, 'fixture-image', 1)
   const imageReplay = await fixture.client.callTool({ name: 'configure_provider', arguments: imageArgs })
   assert.equal(imageReplay.structuredContent.status, 'saved')
@@ -363,14 +360,10 @@ test('Main, SQLite provider ledger, secure settings, and SDK stdio keep image/vi
   const videoInlineInput = (secret) => ({ source: 'inline', credentials: { apiKey: secret } })
   const videoArgs = configureArgs('fixture-video', 'fixture-video-inline-save', 0,
     videoInlineInput(fixture.canaries[2]))
-  const videoPending = await fixture.client.callTool({ name: 'configure_provider', arguments: videoArgs })
-  assert.equal(videoPending.structuredContent.status, 'awaiting_disclosure')
-  assert.equal(JSON.stringify(videoPending).includes(fixture.canaries[2]), false)
-  await approveDisclosure(fixture, 'fixture-video')
-  const videoSaved = await fixture.client.callTool({ name: 'configure_provider', arguments:
-    configureArgs('fixture-video', 'fixture-video-inline-save', 0, videoInlineInput(fixture.canaries[2])) })
+  const videoSaved = await fixture.client.callTool({ name: 'configure_provider', arguments: videoArgs })
   assert.equal(videoSaved.structuredContent.status, 'saved')
   assert.equal(videoSaved.structuredContent.revision, 1)
+  await assertRecordedDisclosure(fixture, 'fixture-video')
   assertProviderConfigurationChanged(fixture, 'fixture-video', 1)
   const videoReplay = await fixture.client.callTool({ name: 'configure_provider', arguments:
     configureArgs('fixture-video', 'fixture-video-inline-save', 0, videoInlineInput(fixture.canaries[2])) })
@@ -381,10 +374,8 @@ test('Main, SQLite provider ledger, secure settings, and SDK stdio keep image/vi
   assert.equal(videoConflict.isError, true)
   assert.equal(videoConflict.structuredContent.errorCode, 'IDEMPOTENCY_CONFLICT')
 
-  const disclosureRecords = fixture.events.filter((event) => event.payload?.type === 'pending-action.created'
-    && event.payload.action?.kind === 'provider_disclosure')
-  assert.equal(disclosureRecords.some((event) => event.payload.action.providerConfig.modalities.includes('image')), true)
-  assert.equal(disclosureRecords.some((event) => event.payload.action.providerConfig.modalities.includes('video')), true)
+  assert.equal(fixture.events.some((event) => event.payload?.type === 'pending-action.created'
+    && ['provider_disclosure', 'pairing'].includes(event.payload.action?.kind)), false)
 
   const snapshot = await fixture.providerSettings.snapshot()
   assert.equal(snapshot.models.find((model) => model.id === 'fixture-image-model').enabled, true)
@@ -402,16 +393,11 @@ test('Main, SQLite provider ledger, secure settings, and SDK stdio keep image/vi
   assert(videoInlineRequests.length >= 6)
   assert.equal(videoInlineRequests[0].requestBody.credentialValues, undefined,
     'the first inline preflight must not read/send values before disclosure')
-  const videoDisclosureAuthorized = fixture.events.find((entry) => entry.payload?.type === 'pending-action.updated'
-    && entry.payload.action?.kind === 'provider_disclosure'
-    && entry.payload.action?.providerId === 'fixture-video'
-    && entry.payload.action?.status === 'authorized')
-  assert(videoDisclosureAuthorized, 'the desktop must authorize video disclosure before the credentialed retry')
+  assert.equal(videoInlineRequests[0].responseBody.structuredContent.errorCode, 'CREDENTIAL_SOURCE_UNAVAILABLE',
+    'inline preflight validates scope before requesting the transient secret')
   for (const entry of videoInlineRequests) {
     const values = entry.requestBody.credentialValues
     if (values && Object.keys(values).length) {
-      assert.equal(entry.eventCount > fixture.events.indexOf(videoDisclosureAuthorized), true,
-        'inline values may cross only after the desktop disclosure event')
       assert.equal(Object.values(values).length, 1)
       assert.equal([fixture.canaries[2], fixture.canaries[3]].includes(Object.values(values)[0]), true)
     }
@@ -434,11 +420,9 @@ test('Main, SQLite provider ledger, secure settings, and SDK stdio keep image/vi
 test('desktop_input saves the exact proposal with the canvas unavailable and a live revoke blocks a later save', async (t) => {
   const fixture = await createFixture(t)
   const videoArgs = configureArgs('fixture-video', 'fixture-video-desktop-input', 0, { source: 'desktop_input' })
-  const pending = await fixture.client.callTool({ name: 'configure_provider', arguments: videoArgs })
-  assert.equal(pending.structuredContent.status, 'awaiting_disclosure')
-  await approveDisclosure(fixture, 'fixture-video')
   const desktopInput = await fixture.client.callTool({ name: 'configure_provider', arguments: videoArgs })
   assert.equal(desktopInput.structuredContent.status, 'awaiting_desktop_input')
+  await assertRecordedDisclosure(fixture, 'fixture-video')
   const proposalId = desktopInput.structuredContent.pendingActionId
   const action = fixture.service.getStore().getAction(proposalId)
   assert.equal(action.kind, 'provider_input')
@@ -472,11 +456,9 @@ test('desktop_input saves the exact proposal with the canvas unavailable and a l
 
   const revokeArgs = configureArgs('fixture-image', 'fixture-image-revoked-desktop-input', 0,
     { source: 'desktop_input' })
-  const revokePending = await fixture.client.callTool({ name: 'configure_provider', arguments: revokeArgs })
-  assert.equal(revokePending.structuredContent.status, 'awaiting_disclosure')
-  await approveDisclosure(fixture, 'fixture-image')
   const revokeInput = await fixture.client.callTool({ name: 'configure_provider', arguments: revokeArgs })
   assert.equal(revokeInput.structuredContent.status, 'awaiting_desktop_input')
+  await assertRecordedDisclosure(fixture, 'fixture-image')
   const revokedProposalId = revokeInput.structuredContent.pendingActionId
 
   await fixture.invoke('client:revoke', fixture.created.clientId)
@@ -508,7 +490,7 @@ test('desktop_input saves the exact proposal with the canvas unavailable and a l
   const configureRequests = fixture.httpRecords.filter((record) => record.route === '/rpc'
     && record.requestBody?.method === 'tools/call'
     && record.requestBody?.params?.name === 'configure_provider')
-  assert(configureRequests.length >= 4)
+  assert(configureRequests.length >= 2)
   for (const record of configureRequests) {
     const publicArguments = record.requestBody.params.arguments
     for (const canary of canaries) assert.equal(JSON.stringify(publicArguments).includes(canary), false)

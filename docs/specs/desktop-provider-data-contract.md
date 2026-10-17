@@ -9,7 +9,7 @@
 | 数据/接口 | 实际映射与约束 |
 | --- | --- |
 | 提供方配置 `revision` | providers.json schemaVersion=2 的 providerRevisions；加密凭据记录独立携带相同 revision。provider-settings.transaction.json 保存无秘密的 fromRevision/toRevision、nextSettings 和 credentialStageRef；不完整状态拒绝生成；revision 变化失效旧检测 |
-| 提供方披露 `disclosureVersion` / `consentRecordId` | 可信桌面记录供应商、发送范围与可能费用；MCP 参数不能自报同意；与生成确认独立 |
+| 提供方披露 `disclosureVersion` / `consentRecordId` | 2026-10-17 起 Main 在已配置范围内直接记录供应商、发送类型与可能费用，不再要求 MCP 披露批准卡；不能由工具自行扩大厂商/字段范围；生成另在客户端确认 |
 | MCP `provider.read` / `provider.configure` | 配置权限独立于画布授权，按厂商/字段限定；无秘密读取或清空全部凭据工具 |
 | `configure_provider` | providerId、expectedRevision、operationId、原公开配置字段、credentialInput；响应仅保存/授权状态和公开快照 |
 | `credentialInput` | tagged union：`authorized_env`（逐字段受限 sourceRefs）、`desktop_input`（原配置页输入）、`inline`（本连接明确允许用户提供的新 credentials）；只用一种来源，缺省保留已有凭据，拒绝任意环境变量/文件读取 |

@@ -158,7 +158,8 @@ export function listMcpRuntimeTools(
 	definitions.push({
 		name: "prepare_generation",
 		title: "准备生成提案",
-		description: "准备一项或多项生成请求；只创建桌面确认提案，桌面用户确认前不会创建任务。",
+		description:
+			"准备一项或多项生成请求后，由桥接通过 MCP form elicitation 在当前客户端请求一次生成确认。表单只收集本次确认决定，不收集 API Key 或其他凭据；客户端拒绝、超时、断线或不支持 form elicitation 时不得提交任务。客户端确认后返回已提交、拒绝、过期或状态未知等结果；服务端不能验证客户端内部由谁点击确认。",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -235,31 +236,34 @@ export function listMcpAuxiliaryTools(): McpDesktopToolDefinition[] {
 		auxiliaryTool(
 			"configure_provider",
 			"配置模型提供方",
-			"先调用 list_provider_configuration 获取当前 provider.revision、模型目录、allowedCredentialFields 和 credentialSources。publicConfig 只接受下方列出的非秘密配置；模型 ID 必须取该提供方返回的 models[].id。使用 authorized_env 时，将每个授权凭据字段映射到同一提供方、同一 fieldName 的 credentialSources[].sourceRef，不要传环境变量名或密钥值。若返回 status=awaiting_disclosure，配置尚未保存且提供方操作账本可能尚未创建；等待原桌面披露授权后，使用完全相同的 providerId、expectedRevision、operationId、publicConfig 和 credentialInput 再调用本工具。复用原 operationId；此时 get_provider_operation 返回 not_found 是预期状态。只有 status=saved 才表示配置已保存。秘密只写入加密凭据存储，桌面输入路径不会把密钥发给此客户端。",
+			"先调用 list_provider_configuration 获取当前 provider.revision、模型目录、allowedCredentialFields 和 credentialSources。publicConfig 只接受下方列出的非秘密配置；模型 ID 必须取该提供方返回的 models[].id。用户已在本地客户端范围中选定该提供方和可写凭据字段，因此配置会在授权范围内直接保存，不等待桌面批准卡。使用 authorized_env 时，将每个授权凭据字段映射到同一提供方、同一 fieldName 的 credentialSources[].sourceRef，不要传环境变量名或密钥值。用稳定唯一的 operationId 关联本次写入；若状态不确定，先调用 get_provider_operation 查询，不要盲目重放。只有 status=saved 才表示配置已保存。秘密只写入加密凭据存储，桌面输入路径不会把密钥发给此客户端。",
 			object(
 				{
 					providerId: { type: "string", minLength: 1, maxLength: 80 },
 					expectedRevision: {
 						type: "integer",
 						minimum: 0,
-						description: "使用 list_provider_configuration 返回的 provider.revision；披露授权后重放配置时保持不变。",
+						description:
+							"使用 list_provider_configuration 返回的 provider.revision；revision 冲突时重新读取当前配置后再决定如何更新。",
 					},
 					operationId: {
 						type: "string",
 						minLength: 1,
 						maxLength: MAX_OPERATION_ID_LENGTH,
-						description: "为这次配置写入生成稳定且唯一的操作标识；从 awaiting_disclosure 续接时必须复用同一值。",
+						description: "为这次配置写入生成稳定且唯一的操作标识；查询不确定的写入状态时复用同一值。",
 					},
 					publicConfig: {
 						type: "object",
 						additionalProperties: false,
-						description: "可选的非秘密配置补丁。模型 ID 和每个模型可用参数从 list_provider_configuration 返回的目录读取；省略字段保留当前值或提供方默认值。",
+						description:
+							"可选的非秘密配置补丁。模型 ID 和每个模型可用参数从 list_provider_configuration 返回的目录读取；省略字段保留当前值或提供方默认值。",
 						properties: {
 							providerId: {
 								type: "string",
 								minLength: 1,
 								maxLength: 80,
-								description: "可选；若提供，必须与 configure_provider 的同级 providerId 完全相同，通常省略即可。",
+								description:
+									"可选；若提供，必须与 configure_provider 的同级 providerId 完全相同，通常省略即可。",
 							},
 							baseUrl: {
 								type: "string",
@@ -295,7 +299,8 @@ export function listMcpAuxiliaryTools(): McpDesktopToolDefinition[] {
 									},
 									additionalProperties: false,
 								},
-								description: "按目录中的模型 ID 设置默认参数；参数名和值必须符合该模型返回的 defaults 和 constraints。",
+								description:
+									"按目录中的模型 ID 设置默认参数；参数名和值必须符合该模型返回的 defaults 和 constraints。",
 							},
 							timeoutSeconds: {
 								type: "integer",
@@ -325,7 +330,8 @@ export function listMcpAuxiliaryTools(): McpDesktopToolDefinition[] {
 									sourceRefs: {
 										type: "object",
 										minProperties: 1,
-										description: "按凭据字段名映射 list_provider_configuration 返回的同提供方、同字段 credentialSources[].sourceRef。",
+										description:
+											"按凭据字段名映射 list_provider_configuration 返回的同提供方、同字段 credentialSources[].sourceRef。",
 										additionalProperties: {
 											type: "string",
 											minLength: 1,
@@ -358,7 +364,7 @@ export function listMcpAuxiliaryTools(): McpDesktopToolDefinition[] {
 		auxiliaryTool(
 			"get_provider_operation",
 			"查询提供方配置操作",
-			"查询当前授权客户端已经开始的凭据写入状态，不返回秘密。只有披露获批后再次调用 configure_provider 才会开始该写入操作；此前 configure_provider 返回 awaiting_disclosure 时，操作账本可能尚未创建，not_found 是预期结果，应先等待桌面披露授权并用原参数和 operationId 续接配置。",
+			"查询当前授权客户端在其提供方范围内开始的凭据写入状态，不返回秘密。not_found 表示此操作尚无持久化记录；先刷新提供方配置和 revision，再决定是否以原 operationId 重试。",
 			object(
 				{
 					providerId: { type: "string", minLength: 1, maxLength: 80 },
@@ -482,7 +488,7 @@ export async function executeMcpRuntimeTool(input: McpRuntimeInput): Promise<Mcp
 				});
 			}
 			return {
-				content: [{ type: "text", text: "生成提案已创建，等待桌面确认。" }],
+				content: [{ type: "text", text: "生成提案已创建，等待 MCP 客户端表单确认。" }],
 				structuredContent,
 				proposal: { proposalId: action.actionId, approvalToken: action.approvalToken, action, confirmationItems },
 			};
@@ -614,7 +620,7 @@ function replayMcpOperation(operation: DesktopMcpOperation): McpRuntimeExecution
 	if (operation.status === "started") return null;
 	if (operation.status === "awaiting_confirmation") {
 		return {
-			content: [{ type: "text", text: "生成提案已创建，等待桌面确认。" }],
+			content: [{ type: "text", text: "生成提案已创建，等待 MCP 客户端表单确认。" }],
 			structuredContent: operation.result ?? { operationId: operation.operationId, status: operation.status },
 		};
 	}
@@ -729,7 +735,7 @@ async function replayPreparedGeneration(
 		result,
 	});
 	return {
-		content: [{ type: "text", text: "生成提案已创建，等待桌面确认。" }],
+		content: [{ type: "text", text: "生成提案已创建，等待 MCP 客户端表单确认。" }],
 		structuredContent: result,
 		proposal: { proposalId: proposal.proposalId, approvalToken: action.approvalToken, action, confirmationItems },
 	};

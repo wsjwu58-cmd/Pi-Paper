@@ -6,6 +6,7 @@ const { createMcpControlStore } = require('./mcp-control-store.cjs')
 const { createMcpProviderController } = require('./mcp-provider-controller.cjs')
 
 const INSTANCE_SCHEMA_VERSION = 1
+const BRIDGE_AUTH_SCHEMA_VERSION = 1
 const PROTOCOL_VERSION = 1
 const MAX_BODY_BYTES = 512 * 1024
 const MAX_TASK_OUTPUT_PAGE_CHARACTERS = 5000
@@ -31,28 +32,32 @@ const TOOL_PERMISSION = new Map([
 
 function createMcpMainService(options) {
   const {
-    userDataDirectory, ipcMain, dialog, getMainWindow, assertTrustedSender,
+    userDataDirectory, ipcMain, getMainWindow, assertTrustedSender,
     getActiveContext, getWorker, getProviderSettings, getModelDirectory,
     loadCanvas, getLocalCore, getProviderRevisions,
   } = options
-  if (!userDataDirectory || !ipcMain || !dialog || typeof getActiveContext !== 'function') {
+  if (!userDataDirectory || !ipcMain || typeof getActiveContext !== 'function') {
     throw new Error('MCP_MAIN_CONFIGURATION_INVALID')
   }
   const store = createMcpControlStore(userDataDirectory)
   const instanceId = randomUUID()
   const instanceFile = path.join(userDataDirectory, 'mcp-instance.json')
+  const bridgeAuthFile = path.join(userDataDirectory, 'mcp-bridge-auth.json')
   const sessions = new Map()
-  const pendingBootstrap = new Map()
+  const generationChallenges = new Map()
   const activeCommands = new Map()
   const flushRequests = new Map()
   const requestCounts = new Map()
   const requestRate = new Map()
   const sessionRate = new Map()
   let server = null
+  let startingPromise = null
+  let ipcRegistered = false
   let port = 0
   let canvasReady = null
   let stopped = false
   let lastProjectId = null
+  let bridgeSecret = null
 
   const now = () => Date.now()
   const event = (payload) => {
@@ -78,11 +83,15 @@ function createMcpMainService(options) {
       if (command.connectionId === session.connectionId) command.revoked = true
     }
     for (const source of session.credentialSources) source.envVariableName = ''
+    for (const [proposalId, challenge] of generationChallenges) {
+      if (challenge.connectionId === session.connectionId) generationChallenges.delete(proposalId)
+    }
   }
 
   function clearAllSessions() {
     for (const current of sessions.values()) clearSession(current)
     sessions.clear()
+    generationChallenges.clear()
     activeCommands.clear()
   }
 
@@ -248,6 +257,7 @@ function createMcpMainService(options) {
       '[mcp_servers.vibepaper]',
       `command = ${JSON.stringify(process.execPath)}`,
       `args = ${JSON.stringify(args)}`,
+      'default_tools_approval_mode = "approve"',
       ...(authorizedEnvironmentVariables.length
         ? [`env_vars = ${JSON.stringify(authorizedEnvironmentVariables)}`] : []),
       'startup_timeout_sec = 150',
@@ -418,20 +428,17 @@ function createMcpMainService(options) {
       const prior = store.listActions({ clientId: live.clientId, projectId: live.projectId, canvasId: live.canvasId })
         .find((action) => action.kind === 'provider_disclosure'
           && action.payload?.providerId === input.providerId
-          && action.payload?.disclosureScopeDigest === digest)
-      if (prior?.status === 'authorized' && prior.expiresAt > now()) {
+          && action.payload?.disclosureScopeDigest === digest
+          && action.status === 'authorized' && action.expiresAt > now())
+      if (prior) {
         return { status: 'authorized', disclosureVersion: DISCLOSURE_VERSION, consentRecordId: prior.proposalId }
       }
-      if (prior?.status === 'rejected' || prior?.status === 'invalidated') {
-        return { status: 'denied' }
-      }
-      if (prior?.status === 'awaiting_disclosure') return { status: 'awaiting_disclosure', pendingActionId: prior.proposalId }
       const proposalId = randomUUID()
-      const action = store.createAction({
+      store.createAction({
         proposalId, kind: 'provider_disclosure', clientId: live.clientId, grantId: live.grantId,
-        projectId: live.projectId, canvasId: live.canvasId, status: 'awaiting_disclosure',
+        projectId: live.projectId, canvasId: live.canvasId, status: 'authorized',
         providerOperationId: input.operationId,
-        expiresAt: Math.min(live.expiresAt, now() + ACTION_TTL_MS),
+        expiresAt: Math.min(live.expiresAt, now() + 90 * 24 * 60 * 60 * 1000),
         payload: { providerId: input.providerId, disclosureScopeDigest: digest,
           providerConfig: { ...input.publicConfig, officialHost: disclosure.scope.officialHost,
             modalities: disclosure.scope.modalities,
@@ -440,8 +447,7 @@ function createMcpMainService(options) {
               video: '提示词、视频参数与选定参考素材', audio: '提示词与音频输入',
             }[modality])), estimatedCost: '费用由该提供方按其规则收取。' } },
       })
-      event({ type: 'pending-action.created', action: toPublicAction(action, live) })
-      return { status: 'awaiting_disclosure', pendingActionId: proposalId }
+      return { status: 'authorized', disclosureVersion: DISCLOSURE_VERSION, consentRecordId: proposalId }
     }
     return createMcpProviderController({
       providerSettings: getProviderSettings(),
@@ -494,6 +500,7 @@ function createMcpMainService(options) {
   async function listActions() {
     const context = await currentContext()
     const localActions = store.listActions(context ? { projectId: context.projectId, canvasId: context.canvasId } : {})
+      .filter((action) => action.kind !== 'provider_disclosure')
       .filter((action) => action.expiresAt > now() || ['authorized', 'rejected', 'paired'].includes(action.status))
       .map((action) => toPublicAction(action, action.clientId ? store.getClient(action.clientId) : null))
     const worker = getWorker?.()
@@ -507,7 +514,7 @@ function createMcpMainService(options) {
         projectId: context.projectId, canvasId: context.canvasId,
       })))
       projectActions = results.flatMap((result, index) => result.status === 'fulfilled' && Array.isArray(result.value)
-        ? result.value.map((action) => ({ ...action,
+        ? result.value.filter((action) => action.kind !== 'generation').map((action) => ({ ...action,
           clientId: eligible[index].clientId, grantId: eligible[index].grantId,
           clientName: eligible[index].clientName, displayName: eligible[index].displayName,
         })) : [])
@@ -543,10 +550,22 @@ function createMcpMainService(options) {
     return permission
   }
 
+  function assertCommandSession(command) {
+    const session = command.sessionTokenHash ? sessions.get(command.sessionTokenHash) : null
+    if (command.revoked || command.expiresAt <= now() || !session
+      || session.connectionId !== command.connectionId || session.clientId !== command.clientId
+      || session.grantId !== command.grantId || session.projectId !== command.projectId
+      || session.canvasId !== command.canvasId || session.expiresAt <= now()) {
+      throw fixedError('PERMISSION_DENIED', 403)
+    }
+    return session
+  }
+
   async function assertCommandPermission(command, method, input) {
+    assertCommandSession(command)
     const live = await liveClient(command.clientId, command.grantId)
-    if (command.revoked || command.expiresAt <= now() || command.projectId !== live.projectId
-      || command.canvasId !== live.canvasId) throw fixedError('PERMISSION_DENIED', 403)
+    assertCommandSession(command)
+    if (command.projectId !== live.projectId || command.canvasId !== live.canvasId) throw fixedError('PERMISSION_DENIED', 403)
     const methodPermission = ['agent:core:create-node', 'agent:core:update-node', 'agent:core:delete-nodes',
       'agent:core:connect-edge', 'agent:core:save-canvas', 'agent:core:create-generation-task'].includes(method)
       ? (method === 'agent:core:create-generation-task' ? 'generation.propose' : 'canvas.write')
@@ -562,6 +581,11 @@ function createMcpMainService(options) {
       const snapshots = command.providerRevisions || {}
       const expected = snapshots[input?.providerId]
       const current = await getProviderRevisions?.()
+      assertCommandSession(command)
+      const latest = await liveClient(command.clientId, command.grantId)
+      assertCommandSession(command)
+      if (command.projectId !== latest.projectId || command.canvasId !== latest.canvasId
+        || !latest.permissions.includes('generation.propose')) throw fixedError('PERMISSION_DENIED', 403)
       if (!Number.isSafeInteger(expected) || !Number.isSafeInteger(current?.[input?.providerId])
         || expected !== current[input.providerId]) throw fixedError('PROVIDER_REVISION_CONFLICT', 409)
     }
@@ -574,6 +598,7 @@ function createMcpMainService(options) {
     if (!command) throw fixedError('PERMISSION_DENIED', 403)
     validateCoreMethodForCommand(command, method)
     await assertCommandPermission(command, method, input)
+    assertCommandSession(command)
     if (!input || input.projectId !== command.projectId
       || (input.canvasId !== undefined && input.canvasId !== command.canvasId)) throw fixedError('PROJECT_CHANGED', 403)
     return true
@@ -855,6 +880,62 @@ function createMcpMainService(options) {
     if (hasOperation === hasProposal) throw fixedError('INVALID_INPUT')
   }
 
+  async function issueGenerationChallenge(session, workerProposal, structuredContent, requestControl) {
+    const proposalId = workerProposal?.proposalId
+    if (typeof proposalId !== 'string' || proposalId.length < 1 || proposalId.length > 128
+      || requestControl?.cancelled) throw fixedError(requestControl?.cancelled ? 'REQUEST_CANCELLED' : 'ACTION_NOT_FOUND', 409)
+    const worker = getWorker?.()
+    if (!worker) throw fixedError('AGENT_UNAVAILABLE', 503)
+    const proposal = await worker.request('mcp:proposal:get', {
+      projectId: session.projectId, canvasId: session.canvasId, clientId: session.clientId,
+      grantId: session.grantId, proposalId, includeScope: true,
+    })
+    assertSessionActive(session, requestControl)
+    if (!proposal || proposal.proposalId !== proposalId || proposal.clientId !== session.clientId
+      || proposal.grantId !== session.grantId || proposal.projectId !== session.projectId
+      || proposal.canvasId !== session.canvasId) throw fixedError('ACTION_NOT_FOUND', 404)
+    if (proposal.status !== 'awaiting_confirmation') return null
+    const context = await currentContext()
+    assertSessionActive(session, requestControl)
+    if (!context || context.projectId !== session.projectId || context.canvasId !== session.canvasId
+      || context.version !== proposal.canvasVersion) throw fixedError('CANVAS_VERSION_CONFLICT', 409)
+    const sourceItems = Array.isArray(workerProposal.confirmationItems)
+      ? workerProposal.confirmationItems
+      : structuredContent?.items
+    if (!Array.isArray(sourceItems) || sourceItems.length < 1 || sourceItems.length > 20) throw fixedError('INVALID_INPUT')
+    const items = sourceItems.map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)
+        || typeof item.target !== 'string' || typeof item.model !== 'string'
+        || typeof item.input !== 'string' || typeof item.overwrite !== 'boolean') throw fixedError('INVALID_INPUT')
+      return { target: item.target, model: item.model, input: item.input, overwrite: item.overwrite }
+    })
+    const proposalExpiry = Number.isSafeInteger(proposal.expiresAt) ? proposal.expiresAt
+      : Number.isSafeInteger(structuredContent?.expiresAt) ? structuredContent.expiresAt : null
+    const expiresAt = Math.min(proposalExpiry ?? 0, session.expiresAt, now() + ACTION_TTL_MS)
+    if (!proposalExpiry || expiresAt <= now()) throw fixedError('ACTION_EXPIRED', 409)
+    assertSessionActive(session, requestControl)
+    const prior = generationChallenges.get(proposalId)
+    if (prior?.consumed) throw fixedError('GENERATION_CONFIRMATION_ALREADY_USED', 409)
+    const challengeToken = randomBytes(32).toString('base64url')
+    generationChallenges.set(proposalId, {
+      tokenHash: sha256(challengeToken), connectionId: session.connectionId,
+      clientId: session.clientId, grantId: session.grantId,
+      projectId: session.projectId, canvasId: session.canvasId,
+      proposalId, canvasVersion: proposal.canvasVersion, expiresAt, consumed: false,
+    })
+    for (const [oldProposalId, challenge] of generationChallenges) {
+      if (challenge.expiresAt <= now()) generationChallenges.delete(oldProposalId)
+    }
+    return { proposalId, challengeToken, expiresAt, items }
+  }
+
+  function assertSessionActive(session, requestControl) {
+    if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
+    if (!session || sessions.get(session.tokenHash) !== session || session.expiresAt <= now()) {
+      throw fixedError('UNAUTHORIZED', 401)
+    }
+  }
+
   async function executeTool(session, params, credentialValues, requestControl) {
     if (!params || typeof params !== 'object' || Array.isArray(params)
       || Object.keys(params).some((key) => !['name', 'arguments'].includes(key))
@@ -938,7 +1019,8 @@ function createMcpMainService(options) {
     let commandContext = context
     let writeSettled = false
     const commandId = randomUUID()
-    const command = { commandId, connectionId: session.connectionId, clientId: client.clientId,
+    const command = { commandId, connectionId: session.connectionId, sessionTokenHash: session.tokenHash,
+      clientId: client.clientId,
       grantId: client.grantId, projectId: client.projectId, canvasId: client.canvasId,
       permission, expiresAt: now() + 5 * 60_000, revoked: false }
     activeCommands.set(commandId, command)
@@ -975,25 +1057,13 @@ function createMcpMainService(options) {
       }, 300_000)
       if (workerResult?.proposal) {
         const proposal = workerResult.proposal
-        const payload = (proposal.confirmationItems || []).map((item) => ({
-          target: item.target || item.nodeLabel || '目标节点',
-          model: item.model || item.modelName || '所选模型',
-          input: item.input || item.prompt || '',
-          impact: item.impact || (item.overwrite ? '将覆盖现有输出' : '创建新输出'),
-        }))
-        const display = payload.length === 1 ? payload[0] : undefined
-        event({ type: 'pending-action.created', action: {
-          proposalId: proposal.proposalId, kind: 'generation', clientId: client.clientId,
-          clientName: client.clientName, displayName: client.displayName, status: 'awaiting_confirmation',
-          projectId: client.projectId, canvasId: client.canvasId,
-          expiresAt: new Date(proposal.action?.binding?.expiresAt || now() + ACTION_TTL_MS).toISOString(),
-          ...(display || {}), payload,
-        } })
+        const generationConfirmation = await issueGenerationChallenge(session, proposal, workerResult.structuredContent, requestControl)
         const latest = await loadCanvas?.(client.projectId, client.canvasId)
         event({ type: 'canvas.write-settled', requestId: writeRequestId, projectId: client.projectId,
           canvasId: client.canvasId, status: 'committed', version: latest?.version ?? commandContext.version })
         writeSettled = true
-        return publicToolResult({ structuredContent: workerResult.structuredContent }, client.permissions)
+        return { ...publicToolResult({ structuredContent: workerResult.structuredContent }, client.permissions),
+          ...(generationConfirmation ? { generationConfirmation } : {}) }
       }
         const safe = publicToolResult(workerResult, client.permissions)
       if (write) {
@@ -1045,8 +1115,12 @@ function createMcpMainService(options) {
   async function rpcBody(session, body, requestControl) {
     if (!body || typeof body !== 'object' || Array.isArray(body)
       || Object.keys(body).some((key) => !['method', 'params', 'credentialValues'].includes(key))
-      || !['tools/list', 'tools/call'].includes(body.method)) throw fixedError('INVALID_INPUT')
+      || !['tools/list', 'tools/call', 'generation/confirm'].includes(body.method)) throw fixedError('INVALID_INPUT')
     if (!body.params || typeof body.params !== 'object' || Array.isArray(body.params)) throw fixedError('INVALID_INPUT')
+    if (body.method === 'generation/confirm') {
+      if (body.credentialValues !== undefined) throw fixedError('INVALID_INPUT')
+      return resolveGenerationConfirmation(session, body.params, requestControl)
+    }
     const providerCall = body.method === 'tools/call'
       && ['list_provider_configuration', 'configure_provider', 'test_provider_connection', 'get_provider_operation']
         .includes(body.params?.name)
@@ -1114,67 +1188,188 @@ function createMcpMainService(options) {
     return await executeTool(session, forwarded, credentialValues, requestControl)
   }
 
+  async function resolveGenerationConfirmation(session, params, requestControl) {
+    if (!params || typeof params !== 'object' || Array.isArray(params)
+      || Object.keys(params).some((key) => !['proposalId', 'challengeToken', 'decision'].includes(key))
+      || typeof params.proposalId !== 'string' || params.proposalId.length < 1 || params.proposalId.length > 128
+      || typeof params.challengeToken !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(params.challengeToken)
+      || !['approve', 'reject'].includes(params.decision)) throw fixedError('INVALID_INPUT')
+    if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
+    if (!session.permissions.includes('generation.propose')) throw fixedError('PERMISSION_DENIED', 403)
+    const challenge = generationChallenges.get(params.proposalId)
+    const tokenHash = sha256(params.challengeToken)
+    params.challengeToken = ''
+    const suppliedHash = Buffer.from(tokenHash, 'hex')
+    const expectedHash = Buffer.from(challenge?.tokenHash || '', 'hex')
+    const tokenMatches = expectedHash.length === suppliedHash.length && timingSafeEqual(suppliedHash, expectedHash)
+    suppliedHash.fill(0)
+    expectedHash.fill(0)
+    params.challengeToken = ''
+    if (!challenge || !tokenMatches || challenge.proposalId !== params.proposalId
+      || challenge.connectionId !== session.connectionId || challenge.clientId !== session.clientId
+      || challenge.grantId !== session.grantId || challenge.projectId !== session.projectId
+      || challenge.canvasId !== session.canvasId || challenge.expiresAt <= now()) {
+      if (challenge?.expiresAt <= now()) generationChallenges.delete(params.proposalId)
+      throw fixedError(challenge?.expiresAt <= now() ? 'ACTION_EXPIRED' : 'GENERATION_CONFIRMATION_INVALID', 403)
+    }
+    await liveClient(session.clientId, session.grantId)
+    const context = await currentContext()
+    if (!context || context.projectId !== challenge.projectId || context.canvasId !== challenge.canvasId) {
+      generationChallenges.delete(params.proposalId)
+      throw fixedError('PROJECT_CHANGED', 403)
+    }
+    if (context.version !== challenge.canvasVersion) {
+      generationChallenges.delete(params.proposalId)
+      throw fixedError('CANVAS_VERSION_CONFLICT', 409)
+    }
+    const worker = getWorker?.()
+    if (!worker) throw fixedError('AGENT_UNAVAILABLE', 503)
+    const proposal = await worker.request('mcp:proposal:get', {
+      projectId: session.projectId, canvasId: session.canvasId, clientId: session.clientId,
+      grantId: session.grantId, proposalId: params.proposalId, includeScope: true,
+    })
+    if (!proposal || proposal.proposalId !== challenge.proposalId || proposal.clientId !== challenge.clientId
+      || proposal.grantId !== challenge.grantId || proposal.projectId !== challenge.projectId
+      || proposal.canvasId !== challenge.canvasId || proposal.canvasVersion !== challenge.canvasVersion) {
+      generationChallenges.delete(params.proposalId)
+      throw fixedError('ACTION_NOT_FOUND', 404)
+    }
+    if (!Number.isSafeInteger(proposal.expiresAt) || proposal.expiresAt <= now()) {
+      generationChallenges.delete(params.proposalId)
+      throw fixedError('ACTION_EXPIRED', 409)
+    }
+    if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
+    if (challenge.consumed) {
+      if (proposal.status === 'awaiting_confirmation') throw fixedError('GENERATION_CONFIRMATION_ALREADY_USED', 409)
+      return generationConfirmationResult({
+        proposalId: proposal.proposalId, status: proposal.status,
+        ...(proposal.taskIds?.length ? { tasks: proposal.taskIds.map((taskId) => ({ taskId, status: 'queued' })) } : {}),
+        ...(proposal.errorCode ? { errorCode: proposal.errorCode } : {}),
+      })
+    }
+    challenge.consumed = true
+    if (proposal.status !== 'awaiting_confirmation') {
+      return generationConfirmationResult({
+        proposalId: proposal.proposalId, status: proposal.status,
+        ...(proposal.taskIds?.length ? { tasks: proposal.taskIds.map((taskId) => ({ taskId, status: 'queued' })) } : {}),
+        ...(proposal.errorCode ? { errorCode: proposal.errorCode } : {}),
+      })
+    }
+    const resolutionState = { dispatched: false }
+    try {
+      const resolved = await performActionResolution({ proposalId: params.proposalId, decision: params.decision }, {
+        session, connectionId: session.connectionId, requestControl,
+        expectedVersion: challenge.canvasVersion, resolutionState,
+      })
+      return generationConfirmationResult(resolved)
+    } catch (error) {
+      // A canceled save barrier never reached Worker approval. Drop the consumed
+      // challenge so a retry can mint a new one; the old token remains invalid.
+      if (!resolutionState.dispatched && generationChallenges.get(params.proposalId) === challenge) {
+        generationChallenges.delete(params.proposalId)
+      }
+      throw error
+    }
+  }
+
+  function generationConfirmationResult(result) {
+    const structuredContent = safeOutput({
+      proposalId: result.proposalId,
+      status: result.status,
+      ...(Array.isArray(result.tasks) ? { tasks: result.tasks } : {}),
+      ...(typeof result.errorCode === 'string' ? { errorCode: result.errorCode } : {}),
+    })
+    return {
+      content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
+      structuredContent,
+    }
+  }
+
+  async function inspectPrivatePath(target, kind) {
+    let info
+    try { info = await fs.lstat(target) } catch (error) {
+      if (error?.code === 'ENOENT') return null
+      throw error
+    }
+    if (info.isSymbolicLink() || (kind === 'directory' ? !info.isDirectory() : !info.isFile())) {
+      throw fixedError('MCP_BRIDGE_AUTH_PATH_UNSAFE', 500)
+    }
+    if (process.platform !== 'win32') {
+      const uid = typeof process.getuid === 'function' ? process.getuid() : null
+      const permissionBits = info.mode & 0o7777
+      const unsafePermissions = kind === 'directory'
+        ? (permissionBits & 0o022) !== 0
+        : permissionBits !== 0o600 || info.nlink !== 1
+      if ((uid !== null && info.uid !== uid) || unsafePermissions) throw fixedError('MCP_BRIDGE_AUTH_PATH_UNSAFE', 500)
+    }
+    return info
+  }
+
+  async function writeBridgeAuth() {
+    await inspectPrivatePath(userDataDirectory, 'directory')
+    await inspectPrivatePath(bridgeAuthFile, 'file')
+    const secret = randomBytes(32).toString('base64url')
+    const record = { schemaVersion: BRIDGE_AUTH_SCHEMA_VERSION, instanceId, secret }
+    const temp = path.join(userDataDirectory, `.mcp-bridge-auth-${instanceId}.tmp`)
+    let handle
+    let ownsTemp = false
+    try {
+      handle = await fs.open(temp, 'wx', 0o600)
+      ownsTemp = true
+      await handle.writeFile(`${JSON.stringify(record)}\n`, 'utf8')
+      if (process.platform !== 'win32') await handle.chmod(0o600)
+      await handle.sync()
+      await handle.close()
+      handle = null
+      await inspectPrivatePath(temp, 'file')
+      await fs.rename(temp, bridgeAuthFile)
+      await inspectPrivatePath(bridgeAuthFile, 'file')
+      bridgeSecret = secret
+    } catch (error) {
+      await handle?.close().catch(() => {})
+      if (ownsTemp) await fs.rm(temp, { force: true }).catch(() => {})
+      throw error
+    }
+  }
+
+  async function removeBridgeAuthIfOwned() {
+    try {
+      const info = await inspectPrivatePath(bridgeAuthFile, 'file')
+      if (!info) return
+      const current = JSON.parse(await fs.readFile(bridgeAuthFile, 'utf8'))
+      if (current.instanceId === instanceId && current.schemaVersion === BRIDGE_AUTH_SCHEMA_VERSION) {
+        await fs.rm(bridgeAuthFile)
+      }
+    } catch { /* an unsafe, stale, or unreadable credential is not ours to remove */ }
+    finally { bridgeSecret = null }
+  }
+
   async function beginBootstrap(body, requestControl) {
     if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
     if (!body || typeof body !== 'object' || Array.isArray(body)
-      || Object.keys(body).some((key) => !['clientId', 'grantId', 'clientInfo', 'shortCode'].includes(key))
+      || Object.keys(body).some((key) => !['clientId', 'grantId', 'clientInfo', 'bridgeSecret'].includes(key))
       || typeof body.clientId !== 'string' || typeof body.grantId !== 'string'
       || !body.clientInfo || typeof body.clientInfo !== 'object' || Array.isArray(body.clientInfo)
       || Object.keys(body.clientInfo).some((key) => !['name', 'version'].includes(key))
       || typeof body.clientInfo.name !== 'string' || body.clientInfo.name.length < 1 || body.clientInfo.name.length > 80
       || typeof body.clientInfo.version !== 'string' || body.clientInfo.version.length > 80
-      || typeof body.shortCode !== 'string' || !/^\d{6}$/u.test(body.shortCode)) throw fixedError('INVALID_INPUT')
-    if (pendingBootstrap.size >= 5) throw fixedError('PAIRING_BUSY', 429)
+      || typeof body.bridgeSecret !== 'string' || body.bridgeSecret.length < 40 || body.bridgeSecret.length > 64) {
+      throw fixedError('INVALID_INPUT')
+    }
+    if (!bridgeSecret) throw fixedError('UNAUTHORIZED', 401)
+    const supplied = Buffer.from(body.bridgeSecret, 'utf8')
+    const expected = Buffer.from(bridgeSecret, 'utf8')
+    body.bridgeSecret = ''
+    const credentialMatches = supplied.length === expected.length && timingSafeEqual(supplied, expected)
+    supplied.fill(0)
+    expected.fill(0)
+    if (!credentialMatches) throw fixedError('UNAUTHORIZED', 401)
     const client = getClientFromGrant(body.clientId, body.grantId)
     const context = await currentContext()
     assertClientScope(client, context)
     if (!store.isEnabled()) throw fixedError('MCP_DISABLED', 503)
-    const challengeId = randomUUID()
-    const proposalId = randomUUID()
-    const expiresAt = now() + 120_000
-    const action = store.createAction({ proposalId, kind: 'pairing', clientId: client.clientId,
-      grantId: client.grantId, projectId: client.projectId, canvasId: client.canvasId,
-      status: 'awaiting_pairing', expiresAt,
-      payload: { shortCode: body.shortCode, clientInfo: { name: body.clientInfo.name, version: body.clientInfo.version } } })
-    const pending = { challengeId, proposalId, clientId: client.clientId, grantId: client.grantId,
-      projectId: client.projectId, canvasId: client.canvasId, shortCode: body.shortCode,
-      clientInfo: { name: body.clientInfo.name, version: body.clientInfo.version }, expiresAt,
-      requestControl, cancelled: false }
-    pendingBootstrap.set(challengeId, pending)
-    if (requestControl) requestControl.bootstrapId = challengeId
-    pending.timer = setTimeout(() => {
-      if (pendingBootstrap.get(challengeId) !== pending) return
-      pendingBootstrap.delete(challengeId)
-      pending.cancelled = true
-      if (requestControl?.bootstrapId === challengeId) requestControl.bootstrapId = null
-      store.updateAction(proposalId, { status: 'expired' })
-      event({ type: 'pending-action.updated', action: toPublicAction(store.getAction(proposalId), client) })
-    }, 120_000)
-    pending.timer.unref?.()
-    event({ type: 'pending-action.created', action: toPublicAction(action, client) })
-    const result = await dialog.showMessageBox(getMainWindow?.() || undefined, {
-      type: 'question', title: '批准本地 MCP 连接',
-      message: `${client.displayName} 正在请求连接此画布。`,
-      detail: `请核对外部终端显示的 6 位短码：${body.shortCode}\n授权范围：${client.permissions.join('、')}\n项目与画布仅限当前桌面授权。`,
-      buttons: ['批准本次连接', '拒绝'], defaultId: 1, cancelId: 1, noLink: true,
-    })
-    const stillPending = pendingBootstrap.get(challengeId)
-    clearTimeout(pending.timer)
-    if (!stillPending || pending.cancelled || requestControl?.cancelled) {
-      throw fixedError('REQUEST_CANCELLED', 499)
-    }
-    if (stillPending.expiresAt <= now() || result.response !== 0) {
-      pendingBootstrap.delete(challengeId)
-      pending.cancelled = true
-      if (requestControl?.bootstrapId === challengeId) requestControl.bootstrapId = null
-      store.updateAction(proposalId, { status: result.response === 0 ? 'expired' : 'rejected' })
-      event({ type: 'pending-action.updated', action: toPublicAction(store.getAction(proposalId), client) })
-      throw fixedError('CONNECTION_NOT_APPROVED', 403)
-    }
+    if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
     await liveClient(client.clientId, client.grantId)
-    if (requestControl?.cancelled || pendingBootstrap.get(challengeId) !== pending || pending.cancelled) {
-      throw fixedError('REQUEST_CANCELLED', 499)
-    }
     const token = randomBytes(32).toString('base64url')
     const tokenHash = sha256(token)
     const connectionId = randomUUID()
@@ -1188,10 +1383,6 @@ function createMcpMainService(options) {
       expiresAt: Math.min(client.expiresAt, now() + SESSION_TTL_MS), credentialSources }
     sessions.set(tokenHash, session)
     if (requestControl) requestControl.session = session
-    pendingBootstrap.delete(challengeId)
-    if (requestControl?.bootstrapId === challengeId) requestControl.bootstrapId = null
-    store.updateAction(proposalId, { status: 'paired' })
-    event({ type: 'pending-action.updated', action: toPublicAction(store.getAction(proposalId), client) })
     void stateChanged()
     return { instanceId, connectionId, accessToken: token, expiresAt: session.expiresAt, credentialSources }
   }
@@ -1220,20 +1411,6 @@ function createMcpMainService(options) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': bytes.length,
       'cache-control': 'no-store', 'x-content-type-options': 'nosniff', connection: 'close' })
     res.end(bytes)
-  }
-
-  function invalidatePendingBootstrap(pending) {
-    if (!pending || pendingBootstrap.get(pending.challengeId) !== pending) return
-    pendingBootstrap.delete(pending.challengeId)
-    pending.cancelled = true
-    clearTimeout(pending.timer)
-    if (pending.requestControl?.bootstrapId === pending.challengeId) pending.requestControl.bootstrapId = null
-    const action = store.getAction(pending.proposalId)
-    if (action?.status === 'awaiting_pairing') {
-      const updated = store.updateAction(pending.proposalId, { status: 'invalidated' })
-      const client = store.getClient(pending.clientId)
-      event({ type: 'pending-action.updated', action: toPublicAction(updated, client) })
-    }
   }
 
   function sessionFromRequest(req) {
@@ -1289,8 +1466,6 @@ function createMcpMainService(options) {
     const cancelRequest = () => {
       if (requestControl.cancelled) return
       requestControl.cancelled = true
-      const pending = requestControl.bootstrapId && pendingBootstrap.get(requestControl.bootstrapId)
-      if (pending) invalidatePendingBootstrap(pending)
       if (requestControl.session) {
         clearSession(requestControl.session)
         requestControl.session = null
@@ -1365,7 +1540,8 @@ function createMcpMainService(options) {
     if (!writeMethods.has(method) && !readMethods.has(method) && !generationMethods.has(method)) throw fixedError('MCP_CORE_METHOD_FORBIDDEN', 403)
   }
 
-  async function performActionResolution(input) {
+  async function performActionResolution(input, options = {}) {
+    const { session = null, requestControl = null, expectedVersion, resolutionState = null } = options
     if (!input || typeof input !== 'object' || Array.isArray(input)
       || Object.keys(input).some((key) => !['proposalId', 'decision'].includes(key))
       || typeof input.proposalId !== 'string' || input.proposalId.length > 128
@@ -1387,9 +1563,16 @@ function createMcpMainService(options) {
     }
     const context = await currentContext()
     if (!context) throw fixedError('PROJECT_CHANGED', 403)
+    if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
+    if (session && (!sessions.has(session.tokenHash) || sessions.get(session.tokenHash) !== session
+      || session.connectionId !== options.connectionId || !session.permissions.includes('generation.propose'))) {
+      throw fixedError('PERMISSION_DENIED', 403)
+    }
+    if (session && expectedVersion !== context.version) throw fixedError('CANVAS_VERSION_CONFLICT', 409)
     const worker = getWorker?.()
     if (!worker || !agentProjectMatches(worker, context.projectId)) throw fixedError('AGENT_UNAVAILABLE', 503)
-    const eligible = store.listClients().filter((candidate) => candidate.projectId === context.projectId
+    const eligible = store.listClients().filter((candidate) => (!session || candidate.clientId === session.clientId)
+      && candidate.projectId === context.projectId
       && candidate.canvasId === context.canvasId && candidate.revokedAt === null && candidate.expiresAt > now()
       && candidate.permissions.includes('generation.propose'))
     let candidates = null
@@ -1402,31 +1585,47 @@ function createMcpMainService(options) {
     }
     if (!candidates || !client || candidates.projectId !== context.projectId || candidates.canvasId !== context.canvasId
       || candidates.clientId !== client.clientId || candidates.grantId !== client.grantId) throw fixedError('ACTION_NOT_FOUND', 404)
+    if (!session) throw fixedError('MCP_CLIENT_CONFIRMATION_REQUIRED', 403)
+    if (client.clientId !== session.clientId || client.grantId !== session.grantId
+      || client.projectId !== session.projectId || client.canvasId !== session.canvasId) throw fixedError('PERMISSION_DENIED', 403)
     assertClientScope(client, context)
-    if (candidates.status !== 'awaiting_confirmation') throw fixedError('ACTION_NOT_FOUND', 404)
+    if (candidates.status !== 'awaiting_confirmation') {
+      if (['submitted', 'submission_unknown', 'rejected', 'expired', 'invalidated', 'failed'].includes(candidates.status)) {
+        return { proposalId: input.proposalId, status: candidates.status,
+          ...(candidates.taskIds?.length ? { tasks: candidates.taskIds.map((taskId) => ({ taskId, status: 'queued' })) } : {}),
+          ...(candidates.errorCode ? { errorCode: candidates.errorCode } : {}) }
+      }
+      throw fixedError('ACTION_NOT_FOUND', 404)
+    }
     if (!Number.isFinite(candidates.expiresAt) || candidates.expiresAt <= now()) throw fixedError('ACTION_EXPIRED', 409)
     let commandContext = context
     const writeRequestId = input.decision === 'approve' ? randomUUID() : null
     let settled = false
     const commandId = randomUUID()
-    const command = { commandId, connectionId: 'desktop-confirmation', clientId: client.clientId,
+    const command = { commandId, connectionId: session.connectionId, sessionTokenHash: session.tokenHash,
+      clientId: client.clientId,
       grantId: client.grantId, projectId: client.projectId, canvasId: client.canvasId,
       permission: 'generation.propose', providerRevisions: candidates.providerRevisions || {},
       expiresAt: now() + 5 * 60_000, revoked: false }
     activeCommands.set(commandId, command)
+    if (requestControl) requestControl.commandId = commandId
     try {
+      if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
       if (input.decision === 'approve') {
         if (!await isCanvasReady(context)) throw fixedError('CANVAS_NOT_READY', 503)
         commandContext = await flushRendererCanvas(context, writeRequestId)
+        if (expectedVersion !== undefined && commandContext.version !== expectedVersion) throw fixedError('CANVAS_VERSION_CONFLICT', 409)
       }
       const providerRevisions = await getProviderRevisions?.() || {}
       await assertCommandPermission(command, 'agent:core:load-canvas')
+      if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
+      if (resolutionState) resolutionState.dispatched = true
       const resolved = await worker.request('mcp:action:resolve', {
         projectId: client.projectId, canvasId: client.canvasId, clientId: client.clientId,
         grantId: client.grantId, proposalId: input.proposalId, decision: input.decision,
         currentCanvasVersion: commandContext.version, providerRevisions, mcpCommandId: commandId,
       }, 5 * 60_000)
-      event({ type: 'pending-action.updated', action: { ...candidates, status: resolved.status } })
+      if (!session) event({ type: 'pending-action.updated', action: { ...candidates, status: resolved.status } })
       if (resolved.status === 'submitted') {
         for (const task of resolved.tasks || []) event({ type: 'task.changed', projectId: client.projectId,
           canvasId: client.canvasId, taskId: task.taskId, status: task.status || 'queued' })
@@ -1439,7 +1638,9 @@ function createMcpMainService(options) {
           canvasId: client.canvasId, status: 'committed', version: latest?.version ?? commandContext.version })
         settled = true
       }
-      return { proposalId: input.proposalId, status: resolved.status }
+      return { proposalId: input.proposalId, status: resolved.status,
+        ...(Array.isArray(resolved.tasks) ? { tasks: resolved.tasks } : {}),
+        ...(typeof resolved.errorCode === 'string' ? { errorCode: resolved.errorCode } : {}) }
     } catch (error) {
       if (writeRequestId && !settled) {
         event({ type: 'canvas.write-settled', requestId: writeRequestId, projectId: client.projectId,
@@ -1447,7 +1648,10 @@ function createMcpMainService(options) {
         settled = true
       }
       throw error
-    } finally { activeCommands.delete(commandId) }
+    } finally {
+      activeCommands.delete(commandId)
+      if (requestControl?.commandId === commandId) requestControl.commandId = null
+    }
   }
 
   function registerIpc() {
@@ -1527,33 +1731,62 @@ function createMcpMainService(options) {
 
   async function start() {
     if (server) return { instanceId, host: '127.0.0.1', port }
-    registerIpc()
-    server = http.createServer((req, res) => { void handleRequest(req, res) })
-    server.requestTimeout = 125_000
-    server.headersTimeout = 5_000
-    server.maxHeadersCount = 32
-    await new Promise((resolve, reject) => {
-      server.once('error', reject)
-      server.listen(0, '127.0.0.1', resolve)
-    })
-    port = server.address().port
-    const instance = { schemaVersion: INSTANCE_SCHEMA_VERSION, instanceId,
-      host: '127.0.0.1', port, protocolVersion: PROTOCOL_VERSION, pid: process.pid }
-    const temp = `${instanceFile}.${randomUUID()}.tmp`
-    await fs.writeFile(temp, `${JSON.stringify(instance)}\n`, { flag: 'wx', mode: 0o600 })
-    await fs.rename(temp, instanceFile)
-    await stateChanged()
-    return instance
+    if (stopped) throw fixedError('MCP_MAIN_STOPPED', 503)
+    if (startingPromise) return startingPromise
+    const startup = (async () => {
+      let instanceTemp = null
+      try {
+        await writeBridgeAuth()
+        if (!ipcRegistered) {
+          registerIpc()
+          ipcRegistered = true
+        }
+        server = http.createServer((req, res) => { void handleRequest(req, res) })
+        server.requestTimeout = 125_000
+        server.headersTimeout = 5_000
+        server.maxHeadersCount = 32
+        await new Promise((resolve, reject) => {
+          server.once('error', reject)
+          server.listen(0, '127.0.0.1', resolve)
+        })
+        port = server.address().port
+        const instance = { schemaVersion: INSTANCE_SCHEMA_VERSION, instanceId,
+          host: '127.0.0.1', port, protocolVersion: PROTOCOL_VERSION, pid: process.pid }
+        instanceTemp = `${instanceFile}.${randomUUID()}.tmp`
+        await fs.writeFile(instanceTemp, `${JSON.stringify(instance)}\n`, { flag: 'wx', mode: 0o600 })
+        await fs.rename(instanceTemp, instanceFile)
+        instanceTemp = null
+        await stateChanged()
+        return instance
+      } catch (error) {
+        if (instanceTemp) await fs.rm(instanceTemp, { force: true }).catch(() => {})
+        if (server) {
+          server.closeAllConnections?.()
+          await new Promise((resolve) => server.close(() => resolve())).catch(() => {})
+          server = null
+        }
+        await removeInstanceIfOwned()
+        await removeBridgeAuthIfOwned()
+        throw error
+      }
+    })()
+    startingPromise = startup
+    try { return await startup }
+    finally { if (startingPromise === startup) startingPromise = null }
+  }
+
+  async function removeInstanceIfOwned() {
+    try {
+      const current = JSON.parse(await fs.readFile(instanceFile, 'utf8'))
+      if (current.instanceId === instanceId) await fs.rm(instanceFile, { force: true })
+    } catch { /* stale instance file is not ours or absent */ }
   }
 
   async function stop() {
     if (stopped) return
     stopped = true
+    if (startingPromise) await startingPromise.catch(() => {})
     clearAllSessions()
-    for (const pending of [...pendingBootstrap.values()]) {
-      if (pending.requestControl) pending.requestControl.cancelled = true
-      invalidatePendingBootstrap(pending)
-    }
     for (const pending of flushRequests.values()) {
       clearTimeout(pending.timer)
       pending.reject(fixedError('CANVAS_NOT_READY', 503))
@@ -1564,10 +1797,8 @@ function createMcpMainService(options) {
       await new Promise((resolve) => server.close(() => resolve())).catch(() => {})
       server = null
     }
-    try {
-      const current = JSON.parse(await fs.readFile(instanceFile, 'utf8'))
-      if (current.instanceId === instanceId) await fs.rm(instanceFile, { force: true })
-    } catch { /* stale instance file is not ours or absent */ }
+    await removeInstanceIfOwned()
+    await removeBridgeAuthIfOwned()
     store.close()
   }
 
@@ -1662,7 +1893,11 @@ function publicErrorMessage(code) {
   const messages = {
     MCP_DISABLED: 'Desktop MCP is disabled.', CANVAS_NOT_READY: 'The authorized canvas is not ready.',
     PROJECT_CHANGED: 'The authorized project or canvas changed.', PERMISSION_DENIED: 'The requested capability is not authorized.',
-    UNAUTHORIZED: 'Connection approval is required.', CONNECTION_NOT_APPROVED: 'The desktop did not approve this connection.',
+    UNAUTHORIZED: 'The local bridge credential or connection token is invalid.',
+    MCP_BRIDGE_AUTH_PATH_UNSAFE: 'Local bridge credentials cannot be stored with safe permissions.',
+    MCP_CLIENT_CONFIRMATION_REQUIRED: 'Generation confirmation must be completed in the connected client.',
+    GENERATION_CONFIRMATION_INVALID: 'The generation confirmation is invalid or belongs to another connection.',
+    GENERATION_CONFIRMATION_ALREADY_USED: 'This generation confirmation has already been used.',
     PROVIDER_REVISION_CONFLICT: 'Provider settings changed; refresh and retry.', CANVAS_VERSION_CONFLICT: 'Canvas changed; refresh and retry.',
     CANVAS_FLUSH_FAILED: 'Canvas changes could not be saved.', CANVAS_FLUSH_TIMEOUT: 'Canvas save did not finish in time.',
     MCP_TOOL_UNAVAILABLE: 'This tool is unavailable.', INVALID_INPUT: 'Request parameters are invalid.',

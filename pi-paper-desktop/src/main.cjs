@@ -591,7 +591,7 @@ async function createAgentWorker() {
             modelId: input.modelId,
             idempotencyKey: input.idempotencyKey,
             parameters: { ...input.parameters, prompt: input.prompt },
-          }, 30_000) : await createGenerationTaskInStore(input)
+          }, 30_000) : await createGenerationTaskInStore(input, { assertAuthorized: reauthorizeMcp })
           void scheduleTaskPump(input.projectId)
           return task
         } finally {
@@ -1502,7 +1502,7 @@ async function assertActiveAssetProject(projectId) {
   if (stopping || projectTransitionCount > 0) throw new Error('项目正在切换，请稍后重试。')
 }
 
-async function createGenerationTaskInStore(input) {
+async function createGenerationTaskInStore(input, { assertAuthorized } = {}) {
   const modalities = ['text', 'image', 'audio', 'video']
   if (!input || typeof input !== 'object' || Array.isArray(input)
     || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
@@ -1606,6 +1606,11 @@ async function createGenerationTaskInStore(input) {
   if (input.modality !== 'audio' || input.prompt.trim() || !String(parameters.prompt ?? '').trim()) {
     parameters.prompt = input.prompt
   }
+  // Provider resolution and parameter normalization can await while the MCP
+  // client disconnects or its command is revoked. Recheck immediately before
+  // dispatch; once task:create has started, callers must reconcile a lost result
+  // through the existing idempotency ledger instead of blindly replaying it.
+  await assertAuthorized?.()
   return localCore.request('task:create', {
     projectId: input.projectId,
     canvasId: input.canvasId,

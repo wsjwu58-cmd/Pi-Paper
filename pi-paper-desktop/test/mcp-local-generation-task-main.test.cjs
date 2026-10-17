@@ -4,7 +4,7 @@ const path = require('node:path')
 const test = require('node:test')
 const vm = require('node:vm')
 
-async function createTaskFixture() {
+async function createTaskFixture(options = {}) {
   const source = await fs.readFile(path.join(__dirname, '../src/main.cjs'), 'utf8')
   const start = source.indexOf('async function createGenerationTaskInStore(')
   const end = source.indexOf('\nfunction dramaRenderBatchScope(', start)
@@ -17,8 +17,8 @@ async function createTaskFixture() {
     SAPI_MODEL_ID: 'local-sapi-tts',
     LOCAL_MEDIA_PROVIDER_ID: 'local-media-postprocess',
     LOCAL_MEDIA_MODEL_ID: 'local-media-postprocess',
-    providerSettings: { snapshot: async () => ({ models: [] }) },
-    localCore: { request: async (method, input) => {
+    providerSettings: options.providerSettings ?? { snapshot: async () => ({ models: [] }) },
+    localCore: options.localCore ?? { request: async (method, input) => {
       requests.push({ method, input })
       return { taskId: `task-${requests.length}`, ...input }
     } },
@@ -30,6 +30,23 @@ async function createTaskFixture() {
   })
   vm.runInContext(source.slice(start, end), context)
   return { create: context.createGenerationTaskInStore, requests }
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function resolvedCloudProvider(resolve) {
+  return {
+    snapshot: async () => ({ models: [{ id: 'fixture-image', providerId: 'fixture-provider' }] }),
+    resolve,
+  }
 }
 
 function taskInput(overrides = {}) {
@@ -64,4 +81,80 @@ test('Main accepts exact local text, SAPI, and postprocess bindings while keepin
 
   await assert.rejects(fixture.create(taskInput({ providerType: 'cloud' })), { code: 'MODEL_UNAVAILABLE' })
   assert.equal(fixture.requests.length, 3)
+})
+
+test('MCP authorization is rechecked after provider resolution before task:create', async () => {
+  const resolving = deferred()
+  const releaseProvider = deferred()
+  const fixture = await createTaskFixture({
+    providerSettings: resolvedCloudProvider(async () => {
+      resolving.resolve()
+      await releaseProvider.promise
+      return { providerId: 'fixture-provider', modelId: 'fixture-image', model: { defaults: {}, constraints: {} } }
+    }),
+  })
+  let revoked = false
+  let authorizationChecks = 0
+  const pending = fixture.create(taskInput({
+    providerType: 'cloud', providerId: 'fixture-provider', modelId: 'fixture-image', modality: 'image',
+  }), { assertAuthorized: async () => {
+    authorizationChecks += 1
+    if (revoked) throw Object.assign(new Error('MCP command was revoked'), { code: 'PERMISSION_DENIED' })
+  } })
+
+  await resolving.promise
+  revoked = true
+  releaseProvider.resolve()
+
+  await assert.rejects(pending, { code: 'PERMISSION_DENIED' })
+  assert.equal(authorizationChecks, 1)
+  assert.equal(fixture.requests.length, 0)
+})
+
+test('authorized MCP generation dispatches one task without forwarding the authorization callback', async () => {
+  const fixture = await createTaskFixture({
+    providerSettings: resolvedCloudProvider(async () => ({
+      providerId: 'fixture-provider', modelId: 'fixture-image', model: { defaults: {}, constraints: {} },
+    })),
+  })
+  let authorizationChecks = 0
+
+  const task = await fixture.create(taskInput({
+    providerType: 'cloud', providerId: 'fixture-provider', modelId: 'fixture-image', modality: 'image',
+  }), { assertAuthorized: async () => { authorizationChecks += 1 } })
+
+  assert.equal(authorizationChecks, 1)
+  assert.equal(fixture.requests.length, 1)
+  assert.equal(fixture.requests[0].method, 'task:create')
+  assert.equal(task.taskId, 'task-1')
+  assert.equal(Object.hasOwn(fixture.requests[0].input, 'assertAuthorized'), false)
+  assert.equal(Object.hasOwn(fixture.requests[0].input, 'mcpCommandId'), false)
+})
+
+test('a disconnected caller does not cause task:create to be replayed after dispatch begins', async () => {
+  const dispatchStarted = deferred()
+  const loseResponse = deferred()
+  const requests = []
+  const fixture = await createTaskFixture({
+    providerSettings: resolvedCloudProvider(async () => ({
+      providerId: 'fixture-provider', modelId: 'fixture-image', model: { defaults: {}, constraints: {} },
+    })),
+    localCore: { request: async (method, input) => {
+      requests.push({ method, input })
+      dispatchStarted.resolve()
+      return loseResponse.promise
+    } },
+  })
+  let authorizationChecks = 0
+  const pending = fixture.create(taskInput({
+    providerType: 'cloud', providerId: 'fixture-provider', modelId: 'fixture-image', modality: 'image',
+  }), { assertAuthorized: async () => { authorizationChecks += 1 } })
+
+  await dispatchStarted.promise
+  loseResponse.reject(Object.assign(new Error('connection closed'), { code: 'TRANSPORT_CLOSED' }))
+
+  await assert.rejects(pending, { code: 'TRANSPORT_CLOSED' })
+  assert.equal(authorizationChecks, 1)
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].method, 'task:create')
 })

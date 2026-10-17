@@ -2,6 +2,8 @@
 
 ## 2026-10-10 外部 MCP 调用（目标，待实现）
 
+2026-10-17 用户变更外部 MCP 交互：启用并设置范围后，连接、凭据配置、安全模型测试和普通画布操作不需人工批准；仅生成通过 MCP form elicitation 在 Codex 等客户端确认，桌面不重复确认。不支持 form、拒绝、取消、超时均不提交。Main 仍验证会话绑定的一次性提案挑战和原业务确认。内置 Agent 的原桌面确认流程不变。实施与最新验收见 MCP 功能规格，旧桌面批准方式的通过记录不代表新流程通过。
+
 用户已确认本机 Codex、Claude Code 等外部 Agent 可在桌面应用运行、原画布创作页打开时操作授权画布，并协助填写图片/视频模型 API Key、启用模型和使用。详细目标见 [MCP 功能规格](desktop-mcp-functional-spec.md)，实施见 [MCP 计划](../plans/2026-10-10-desktop-mcp-implementation-plan.md)。本节不是实现/验收记录。
 
 MCP stdio 桥接复用原 TypeScript 工具 schema、CanvasCommandService、ApprovalService 和桌面本地能力；普通工具调用不新增内置模型回合、会话或虚构小P消息。Main 提炼共享可信入口并在服务端验证外部授权/确认，不能直接公开信任内置 Worker 已确认的私有 RPC。画布改动经原 CanvasPage 保存屏障、CAS、幂等及独立事件同步，不依赖当前内置会话的订阅，也不丢失用户未保存编辑。

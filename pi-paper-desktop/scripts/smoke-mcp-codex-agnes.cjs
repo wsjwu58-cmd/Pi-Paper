@@ -1,7 +1,8 @@
 // Codex-only real-account acceptance harness. This file is QA tooling only:
 // it launches the original Electron Main/Renderer and the installed Codex CLI,
-// but never starts a provider request by itself. A desktop user must approve
-// provider disclosure and each generation confirmation in the original UI.
+// but never starts a provider generation by itself. Configuration has no manual
+// gate; each generation requires client form elicitation. --configuration-only
+// verifies the non-interactive CLI path without submitting media tasks.
 // Evidence is restricted to state, counts, safe error codes, model labels,
 // media MIME/size/hash and render visibility. No prompt, transcript, IDs,
 // credentials, MCP bootstrap values, or screenshots are persisted.
@@ -53,6 +54,7 @@ const safeErrorCodes = new Set([
   'GENERATION_ACTION_AMBIGUOUS', 'EXISTING_MEDIA_TASK_TIMEOUT',
   'GENERATION_SUBMISSION_UNCERTAIN',
   'QA_MEDIA_SCOPE_EXCEEDED',
+  'CLIENT_CONFIRMATION_UNSUPPORTED', 'GENERATION_CONFIRMATION_UNRESOLVED',
   'PROVIDER_CONFIGURE_FORBIDDEN', 'PROVIDER_READ_FORBIDDEN', 'PROVIDER_DISCLOSURE_DENIED',
   'PROVIDER_DISCLOSURE_UNAVAILABLE', 'PROVIDER_FIELD_FORBIDDEN', 'PROVIDER_INPUT_MODE_FORBIDDEN',
   'PROVIDER_INPUT_REQUIRED', 'PROVIDER_STATE_INCOMPLETE', 'PROVIDER_DEFAULT_INVALID',
@@ -89,6 +91,7 @@ const envAllowlist = [
   'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'SYSTEMDRIVE', 'TEMP', 'TMP', 'COMSPEC', 'CODEX_HOME',
 ]
 const codexDiagnosticMode = process.argv.includes('--diagnose-codex')
+const configurationOnly = process.argv.includes('--configuration-only')
 const executorPreauthorizedOneImageAndVideo = process.argv.includes('--allow-one-image-and-video')
 let originalSecret = codexDiagnosticMode ? undefined : process.env[secretEnvName]
 delete process.env[secretEnvName]
@@ -802,7 +805,8 @@ async function runController() {
   // CLI silently use a different WinINET fallback route.
   const { environment: childEnvironment } = buildCodexEnvironment(secret)
   delete childEnvironment.ELECTRON_RUN_AS_NODE
-  const child = spawn(electronPath, [workerPath, '--worker', '--run-root', runRoot], {
+  const child = spawn(electronPath, [workerPath, '--worker', '--run-root', runRoot,
+    ...(configurationOnly ? ['--configuration-only'] : [])], {
     cwd: root, env: childEnvironment, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
   })
   childEnvironment[secretEnvName] = ''
@@ -915,6 +919,7 @@ async function runController() {
     ...summary,
     secretInputTransport,
     executorPreauthorizedOneImageAndVideo,
+    configurationOnly,
     postExitPlaintextKeyFound: plaintextKeyFound,
     credentialHygiene: {
       suppliedByTemporaryEnvironment: true,
@@ -1000,6 +1005,7 @@ async function workerMain() {
   let cliChild
   let phase = 'prepare-isolated-profile'
   let pairedConnections = 0
+  let nativeApprovalDialogsObserved = 0
   let providerDisclosureObserved = false
   let providerDisclosureConfirmed = false
   let providerDisclosureCardObserved = false
@@ -1256,6 +1262,7 @@ async function workerMain() {
     const buttons = Array.isArray(options?.buttons) ? options.buttons : []
     const approveIndex = buttons.findIndex((label) => /批准|允许|approve|allow/iu.test(label))
     if (approveIndex >= 0) {
+      nativeApprovalDialogsObserved += 1
       const owner = args.length > 1 && args[0]?.webContents ? args[0] : window
       if (owner && !owner.isDestroyed()) {
         if (owner.isMinimized()) owner.restore()
@@ -1764,7 +1771,7 @@ async function workerMain() {
     configure: [
       '请通过已连接的 Pi-Paper 操作当前授权画布并读取可用模型/Agnes 配置。桌面已授权本次提供方配置及只写入的本地凭据来源，无需向我索取或展示Key明文。',
       '使用当前 Agnes 配置列出的本地授权凭据来源，选择可用来源并将其关联到对应的密钥凭据字段；不要索要或展示密钥正文。启用并分别设置默认图片型号“Agnes Image 2.5 Flash”和视频型号“Agnes Video 2.5 Flash”。请按模型目录中的官方能力和默认参数配置；图片用 1K、1:1，视频用文本模式、4 秒、720P、16:9。',
-      '请执行可用的连接检测；若系统明确返回不支持，请如实报告“不支持检测”，不要把它说成鉴权成功。若原桌面出现数据发送披露卡，请等待桌面用户确认后继续。此阶段只配置和检测，不提交图片或视频生成。',
+      '请执行可用的连接检测；若系统明确返回不支持，请如实报告“不支持检测”，不要把它说成鉴权成功。配置和安全检测不要求人工批准。此阶段只配置和检测，不提交图片或视频生成。',
       '只根据当前画布和模型目录的信息操作，不运行命令、不读取文件、不复述任何凭据。用简短中文报告配置状态、检测状态和显示型号。',
     ].join('\n'),
     configureResume: [
@@ -1775,14 +1782,14 @@ async function workerMain() {
     image: [
       '请重新读取当前画布、Agnes 提供方配置和已有任务，完成本阶段的图片创作；已经存在的节点或已提交任务不要重复创建或再次提交。',
       '在画布里创建一个文字参考节点，内容描述蓝色陶瓷方块置于白色影棚背景、柔和自然阴影、无文字，并命名为“蓝色陶瓷方块参考说明”；再创建一个图片目标节点，命名为“蓝色陶瓷方块海报”，只连接该文字参考节点到图片目标节点一次。只对图片目标节点使用“Agnes Image 2.5 Flash”生成一张 1K、1:1 图片。',
-      '桌面若出现该生成的确认卡，请等待桌面用户明确确认后继续查询这次任务直到成功，再通过授权预览读取已保存图片，并核对它显示在原目标节点。若提交结果不确定，先查询现有操作和任务，不得重新提交；若有明确失败，请如实报告并结束本阶段，不要重试。',
+      '生成时在当前客户端请求用户确认，不能自动批准或改为桌面确认；若当前客户端不支持确认，请报告该限制并结束。批准后查询这次任务，再通过授权预览读取已保存图片并核对原目标节点。若提交结果不确定，先查询现有操作和任务，不得重新提交；若有明确失败，请如实报告并结束，不要重试。',
       '不要生成视频，不要输出任何内部标识或凭据。结束时简要报告显示型号、任务状态、预览读取及原节点显示状态。',
     ].join('\n'),
     imageQuery: '请只查询当前授权画布上已经提交的图片任务并读取其已保存的授权图片预览，核对原图片节点结果。不要创建或修改任何节点，不要准备或提交生成，不要重新生成或重试；如任务失败请如实报告。不要运行命令、读取文件或输出内部标识与凭据。',
     video: [
       '请重新读取当前画布、Agnes 提供方配置和已有任务，完成本阶段的视频创作；先查询已有内容，绝不要重复图片生成，也不要重复已提交的视频任务。',
       '在画布中新增独立的视频节点，内容为蓝色陶瓷方块在白色影棚背景中缓慢旋转、固定镜头、无文字；不使用参考图片或其他媒体输入。只使用“Agnes Video 2.5 Flash”，文本模式，4 秒、720P、16:9，生成一条视频。',
-      '桌面若出现该生成的确认卡，请等待桌面用户明确确认后继续查询这次任务直到成功，再通过授权预览读取已保存视频资源，并核对它显示在原视频节点。若提交结果不确定，先查询现有操作和任务，不得重新提交；若有明确失败，请如实报告并结束本阶段，不要重试。',
+      '生成时在当前客户端请求用户确认，不能自动批准或改为桌面确认；若当前客户端不支持确认，请报告该限制并结束。批准后查询这次任务，再通过授权预览读取已保存视频并核对原视频节点。若提交结果不确定，先查询现有操作和任务，不得重新提交；若有明确失败，请如实报告并结束，不要重试。',
       '不要生成图片，不要输出任何内部标识或凭据。结束时简要报告显示型号、任务状态、预览读取及原节点显示状态。',
     ].join('\n'),
     videoQuery: '请只查询当前授权画布上已经提交的视频任务并读取其已保存的授权视频预览，核对原视频节点结果。不要创建或修改任何节点，不要准备或提交生成，不要重新生成或重试；如任务失败请如实报告。不要运行命令、读取文件或输出内部标识与凭据。',
@@ -1877,22 +1884,44 @@ async function workerMain() {
     await setupApplication()
     phase = 'codex-natural-language-provider-configuration'
     await runCodexStage('configuration', prompts.configure)
-    const disclosureAuthorized = await waitForProviderDisclosureResolution()
-    if (disclosureAuthorized) {
-      await returnToOriginalCanvasAfterDisclosure()
-      const beforeResume = await readConfiguredModelSnapshot()
-      const modelsReady = Boolean(beforeResume.provider?.configured
-        && beforeResume.configuredModels.every((entry) => entry.enabled))
-      if (!modelsReady || providerConnectionTestStatus !== 'unsupported') {
-        configurationContinuationAttempted = true
-        phase = 'codex-natural-language-provider-configuration-resume'
-        await runCodexStage('configuration-resume', prompts.configureResume)
-      }
-    }
     const configured = await assertConfiguredModels()
     providerConfigured = true
     configurationVerified = configured.provider.configured && configured.configuredModels.every((entry) => entry.enabled)
     if (!configurationVerified) throw Object.assign(new Error('AGNES_MODELS_NOT_ENABLED'), { code: 'AGNES_MODELS_NOT_ENABLED' })
+    if (configurationOnly) {
+      const current = await inspectFinalCanvas()
+      const authority = await getCanvasState()
+      if (current.imageTaskCount !== 0 || current.videoTaskCount !== 0 || authority.tasks.length !== 0
+        || nativeApprovalDialogsObserved !== 0 || pairedConnections !== 0) {
+        throw Object.assign(new Error('QA_ASSERTION_FAILED'), { code: 'QA_ASSERTION_FAILED' })
+      }
+      const pending = await evaluate('window.vibepaperDesktop.getMcpPendingActions()')
+      if ((Array.isArray(pending) ? pending : pending?.actions || []).some((action) =>
+        ['awaiting_pairing', 'awaiting_disclosure'].includes(action.status))) {
+        throw Object.assign(new Error('QA_ASSERTION_FAILED'), { code: 'QA_ASSERTION_FAILED' })
+      }
+      await cleanupCredentials()
+      if (!providerCredentialCleared || !grantRevoked) throw Object.assign(new Error('CREDENTIAL_CLEANUP_FAILED'), { code: 'CREDENTIAL_CLEANUP_FAILED' })
+      const trace = aggregateToolTrace()
+      await fs.writeFile(resultPath, JSON.stringify({ schemaVersion: 1, success: true,
+        testType: 'real Codex natural-language provider configuration without manual approval',
+        confirmationPolicy: 'client-form-generation-only-2026-10-17',
+        phase: 'configuration-completed', provider: 'Agnes', providerConfigurationSaved: true,
+        providerModelsEnabled: true, providerConnectionTestStatus, pairedConnectionCount: pairedConnections,
+        nativeApprovalDialogsObserved,
+        desktopPairingOrDisclosureApprovalRequired: false, fullMediaChainAccepted: false,
+        taskStoreSubmittedMediaTaskCount: 0, toolNamesObserved: trace.toolNames,
+        mainWorkerToolCallCounts: { ...mcpDiagnostics.calls }, publicRpcResponses: mcpDiagnostics.rpcResponses,
+        cliExitCodes: cliTurns.map((turn) => turn.exitCode), cliTurnSummaries: safeCliTurnSummaries(),
+        credentialsClearedViaDesktopIpc: providerCredentialCleared, testGrantRevoked: grantRevoked,
+        rawClientTranscriptSaved: false, apiKeySavedInEvidence: false, startedAt, completedAt: new Date().toISOString(),
+      }, null, 2))
+      secretValue = undefined
+      secretBytes.fill(0)
+      status('COMPLETE_CONFIGURATION_SUCCESS')
+      app.quit()
+      return
+    }
     paidMediaAuthorizedByOperator = await waitForOperatorContinue()
     phase = 'codex-natural-language-image-generation'
     await runCodexStage('image', prompts.image)

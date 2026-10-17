@@ -7,17 +7,143 @@ const { EventEmitter } = require('node:events')
 const test = require('node:test')
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js')
 const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js')
+const { ElicitRequestSchema } = require('@modelcontextprotocol/sdk/types.js')
 const {
   BridgeFailure,
   callProviderWithCredentialPreflight,
   createMcpStdioBridge,
+  fixedBridgeAuthPath,
   fixedInstancePath,
   prepareCredentialCall,
+  readBridgeAuthFile,
   readInstanceFile,
   sanitizeTaskOutputResult,
   scrubValue,
+  stripGenerationConfirmation,
+  validateBridgeAuth,
   validateCredentialSources,
+  validateGenerationConfirmation,
 } = require('../src/mcp-stdio.cjs')
+
+const BRIDGE_SECRET = Buffer.from('0123456789abcdef0123456789abcdef').toString('base64url')
+
+async function writeMcpAuthFiles(appDataPath, instance, secret = BRIDGE_SECRET) {
+  const instancePath = fixedInstancePath(appDataPath)
+  const authPath = fixedBridgeAuthPath(appDataPath)
+  await fs.mkdir(path.dirname(instancePath), { recursive: true })
+  await fs.writeFile(instancePath, JSON.stringify(instance), { mode: 0o600 })
+  await fs.writeFile(authPath, JSON.stringify({ schemaVersion: 1, instanceId: instance.instanceId,
+    secret }), { mode: 0o600 })
+}
+
+async function createGenerationFixture(t, options = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'VibePaper MCP generation elicitation '))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const appDataPath = path.join(root, 'App Data')
+  const instanceFilePath = fixedInstancePath(appDataPath)
+  const initialInstanceId = '00000000-0000-4000-8000-000000000081'
+  const connectionId = '00000000-0000-4000-8000-000000000082'
+  const accessToken = 'generation-test-access-token-that-stays-in-memory'
+  const instance = { schemaVersion: 1, instanceId: initialInstanceId, host: '127.0.0.1', port: 32187,
+    protocolVersion: 1, pid: process.pid }
+  let activeInstanceId = initialInstanceId
+  let activeBridgeSecret = options.bridgeSecret || BRIDGE_SECRET
+  let bootstrapCalls = 0
+  let prepareCalls = 0
+  let confirmationCalls = 0
+  let approvedTasks = 0
+  let markConfirmationCall
+  const confirmationCalled = new Promise((resolve) => { markConfirmationCall = resolve })
+  const confirmations = []
+  const elicitationRequests = []
+  const proposal = {
+    proposalId: 'proposal-fixture-1',
+    challengeToken: 'private-generation-challenge-fixture-1',
+    expiresAt: Date.now() + 60_000,
+    items: [{ target: 'Video node 1', model: 'Example Video Model',
+      input: { prompt: 'A paper boat crossing a blue lake' }, overwrite: false }],
+  }
+  const send = (value, statusCode = 200) => new Response(JSON.stringify(value), {
+    status: statusCode, headers: { 'content-type': 'application/json' },
+  })
+  const fetchImpl = async (url, init) => {
+    const route = new URL(url).pathname
+    const body = JSON.parse(Buffer.from(init.body).toString('utf8'))
+    if (route === '/bootstrap') {
+      bootstrapCalls += 1
+      assert.equal(body.bridgeSecret, activeBridgeSecret)
+      assert.equal(body.shortCode, undefined)
+      body.bridgeSecret = ''
+      return send({ instanceId: activeInstanceId, connectionId, accessToken,
+        expiresAt: Date.now() + 60_000, credentialSources: [] })
+    }
+    if (route === '/close') return send({ closed: true })
+    assert.equal(route, '/rpc')
+    assert.equal(init.headers.authorization, `Bearer ${accessToken}`)
+    if (body.method === 'tools/list') {
+      return send({ tools: [{ name: 'prepare_generation', description: 'Prepare generation',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] })
+    }
+    if (body.method === 'tools/call') {
+      prepareCalls += 1
+      const value = options.malformedProposal
+        ? { ...proposal, unexpected: true, challengeToken: 'leaked-invalid-private-challenge' }
+        : proposal
+      return send({ content: [{ type: 'text', text: 'Waiting for client confirmation.' }],
+        structuredContent: { status: 'awaiting_confirmation' }, generationConfirmation: value })
+    }
+    if (body.method === 'generation/confirm') {
+      confirmationCalls += 1
+      markConfirmationCall()
+      confirmations.push(body.params)
+      if (options.rejectSessionChange && body.params.challengeToken === proposal.challengeToken
+        && activeInstanceId !== initialInstanceId) {
+        return send({ error: { code: 'GENERATION_CONFIRMATION_INVALIDATED' } }, 400)
+      }
+      if (body.params.decision === 'approve') approvedTasks += 1
+      return send({ content: [{ type: 'text', text: body.params.decision === 'approve' ? 'Generation submitted.' : 'Generation declined.' }],
+        structuredContent: { status: body.params.decision === 'approve' ? 'submitted' : 'rejected' } })
+    }
+    return send({ error: { code: 'NOT_FOUND' } }, 404)
+  }
+  await writeMcpAuthFiles(appDataPath, instance, activeBridgeSecret)
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  const clientOptions = options.clientSupportsForm === false ? {} : { capabilities: { elicitation: { form: {} } } }
+  const client = new Client({ name: 'generation-fixture-client', version: '1.0.0' }, clientOptions)
+  if (options.elicitationHandler) {
+    client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
+      elicitationRequests.push(request.params)
+      return options.elicitationHandler(request.params, extra)
+    })
+  } else if (options.clientSupportsForm !== false) {
+    client.setRequestHandler(ElicitRequestSchema, async (request) => {
+      elicitationRequests.push(request.params)
+      return options.elicitationResult || { action: 'accept', content: { confirm: true } }
+    })
+  }
+  const bridge = createMcpStdioBridge({ appDataPath, instanceFilePath,
+    clientId: '00000000-0000-4000-8000-000000000083', grantId: '00000000-0000-4000-8000-000000000084',
+    fetchImpl, transportOverride: serverTransport, stdin: new (require('node:stream').PassThrough)(),
+    stderr: { write() {} }, processLike: new EventEmitter(),
+    elicitationTimeoutMs: options.elicitationTimeoutMs ?? 120_000,
+  })
+  const running = bridge.start()
+  await client.connect(clientTransport)
+  const changeInstance = async (nextInstanceId) => {
+    activeInstanceId = nextInstanceId
+    activeBridgeSecret = Buffer.from('fedcba9876543210fedcba9876543210').toString('base64url')
+    await writeMcpAuthFiles(appDataPath, { ...instance, instanceId: nextInstanceId }, activeBridgeSecret)
+  }
+  const close = async ({ closeClient = true } = {}) => {
+    await bridge.close()
+    await running
+    if (closeClient) await client.close().catch(() => {})
+  }
+  return { bridge, client, running, close, changeInstance, initialInstanceId,
+    state: { get bootstrapCalls() { return bootstrapCalls }, get prepareCalls() { return prepareCalls },
+      get confirmationCalls() { return confirmationCalls }, get approvedTasks() { return approvedTasks },
+      confirmations, elicitationRequests, confirmationCalled, proposal }, }
+}
 
 test('inline credential values are not read before authorized disclosure preflight', async () => {
   const secret = 'mcp-inline-secret-canary-7f2c'
@@ -201,8 +327,8 @@ test('SDK bridge carries a bounded video resource larger than the former HTTP re
       : route === '/rpc' ? payload : { closed: true }
     return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
   }
-  await fs.writeFile(instanceFilePath, JSON.stringify({ schemaVersion: 1, instanceId, host: '127.0.0.1',
-    port: 32123, protocolVersion: 1, pid: process.pid }), { mode: 0o600 })
+  await writeMcpAuthFiles(appDataPath, { schemaVersion: 1, instanceId, host: '127.0.0.1',
+    port: 32123, protocolVersion: 1, pid: process.pid })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const bridge = createMcpStdioBridge({ appDataPath, instanceFilePath,
@@ -245,6 +371,50 @@ test('instance discovery accepts only the fixed file in the application data dir
     (error) => error.code === 'DESKTOP_NOT_RUNNING')
 })
 
+test('bridge authorization file is fixed-path, per-instance, bounded, and private on POSIX', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'VibePaper MCP bridge auth '))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const appDataPath = path.join(root, 'App Data')
+  const authPath = fixedBridgeAuthPath(appDataPath)
+  const auth = { schemaVersion: 1, instanceId: '00000000-0000-4000-8000-000000000051', secret: BRIDGE_SECRET }
+  await fs.mkdir(path.dirname(authPath), { recursive: true })
+  await fs.writeFile(authPath, JSON.stringify(auth), { mode: 0o600 })
+  assert.deepEqual(await readBridgeAuthFile(authPath, appDataPath), auth)
+  assert.throws(() => validateBridgeAuth({ ...auth, instanceId: 'public-grant-id' }),
+    (error) => error.code === 'MCP_BRIDGE_AUTH_INVALID')
+  await assert.rejects(readBridgeAuthFile(path.join(root, 'other-auth.json'), appDataPath),
+    (error) => error.code === 'MCP_LAUNCH_CONFIGURATION_INVALID')
+
+  const symlinkFs = {
+    async lstat() { return { isSymbolicLink: () => true, isFile: () => true, size: 128 } },
+    async open() { assert.fail('a symbolic link must be rejected before it is opened') },
+  }
+  await assert.rejects(readBridgeAuthFile(authPath, appDataPath, symlinkFs),
+    (error) => error.code === 'MCP_BRIDGE_AUTH_INVALID')
+
+  const oversizedAuthPath = fixedBridgeAuthPath(path.join(root, 'Oversized'))
+  await fs.mkdir(path.dirname(oversizedAuthPath), { recursive: true })
+  await fs.writeFile(oversizedAuthPath, JSON.stringify({ ...auth, padding: 'x'.repeat(5000) }), { mode: 0o600 })
+  await assert.rejects(readBridgeAuthFile(oversizedAuthPath, path.join(root, 'Oversized')),
+    (error) => error.code === 'MCP_BRIDGE_AUTH_INVALID')
+
+  if (process.platform !== 'win32') {
+    await fs.chmod(authPath, 0o644)
+    await assert.rejects(readBridgeAuthFile(authPath, appDataPath),
+      (error) => error.code === 'MCP_BRIDGE_AUTH_INVALID')
+  }
+})
+
+test('private generation confirmation fields are stripped recursively from public results', () => {
+  const safe = stripGenerationConfirmation({
+    generationConfirmation: { proposalId: 'private', challengeToken: 'private-challenge' },
+    structuredContent: { status: 'awaiting_confirmation', challenge: 'private-challenge', detail: 'visible' },
+  })
+  assert.deepEqual(safe, { structuredContent: { status: 'awaiting_confirmation', detail: 'visible' } })
+  assert.throws(() => validateGenerationConfirmation({ proposalId: 'p', challengeToken: 'short',
+    expiresAt: Date.now() + 1000, items: [] }, Date.now()), (error) => error.code === 'MCP_RESPONSE_INVALID')
+})
+
 test('official SDK client initializes offline and receives an explicit DESKTOP_NOT_RUNNING tool result', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'VibePaper MCP offline '))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
@@ -274,7 +444,7 @@ test('official SDK client initializes offline and receives an explicit DESKTOP_N
   await client.close()
 })
 
-test('SDK stdio adapter pairs once, isolates inline secrets in credentialValues, redacts replies, and never retries RPC', async (t) => {
+test('SDK stdio adapter authenticates from the private instance file, isolates inline secrets, and never retries RPC', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'VibePaper MCP SDK bridge '))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const appDataPath = path.join(root, 'App Data')
@@ -287,7 +457,7 @@ test('SDK stdio adapter pairs once, isolates inline secrets in credentialValues,
   let rpcCalls = 0
   let bootstrapCalls = 0
   let closeCalls = 0
-  let codeFromBootstrap = null
+  let bridgeSecretFromBootstrap = null
   let rpcBody = null
   const main = http.createServer(async (request, response) => {
     const chunks = []
@@ -296,7 +466,8 @@ test('SDK stdio adapter pairs once, isolates inline secrets in credentialValues,
     response.setHeader('content-type', 'application/json')
     if (request.url === '/bootstrap') {
       bootstrapCalls += 1
-      codeFromBootstrap = body.shortCode
+      bridgeSecretFromBootstrap = body.bridgeSecret
+      assert.equal(body.shortCode, undefined)
       response.end(JSON.stringify({ instanceId, connectionId, accessToken,
         expiresAt: Date.now() + 60_000, credentialSources: [] }))
       return
@@ -343,8 +514,8 @@ test('SDK stdio adapter pairs once, isolates inline secrets in credentialValues,
   await new Promise((resolve) => main.listen(0, '127.0.0.1', resolve))
   t.after(() => new Promise((resolve) => main.close(resolve)))
   const port = main.address().port
-  await fs.writeFile(instanceFilePath, JSON.stringify({ schemaVersion: 1, instanceId, host: '127.0.0.1', port,
-    protocolVersion: 1, pid: process.pid }), { mode: 0o600 })
+  await writeMcpAuthFiles(appDataPath, { schemaVersion: 1, instanceId, host: '127.0.0.1', port,
+    protocolVersion: 1, pid: process.pid })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const stderrLines = []
@@ -356,7 +527,6 @@ test('SDK stdio adapter pairs once, isolates inline secrets in credentialValues,
     stdin: new (require('node:stream').PassThrough)(),
     stderr: { write: (line) => stderrLines.push(line) },
     processLike: new EventEmitter(),
-    randomCode: () => '034718',
   })
   const client = new Client({ name: 'fixture-client', version: '2.0.0' })
   const running = bridge.start()
@@ -378,7 +548,9 @@ test('SDK stdio adapter pairs once, isolates inline secrets in credentialValues,
   assert.equal(bootstrapCalls, 1)
   assert.equal(rpcCalls, 4)
   assert.equal(closeCalls, 0)
-  assert.match(stderrLines.join(''), /034718/u)
+  assert.equal(bridgeSecretFromBootstrap, BRIDGE_SECRET)
+  assert.equal(stderrLines.join('').includes(BRIDGE_SECRET), false)
+  assert.equal(stderrLines.join('').includes('approval'), false)
   assert.equal(JSON.stringify(rpcBody).includes(accessToken), false)
   assert.equal(firstInput.credentialInput.credentials.apiKey, '')
   assert.equal(input.credentialInput.credentials.apiKey, '')
@@ -436,8 +608,8 @@ test('a first direct configure call waits for bootstrap before resolving registe
   })
   await new Promise((resolve) => main.listen(0, '127.0.0.1', resolve))
   t.after(() => new Promise((resolve) => main.close(resolve)))
-  await fs.writeFile(instanceFilePath, JSON.stringify({ schemaVersion: 1, instanceId, host: '127.0.0.1',
-    port: main.address().port, protocolVersion: 1, pid: process.pid }), { mode: 0o600 })
+  await writeMcpAuthFiles(appDataPath, { schemaVersion: 1, instanceId, host: '127.0.0.1',
+    port: main.address().port, protocolVersion: 1, pid: process.pid })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const bridge = createMcpStdioBridge({ appDataPath, instanceFilePath,
@@ -523,8 +695,8 @@ test('an SDK cancellation aborts only the pending RPC and keeps the approved con
   })
   await new Promise((resolve) => main.listen(0, '127.0.0.1', resolve))
   t.after(() => new Promise((resolve) => main.close(resolve)))
-  await fs.writeFile(instanceFilePath, JSON.stringify({ schemaVersion: 1, instanceId, host: '127.0.0.1',
-    port: main.address().port, protocolVersion: 1, pid: process.pid }), { mode: 0o600 })
+  await writeMcpAuthFiles(appDataPath, { schemaVersion: 1, instanceId, host: '127.0.0.1',
+    port: main.address().port, protocolVersion: 1, pid: process.pid })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const bridge = createMcpStdioBridge({ appDataPath, instanceFilePath,
@@ -560,4 +732,184 @@ test('an SDK cancellation aborts only the pending RPC and keeps the approved con
   await running
   await client.close()
   assert.equal(closeCalls, 1)
+})
+
+test('generation is confirmed through the SDK form elicitation before Main receives approve', async (t) => {
+  const fixture = await createGenerationFixture(t)
+  try {
+    const listed = await fixture.client.listTools()
+    assert.deepEqual(listed.tools.map((tool) => tool.name), ['prepare_generation'])
+    const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+    assert.equal(result.structuredContent.status, 'submitted')
+    assert.equal(fixture.state.prepareCalls, 1)
+    assert.equal(fixture.state.confirmationCalls, 1)
+    assert.equal(fixture.state.confirmations[0].decision, 'approve')
+    assert.equal(fixture.state.confirmations[0].proposalId, fixture.state.proposal.proposalId)
+    assert.equal(fixture.state.confirmations[0].challengeToken, fixture.state.proposal.challengeToken)
+    assert.equal(fixture.state.approvedTasks, 1)
+    const elicitation = fixture.state.elicitationRequests[0]
+    assert.equal(elicitation.mode, 'form')
+    assert.deepEqual(Object.keys(elicitation.requestedSchema.properties), ['confirm'])
+    assert.deepEqual(elicitation.requestedSchema.required, ['confirm'])
+    assert.match(elicitation.message, /Video node 1/u)
+    assert.match(elicitation.message, /Example Video Model/u)
+    assert.match(elicitation.message, /A paper boat crossing a blue lake/u)
+    assert.match(elicitation.message, /Overwrite existing content: No/u)
+    assert.match(elicitation.message, /provider fees may apply/u)
+    assert.equal(JSON.stringify(result).includes(fixture.state.proposal.challengeToken), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'generationConfirmation'), false)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('declined and cancelled generation forms send only a reject decision', async (t) => {
+  for (const elicitationResult of [
+    { action: 'decline' },
+    { action: 'cancel' },
+    { action: 'accept', content: { confirm: false } },
+  ]) {
+    const fixture = await createGenerationFixture(t, { elicitationResult })
+    try {
+      const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+      assert.equal(result.structuredContent.status, 'rejected')
+      assert.equal(fixture.state.confirmationCalls, 1)
+      assert.equal(fixture.state.confirmations[0].decision, 'reject')
+      assert.equal(fixture.state.approvedTasks, 0)
+      assert.equal(JSON.stringify(result).includes(fixture.state.proposal.challengeToken), false)
+    } finally {
+      await fixture.close()
+    }
+  }
+})
+
+test('clients without form elicitation fail before a generation proposal is created', async (t) => {
+  const fixture = await createGenerationFixture(t, { clientSupportsForm: false })
+  try {
+    const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+    assert.equal(result.isError, true)
+    assert.equal(result.structuredContent.errorCode, 'CLIENT_CONFIRMATION_UNSUPPORTED')
+    assert.equal(fixture.state.prepareCalls, 0)
+    assert.equal(fixture.state.confirmationCalls, 0)
+    assert.equal(fixture.state.approvedTasks, 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('malformed private confirmation data returns a safe error without leaking its challenge', async (t) => {
+  const fixture = await createGenerationFixture(t, { malformedProposal: true })
+  try {
+    const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+    assert.equal(result.isError, true)
+    assert.equal(result.structuredContent.errorCode, 'MCP_RESPONSE_INVALID')
+    assert.equal(JSON.stringify(result).includes('leaked-invalid-private-challenge'), false)
+    assert.equal(fixture.state.confirmationCalls, 0)
+    assert.equal(fixture.state.approvedTasks, 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('invalid form answers fail closed without forwarding an approval decision', async (t) => {
+  const fixture = await createGenerationFixture(t, {
+    elicitationResult: { action: 'accept', content: { confirm: 'yes' } },
+  })
+  try {
+    const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+    assert.equal(result.isError, true)
+    assert.equal(result.structuredContent.errorCode, 'GENERATION_CONFIRMATION_UNRESOLVED')
+    assert.equal(fixture.state.confirmationCalls, 1)
+    assert.equal(fixture.state.confirmations[0].decision, 'reject')
+    assert.equal(fixture.state.approvedTasks, 0)
+    assert.equal(JSON.stringify(result).includes(fixture.state.proposal.challengeToken), false)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('form elicitation timeout leaves the proposal unsubmitted', async (t) => {
+  const fixture = await createGenerationFixture(t, {
+    elicitationTimeoutMs: 25,
+    elicitationHandler: async (_params, extra) => new Promise((resolve) => {
+      extra.signal.addEventListener('abort', () => resolve({ action: 'cancel' }), { once: true })
+    }),
+  })
+  try {
+    const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+    assert.equal(result.isError, true)
+    assert.equal(result.structuredContent.errorCode, 'GENERATION_CONFIRMATION_UNRESOLVED')
+    assert.equal(fixture.state.confirmationCalls, 1)
+    assert.equal(fixture.state.confirmations[0].decision, 'reject')
+    assert.equal(fixture.state.approvedTasks, 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('cancelling the MCP call while the form is open rejects the pending proposal without approval', async (t) => {
+  let markElicitationStarted
+  const elicitationStarted = new Promise((resolve) => { markElicitationStarted = resolve })
+  const fixture = await createGenerationFixture(t, {
+    elicitationHandler: async (_params, extra) => new Promise((resolve) => {
+      markElicitationStarted()
+      extra.signal.addEventListener('abort', () => resolve({ action: 'cancel' }), { once: true })
+    }),
+  })
+  try {
+    const controller = new AbortController()
+    const pending = fixture.client.callTool({ name: 'prepare_generation', arguments: {} }, undefined,
+      { signal: controller.signal })
+    await elicitationStarted
+    controller.abort(new Error('cancelled by test'))
+    await assert.rejects(pending)
+    await Promise.race([fixture.state.confirmationCalled, new Promise((resolve) => setTimeout(resolve, 100))])
+    assert.equal(fixture.state.confirmationCalls, 1)
+    assert.equal(fixture.state.confirmations[0].decision, 'reject')
+    assert.equal(fixture.state.approvedTasks, 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('disconnecting the client while the form is open sends no confirmation', async (t) => {
+  let markElicitationStarted
+  const elicitationStarted = new Promise((resolve) => { markElicitationStarted = resolve })
+  const fixture = await createGenerationFixture(t, {
+    elicitationHandler: async () => new Promise(() => { markElicitationStarted() }),
+  })
+  try {
+    const pending = fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+    await elicitationStarted
+    await fixture.client.close()
+    await assert.rejects(pending)
+    await fixture.bridge.close()
+    await fixture.running
+    assert.equal(fixture.state.confirmationCalls, 0)
+    assert.equal(fixture.state.approvedTasks, 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('instance and bridge credential changes during elicitation invalidate the proposal without an RPC', async (t) => {
+  let fixture
+  fixture = await createGenerationFixture(t, {
+    rejectSessionChange: true,
+    elicitationHandler: async () => {
+      await fixture.changeInstance('00000000-0000-4000-8000-000000000085')
+      return { action: 'accept', content: { confirm: true } }
+    },
+  })
+  try {
+    const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+    assert.equal(result.isError, true)
+    assert.equal(result.structuredContent.errorCode, 'GENERATION_CONFIRMATION_UNRESOLVED')
+    assert.equal(fixture.state.bootstrapCalls, 1)
+    assert.equal(fixture.state.confirmationCalls, 0)
+    assert.equal(fixture.state.approvedTasks, 0)
+    assert.equal(JSON.stringify(result).includes(fixture.state.proposal.challengeToken), false)
+  } finally {
+    await fixture.close()
+  }
 })
