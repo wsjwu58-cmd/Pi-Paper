@@ -7,13 +7,43 @@
   "publicModelCallableApprovalTool": false,
   "reviewer": "root integration review of Luna max subagent changes",
   "verification": {
-    "desktopMcpRegression": { "passed": 103, "failed": 0, "skipped": 0, "command": "node --test --test-isolation=none test/mcp-*.test.cjs (expanded by PowerShell)", "log": "client-confirmation-tests-20261017.log" },
-    "providerDefaultsRegression": { "passed": 1, "failed": 0 },
-    "webGrantPolicy": { "passed": 2, "failed": 0 },
-    "sharedTypescriptDiscovery": { "passed": 2, "failed": 0 },
-    "piCheck": { "passed": true, "executor": "Luna max subagent", "formatterChangedUnrelatedFiles": false },
-    "originalFrontendBuild": { "passed": true, "existingWarnings": ["large output chunk", "CSS plugin timing"] },
-    "originalWorkerBuild": { "passed": true, "existingWarnings": ["import.meta in optional CJS lazy modules"] }
+    "desktopMcpRegression": {
+      "passed": 103,
+      "failed": 0,
+      "skipped": 0,
+      "command": "node --test --test-isolation=none test/mcp-*.test.cjs (expanded by PowerShell)",
+      "log": "client-confirmation-tests-20261017.log"
+    },
+    "providerDefaultsRegression": {
+      "passed": 1,
+      "failed": 0
+    },
+    "webGrantPolicy": {
+      "passed": 2,
+      "failed": 0
+    },
+    "sharedTypescriptDiscovery": {
+      "passed": 2,
+      "failed": 0
+    },
+    "piCheck": {
+      "passed": true,
+      "executor": "Luna max subagent",
+      "formatterChangedUnrelatedFiles": false
+    },
+    "originalFrontendBuild": {
+      "passed": true,
+      "existingWarnings": [
+        "large output chunk",
+        "CSS plugin timing"
+      ]
+    },
+    "originalWorkerBuild": {
+      "passed": true,
+      "existingWarnings": [
+        "import.meta in optional CJS lazy modules"
+      ]
+    }
   },
   "securityEvidence": {
     "automaticBootstrapRequiresPrivatePerInstanceCredential": true,
@@ -29,8 +59,8 @@
     "newPolicyRealCodexConfiguration": "passed; codex-agnes-acceptance-2026-10-17T12-06-32-275Z.json; zero native approval dialogs and zero media tasks",
     "newPolicyRealCodexGenerationPopup": "pending",
     "newPolicyOfficialMediaFullChain": "pending",
-    "newPolicyWindowsInstalledPackage": "pending",
-    "windowsUninstallCleanup": "not passed; historical exit code 0 left application files and registry keys",
+    "newPolicyWindowsInstalledPackage": "normal payload hashes match; normal desktop workspace launch, close and reopen passed on 2026-10-18; isolated command launch failed to expose window; normal installer intermediate pages only partly observed",
+    "windowsUninstallCleanup": "diagnostic build passed on 2026-10-17: files and registry absent after all tracked processes exited and 30-second stability; daily 1737 files unchanged; historical failures retained",
     "windowsCredentialFileAclIndependentlyVerified": false,
     "differentMainProcessesSharingUserData": "relies on existing Electron single-instance lock",
     "claudeRealSession": "cancelled by user for this round",

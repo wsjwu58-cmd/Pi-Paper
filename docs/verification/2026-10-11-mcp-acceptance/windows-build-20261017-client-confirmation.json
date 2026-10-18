@@ -4,7 +4,7 @@
   "normal": {
     "buildPassed": true,
     "bytes": 120400523,
-    "installedRuntimeAccepted": false,
+    "installedRuntimeAccepted": true,
     "packagedNodeSmokePassed": true,
     "manualInstallerAccepted": false,
     "output": "output/mcp-windows-2026-10-17/Pi-Paper-0.1.0-win-x64.exe",
@@ -13,13 +13,13 @@
   },
   "diagnostic": {
     "bytes": 120402606,
-    "installerRun": false,
+    "installerRun": true,
     "sha256": "909be7a876fafc12ed2328b456f6f0d77b503f7b7bf2d89c30581628a09a073b",
-    "uninstallerRun": false,
+    "uninstallerRun": true,
     "initialCompileWarning": "unused VPD_PHASE treated as error; removed before successful rebuild",
     "explicitOptInRequired": true,
     "output": "output/mcp-windows-2026-10-17-diagnostics/Pi-Paper-0.1.0-win-x64.exe",
-    "uninstallAccepted": false,
+    "uninstallAccepted": true,
     "buildPassed": true
   },
   "payload": {

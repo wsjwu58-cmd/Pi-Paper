@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-17",
+  "productSourceCommit": "a4ac061",
+  "diagnosticInstallerSha256": "909be7a876fafc12ed2328b456f6f0d77b503f7b7bf2d89c30581628a09a073b",
+  "diagnosticInstallerManualRun": true,
+  "observedPages": [
+    "current-user installation selected",
+    "installation directory",
+    "progress",
+    "completion"
+  ],
+  "selectedInstallDirectory": "E:\\pp\\Pi-Paper",
+  "runAfterInstallUnchecked": true,
+  "installerWindowExited": true,
+  "installedMcpMainSha256": "671bae07d968fed7322bd49a2ff15b79171be712380ceba22366a00a2577b84a",
+  "installedMcpMainMatchesNewPayload": true,
+  "installedDiagnosticUninstallerSha256": "0fdd2d83ef1019094e02b4c2baff0643cc159a1636a36e7657b579b8c9669516",
+  "dailyProfileBeforeFiles": 1737,
+  "dailyProfileAfterInstallFiles": 1737,
+  "dailyProfileMissingFiles": 0,
+  "dailyProfileAddedFiles": 0,
+  "dailyProfileChangedFiles": 0,
+  "uninstallStatus": "passed for diagnostic build; original files and registration absent after process-tree exit and 30-second stability",
+  "finalNormalInstallerRun": true,
+  "newInstalledGuiRuntimeAccepted": true,
+  "nativeCodexGenerationPopupAccepted": false,
+  "diagnosticBuildIsNotDefaultDistribution": true,
+  "uninstallTrace": "windows-uninstall-process-trace-20261017-202922-dd8a19dc.json",
+  "uninstallDiagnosticLog": "windows-uninstall-diagnostic-20261017.log",
+  "dailyProfileAfterUninstallExactContentPreserved": true,
+  "installedRuntimeEvidence": "windows-installed-runtime-20261018.json"
+}

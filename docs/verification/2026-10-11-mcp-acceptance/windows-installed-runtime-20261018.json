@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-18",
+  "productSourceCommit": "a4ac061",
+  "installedDirectory": "E:\\pp\\Pi-Paper",
+  "normalInstallerSha256": "89c81eefa757a6dedec351d781ad27d0c7d596fbd74089ae5f8041c1e34d380f",
+  "installedMainSha256": "c4a247035fc949953e406bbcd8cc22b397b9a3a248787e6eac5598f2799d2d30",
+  "installedMcpMainSha256": "671bae07d968fed7322bd49a2ff15b79171be712380ceba22366a00a2577b84a",
+  "installedSourcesMatchNormalPayload": true,
+  "normalInstallerIntermediateSteps": "user operated while automation input guard was active; reviewer observed directory page but not every normal-installer page",
+  "normalGuiLaunch": true,
+  "originalWorkspaceEntryObserved": true,
+  "existingProjectEntriesObserved": 2,
+  "firstNormalClose": true,
+  "firstCloseConfirmedByNoTargetWindowsAndNoPiPaperProcesses": true,
+  "normalGuiReopen": true,
+  "workspaceAndSameProjectEntriesAfterReopen": true,
+  "secondNormalCloseRequested": true,
+  "canvasContentModified": false,
+  "generationRequested": false,
+  "dailyProfileUsedForNormalGuiLaunch": true,
+  "dailyProfileExactContentPreservationAfterRuntimeClaimed": false,
+  "isolatedCommandLaunch": {
+    "pid": 25684,
+    "profile": ".test-temp/windows-installed-20261018",
+    "passed": false,
+    "observed": "process started but no targetable application window was exposed",
+    "ownedProcessStoppedAfterPathAndStartTimeCheck": true,
+    "causeConfirmed": false
+  },
+  "manualUninstallEvidence": "windows-manual-20261017-client-confirmation.json",
+  "normalDistributionUninstallerSeparatelyRun": false,
+  "nativeCodexPopupAccepted": false
+}

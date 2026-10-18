@@ -4,9 +4,11 @@
 
 新策略 [103 项 MCP 回归](client-confirmation-tests-20261017.log)通过。[真实 Codex 配置运行](codex-agnes-acceptance-2026-10-17T12-06-32-275Z.json)确认原 Main 返回配置 `saved`、检测 `unsupported`，没有原生批准窗口或媒体任务；凭据清除、授权撤销及退出后明文扫描通过。其原始诊断含未分类事件标记，未保存原文，不能据此补推错误原因；配置通过依据是实际 RPC 与权威配置状态。生成弹窗、完整官方媒体链路及更新后的安装包另行验收，见[新策略记录](client-confirmation-policy-20261017.json)。
 
-[10-17 Windows 构建](windows-build-20261017-client-confirmation.json)已产生独立正式配置包与显式开启的卸载诊断包。正式包的包内 Node/MCP fixture、Worker 与持久化重开检查通过；新包的安装向导、安装后 GUI 和卸载仍未验收。诊断包只记录固定阶段与布尔状态，不改 stock 清理流程，已编译、尚未安装运行；不把它计作卸载修复或通过。早期包内 smoke 因旧鉴权 fixture 失败，更新 fixture 后在同一载荷复测通过，原情况如实记录。
+[10-17 Windows 构建](windows-build-20261017-client-confirmation.json)已产生独立正式配置包与显式开启的卸载诊断包。正式包的包内 Node/MCP fixture、Worker 与持久化重开检查通过。诊断包已通过当前用户、目录、进度和完成页安装检查，随后用户手工卸载；[进程观察](windows-uninstall-process-trace-20261017-202922-dd8a19dc.json)确认退出并稳定 30 秒后程序、卸载器及 HKCU/HKLM 注册项均不存在，[1,737 个原数据文件内容不变](windows-manual-20261017-client-confirmation-uninstall-data.json)。[诊断日志](windows-uninstall-diagnostic-20261017.log)观察到原清理流程成功回调，未新增清理逻辑；这证明该诊断包卸载通过，旧包残留的具体原因仍未确定。正式包安装及安装后 GUI 另记于[本轮向导记录](windows-manual-20261017-client-confirmation.json)。早期包内 smoke 因旧鉴权 fixture 失败，更新 fixture 后在同一载荷复测通过，原情况如实记录。
 
 2026-10-11 开始，2026-10-16 接续。以下按实际证据分别判定，完整产品验收仍未完成。用户指定使用 Agnes Video 2.5 Flash，并要求先测 Windows；没有 macOS/Linux 测试机器。Claude Code 真实会话按用户最新要求取消本轮验收。
+
+[10-18 正式安装运行复核](windows-installed-runtime-20261018.json)确认原目录中 Main/MCP 核心与正式载荷匹配，正常桌面入口启动、关闭并重开后仍有原两个项目入口；未改画布或发起生成。正式向导的中间步骤由用户操作，审查者仅观察到目录页，不补记全部页面通过。独立命令行启动虽有进程却未出现可验收窗口，已停止该测试进程，原因未定；不将正常桌面重开通过解释成此启动路径也通过。
 
 10-15 按用户要求整合 GitHub `feat/desktop-local-migration` 的既有改动，当前源码目录为 `pi-paper-web` / `pi-paper-desktop`。原验收 JSON、截图与运行路径保留，不回写成新目录下的实测。合并中修复了 Agent 控制库 schema 11 被旧备份校验拒绝的问题；[合并复核记录](merge-feat-2026-10-15.json)另列 101 项桌面、19 项记忆恢复及 10 项前端回归，计数不与历史集合累加。
 
