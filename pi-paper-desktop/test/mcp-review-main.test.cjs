@@ -232,6 +232,47 @@ test('bridge bootstrap rejects a bad secret and connects with the private per-in
   assert.equal(JSON.stringify(f.created.config).includes(f.authRecord.secret), false)
 })
 
+test('normal RPC traffic does not consume the bootstrap rate budget', async (t) => {
+  const f = await fixture(t)
+  for (let index = 0; index < 8; index += 1) {
+    const result = await f.request('/rpc', { method: 'tools/list', params: {} }, f.authorization)
+    assert.equal(result.status, 200)
+  }
+  const reconnected = await f.bootstrapFor()
+  assert.equal(reconnected.status, 200)
+})
+
+test('bootstrap rate bucket returns 429 after eight requests in its window', async (t) => {
+  const f = await fixture(t)
+  // fixture() already performed the first successful bootstrap.
+  for (let index = 0; index < 7; index += 1) {
+    const result = await f.bootstrapFor()
+    assert.equal(result.status, 200)
+  }
+  const exceeded = await f.bootstrapFor()
+  assert.equal(exceeded.status, 429)
+  assert.equal(exceeded.body.error.code, 'RATE_LIMITED')
+})
+
+test('RPC address rate bucket returns 429 after 120 requests despite per-session limits', async (t) => {
+  const f = await fixture(t)
+  const authorizations = [f.authorization]
+  for (let index = 0; index < 2; index += 1) {
+    const session = await f.bootstrapFor()
+    assert.equal(session.status, 200)
+    authorizations.push({ authorization: `Bearer ${session.body.accessToken}` })
+  }
+  for (const authorization of authorizations) {
+    for (let index = 0; index < 40; index += 1) {
+      const result = await f.request('/rpc', { method: 'tools/list', params: {} }, authorization)
+      assert.equal(result.status, 200)
+    }
+  }
+  const exceeded = await f.request('/rpc', { method: 'tools/list', params: {} }, authorizations[0])
+  assert.equal(exceeded.status, 429)
+  assert.equal(exceeded.body.error.code, 'RATE_LIMITED')
+})
+
 test('generation confirmation rejects wrong tokens and another live client session', async (t) => {
   const f = await fixture(t, {}, { prepareProposal: true })
   const prepared = await f.call('prepare_generation', { operationId: 'review-generation-scope', expectedVersion: 1,

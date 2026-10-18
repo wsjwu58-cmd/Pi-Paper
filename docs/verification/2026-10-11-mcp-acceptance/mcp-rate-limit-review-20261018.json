@@ -1,0 +1,17 @@
+{
+  "date": "2026-10-18",
+  "reviewer": "root independent review of Luna max patch",
+  "problem": "bootstrap and normal RPC used the same address counter with different thresholds; ordinary traffic exhausted the next connection's bootstrap budget",
+  "change": "separate bootstrapRate and requestRate maps; preserve original thresholds",
+  "limits": {"bootstrapPerAddressPerMinute": 8, "rpcAndClosePerAddressPerMinute": 120, "perSessionPerMinute": 60, "concurrentRequests": 32},
+  "realHttpRegressions": [
+    "bootstrap succeeds after eight ordinary RPC calls",
+    "ninth bootstrap in one window returns 429",
+    "121st address RPC across three sessions returns 429"
+  ],
+  "allMcpTests": {"passed": 106, "failed": 0, "skipped": 0, "command": "node --test --test-isolation=none <PowerShell-expanded pi-paper-desktop/test/mcp-*.test.cjs>"},
+  "qaHostAndControlTests": {"passed": 20, "failed": 0, "paidProviderRequests": 0},
+  "realClientMediaRetestRequiredAfterFix": true,
+  "windowsPackageRebuildRequiredAfterFix": true,
+  "officialMediaGenerationAcceptedByTheseTests": false
+}

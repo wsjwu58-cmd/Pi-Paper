@@ -49,6 +49,7 @@ function createMcpMainService(options) {
   const flushRequests = new Map()
   const requestCounts = new Map()
   const requestRate = new Map()
+  const bootstrapRate = new Map()
   const sessionRate = new Map()
   let server = null
   let startingPromise = null
@@ -1444,7 +1445,9 @@ function createMcpMainService(options) {
       sendJson(res, 404, { error: { code: 'NOT_FOUND', message: 'Not found.' } }); return
     }
     const address = req.socket.remoteAddress || 'unknown'
-    if (!consumeRate(requestRate, address, req.url === '/bootstrap' ? 8 : 120, 60_000)) {
+    const rateBucket = req.url === '/bootstrap' ? bootstrapRate : requestRate
+    const rateLimit = req.url === '/bootstrap' ? 8 : 120
+    if (!consumeRate(rateBucket, address, rateLimit, 60_000)) {
       sendJson(res, 429, { error: { code: 'RATE_LIMITED', message: 'Request rate limit reached.' } }); return
     }
     if (requestCounts.size && totalRequests() >= 32) {

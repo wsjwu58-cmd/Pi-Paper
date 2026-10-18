@@ -1,0 +1,28 @@
+{
+  "date": "2026-10-18",
+  "executor": "root independent review of frozen Luna max changes",
+  "command": "node --test --test-isolation=none pi-paper-desktop/test/codex-app-server-acceptance-host.test.cjs",
+  "passed": 16,
+  "failed": 0,
+  "skipped": 0,
+  "coverage": [
+    "ephemeral read-only turn and completion/close race",
+    "JSONL to a local fake app-server process",
+    "global and profile overrides using standard TOML parsing",
+    "reject active unknown services, missing runtime state, pagination and ambiguous inventory",
+    "8 MiB protocol line accepted and over 16 MiB rejected",
+    "explicit accept or decline for the exact generation form",
+    "foreign forms and shell/file/permission requests rejected",
+    "timeout or disconnect aborts pending confirmation",
+    "same client catalog unique visible default model; no thread for ambiguous, hidden, missing or paginated defaults"
+  ],
+  "quantityGuardPrivateScenariosPassed": 55,
+  "realCodexOrProviderUsedByTheseTests": false,
+  "paidGenerationSubmittedByTheseTests": false,
+  "realAcceptanceRecordedSeparately": true,
+  "initialRootTestFailure": "profile inline-table serializer emitted object Map; fixed before this passing run",
+  "pythonDependencyScope": "QA-only standard tomllib, Python 3.11+; no desktop MCP runtime dependency added",
+  "ipcControlTestsPassed": 4,
+  "independentlyCombinedTestsPassed": 20,
+  "realElectronIpcTransportFixture": "Luna max fixture passed gate=true and generation decision=false without loading Main/model; temporary fixture cleaned"
+}

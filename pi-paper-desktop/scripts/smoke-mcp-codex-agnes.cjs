@@ -54,6 +54,10 @@ const safeErrorCodes = new Set([
   'GENERATION_ACTION_AMBIGUOUS', 'EXISTING_MEDIA_TASK_TIMEOUT',
   'GENERATION_SUBMISSION_UNCERTAIN',
   'QA_MEDIA_SCOPE_EXCEEDED',
+  'CODEX_APP_SERVER_TIMEOUT', 'CODEX_APP_SERVER_DISCONNECTED', 'CODEX_APP_SERVER_CLOSED',
+  'CODEX_APP_SERVER_CONFIGURATION_INVALID', 'CODEX_APP_SERVER_PROTOCOL_INVALID',
+  'CODEX_APP_SERVER_REQUEST_FAILED', 'CODEX_APP_SERVER_MCP_SCOPE_INVALID',
+  'CODEX_APP_SERVER_MODEL_UNAVAILABLE',
   'CLIENT_CONFIRMATION_UNSUPPORTED', 'GENERATION_CONFIRMATION_UNRESOLVED',
   'PROVIDER_CONFIGURE_FORBIDDEN', 'PROVIDER_READ_FORBIDDEN', 'PROVIDER_DISCLOSURE_DENIED',
   'PROVIDER_DISCLOSURE_UNAVAILABLE', 'PROVIDER_FIELD_FORBIDDEN', 'PROVIDER_INPUT_MODE_FORBIDDEN',
@@ -92,6 +96,7 @@ const envAllowlist = [
 ]
 const codexDiagnosticMode = process.argv.includes('--diagnose-codex')
 const configurationOnly = process.argv.includes('--configuration-only')
+const appServerHost = process.argv.includes('--app-server-host')
 const executorPreauthorizedOneImageAndVideo = process.argv.includes('--allow-one-image-and-video')
 let originalSecret = codexDiagnosticMode ? undefined : process.env[secretEnvName]
 delete process.env[secretEnvName]
@@ -287,7 +292,7 @@ function buildCodexOverride(server, fixtureRoot, stage) {
   const envToml = Object.entries(env).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(',')
   const argsToml = server.args.map((value) => JSON.stringify(value)).join(',')
   const toolsToml = toolsForCodexStage(stage).map((value) => JSON.stringify(value)).join(',')
-  const serverValue = `{command=${JSON.stringify(server.command)},args=[${argsToml}],env={${envToml}},env_vars=[${JSON.stringify(secretEnvName)}],enabled_tools=[${toolsToml}],required=true,startup_timeout_sec=150,default_tools_approval_mode="auto",tools={prepare_generation={approval_mode="approve"},configure_provider={approval_mode="approve"},test_provider_connection={approval_mode="approve"}}}`
+  const serverValue = `{command=${JSON.stringify(server.command)},args=[${argsToml}],env={${envToml}},env_vars=[${JSON.stringify(secretEnvName)}],enabled_tools=[${toolsToml}],required=true,startup_timeout_sec=150,tool_timeout_sec=660,default_tools_approval_mode="approve"}`
   return {
     override: `mcp_servers.vibepaper=${serverValue}`,
     bridgeAppDataIsolated: env.APPDATA === fixtureRoot,
@@ -800,20 +805,140 @@ async function runController() {
   const electronPath = path.join(root, 'pi-paper-desktop/node_modules/electron/dist/electron.exe')
   const needle = Buffer.from(secret, 'utf8')
   await fs.mkdir(runRoot, { recursive: true })
+  await fs.mkdir(profile, { recursive: true, mode: 0o700 })
+  // The QA profile lives in the checkout, whose inherited Windows ACL may be
+  // broader than normal AppData. Protect this new, isolated directory before
+  // Main writes its temporary connection credential. Never change daily data.
+  if (process.platform === 'win32') {
+    const aclScript = 'try {\n' + [
+      '$ErrorActionPreference = "Stop"',
+      '$target = $env:VIBEPAPER_QA_PRIVATE_PROFILE',
+      '$owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
+      '$acl = New-Object System.Security.AccessControl.DirectorySecurity',
+      '$acl.SetAccessRuleProtection($true, $false)',
+      '$acl.SetOwner($owner)',
+      'foreach ($sid in @($owner, (New-Object System.Security.Principal.SecurityIdentifier("S-1-5-18")), (New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-544")))) {',
+      '  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")',
+      '  $acl.AddAccessRule($rule)',
+      '}',
+      'Set-Acl -LiteralPath $target -AclObject $acl',
+      'if (!(Get-Acl -LiteralPath $target).AreAccessRulesProtected) { throw "QA_PROFILE_ACL_FAILED" }',
+      'Write-Output "QA_PROFILE_PRIVATE"',
+    ].join('\n') + '\nexit 0\n} catch { exit 1 }\n\n'
+    const aclEnvironment = { VIBEPAPER_QA_PRIVATE_PROFILE: profile }
+    for (const name of ['SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP']) {
+      if (process.env[name]) aclEnvironment[name] = process.env[name]
+    }
+    const aclOutput = execFileSync(path.join(process.env.SYSTEMROOT, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+      ['-NoProfile', '-NonInteractive', '-Command', '-'], { input: aclScript,
+        env: aclEnvironment, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8' })
+    if (!aclOutput.includes('QA_PROFILE_PRIVATE')) throw Object.assign(new Error('QA_ASSERTION_FAILED'), { code: 'QA_ASSERTION_FAILED' })
+  }
   // Use the same sanitized network environment as the no-key CLI diagnostic.
   // Dropping the parent's explicit proxy here would make the Electron-hosted
   // CLI silently use a different WinINET fallback route.
   const { environment: childEnvironment } = buildCodexEnvironment(secret)
   delete childEnvironment.ELECTRON_RUN_AS_NODE
-  const child = spawn(electronPath, [workerPath, '--worker', '--run-root', runRoot,
-    ...(configurationOnly ? ['--configuration-only'] : [])], {
-    cwd: root, env: childEnvironment, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
+  const workerArgs = [workerPath, '--worker', '--run-root', runRoot,
+    ...(configurationOnly ? ['--configuration-only'] : []),
+    ...(appServerHost ? ['--app-server-host'] : [])]
+  const child = spawn(electronPath, workerArgs, {
+    cwd: root, env: childEnvironment, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore', 'ipc'],
   })
   childEnvironment[secretEnvName] = ''
   secret = undefined
   originalSecret = undefined
   let outputBuffer = ''
   let operatorGateStarted = false
+  let pendingClientConfirmation = null
+  let clientConfirmationInputBuffer = ''
+  let clientConfirmationDataListener = null
+  let clientConfirmationEndListener = null
+  function sendWorkerControlMessage(message) {
+    if (!child.connected || typeof child.send !== 'function') return Promise.resolve(false)
+    return new Promise((resolve) => {
+      let settled = false
+      const timer = setTimeout(() => finish(false), 3_000)
+      const finish = (sent) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(sent)
+      }
+      try { child.send(message, (error) => finish(!error)) }
+      catch { finish(false) }
+    })
+  }
+
+  function stopClientConfirmationInput() {
+    if (clientConfirmationDataListener) process.stdin.removeListener('data', clientConfirmationDataListener)
+    if (clientConfirmationEndListener) process.stdin.removeListener('end', clientConfirmationEndListener)
+    clientConfirmationDataListener = null
+    clientConfirmationEndListener = null
+    clientConfirmationInputBuffer = ''
+    process.stdin.pause()
+  }
+  function settleClientConfirmation(requestId, accept, writeResponse = true) {
+    if (!pendingClientConfirmation || pendingClientConfirmation.qaRequestId !== requestId) return false
+    clearTimeout(pendingClientConfirmation.timer)
+    pendingClientConfirmation = null
+    stopClientConfirmationInput()
+    if (writeResponse) void sendWorkerControlMessage({ type: 'qa-client-confirmation', requestId, accept })
+    return true
+  }
+  function handleClientConfirmationLine(line) {
+    const match = line.trim().match(/^(approve|reject):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu)
+    if (!match || !pendingClientConfirmation || match[2].toLowerCase() !== pendingClientConfirmation.qaRequestId) return
+    settleClientConfirmation(pendingClientConfirmation.qaRequestId, match[1].toLowerCase() === 'approve')
+  }
+  function startClientConfirmationInput() {
+    if (clientConfirmationDataListener) return
+    clientConfirmationDataListener = (chunk) => {
+      clientConfirmationInputBuffer += String(chunk)
+      if (clientConfirmationInputBuffer.length > 512) {
+        clientConfirmationInputBuffer = ''
+        return
+      }
+      let newline
+      while ((newline = clientConfirmationInputBuffer.search(/[\r\n]/u)) >= 0) {
+        const line = clientConfirmationInputBuffer.slice(0, newline)
+        clientConfirmationInputBuffer = clientConfirmationInputBuffer.slice(newline + 1).replace(/^\n/u, '')
+        handleClientConfirmationLine(line)
+      }
+    }
+    clientConfirmationEndListener = () => {
+      if (pendingClientConfirmation) settleClientConfirmation(pendingClientConfirmation.qaRequestId, false)
+    }
+    process.stdin.on('data', clientConfirmationDataListener)
+    process.stdin.once('end', clientConfirmationEndListener)
+    process.stdin.resume()
+  }
+  function relayClientGenerationConfirmation(payload) {
+    const keys = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? Object.keys(payload).sort().join(',') : ''
+    const valid = keys === 'message,qaRequestId,stage'
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(payload.qaRequestId || '')
+      && ['image', 'video'].includes(payload.stage)
+      && typeof payload.message === 'string' && payload.message.length > 0 && payload.message.length <= 20_000
+    if (!valid) {
+      console.log('QA_STATUS GENERATION_CONFIRMATION_INVALID')
+      return
+    }
+    if (pendingClientConfirmation) {
+      void sendWorkerControlMessage({ type: 'qa-client-confirmation', requestId: payload.qaRequestId, accept: false })
+      console.log('QA_STATUS GENERATION_CONFIRMATION_CONCURRENTLY_REJECTED')
+      return
+    }
+    const qaRequestId = payload.qaRequestId.toLowerCase()
+    const timer = setTimeout(() => {
+      if (pendingClientConfirmation?.qaRequestId !== qaRequestId) return
+      settleClientConfirmation(qaRequestId, false)
+      console.log('QA_STATUS GENERATION_CONFIRMATION_EXPIRED')
+    }, 120_000)
+    pendingClientConfirmation = { qaRequestId, stage: payload.stage, timer }
+    startClientConfirmationInput()
+    console.log(`QA_GENERATION_CONFIRMATION ${JSON.stringify({ qaRequestId, stage: payload.stage, message: payload.message })}`)
+  }
   const removeChildSignalHandlers = () => {
     process.off('SIGINT', handleParentInterrupt)
     process.off('SIGTERM', handleParentTermination)
@@ -832,15 +957,14 @@ async function runController() {
   let operatorInterface = null
   const requestPaidStageApproval = async () => {
     // The caller must have the user's authorization for this explicit scope.
-    // The original desktop disclosure and every generation confirmation still
-    // require the human user; this controls only the extra QA executor gate.
-    if (executorPreauthorizedOneImageAndVideo && child.stdin?.writable) {
+    // Each generation form still requires the human user; this controls only
+    // the extra QA executor gate, never a provider or generation approval.
+    if (executorPreauthorizedOneImageAndVideo) {
       console.log('QA_STATUS EXECUTOR_PREAUTHORIZED_ONE_IMAGE_AND_VIDEO')
-      child.stdin.write('continue\n')
-      return true
+      return sendWorkerControlMessage({ type: 'qa-operator-media-gate', approved: true })
     }
-    if (!process.stdin.isTTY || !child.stdin?.writable) {
-      child.stdin?.end('cancel\n')
+    if (!process.stdin.isTTY || !child.connected) {
+      await sendWorkerControlMessage({ type: 'qa-operator-media-gate', approved: false })
       return false
     }
     process.stdin.setRawMode?.(false)
@@ -854,9 +978,8 @@ async function runController() {
         settled = true
         interfaceHandle.close()
         operatorInterface = null
-        if (child.stdin?.writable) child.stdin.write(approved ? 'continue\n' : 'cancel\n')
-        if (!approved) child.stdin?.end()
-        resolve(approved)
+        void sendWorkerControlMessage({ type: 'qa-operator-media-gate', approved })
+          .then((sent) => resolve(approved && sent))
       }
       const ask = () => interfaceHandle.question('配置和启用型号已核验。输入 continue 开始最多一次图片和一次视频生成，输入 cancel 停止：',
         (answer) => {
@@ -874,15 +997,23 @@ async function runController() {
     while ((index = outputBuffer.indexOf('\n')) >= 0) {
       const line = outputBuffer.slice(0, index).trim()
       outputBuffer = outputBuffer.slice(index + 1)
+      if (line.startsWith('QA_GENERATION_CONFIRMATION ')) {
+        try {
+          if (line.length > 130_000) throw new Error('oversized confirmation line')
+          relayClientGenerationConfirmation(JSON.parse(line.slice('QA_GENERATION_CONFIRMATION '.length)))
+        }
+        catch { console.log('QA_STATUS GENERATION_CONFIRMATION_INVALID') }
+        continue
+      }
       if (/^QA_STATUS [A-Z0-9_ -]{1,100}$/u.test(line)) {
         console.log(line)
         if (line === 'QA_STATUS CONFIGURATION_VERIFIED_WAITING_FOR_PAID_MEDIA' && !operatorGateStarted) {
           operatorGateStarted = true
-          void requestPaidStageApproval().catch(() => child.stdin?.end('cancel\n'))
+          void requestPaidStageApproval().catch(() => sendWorkerControlMessage({ type: 'qa-operator-media-gate', approved: false }))
         }
       }
     }
-    if (outputBuffer.length > 2048) outputBuffer = ''
+    if (outputBuffer.length > 132_000) outputBuffer = ''
   })
   let timedOut = false
   const workerResult = await new Promise((resolve) => {
@@ -892,6 +1023,8 @@ async function runController() {
       settled = true
       clearTimeout(timer)
       removeChildSignalHandlers()
+      if (pendingClientConfirmation) settleClientConfirmation(pendingClientConfirmation.qaRequestId, false, false)
+      else stopClientConfirmationInput()
       operatorInterface?.close()
       const summary = await fs.readFile(resultPath, 'utf8').then((raw) => JSON.parse(raw)).catch(() => null)
       resolve({ code, signal, spawnErrorCode, summary })
@@ -913,6 +1046,10 @@ async function runController() {
   needle.fill(0)
   const summary = workerResult.summary || {
     schemaVersion: 1, success: false, phase: 'electron-worker', errorCode: timedOut ? 'ELECTRON_WORKER_TIMEOUT' : workerResult.spawnErrorCode || 'ELECTRON_WORKER_FAILED',
+    confirmationPolicy: 'client-form-generation-only-2026-10-17',
+    clientHost: appServerHost ? 'codex-app-server-qa-relay' : 'codex-cli-exec',
+    nativeCodexPopupAccepted: false, generationConfirmationsObserved: 0,
+    generationConfirmationResponses: 0, generationConfirmationsConfirmed: 0,
     cliExitCodes: [], providerConfigurationSaved: false, imageTaskStatus: null, videoTaskStatus: null,
   }
   const final = {
@@ -943,18 +1080,59 @@ async function runController() {
   if (!final.success || plaintextKeyFound !== false) process.exitCode = 1
 }
 
-function createAcceptanceMediaSubmissionGuard() {
+function createAcceptanceMediaSubmissionGuard(getActiveStage = () => null) {
   const proposals = new Map()
   const attemptedModalities = new Set()
+  const startedStages = new Set()
   const scopeKeys = ['projectId', 'canvasId', 'clientId', 'grantId']
   const reject = () => { throw Object.assign(new Error('QA_MEDIA_SCOPE_EXCEEDED'), { code: 'QA_MEDIA_SCOPE_EXCEEDED' }) }
+  const parseArguments = (payload) => {
+    let args = payload?.arguments
+    if (typeof args === 'string') { try { args = JSON.parse(args) } catch { args = null } }
+    return args && typeof args === 'object' && !Array.isArray(args) ? args : null
+  }
+  const nonEmpty = (value) => {
+    if (value === null || value === undefined || value === false) return false
+    if (typeof value === 'string') return value.trim().length > 0
+    if (Array.isArray(value)) return value.length > 0
+    if (typeof value === 'object') return Object.keys(value).length > 0
+    return true
+  }
+  const allowedModelParams = (modality, value) => {
+    if (value !== undefined && value !== null && (typeof value !== 'object' || Array.isArray(value))) return false
+    const params = value || {}
+    const aliases = (names, predicate) => names.every((name) => !Object.hasOwn(params, name) || predicate(params[name]))
+    if (!aliases(['count', 'n', 'num_images', 'num_videos'], (entry) => entry === 1)) return false
+    if (modality === 'image') {
+      return true
+    }
+    if (modality !== 'video') return false
+    return aliases(['duration', 'seconds'], (entry) => entry === 4)
+      && aliases(['resolution', 'size', 'resKey'], (entry) => typeof entry === 'string' && entry.trim().toUpperCase() === '720P')
+      && aliases(['ratio', 'aspect', 'aspectRatio', 'aspect_ratio'], (entry) => typeof entry === 'string' && entry.trim() === '16:9')
+      && ['firstFrameUrl', 'lastFrameUrl', 'imageUrl', 'referenceImages', 'referenceUrls', 'videoUrl', 'refVideoUrl']
+        .every((name) => !Object.hasOwn(params, name) || !nonEmpty(params[name]))
+  }
   return async function guardedRequest(invoke, method, payload) {
     if (method === 'mcp:action:resolve' && payload?.decision === 'approve') {
       const prepared = proposals.get(payload.proposalId)
       if (!prepared || scopeKeys.some((key) => prepared[key] !== payload[key])
-        || attemptedModalities.has(prepared.modality)) reject()
-      // Reserve before dispatch, including uncertain or failed submissions. Never retry paid work.
-      attemptedModalities.add(prepared.modality)
+        || prepared.approved) reject()
+      // Reserve approval before dispatch, including uncertain results.
+      prepared.approved = true
+    }
+    let stageForPreparation = null
+    if (method === 'mcp:tool:execute' && payload?.toolName === 'prepare_generation') {
+      const args = parseArguments(payload)
+      stageForPreparation = getActiveStage()
+      if (['image', 'video'].includes(stageForPreparation)) {
+        if (attemptedModalities.has(stageForPreparation) || startedStages.has(stageForPreparation)) reject()
+        // Even a malformed or failed prepare consumes this stage's one attempt.
+        startedStages.add(stageForPreparation)
+      }
+      if (!args || !Array.isArray(args.generations) || args.generations.length !== 1
+        || !['image', 'video'].includes(stageForPreparation)
+        || !allowedModelParams(stageForPreparation, args.generations[0]?.modelParams)) reject()
     }
     const result = await invoke()
     if (method === 'mcp:tool:execute' && payload?.toolName === 'prepare_generation') {
@@ -965,15 +1143,20 @@ function createAcceptanceMediaSubmissionGuard() {
       const modality = label === 'Agnes Image 2.5 Flash' ? 'image'
         : label === 'Agnes Video 2.5 Flash' ? 'video' : null
       if (typeof content.proposalId !== 'string' || !Array.isArray(items) || items.length !== 1 || !modality
-        || attemptedModalities.has(modality)) reject()
-      // Retain only scope and modality, never prompt, key, input parameters or approval token.
-      proposals.set(content.proposalId, { ...Object.fromEntries(scopeKeys.map((key) => [key, payload[key]])), modality })
+        || modality !== stageForPreparation || attemptedModalities.has(modality)) reject()
+      // Reserve before a client decision or uncertain follow-up. Retain only
+      // scope, stage, modality, and one-use state; never retain prompt or params.
+      attemptedModalities.add(modality)
+      proposals.set(content.proposalId, { ...Object.fromEntries(scopeKeys.map((key) => [key, payload[key]])), modality,
+        stage: stageForPreparation, approved: false })
     }
     return result
   }
 }
 
 async function workerMain() {
+  const { createQaWorkerControl } = require('./qa-worker-ipc.cjs')
+  const qaWorkerControl = createQaWorkerControl(process)
   const { app, BrowserWindow, dialog, protocol, safeStorage } = require('electron')
   const { createLocalProjectStore } = require('../src/project-store.cjs')
   const { spawn: childSpawn } = require('node:child_process')
@@ -1003,6 +1186,7 @@ async function workerMain() {
   let grantClientId
   let clientConfig
   let cliChild
+  let cliHostClose = null
   let phase = 'prepare-isolated-profile'
   let pairedConnections = 0
   let nativeApprovalDialogsObserved = 0
@@ -1014,6 +1198,7 @@ async function workerMain() {
   let configurationContinuationAttempted = false
   let canvasReadyAfterDisclosureReturn = null
   let generationConfirmationsObserved = 0
+  let generationConfirmationResponses = 0
   let generationConfirmationsConfirmed = 0
   let providerConfigured = false
   let providerCredentialCleared = false
@@ -1025,6 +1210,7 @@ async function workerMain() {
   let latestCanvasSummary = null
   let previewMatchesTaskStore = { image: null, video: null }
   let cliTurns = []
+  let activeGenerationStage = null
   let providerConnectionTestStatus = null
   let mcpDiagnostics = { toolNames: [], calls: Object.create(null), statusByTool: Object.create(null), errorCodes: new Set(),
     jsonRpcErrorCodes: new Set(), rpcResponses: [], unknownPublicErrorCode: false,
@@ -1032,6 +1218,24 @@ async function workerMain() {
   const startedAt = new Date().toISOString()
 
   function status(message) { console.log(`QA_STATUS ${message}`) }
+
+  async function relayCodexGenerationElicitation(params, stage, signal) {
+    if (!appServerHost || !['image', 'video'].includes(stage)
+      || typeof params?.message !== 'string' || params.message.length === 0 || params.message.length > 20_000) {
+      return { action: 'decline', content: null }
+    }
+    const qaRequestId = randomUUID()
+    generationConfirmationsObserved += 1
+    const decision = qaWorkerControl.waitForClientConfirmation(qaRequestId, { signal, timeoutMs: 120_000 })
+    process.stdout.write(`QA_GENERATION_CONFIRMATION ${JSON.stringify({ qaRequestId, stage, message: params.message })}\n`)
+    const response = await decision
+    if (response.answered) generationConfirmationResponses += 1
+    if (response.accepted) {
+      generationConfirmationsConfirmed += 1
+      return { action: 'accept', content: { confirm: true } }
+    }
+    return { action: 'decline', content: null }
+  }
 
   function safeCliTurnSummaries() {
     return cliTurns.map((turn) => ({
@@ -1067,7 +1271,7 @@ async function workerMain() {
     const serviceModule = require('../src/mcp-main-service.cjs')
     const originalFactory = serviceModule.createMcpMainService
     const workerProxies = new WeakMap()
-    const guardMediaSubmission = createAcceptanceMediaSubmissionGuard()
+    const guardMediaSubmission = createAcceptanceMediaSubmissionGuard(() => activeGenerationStage)
     const recordMedia = (summary) => {
       if (!summary || !['image', 'video'].includes(summary.modality)
         || !['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/quicktime', 'video/webm'].includes(summary.mimeType)
@@ -1409,35 +1613,6 @@ async function workerMain() {
     })()`)
   }
 
-  async function waitForHumanCard(_kind, ordinal = 1) {
-    const selector = '[data-testid="mcp-generation-confirmation"] button:not(:disabled)'
-    const label = `GENERATION_CONFIRMATION_${ordinal}`
-    const after = '!document.querySelector("[data-testid=mcp-generation-confirmation]")'
-    await waitFor(`Boolean(document.querySelector(${JSON.stringify(selector)}))`, 35 * 60_000)
-    const pending = (await readScopedGenerationActions()).filter((action) => action.status === 'awaiting_confirmation')
-    if (pending.length !== 1) throw Object.assign(new Error('GENERATION_ACTION_AMBIGUOUS'), { code: 'GENERATION_ACTION_AMBIGUOUS' })
-    generationConfirmationsObserved += 1
-    status(`WAITING_FOR_${label}_IN_ORIGINAL_DESKTOP`)
-    await waitFor(after, 35 * 60_000)
-    const deadline = Date.now() + 10_000
-    while (Date.now() < deadline) {
-      const resolved = (await readScopedGenerationActions()).find((action) => action.proposalId === pending[0].proposalId)
-      if (resolved && ['rejected', 'cancelled', 'expired', 'invalidated', 'denied'].includes(resolved.status)) {
-        throw Object.assign(new Error('GENERATION_CONFIRMATION_REJECTED'), { code: 'GENERATION_CONFIRMATION_REJECTED' })
-      }
-      if (resolved && ['submission_unknown', 'submission-unknown'].includes(resolved.status)) {
-        throw Object.assign(new Error('GENERATION_SUBMISSION_UNCERTAIN'), { code: 'GENERATION_SUBMISSION_UNCERTAIN' })
-      }
-      if (resolved?.status === 'submitted') {
-        generationConfirmationsConfirmed += 1
-        status(`DESKTOP_CONFIRMED_${label}`)
-        return
-      }
-      await new Promise((resolve) => setTimeout(resolve, 300))
-    }
-    throw Object.assign(new Error('GENERATION_CONFIRMATION_UNRESOLVED'), { code: 'GENERATION_CONFIRMATION_UNRESOLVED' })
-  }
-
   async function settleExistingMediaTask(modality) {
     const deadline = Date.now() + 35 * 60_000
     let noTaskDeadline = Date.now() + 30_000
@@ -1450,12 +1625,17 @@ async function workerMain() {
       if (canvas[taskCountKey] === 1) {
         if (['succeeded', 'failed', 'cancelled'].includes(canvas[taskStatusKey])) return canvas
       } else {
-        const pending = (await readScopedGenerationActions()).filter((action) => action.status === 'awaiting_confirmation')
-        if (pending.length > 1) throw Object.assign(new Error('GENERATION_ACTION_AMBIGUOUS'), { code: 'GENERATION_ACTION_AMBIGUOUS' })
-        if (pending.length === 1) {
-          await waitForHumanCard('generation', generationConfirmationsObserved + 1)
-          noTaskDeadline = Date.now() + 30_000
-          continue
+        const actions = await readScopedGenerationActions()
+        if (actions.length > 1) throw Object.assign(new Error('GENERATION_ACTION_AMBIGUOUS'), { code: 'GENERATION_ACTION_AMBIGUOUS' })
+        const pending = actions[0]
+        if (pending && ['rejected', 'cancelled', 'expired', 'invalidated', 'denied'].includes(pending.status)) {
+          throw Object.assign(new Error('GENERATION_CONFIRMATION_REJECTED'), { code: 'GENERATION_CONFIRMATION_REJECTED' })
+        }
+        if (pending && ['submission_unknown', 'submission-unknown'].includes(pending.status)) {
+          throw Object.assign(new Error('GENERATION_SUBMISSION_UNCERTAIN'), { code: 'GENERATION_SUBMISSION_UNCERTAIN' })
+        }
+        if (pending?.status === 'awaiting_confirmation') {
+          throw Object.assign(new Error('GENERATION_CONFIRMATION_UNRESOLVED'), { code: 'GENERATION_CONFIRMATION_UNRESOLVED' })
         }
         if (Date.now() >= noTaskDeadline) break
       }
@@ -1464,57 +1644,22 @@ async function workerMain() {
     throw Object.assign(new Error('EXISTING_MEDIA_TASK_TIMEOUT'), { code: 'EXISTING_MEDIA_TASK_TIMEOUT' })
   }
 
-  async function waitForInteractionAndExit(turn, stage) {
-    let generationOrdinal = 0
-    const deadline = Date.now() + 37 * 60_000
-    while (Date.now() < deadline) {
-      if (window && !window.isDestroyed() && !window.webContents.isLoading()) {
-        if (await evaluate('Boolean(document.querySelector("[data-testid=\\"mcp-generation-confirmation\\"] button:not(:disabled)"))').catch(() => false)) {
-          generationOrdinal += 1
-          await waitForHumanCard('generation', generationOrdinal)
-        }
-      }
-      const outcome = await Promise.race([turn.result, new Promise((resolve) => setTimeout(() => resolve(null), 100))])
-      if (outcome) return outcome
-      await new Promise((resolve) => setTimeout(resolve, 200))
-    }
-    await stopOwnedCli()
-    throw Object.assign(new Error(`CODEX_STAGE_TIMEOUT_${stage}`), { code: 'CODEX_STAGE_TIMEOUT' })
-  }
-
   async function waitForOperatorContinue() {
+    const decision = qaWorkerControl.waitForOperatorMediaGate({ timeoutMs: 55 * 60_000 })
     status('CONFIGURATION_VERIFIED_WAITING_FOR_PAID_MEDIA')
-    const approved = await new Promise((resolve) => {
-      let buffer = ''
-      let settled = false
-      const finish = (value) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        process.stdin.removeListener('data', onData)
-        process.stdin.removeListener('end', onEnd)
-        process.stdin.pause()
-        buffer = ''
-        resolve(value)
-      }
-      const onData = (chunk) => {
-        for (const character of String(chunk)) {
-          if (character === '\r' || character === '\n') return finish(buffer.trim().toLowerCase() === 'continue')
-          if (buffer.length < 32) buffer += character
-        }
-      }
-      const onEnd = () => finish(false)
-      const timer = setTimeout(() => finish(false), 55 * 60_000)
-      process.stdin.on('data', onData)
-      process.stdin.once('end', onEnd)
-      process.stdin.resume()
-    })
+    const approved = await decision
     if (!approved) throw Object.assign(new Error('OPERATOR_MEDIA_GATE_CANCELLED'), { code: 'OPERATOR_MEDIA_GATE_CANCELLED' })
     status('OPERATOR_APPROVED_PAID_MEDIA')
     return true
   }
 
   async function stopOwnedCli() {
+    if (cliHostClose) {
+      const close = cliHostClose
+      cliHostClose = null
+      await close().catch(() => {})
+      return
+    }
     if (!cliChild || cliChild.exitCode !== null || cliChild.signalCode !== null || !Number.isInteger(cliChild.pid)) return
     if (process.platform === 'win32') {
       await new Promise((resolve) => {
@@ -1527,6 +1672,8 @@ async function workerMain() {
   }
 
   async function startCodexTurn(stage, prompt) {
+    const desktopState = await evaluate('window.vibepaperDesktop.getMcpState()')
+    status(`CODEX_DESKTOP_CANVAS_READY_${desktopState?.canvasReady === true ? 'YES' : 'NO'}`)
     const server = parseCodexConfig(clientConfig)
     const { override, bridgeAppDataIsolated } = buildCodexOverride(server, runRoot, stage)
     const executable = resolveCodexExecutable()
@@ -1535,12 +1682,69 @@ async function workerMain() {
     const cwd = projectDirectory
     const trace = createSafeTraceParser()
     const stderrDiagnostics = createSafeStderrClassifier()
+    status(`CODEX_STAGE_${stage.toUpperCase()}_STARTED`)
+    if (appServerHost) {
+      const prefix = 'mcp_servers.vibepaper='
+      if (!override.startsWith(prefix)) throw Object.assign(new Error('CODEX_MCP_CONFIG_INVALID'), { code: 'CODEX_MCP_CONFIG_INVALID' })
+      const configHome = environment.CODEX_HOME || path.join(environment.USERPROFILE || os.homedir(), '.codex')
+      let configText = ''
+      try { configText = fsSync.readFileSync(path.join(configHome, 'config.toml'), 'utf8') }
+      catch (error) { if (error?.code !== 'ENOENT') throw Object.assign(new Error('CODEX_MCP_CONFIG_INVALID'), { code: 'CODEX_MCP_CONFIG_INVALID' }) }
+      const { createVibePaperOnlyOverride, startCodexAppServerTurn } = require('./codex-app-server-acceptance-host.cjs')
+      const appServerOverrides = createVibePaperOnlyOverride(override.slice(prefix.length), configText)
+      const host = await startCodexAppServerTurn({
+        executable,
+        overrides: appServerOverrides,
+        useClientDefaultModel: true,
+        cwd,
+        environment,
+        prompt,
+        timeoutMs: 37 * 60_000,
+        onTrace: (event) => trace.accept(JSON.stringify(event)),
+        onStderr: (chunk) => stderrDiagnostics.accept(chunk),
+        onRequestError: ({ method, code }) => {
+          const safeMethod = ['initialize', 'model/list', 'thread/start', 'mcpServerStatus/list', 'turn/start'].includes(method)
+            ? method.replaceAll('/', '_').toUpperCase() : 'OTHER'
+          status(`CODEX_RPC_${safeMethod}_ERROR_${safeJsonRpcErrorCodes.has(code) ? code : 'OTHER'}`)
+        },
+        onScope: (summary) => {
+          status(`CODEX_SCOPE_SERVERS_${summary.serverCount}`)
+          status(`CODEX_SCOPE_PAGINATED_${summary.paginated ? 'YES' : 'NO'}`)
+          for (const state of summary.vibePaperStatuses) status(`CODEX_SCOPE_VIBE_${state.toUpperCase()}`)
+          for (const [state, count] of Object.entries(summary.otherStatuses)) status(`CODEX_SCOPE_OTHER_${state.toUpperCase()}_${count}`)
+          status(`CODEX_SCOPE_OTHER_WITH_TOOLS_${summary.otherWithTools}`)
+        },
+        onElicitation: (params, { signal }) => relayCodexGenerationElicitation(params, stage, signal),
+      }).catch((error) => {
+        environment[secretEnvName] = ''
+        finishAppServerTurn('failed')
+        throw error
+      })
+      environment[secretEnvName] = ''
+      cliChild = host.child
+      cliHostClose = host.close
+      function finishAppServerTurn(turnStatus) {
+        const summary = trace.summary()
+        const output = { stage, exitCode: turnStatus === 'completed' ? 0 : 1, terminationSignal: null,
+          turnCompleted: turnStatus === 'completed' && summary.turnCompleted,
+          errorEventSeen: summary.errorEventSeen, trace: summary, systemProxyAddressProvided,
+          codexCliAppDataPreserved, mcpBridgeAppDataIsolated: bridgeAppDataIsolated,
+          stderrDiagnostics: stderrDiagnostics.summary() }
+        cliTurns.push(output)
+        stderrDiagnostics.clear()
+        return output
+      }
+      const result = host.result.then((turn) => finishAppServerTurn(turn?.status), (error) => {
+        finishAppServerTurn('failed')
+        throw error
+      })
+      return { child: host.child, result, trace, close: host.close }
+    }
     const args = [
       '--ask-for-approval', 'on-request', '-c', override,
       'exec', '--ignore-user-config', '--ephemeral', '--disable', 'shell_tool',
       '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '--cd', cwd, prompt,
     ]
-    status(`CODEX_STAGE_${stage.toUpperCase()}_STARTED`)
     const child = spawn(executable, args, { cwd, env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     environment[secretEnvName] = ''
     cliChild = child
@@ -1590,14 +1794,20 @@ async function workerMain() {
   }
 
   async function runCodexStage(stage, prompt) {
-    const turn = await startCodexTurn(stage, prompt)
-    const result = await waitForInteractionAndExit(turn, stage)
-    cliChild = null
-    if (result.exitCode !== 0 || !result.turnCompleted) {
-      throw Object.assign(new Error(`CODEX_TURN_FAILED_${stage.toUpperCase()}`), { code: 'CODEX_TURN_FAILED' })
+    activeGenerationStage = stage
+    try {
+      const turn = await startCodexTurn(stage, prompt)
+      const result = await turn.result
+      if (result.exitCode !== 0 || !result.turnCompleted) {
+        throw Object.assign(new Error(`CODEX_TURN_FAILED_${stage.toUpperCase()}`), { code: 'CODEX_TURN_FAILED' })
+      }
+      status(`CODEX_STAGE_${stage.toUpperCase()}_COMPLETED`)
+      return result
+    } finally {
+      cliChild = null
+      cliHostClose = null
+      activeGenerationStage = null
     }
-    status(`CODEX_STAGE_${stage.toUpperCase()}_COMPLETED`)
-    return result
   }
 
   function aggregateToolTrace() {
@@ -1775,7 +1985,7 @@ async function workerMain() {
       '只根据当前画布和模型目录的信息操作，不运行命令、不读取文件、不复述任何凭据。用简短中文报告配置状态、检测状态和显示型号。',
     ].join('\n'),
     configureResume: [
-      '桌面用户已批准 Agnes 的数据发送披露，系统核对当前仍未保存本次密钥和默认模型。请完成尚未保存的配置：先重新读取当前 Agnes 公开配置、可用型号和本轮授权凭据来源。若已有完整配置则保留并核验。',
+      'Agnes 配置范围已授权并自动记录发送信息，系统核对当前仍未保存本次密钥和默认模型。请完成尚未保存的配置：先重新读取当前 Agnes 公开配置、可用型号和本轮授权凭据来源。若已有完整配置则保留并核验。',
       '本轮已授权通过本地凭据来源写入密钥，请使用公开配置返回的来源引用完成保存；保存动作无需读取或显示密钥正文。请把来源关联到对应密钥字段，并启用及设置默认图片型号“Agnes Image 2.5 Flash”和视频型号“Agnes Video 2.5 Flash”，参数按目录配置为图片 1K、1:1，视频文本模式、4 秒、720P、16:9。',
       '请先完成保存并重新读取公开配置确认，再执行不创建生成任务的连接检测；如结果为不支持，请明确报告“不支持检测”，不得说成鉴权成功。不要索要密钥正文，不要创建节点、图片、视频或任何媒体任务，不运行命令，不读取文件。',
     ].join('\n'),
@@ -1904,8 +2114,12 @@ async function workerMain() {
       if (!providerCredentialCleared || !grantRevoked) throw Object.assign(new Error('CREDENTIAL_CLEANUP_FAILED'), { code: 'CREDENTIAL_CLEANUP_FAILED' })
       const trace = aggregateToolTrace()
       await fs.writeFile(resultPath, JSON.stringify({ schemaVersion: 1, success: true,
-        testType: 'real Codex natural-language provider configuration without manual approval',
+        testType: appServerHost ? 'real Codex app-server provider configuration without manual approval'
+          : 'real Codex CLI natural-language provider configuration without manual approval',
         confirmationPolicy: 'client-form-generation-only-2026-10-17',
+        clientHost: appServerHost ? 'codex-app-server-qa-relay' : 'codex-cli-exec',
+        nativeCodexPopupAccepted: false,
+        generationConfirmationsObserved, generationConfirmationResponses, generationConfirmationsConfirmed,
         phase: 'configuration-completed', provider: 'Agnes', providerConfigurationSaved: true,
         providerModelsEnabled: true, providerConnectionTestStatus, pairedConnectionCount: pairedConnections,
         nativeApprovalDialogsObserved,
@@ -1979,7 +2193,11 @@ async function workerMain() {
     secretBytes.fill(0)
     const output = {
       schemaVersion: 1,
-      testType: 'real Codex CLI natural-language Agnes image and video MCP acceptance',
+      testType: appServerHost ? 'real Codex app-server Agnes image and video MCP acceptance'
+        : 'real Codex CLI natural-language Agnes image and video MCP acceptance',
+      confirmationPolicy: 'client-form-generation-only-2026-10-17',
+      clientHost: appServerHost ? 'codex-app-server-qa-relay' : 'codex-cli-exec',
+      nativeCodexPopupAccepted: false,
       success: true,
       phase: 'completed',
       provider: 'Agnes',
@@ -1996,6 +2214,7 @@ async function workerMain() {
       configurationContinuationAttempted,
       canvasReadyAfterDisclosureReturn,
       generationConfirmationsObserved,
+      generationConfirmationResponses,
       generationConfirmationsConfirmed,
       paidMediaAuthorizedByOperator,
       toolNamesObserved: trace.toolNames,
@@ -2070,7 +2289,11 @@ async function workerMain() {
     secretBytes.fill(0)
     const output = {
       schemaVersion: 1,
-      testType: 'real Codex CLI natural-language Agnes image and video MCP acceptance',
+      testType: appServerHost ? 'real Codex app-server Agnes image and video MCP acceptance'
+        : 'real Codex CLI natural-language Agnes image and video MCP acceptance',
+      confirmationPolicy: 'client-form-generation-only-2026-10-17',
+      clientHost: appServerHost ? 'codex-app-server-qa-relay' : 'codex-cli-exec',
+      nativeCodexPopupAccepted: false,
       success: false,
       phase,
       errorCode: code,
@@ -2088,6 +2311,7 @@ async function workerMain() {
       configurationContinuationAttempted,
       canvasReadyAfterDisclosureReturn,
       generationConfirmationsObserved,
+      generationConfirmationResponses,
       generationConfirmationsConfirmed,
       paidMediaAuthorizedByOperator,
       toolNamesObserved: trace.toolNames,
@@ -2162,6 +2386,10 @@ if (codexDiagnosticMode) {
     const runRoot = process.argv[process.argv.indexOf('--run-root') + 1]
     const resultPath = path.join(runRoot, 'worker-result.json')
     const summary = { schemaVersion: 1, success: false, phase: 'electron-worker-bootstrap', errorCode: code,
+      confirmationPolicy: 'client-form-generation-only-2026-10-17',
+      clientHost: appServerHost ? 'codex-app-server-qa-relay' : 'codex-cli-exec',
+      nativeCodexPopupAccepted: false, generationConfirmationsObserved: 0,
+      generationConfirmationResponses: 0, generationConfirmationsConfirmed: 0,
       credentialsClearedViaDesktopIpc: false, testGrantRevoked: false, rawClientTranscriptSaved: false,
       promptSaved: false, apiKeySavedInEvidence: false, mcpBootstrapSaved: false }
     await fs.writeFile(resultPath, JSON.stringify(summary, null, 2)).catch(() => {})
