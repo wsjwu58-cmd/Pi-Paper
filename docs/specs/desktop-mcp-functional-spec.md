@@ -86,6 +86,8 @@ flowchart LR
 | `create_nodes` / `update_node_config` | 原 schema，明确参考关系；写入 operationId/版本 | 真实节点及完成步骤；遵循原领域规则 |
 | `connect_nodes` / `layout_nodes` | 明确端点/原布局参数；operationId/版本 | 真实边/布局；不推断多参考到多目标的笛卡尔积 |
 | `prepare_generation` | 目标、bindingId、参数、明确参考；operationId/expectedVersion | 持久化提案；桥接在同次调用中请求客户端 form 确认，批准后沿原任务通道提交，返回状态/任务；拒绝、取消或不支持均不提交 |
+
+`prepare_generation.generations[].modelType` 是兼容原生成 DTO 的字段名，其值须从 `list_models` 返回的精确 `name` 或 `bindingId` 复制。它不是目录的模态字段 `modelType`，也不是供应商调用 ID `apiModelId`；服务端只做精确查找并规范为目录 `name`，不按展示名称、简称或相似文字推断模型。
 | `get_operation` | operationId 或 proposalId | 本连接可查询的权威执行/确认状态、任务关联与错误 |
 | `check_task_status` | taskId | 状态、错误、结果元数据；成功以文件已落盘且可读取为准 |
 | `read_task_output` | taskId、outputIndex（0–3，默认 0）、mode（metadata/preview）、文本 offset/limit | 文本分页；图片/视频默认元数据，显式 preview 返回受限媒体内容；不给任意目录读取能力 |

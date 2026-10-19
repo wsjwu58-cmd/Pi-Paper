@@ -1215,6 +1215,8 @@ async function workerMain() {
   let mcpDiagnostics = { toolNames: [], calls: Object.create(null), statusByTool: Object.create(null), errorCodes: new Set(),
     jsonRpcErrorCodes: new Set(), rpcResponses: [], unknownPublicErrorCode: false,
     unknownJsonRpcErrorCode: false, unknownHttpStatusCodeObserved: false, previewReads: [], mediaReads: [] }
+  let publicModelReferences = []
+  const generationModelReferenceChecks = []
   const startedAt = new Date().toISOString()
 
   function status(message) { console.log(`QA_STATUS ${message}`) }
@@ -1439,7 +1441,29 @@ async function workerMain() {
                   mcpDiagnostics.calls[payload.toolName] = (mcpDiagnostics.calls[payload.toolName] || 0) + 1
                   if (!mcpDiagnostics.toolNames.includes(payload.toolName)) mcpDiagnostics.toolNames.push(payload.toolName)
                 }
-                return guardMediaSubmission(() => Reflect.apply(originalRequest, target, args), method, payload)
+                return guardMediaSubmission(async () => {
+                  if (method === 'mcp:tool:execute' && payload?.toolName === 'prepare_generation') {
+                    const supplied = payload.arguments?.generations?.[0]?.modelType
+                    // Persist only comparisons against public directory fields, never the
+                    // supplied arguments, directory contents, prompts, or credentials.
+                    generationModelReferenceChecks.push({
+                      stage: ['image', 'video'].includes(activeGenerationStage) ? activeGenerationStage : 'unknown',
+                      directoryEntryCount: publicModelReferences.length,
+                      referenceIsString: typeof supplied === 'string',
+                      ...Object.fromEntries(['name', 'id', 'bindingId', 'apiModelId', 'displayName', 'modelType']
+                        .map((field) => [field, typeof supplied === 'string'
+                          && publicModelReferences.some((entry) => entry[field] === supplied)])),
+                    })
+                  }
+                  const result = await Reflect.apply(originalRequest, target, args)
+                  if (method === 'mcp:tool:execute' && payload?.toolName === 'list_models') {
+                    const models = result?.structuredContent?.models
+                    publicModelReferences = Array.isArray(models) ? models.map((entry) => Object.fromEntries(
+                      ['name', 'id', 'bindingId', 'apiModelId', 'displayName', 'modelType']
+                        .filter((field) => typeof entry?.[field] === 'string').map((field) => [field, entry[field]]))) : []
+                  }
+                  return result
+                }, method, payload)
               }
               const value = Reflect.get(target, property, target)
               return typeof value === 'function' ? value.bind(target) : value
@@ -2126,6 +2150,7 @@ async function workerMain() {
         desktopPairingOrDisclosureApprovalRequired: false, fullMediaChainAccepted: false,
         taskStoreSubmittedMediaTaskCount: 0, toolNamesObserved: trace.toolNames,
         mainWorkerToolCallCounts: { ...mcpDiagnostics.calls }, publicRpcResponses: mcpDiagnostics.rpcResponses,
+        generationModelReferenceChecks,
         cliExitCodes: cliTurns.map((turn) => turn.exitCode), cliTurnSummaries: safeCliTurnSummaries(),
         credentialsClearedViaDesktopIpc: providerCredentialCleared, testGrantRevoked: grantRevoked,
         rawClientTranscriptSaved: false, apiKeySavedInEvidence: false, startedAt, completedAt: new Date().toISOString(),
@@ -2231,6 +2256,7 @@ async function workerMain() {
       cliHttpStatusCodes: trace.httpStatusCodes,
       unknownCliHttpStatusCodeObserved: trace.unknownHttpStatusCodeObserved,
       mainWorkerToolCallCounts: { ...mcpDiagnostics.calls },
+      generationModelReferenceChecks,
       publicRpcResponses: mcpDiagnostics.rpcResponses,
       unknownPublicErrorCodeObserved: mcpDiagnostics.unknownPublicErrorCode,
       unknownMcpHttpStatusCodeObserved: mcpDiagnostics.unknownHttpStatusCodeObserved,
@@ -2328,6 +2354,7 @@ async function workerMain() {
       cliHttpStatusCodes: trace.httpStatusCodes,
       unknownCliHttpStatusCodeObserved: trace.unknownHttpStatusCodeObserved,
       mainWorkerToolCallCounts: { ...mcpDiagnostics.calls },
+      generationModelReferenceChecks,
       publicRpcResponses: mcpDiagnostics.rpcResponses,
       unknownPublicErrorCodeObserved: mcpDiagnostics.unknownPublicErrorCode,
       unknownMcpHttpStatusCodeObserved: mcpDiagnostics.unknownHttpStatusCodeObserved,

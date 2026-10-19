@@ -175,7 +175,13 @@ export function listMcpRuntimeTools(
 						additionalProperties: false,
 						properties: {
 							nodeId: { type: "string", minLength: 1, maxLength: 256 },
-							modelType: { type: "string", minLength: 1, maxLength: 256 },
+							modelType: {
+								type: "string",
+								minLength: 1,
+								maxLength: 256,
+								description:
+									"填写 list_models 返回的精确 name 或 bindingId；不要使用 displayName、apiModelId、简称或模糊匹配。服务端会将该标识解析为规范 name 后提交生成。",
+							},
 							modelParams: { type: "object", additionalProperties: true },
 							overwrite: { type: "boolean" },
 						},

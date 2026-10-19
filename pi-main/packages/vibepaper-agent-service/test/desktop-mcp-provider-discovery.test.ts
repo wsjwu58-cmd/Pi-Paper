@@ -68,6 +68,13 @@ it("requires generation confirmation through client form elicitation and exposes
 	expect(prepare.description).toContain("不收集 API Key");
 	expect(prepare.description).toContain("不支持 form elicitation 时不得提交任务");
 	expect(prepare.annotations).toMatchObject({ readOnlyHint: false, idempotentHint: true, openWorldHint: true });
+	const prepareSchema = asRecord(prepare.inputSchema);
+	const prepareProperties = asRecord(prepareSchema.properties);
+	const generationItems = asRecord(asRecord(prepareProperties.generations).items);
+	const generationProperties = asRecord(generationItems.properties);
+	const modelTypeDescription = asRecord(generationProperties.modelType).description;
+	expect(modelTypeDescription).toContain("list_models 返回的精确 name 或 bindingId");
+	expect(modelTypeDescription).toContain("不要使用 displayName、apiModelId");
 	expect(runtimeTools.map((tool) => tool.name)).not.toContain("approve_generation");
 	expect(listMcpAuxiliaryTools().map((tool) => tool.name)).not.toContain("approve_generation");
 
