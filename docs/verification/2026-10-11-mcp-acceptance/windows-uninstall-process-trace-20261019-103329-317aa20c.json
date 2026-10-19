@@ -1,0 +1,395 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-10-19T10:33:29.6511443+08:00",
+  "purpose": "Read-only observation of one registered Pi-Paper NSIS uninstall attempt.",
+  "scope": {
+    "installationDirectory": "E:\\pp\\Pi-Paper",
+    "mainExecutable": "E:\\pp\\Pi-Paper\\Pi-Paper.exe",
+    "registeredUninstaller": "E:\\pp\\Pi-Paper\\Uninstall Pi-Paper.exe",
+    "registryGuid": "6d7bc0c1-d3cd-50da-9feb-41d1166b5a3e",
+    "dailyUserDataOpened": false,
+    "registryModified": false,
+    "installerOrUninstallerLaunchedByScript": false,
+    "rawUninstallCommandStored": false,
+    "processCommandLinesRead": true,
+    "processCommandLinesReadScope": "Only exact-name Uninstall Pi-Paper.exe candidates under user TEMP after registered-target SHA256 match; text is inspected in memory for E:\\pp\\Pi-Paper path and discarded.",
+    "candidateCommandLineReadOnlyAfterTempHashMatch": true,
+    "processCommandLineTextStored": false,
+    "unrelatedProcessDetailsSaved": false
+  },
+  "observation": {
+    "startedAt": "2026-10-19T10:31:48.0465361+08:00",
+    "endedAt": "2026-10-19T10:33:29.6511901+08:00",
+    "durationSeconds": 101.605,
+    "maximumSeconds": 600,
+    "requiredStableSeconds": 30,
+    "terminationReason": "uninstaller-process-tree-exited-and-state-stable-30s",
+    "processObserved": true,
+    "processTreeExitedAndStable": true,
+    "processLookupIssueObserved": false,
+    "processLookupIssue": null
+  },
+  "traceCapabilities": {
+    "exactUninstallerStartTraceAvailable": false,
+    "exactUninstallerStopTraceAvailable": false,
+    "descendantStartTraceQueryCount": 0,
+    "descendantStopTraceQueryCount": 0,
+    "heldProcessHandleCount": 4,
+    "anyExitStatusCapturedFromStopTrace": false,
+    "anyExitStatusCapturedFromHeldProcessHandle": true,
+    "anyExitStatusCaptured": true,
+    "exactTraceSetupErrorTypes": [
+      "System.Management.Automation.RemoteException",
+      "System.Management.Automation.RemoteException"
+    ],
+    "descendantTraceSetupErrorTypes": [
+      "System.Management.Automation.RemoteException",
+      "System.Management.Automation.RemoteException",
+      "System.Management.Automation.RemoteException",
+      "System.Management.Automation.RemoteException",
+      "System.Management.Automation.RemoteException",
+      "System.Management.Automation.RemoteException",
+      "System.Management.Automation.RemoteException",
+      "System.Management.Automation.RemoteException",
+      "System.Management.Automation.RemoteException"
+    ]
+  },
+  "initialSnapshot": {
+    "capturedAt": "2026-10-19T10:31:48.0465361+08:00",
+    "state": {
+      "files": {
+        "mainExecutablePresent": true,
+        "uninstallerPresent": true,
+        "registeredCommandTargetVerified": true,
+        "registeredCommandTargetSha256AtStart": "4820461a4d1a8b875569561f6524eb938dbf6a8963cb17ee689001a69260d656"
+      },
+      "registry": {
+        "HKCU": {
+          "uninstallKey": {
+            "readable": true,
+            "exists": true,
+            "hasUninstallString": true,
+            "hasDisplayName": true,
+            "hasDisplayVersion": true,
+            "command": {
+              "present": true,
+              "parseStatus": "expected-quoted-path",
+              "executableMatchesExpectedPath": true,
+              "recognizedFlags": [
+                "currentuser"
+              ],
+              "currentuser": true,
+              "allusers": false,
+              "silentS": false,
+              "recognizedFlagCount": 1
+            }
+          },
+          "installLocationKey": {
+            "readable": true,
+            "exists": true,
+            "hasUninstallString": false,
+            "hasDisplayName": false,
+            "hasDisplayVersion": false,
+            "command": {
+              "present": false,
+              "parseStatus": "missing",
+              "executableMatchesExpectedPath": false,
+              "recognizedFlags": [],
+              "currentuser": false,
+              "allusers": false,
+              "silentS": false,
+              "recognizedFlagCount": 0
+            }
+          }
+        },
+        "HKLM": {
+          "uninstallKey": {
+            "readable": true,
+            "exists": false,
+            "hasUninstallString": false,
+            "command": {
+              "present": false,
+              "parseStatus": "missing",
+              "executableMatchesExpectedPath": false,
+              "recognizedFlags": [],
+              "currentuser": false,
+              "allusers": false,
+              "silentS": false,
+              "recognizedFlagCount": 0
+            }
+          },
+          "installLocationKey": {
+            "readable": true,
+            "exists": false,
+            "hasUninstallString": false,
+            "command": {
+              "present": false,
+              "parseStatus": "missing",
+              "executableMatchesExpectedPath": false,
+              "recognizedFlags": [],
+              "currentuser": false,
+              "allusers": false,
+              "silentS": false,
+              "recognizedFlagCount": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "processTree": [
+    {
+      "processId": 3044,
+      "parentProcessId": 36564,
+      "processName": "powershell.exe",
+      "role": "observed-descendant",
+      "executablePathWithinInstall": null,
+      "executableLocation": "unknown",
+      "startedObservedAt": "2026-10-19T10:32:50.7054191+08:00",
+      "startObservationMethod": "CIM parent-PID polling",
+      "startTraceObserved": false,
+      "processCreationDateUtc": "2026-10-19T02:32:50.1241230Z",
+      "startTraceTimeCreatedUtc": null,
+      "verifiedTempUninstallerCopy": false,
+      "tempCopySha256MatchedRegisteredTarget": false,
+      "tempCopyCommandLineInstallPathMatched": false,
+      "stopTraceObserved": false,
+      "stopTraceParentProcessIdAvailable": null,
+      "exitStatus": null,
+      "exitStatusCaptured": false,
+      "exitStatusFormat": null,
+      "exitStatusSource": null,
+      "processHandleAttachAttempted": true,
+      "processHandleAcquired": false,
+      "processHandleCaptureStatus": "process-disappeared-before-handle-identity-could-be-verified",
+      "processHandleStartTimeMatched": null,
+      "processHandlePathMatched": null,
+      "processHandleEnableRaisingEvents": false,
+      "processHandleAcquiredAt": null,
+      "processHandleAttachErrorType": null,
+      "processHandleExitCodeReadErrorType": null,
+      "processExitedObserved": true,
+      "exitObservedAt": "2026-10-19T10:32:51.0505075+08:00",
+      "exitObservedBy": "CIM process-absence observation"
+    },
+    {
+      "processId": 21360,
+      "parentProcessId": 36564,
+      "processName": "powershell.exe",
+      "role": "observed-descendant",
+      "executablePathWithinInstall": null,
+      "executableLocation": "outside-installation",
+      "startedObservedAt": "2026-10-19T10:32:48.9610161+08:00",
+      "startObservationMethod": "CIM parent-PID polling",
+      "startTraceObserved": false,
+      "processCreationDateUtc": "2026-10-19T02:32:48.7438050Z",
+      "startTraceTimeCreatedUtc": null,
+      "verifiedTempUninstallerCopy": false,
+      "tempCopySha256MatchedRegisteredTarget": false,
+      "tempCopyCommandLineInstallPathMatched": false,
+      "stopTraceObserved": false,
+      "stopTraceParentProcessIdAvailable": null,
+      "exitStatus": 0,
+      "exitStatusCaptured": true,
+      "exitStatusFormat": "UInt32 Win32 DWORD",
+      "exitStatusSource": "System.Diagnostics.Process.ExitCode via held handle",
+      "processHandleAttachAttempted": true,
+      "processHandleAcquired": true,
+      "processHandleCaptureStatus": "exit-code-captured",
+      "processHandleStartTimeMatched": true,
+      "processHandlePathMatched": true,
+      "processHandleEnableRaisingEvents": true,
+      "processHandleAcquiredAt": "2026-10-19T10:32:48.9617842+08:00",
+      "processHandleAttachErrorType": null,
+      "processHandleExitCodeReadErrorType": null,
+      "processExitedObserved": true,
+      "exitObservedAt": "2026-10-19T10:32:49.6913135+08:00",
+      "exitObservedBy": "System.Diagnostics.Process held handle; WaitForExit(0)"
+    },
+    {
+      "processId": 36564,
+      "parentProcessId": 35196,
+      "processName": "Un_A.exe",
+      "role": "observed-descendant",
+      "executablePathWithinInstall": null,
+      "executableLocation": "user-temporary-directory",
+      "startedObservedAt": "2026-10-19T10:32:48.1623300+08:00",
+      "startObservationMethod": "CIM parent-PID polling",
+      "startTraceObserved": false,
+      "processCreationDateUtc": "2026-10-19T02:32:47.8382920Z",
+      "startTraceTimeCreatedUtc": null,
+      "verifiedTempUninstallerCopy": false,
+      "tempCopySha256MatchedRegisteredTarget": false,
+      "tempCopyCommandLineInstallPathMatched": false,
+      "stopTraceObserved": false,
+      "stopTraceParentProcessIdAvailable": null,
+      "exitStatus": 0,
+      "exitStatusCaptured": true,
+      "exitStatusFormat": "UInt32 Win32 DWORD",
+      "exitStatusSource": "System.Diagnostics.Process.ExitCode via held handle",
+      "processHandleAttachAttempted": true,
+      "processHandleAcquired": true,
+      "processHandleCaptureStatus": "exit-code-captured",
+      "processHandleStartTimeMatched": true,
+      "processHandlePathMatched": true,
+      "processHandleEnableRaisingEvents": true,
+      "processHandleAcquiredAt": "2026-10-19T10:32:48.1644614+08:00",
+      "processHandleAttachErrorType": null,
+      "processHandleExitCodeReadErrorType": null,
+      "processExitedObserved": true,
+      "exitObservedAt": "2026-10-19T10:32:59.2357580+08:00",
+      "exitObservedBy": "System.Diagnostics.Process held handle; WaitForExit(0)"
+    },
+    {
+      "processId": 13272,
+      "parentProcessId": 36564,
+      "processName": "powershell.exe",
+      "role": "observed-descendant",
+      "executablePathWithinInstall": null,
+      "executableLocation": "outside-installation",
+      "startedObservedAt": "2026-10-19T10:32:49.5432546+08:00",
+      "startObservationMethod": "CIM parent-PID polling",
+      "startTraceObserved": false,
+      "processCreationDateUtc": "2026-10-19T02:32:49.1950020Z",
+      "startTraceTimeCreatedUtc": null,
+      "verifiedTempUninstallerCopy": false,
+      "tempCopySha256MatchedRegisteredTarget": false,
+      "tempCopyCommandLineInstallPathMatched": false,
+      "stopTraceObserved": false,
+      "stopTraceParentProcessIdAvailable": null,
+      "exitStatus": 0,
+      "exitStatusCaptured": true,
+      "exitStatusFormat": "UInt32 Win32 DWORD",
+      "exitStatusSource": "System.Diagnostics.Process.ExitCode via held handle",
+      "processHandleAttachAttempted": true,
+      "processHandleAcquired": true,
+      "processHandleCaptureStatus": "exit-code-captured",
+      "processHandleStartTimeMatched": true,
+      "processHandlePathMatched": true,
+      "processHandleEnableRaisingEvents": true,
+      "processHandleAcquiredAt": "2026-10-19T10:32:49.5439895+08:00",
+      "processHandleAttachErrorType": null,
+      "processHandleExitCodeReadErrorType": null,
+      "processExitedObserved": true,
+      "exitObservedAt": "2026-10-19T10:32:50.3211028+08:00",
+      "exitObservedBy": "System.Diagnostics.Process held handle; WaitForExit(0)"
+    },
+    {
+      "processId": 35196,
+      "parentProcessId": 33840,
+      "processName": "Uninstall Pi-Paper.exe",
+      "role": "registered-uninstaller",
+      "executablePathWithinInstall": "E:\\pp\\Pi-Paper\\Uninstall Pi-Paper.exe",
+      "executableLocation": "installation-directory",
+      "startedObservedAt": "2026-10-19T10:32:47.6615695+08:00",
+      "startObservationMethod": "CIM exact-name polling; installation path matched",
+      "startTraceObserved": false,
+      "processCreationDateUtc": "2026-10-19T02:32:47.5221130Z",
+      "startTraceTimeCreatedUtc": null,
+      "verifiedTempUninstallerCopy": false,
+      "tempCopySha256MatchedRegisteredTarget": false,
+      "tempCopyCommandLineInstallPathMatched": false,
+      "stopTraceObserved": false,
+      "stopTraceParentProcessIdAvailable": null,
+      "exitStatus": 0,
+      "exitStatusCaptured": true,
+      "exitStatusFormat": "UInt32 Win32 DWORD",
+      "exitStatusSource": "System.Diagnostics.Process.ExitCode via held handle",
+      "processHandleAttachAttempted": true,
+      "processHandleAcquired": true,
+      "processHandleCaptureStatus": "exit-code-captured",
+      "processHandleStartTimeMatched": true,
+      "processHandlePathMatched": true,
+      "processHandleEnableRaisingEvents": true,
+      "processHandleAcquiredAt": "2026-10-19T10:32:47.6862007+08:00",
+      "processHandleAttachErrorType": null,
+      "processHandleExitCodeReadErrorType": null,
+      "processExitedObserved": true,
+      "exitObservedAt": "2026-10-19T10:32:48.2386688+08:00",
+      "exitObservedBy": "System.Diagnostics.Process held handle; WaitForExit(0)"
+    }
+  ],
+  "finalSnapshot": {
+    "capturedAt": "2026-10-19T10:33:29.7014252+08:00",
+    "state": {
+      "files": {
+        "mainExecutablePresent": false,
+        "uninstallerPresent": false,
+        "registeredCommandTargetVerified": true,
+        "registeredCommandTargetSha256AtStart": null
+      },
+      "registry": {
+        "HKCU": {
+          "uninstallKey": {
+            "readable": true,
+            "exists": true,
+            "hasUninstallString": true,
+            "hasDisplayName": true,
+            "hasDisplayVersion": true,
+            "command": {
+              "present": true,
+              "parseStatus": "expected-quoted-path",
+              "executableMatchesExpectedPath": true,
+              "recognizedFlags": [
+                "currentuser"
+              ],
+              "currentuser": true,
+              "allusers": false,
+              "silentS": false,
+              "recognizedFlagCount": 1
+            }
+          },
+          "installLocationKey": {
+            "readable": true,
+            "exists": true,
+            "hasUninstallString": false,
+            "hasDisplayName": false,
+            "hasDisplayVersion": false,
+            "command": {
+              "present": false,
+              "parseStatus": "missing",
+              "executableMatchesExpectedPath": false,
+              "recognizedFlags": [],
+              "currentuser": false,
+              "allusers": false,
+              "silentS": false,
+              "recognizedFlagCount": 0
+            }
+          }
+        },
+        "HKLM": {
+          "uninstallKey": {
+            "readable": true,
+            "exists": false,
+            "hasUninstallString": false,
+            "command": {
+              "present": false,
+              "parseStatus": "missing",
+              "executableMatchesExpectedPath": false,
+              "recognizedFlags": [],
+              "currentuser": false,
+              "allusers": false,
+              "silentS": false,
+              "recognizedFlagCount": 0
+            }
+          },
+          "installLocationKey": {
+            "readable": true,
+            "exists": false,
+            "hasUninstallString": false,
+            "command": {
+              "present": false,
+              "parseStatus": "missing",
+              "executableMatchesExpectedPath": false,
+              "recognizedFlags": [],
+              "currentuser": false,
+              "allusers": false,
+              "silentS": false,
+              "recognizedFlagCount": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

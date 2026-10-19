@@ -39,7 +39,9 @@
     "runtimeExactContentPreserved": false,
     "runtimeComparison": "windows-manual-20261019-rate-model-fix-runtime-data.json"
   },
-  "newBuildUninstallPerformed": false,
+  "newBuildUninstallPerformed": true,
+  "newBuildUninstallAccepted": false,
+  "newBuildUninstallEvidence": "windows-uninstall-review-20261019.json",
   "historicalDiagnosticUninstallEvidence": "windows-manual-20261017-client-confirmation.json",
   "nativeCodexPopupAccepted": false
 }
