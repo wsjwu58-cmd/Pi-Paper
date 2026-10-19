@@ -1,0 +1,23 @@
+{
+  "date": "2026-10-19",
+  "sourceCommit": "934862b",
+  "output": "output/mcp-windows-2026-10-19/Pi-Paper-0.1.0-win-x64.exe",
+  "bytes": 120400704,
+  "sha256": "88a2f0384460ce537a0d22b58ca0eb36e215419708fb33053e579b74e40de336",
+  "buildPassed": true,
+  "diagnosticInclude": false,
+  "packagedNodeSmokePassed": true,
+  "packagedSmokeScope": "Electron Node MCP fixture, renderer resources, 24 providers/93 models, original Worker Skill and fragment recovery, SQLite restart persistence",
+  "payload": {
+    "mainSha256": "c4a247035fc949953e406bbcd8cc22b397b9a3a248787e6eac5598f2799d2d30",
+    "mcpMainSha256": "61d2addf46bb67f39b212bfdbbe537c1b16fe606dcbbeead8a78875e35959132",
+    "sourcePackagedAndInstalledMcpMainMatch": true
+  },
+  "upgradeRun": true,
+  "installedGuiLaunchCloseReopenPassed": true,
+  "signingTrustAccepted": false,
+  "manualPagesFullyObservedForThisBuild": false,
+  "uninstallAcceptedForThisBuild": false,
+  "priorInstallersPreserved": true,
+  "macOSAndLinuxAccepted": false
+}

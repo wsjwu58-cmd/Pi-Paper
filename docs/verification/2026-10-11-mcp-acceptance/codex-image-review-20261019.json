@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-19",
+  "sourceReport": "codex-agnes-acceptance-2026-10-19T02-16-43-400Z.json",
+  "overallRunAccepted": false,
+  "acceptedSubflows": [
+    "real Codex app-server automatic MCP authentication and natural-language provider configuration without approval windows",
+    "one real MCP form elicitation relayed to the human in this Codex conversation and accepted once",
+    "one Agnes Image 2.5 Flash task succeeded with one persisted output",
+    "one text-reference-to-image-target edge",
+    "real Codex MCP image preview read"
+  ],
+  "imageOutput": {
+    "mimeType": "image/png",
+    "sizeBytes": 868764,
+    "sha256": "d2bd787beb4c9909cf4e691e8457ebb7a29085fe0c347279475a568cae9a5782"
+  },
+  "modelReference": {
+    "matchedDirectoryNameIdAndBindingId": true,
+    "matchedApiModelIdDisplayNameOrModality": false,
+    "earlierModelNotFoundRootCauseProven": false
+  },
+  "failure": {
+    "code": "UI_STATE_TIMEOUT",
+    "stage": "original image node viewport inspection",
+    "observed": "initial canvas viewport showed the seed node at high zoom; new media nodes were outside it",
+    "nativeUiRecovery": "minimized test window restored; subsequent Fit View input raced with test cleanup and was not confirmed"
+  },
+  "nativeCodexPopupAccepted": false,
+  "clientHost": "codex-app-server-qa-relay",
+  "videoSubmitted": false,
+  "credentialsCleared": true,
+  "testGrantRevoked": true,
+  "postExitPlaintextKeyFound": false,
+  "nextStep": "resume the retained isolated project, reuse the existing image task, focus the original viewport, and submit no duplicate image generation"
+}

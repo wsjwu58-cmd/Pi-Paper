@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-19",
+  "sourceCommit": "934862b",
+  "installerEvidence": "windows-build-20261019-rate-model-fix.json",
+  "installationDirectory": "E:\\pp\\Pi-Paper",
+  "installer": {
+    "launchedThroughComputerUse": true,
+    "existingInstallUpgrade": true,
+    "progressPageObserved": true,
+    "currentUserAndDirectoryPagesObserved": false,
+    "completionPageObserved": false,
+    "windowExited": true,
+    "installerExitCodeCaptured": false
+  },
+  "registration": {
+    "hkcuUninstallEntryPresent": true,
+    "displayIconAndUninstallStringPointToExistingInstallation": true,
+    "uninstallerSha256": "4820461a4d1a8b875569561f6524eb938dbf6a8963cb17ee689001a69260d656"
+  },
+  "runtime": {
+    "normalDesktopLaunchPassed": true,
+    "workspaceVisible": true,
+    "existingProjectEntryCount": 2,
+    "normalCloseConfirmed": true,
+    "normalReopenPassed": true,
+    "sameWorkspaceAndEntriesVisibleAfterReopen": true,
+    "secondCloseConfirmed": true,
+    "dailyProfileUsed": true,
+    "canvasEditedOrGenerationRequested": false
+  },
+  "dailyProfile": {
+    "baselineFiles": 1738,
+    "upgradeExactContentPreserved": true,
+    "upgradeComparison": "windows-manual-20261019-rate-model-fix-reinstall-data.json",
+    "afterRuntimeMissingFiles": 0,
+    "afterRuntimeAddedFiles": 0,
+    "afterRuntimeChangedFiles": 17,
+    "runtimeChangeCategories": "Chromium graphics/network/storage state, MCP control database, recent-project index",
+    "runtimeExactContentPreserved": false,
+    "runtimeComparison": "windows-manual-20261019-rate-model-fix-runtime-data.json"
+  },
+  "newBuildUninstallPerformed": false,
+  "historicalDiagnosticUninstallEvidence": "windows-manual-20261017-client-confirmation.json",
+  "nativeCodexPopupAccepted": false
+}
