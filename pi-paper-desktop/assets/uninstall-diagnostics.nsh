@@ -2,6 +2,8 @@
 ; when VIBEPAPER_NSIS_UNINSTALL_DIAGNOSTICS_TEST_ONLY=1 is explicitly set.
 ; This file is intentionally observational: no registry/file writes or UI changes.
 
+!include "uninstall-cleanup.nsh"
+
 !ifdef BUILD_UNINSTALLER
   Var VPD_LOG_ENABLED
   Var VPD_LOG_HANDLE

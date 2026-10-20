@@ -12,7 +12,8 @@
   "imageOutput": {
     "mimeType": "image/png",
     "sizeBytes": 868764,
-    "sha256": "d2bd787beb4c9909cf4e691e8457ebb7a29085fe0c347279475a568cae9a5782"
+    "sha256": "d2bd787beb4c9909cf4e691e8457ebb7a29085fe0c347279475a568cae9a5782",
+    "previewSha256AndSizeMatchTaskStore": true
   },
   "modelReference": {
     "matchedDirectoryNameIdAndBindingId": true,

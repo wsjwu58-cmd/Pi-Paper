@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-20",
+  "qaResume": {
+    "localTestsPassed": 7,
+    "existingQuantityGuardScenariosPassed": 55,
+    "originalImageReused": true,
+    "originalProjectAndCanvasIdentityPreserved": true,
+    "imageNodeVisibleAndLoaded": true,
+    "imageEvidence": "codex-agnes-acceptance-2026-10-19T02-50-18-401Z.json",
+    "priorFailuresRetained": [
+      "codex-agnes-acceptance-2026-10-19T02-37-41-973Z.json",
+      "codex-agnes-acceptance-2026-10-19T02-47-34-589Z.json",
+      "codex-agnes-acceptance-2026-10-19T02-50-18-401Z.json",
+      "codex-agnes-acceptance-2026-10-19T02-54-12-693Z.json"
+    ],
+    "entryFix": "recognize Electron browser worker entry even when require.main differs; CommonJS imports remain inert",
+    "bootstrapFix": "register privileged protocol before asynchronous resume validation and terminate Electron on bootstrap rejection",
+    "canvasConflictRecovery": "reread current state and operation before one retry of a known-unapplied ordinary edit; never replay a generation submission",
+    "latestPriorVideoStop": "real Codex turn failed before tools; safe diagnostic flags included usage, limit and credits",
+    "paidVideoSubmittedByPriorRuns": false,
+    "nativeCodexPopupAccepted": false
+  },
+  "windowsCleanup": {
+    "implementation": "ownership-checked tail section after stock uninstall; selected hive and explicit package registry view only",
+    "fixtureCasesPassed": 12,
+    "fixtureUsesProductionMacro": true,
+    "fixtureCreatesOrRunsUninstaller": false,
+    "fixtureRegistryScope": "unique random HKCU Software/VibePaperAcceptance subtree",
+    "realApplicationRegistryModifiedByFixture": false,
+    "userDataModifiedByCleanup": false,
+    "negativeCases": [
+      "different directory",
+      "relative location",
+      "wrong uninstall scope",
+      "wrong icon path",
+      "mismatched optional location",
+      "all-users mode leaves HKCU records alone",
+      "unknown install mode",
+      "delete permission denied"
+    ],
+    "positiveCases": [
+      "owned records removed after installation directory no longer exists",
+      "trailing path separator normalized",
+      "missing sibling keys",
+      "uninstall record without optional InstallLocation",
+      "incoming NSIS errors and working registers preserved"
+    ],
+    "initialIssuesFixedBeforePassing": [
+      "native registry handle passed to post-deletion verification",
+      "NSIS path instruction rejected nonexistent directory; switched to lexical Win32 API",
+      "fixture now removes its exact temporary DELETE deny rule before cleanup"
+    ],
+    "stockUninstallRootCauseProven": false,
+    "newFullInstallerAndManualUninstallAcceptedByFixture": false
+  }
+}
