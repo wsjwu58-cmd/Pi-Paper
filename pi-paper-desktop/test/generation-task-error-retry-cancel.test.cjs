@@ -65,6 +65,7 @@ test('provider error details reach the task linked to its canvas node; failed ta
     parameters: {},
     outputDirectory: claimed.outputDirectory,
   }, {
+    checkpoint: async () => undefined,
     postJson: (_endpoint, payload, credential, timeoutMs) => postJson(providerEndpoint, payload, credential, timeoutMs),
   }), (error) => {
     providerError = error

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Check, Clipboard, PlugZap, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
 import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { desktopProviderLabel } from '@/desktop/providerModels'
-import { canCreateMcpGrant, createMcpClientGrantInput } from './mcpGrantPolicy'
+import { canCreateMcpGrant, createMcpClientGrantInput, providerGrantForPermissions, setMcpGrantPermission } from './mcpGrantPolicy'
 import type {
   DesktopMcpClientGrantInput,
   DesktopMcpCredentialInputMode,
@@ -20,9 +20,9 @@ const permissionOptions: Array<{ id: DesktopMcpPermission; label: string; note: 
   { id: 'canvas.write', label: '编辑画布', note: '创建或修改授权画布中的节点、连线和布局。' },
   { id: 'generation.propose', label: '准备生成', note: '提交前由客户端通过 MCP 表单确认；桌面不重复确认。' },
   { id: 'task.read', label: '读取任务', note: '查看授权画布任务状态和文本结果。' },
-  { id: 'media.read', label: '读取媒体', note: '只读取下方指定类别的结果预览或媒体内容。' },
+  { id: 'media.read', label: '读取媒体', note: '只读取下方指定类别的结果预览或媒体内容；同时需要读取任务状态与结果。' },
   { id: 'provider.read', label: '读取模型配置', note: '查看公开模型能力和连接状态，不包含密钥。' },
-  { id: 'provider.configure', label: '配置模型', note: '仅限下方指定的提供方和凭据字段。' },
+  { id: 'provider.configure', label: '配置模型', note: '仅限下方指定的提供方和凭据字段；同时需要读取公开模型配置。' },
 ]
 const mediaOptions = ['image', 'video', 'audio', 'text'] as const
 const mediaLabels: Record<typeof mediaOptions[number], string> = {
@@ -111,8 +111,9 @@ export function DesktopMcpSettingsPage() {
   const providerScopeNeeded = permissions.includes('provider.configure') || permissions.includes('provider.read')
   const selectedProviderDrafts = (state?.providers ?? []).filter((provider) => (providerDrafts[provider.providerId] ?? providerDraft(provider)).selected)
   const invalidProviderInput = selectedProviderDrafts.some((provider) => {
+    if (!permissions.includes('provider.configure')) return false
     const draft = providerDrafts[provider.providerId] ?? providerDraft(provider)
-    if (permissions.includes('provider.configure') && !draft.credentialFields.length) return true
+    if (!draft.credentialFields.length) return true
     return draft.credentialInputModes.includes('authorized_env') && draft.credentialFields.some((fieldName) => (
       !/^[A-Za-z_][A-Za-z0-9_]*$/u.test((draft.authorizedEnv[fieldName] ?? '').trim())
     ))
@@ -128,9 +129,7 @@ export function DesktopMcpSettingsPage() {
   })
 
   const setPermission = (permission: DesktopMcpPermission, enabled: boolean) => {
-    setPermissions((current) => enabled
-      ? [...new Set([...current, permission])]
-      : current.filter((value) => value !== permission))
+    setPermissions((current) => setMcpGrantPermission(current, permission, enabled))
     if (permission === 'media.read' && !enabled) setMediaTypes([])
   }
 
@@ -151,20 +150,18 @@ export function DesktopMcpSettingsPage() {
       const draft = providerDrafts[provider.providerId] ?? providerDraft(provider)
       if (!draft.selected) return []
       const authorizedEnv = draft.credentialInputModes.includes('authorized_env')
-        ? draft.credentialFields.map((fieldName) => {
-          const envVariableName = (draft.authorizedEnv[fieldName] ?? '').trim()
-          if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(envVariableName)) {
-            throw new Error(uiText('请为授权的凭据字段填写有效的环境变量名。'))
-          }
-          return { fieldName, envVariableName }
-        })
+        ? draft.credentialFields.map((fieldName) => ({ fieldName, envVariableName: (draft.authorizedEnv[fieldName] ?? '').trim() }))
         : []
-      return [{
+      const grant = providerGrantForPermissions({
         providerId: provider.providerId,
         credentialFields: draft.credentialFields,
         credentialInputModes: draft.credentialInputModes,
         authorizedEnv,
-      }]
+      }, permissions.includes('provider.configure'))
+      if (grant.authorizedEnv.some(({ envVariableName }) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(envVariableName))) {
+        throw new Error(uiText('请为授权的凭据字段填写有效的环境变量名。'))
+      }
+      return [grant]
     })
   }
 
@@ -278,7 +275,7 @@ export function DesktopMcpSettingsPage() {
         <div className="mt-5 grid gap-2 md:grid-cols-2">
           {permissionOptions.map((option) => (
             <label key={option.id} className="flex cursor-pointer gap-3 rounded-xl border border-[#e7ebf2] p-3">
-              <input type="checkbox" checked={permissions.includes(option.id)} onChange={(event) => setPermission(option.id, event.target.checked)} className="mt-1 accent-[#315d9d]" />
+              <input type="checkbox" checked={permissions.includes(option.id)} disabled={(option.id === 'provider.read' && permissions.includes('provider.configure')) || (option.id === 'task.read' && permissions.includes('media.read'))} onChange={(event) => setPermission(option.id, event.target.checked)} className="mt-1 accent-[#315d9d]" />
               <span><span className="block text-sm font-semibold text-[#26364f]">{uiText(option.label)}</span><span className="mt-0.5 block text-xs leading-5 text-[#69768c]">{uiText(option.note)}</span></span>
             </label>
           ))}

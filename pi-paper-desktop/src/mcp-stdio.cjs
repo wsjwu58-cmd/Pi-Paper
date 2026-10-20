@@ -42,6 +42,7 @@ const ERROR_MESSAGES = Object.freeze({
   MCP_BRIDGE_AUTH_INVALID: 'The local MCP bridge authorization is invalid. Restart VibePaper and reconnect.',
   CLIENT_CONFIRMATION_UNSUPPORTED: 'This MCP client does not support form confirmation required for generation.',
   GENERATION_CONFIRMATION_UNRESOLVED: 'Generation confirmation was not completed. No generation task was submitted.',
+  GENERATION_CONFIRMATION_PENDING: 'This generation already has a pending client confirmation. Complete that form or check the original operation.',
   UNAUTHORIZED: 'The desktop connection is no longer authorized.',
   PROJECT_CHANGED: 'The authorized project or canvas changed.',
   PERMISSION_DENIED: 'The requested capability is not authorized.',

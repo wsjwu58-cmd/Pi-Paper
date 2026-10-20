@@ -1,0 +1,58 @@
+
+> pi-paper-desktop@0.1.0 build:package
+> node scripts/build-package.cjs
+
+vite v8.1.5 building client environment for production...
+[2K
+transforming...✓ 2112 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                          1.13 kB │ gzip:   0.57 kB
+dist/assets/index-DIDqKrsX.css         136.14 kB │ gzip:  23.78 kB
+dist/assets/auth-tNStM2xu.js             0.06 kB │ gzip:   0.07 kB
+dist/assets/taskActions-Cksi8NfR.js      0.07 kB │ gzip:   0.08 kB
+dist/assets/auth-BuHrjmm0.js             0.88 kB │ gzip:   0.38 kB
+dist/assets/taskActions-BafL10dx.js     21.84 kB │ gzip:   7.47 kB
+dist/assets/api-CfeIVzgo.js            125.56 kB │ gzip:  41.58 kB
+dist/assets/index-DnJ8gISq.js        1,930.74 kB │ gzip: 543.32 kB
+
+✓ built in 564ms
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    ../pi-main/packages/ai/src/api/bedrock-converse-stream.lazy.ts:11:26:
+      11 │   const runtimeSpecifier = import.meta.url.endsWith(".js") ? speci...
+         ╵                            ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    ../pi-main/packages/ai/src/auth/oauth/load.ts:10:26:
+      10 │   const runtimeSpecifier = import.meta.url.endsWith(".js") ? speci...
+         ╵                            ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    ../pi-main/packages/ai/src/api/bedrock-converse-stream.lazy.ts:11:26:
+      11 │   const runtimeSpecifier = import.meta.url.endsWith(".js") ? speci...
+         ╵                            ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+▲ [WARNING] "import.meta" is not available with the "cjs" output format and will be empty [empty-import-meta]
+
+    ../pi-main/packages/ai/src/auth/oauth/load.ts:10:26:
+      10 │   const runtimeSpecifier = import.meta.url.endsWith(".js") ? speci...
+         ╵                            ~~~~~~~~~~~
+
+  You need to set the output format to "esm" for "import.meta" to work correctly.
+
+Agent Worker bundle loaded a project Skill and saved/imported a project fragment across restart.
+Standalone desktop application staged at E:\VibePaperProject\pi-paper-desktop\dist\app

@@ -310,6 +310,30 @@ test('generation confirmation submits once and an exact replay returns the prior
   assert.equal(f.resolutionCount(), 1)
 })
 
+test('replayed and concurrent generation preparation preserve the first pending client confirmation', async (t) => {
+  for (const concurrent of [false, true]) {
+    await t.test(concurrent ? 'concurrent requests' : 'sequential replay', async (t) => {
+      const f = await fixture(t, {}, { prepareProposal: true })
+      const args = { operationId: 'review-generation-pending', expectedVersion: 1,
+        generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] }
+      const responses = concurrent
+        ? await Promise.all([f.call('prepare_generation', args), f.call('prepare_generation', args)])
+        : [await f.call('prepare_generation', args), await f.call('prepare_generation', args)]
+      const prepared = responses.filter((result) => result.body.generationConfirmation)
+      const rejected = responses.filter((result) => result.body.isError)
+      assert.equal(prepared.length, 1, 'only one response may open the confirmation form')
+      assert.equal(rejected.length, 1)
+      assert.equal(rejected[0].body.structuredContent.errorCode, 'GENERATION_CONFIRMATION_PENDING')
+      assert.equal(f.submissionCount(), 0)
+      const confirmation = prepared[0].body.generationConfirmation
+      const confirmed = await f.confirm(confirmation.proposalId, confirmation.challengeToken)
+      assert.equal(confirmed.body.isError, undefined, 'the original form must remain usable')
+      assert.equal(confirmed.body.structuredContent.status, 'submitted')
+      assert.equal(f.submissionCount(), 1)
+    })
+  }
+})
+
 test('generation rejection is one use and never submits a task', async (t) => {
   const f = await fixture(t, {}, { prepareProposal: true })
   const prepared = await f.call('prepare_generation', { operationId: 'review-generation-reject', expectedVersion: 1,

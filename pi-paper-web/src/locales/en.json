@@ -1314,9 +1314,11 @@
   "查看授权画布任务状态和文本结果。": "View task status and text results for the authorized canvas.",
   "读取媒体": "Read media",
   "只读取下方指定类别的结果预览或媒体内容。": "Read result previews or media content only for the categories selected below.",
+  "只读取下方指定类别的结果预览或媒体内容；同时需要读取任务状态与结果。": "Read previews or media only for the selected categories. Reading task status and results is also required.",
   "读取模型配置": "Read model settings",
   "查看公开模型能力和连接状态，不包含密钥。": "View public model capabilities and connection status without access to credentials.",
   "仅限下方指定的提供方和凭据字段。": "Limited to the providers and credential fields selected below.",
+  "仅限下方指定的提供方和凭据字段；同时需要读取公开模型配置。": "Limited to the selected providers and credential fields. Reading public model settings is also required.",
   "提供方范围与凭据输入方式": "Provider scope and credential input",
   "可写凭据字段": "Credential fields allowed for writing",
   "允许的凭据输入方式": "Allowed credential input methods",
@@ -1380,5 +1382,15 @@
   "这份外部配置准备期间，提供方版本已变化。请刷新后让外部 Agent 重新准备。": "The provider settings changed while this external request was being prepared. Refresh and ask the external agent to prepare it again.",
   "配置已保存。外部客户端可查询原请求结果；密钥不会回传。": "Settings saved. The external client can check the original request; the key will not be returned.",
   "配置版本尚未就绪，请刷新后重试。": "The configuration revision is not ready. Refresh and try again.",
-  "外部 Agent 已准备公开配置。请在此页面输入密钥并保存；密钥不会返回给外部客户端。需配置字段：{0}": "The external agent prepared public settings. Enter the key on this page and save; the key will not be returned to the external client. Fields to configure: {0}"
+  "外部 Agent 已准备公开配置。请在此页面输入密钥并保存；密钥不会返回给外部客户端。需配置字段：{0}": "The external agent prepared public settings. Enter the key on this page and save; the key will not be returned to the external client. Fields to configure: {0}",
+  "已记录所选访问范围并生成连接配置。客户端将按此范围自动连接；生成时由客户端表单确认。": "The selected access scope was saved and connection settings were created. The client connects automatically within this scope and asks for confirmation through a form before generation.",
+  "授权 Codex、Claude Code 等本机 Agent 操作当前本地画布。生成只在所选客户端中确认一次，桌面不会重复确认；不支持确认表单的客户端无法生成。": "Allow local agents such as Codex and Claude Code to work with the current local canvas. Generation requires one confirmation in the selected client, with no second desktop prompt. Clients without form support cannot generate.",
+  "已启用；客户端按下方保存的项目、画布、媒体和提供方范围自动连接。": "Enabled. Clients connect automatically within the saved project, canvas, media, and provider scopes below.",
+  "默认关闭。启用并创建范围授权后，本机 MCP 客户端可自动连接。": "Off by default. Enable the service and create a scoped grant to let local MCP clients connect automatically.",
+  "每个客户端单独设置权限范围。配置片段只含本机启动参数，不包含连接秘密或模型 API Key；连接会自动验证受限本地凭据。": "Set permissions separately for each client. Configuration snippets contain local launch arguments, without connection secrets or model API keys. Connections automatically verify restricted local credentials.",
+  "范围、数据发送与费用": "Scope, data sharing, and costs",
+  "创建授权会记录当前项目与画布、所选权限、媒体类别、提供方及可写凭据字段。外部 Agent 读取的提示词、文本和所选媒体可能由客户端发给它自己的模型供应商。使用云端生成模型时，本次请求所需的提示词、参数和参考内容会发送给所选提供方，供应商可能收费；具体范围和费用依厂商及实际请求而定。": "A grant records the current project and canvas, selected permissions, media types, providers, and writable credential fields. The external client may send prompts, text, and selected media it reads to its own model provider. Cloud generation sends the prompts, parameters, and references needed for the request to the selected provider, which may charge fees. The exact data and costs depend on the provider and request.",
+  "生成确认只在支持 MCP 表单的客户端中显示一次；拒绝、超时或不支持该能力时不会创建生成任务。模型凭据不能通过确认表单收集。": "Generation confirmation appears once in a client that supports MCP forms. Declining, timing out, or lacking form support creates no generation task. Confirmation forms never collect model credentials.",
+  "启用服务并创建授权即记录上述所选范围；后续连接、配置和安全检测在范围内自动执行。": "Enabling the service and creating a grant records the selected scope above. Connections, configuration, and safe connection tests then run automatically within that scope.",
+  "选择对应客户端复制。配置不含连接秘密或模型凭据；连接会在当前授权范围内自动建立。": "Copy the settings for your client. They contain no connection secrets or model credentials. Connections are established automatically within the current grant."
 }

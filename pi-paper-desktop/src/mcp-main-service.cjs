@@ -918,6 +918,7 @@ function createMcpMainService(options) {
     assertSessionActive(session, requestControl)
     const prior = generationChallenges.get(proposalId)
     if (prior?.consumed) throw fixedError('GENERATION_CONFIRMATION_ALREADY_USED', 409)
+    if (prior && prior.expiresAt > now()) throw fixedError('GENERATION_CONFIRMATION_PENDING', 409)
     const challengeToken = randomBytes(32).toString('base64url')
     generationChallenges.set(proposalId, {
       tokenHash: sha256(challengeToken), connectionId: session.connectionId,
@@ -1902,6 +1903,7 @@ function publicErrorMessage(code) {
     MCP_CLIENT_CONFIRMATION_REQUIRED: 'Generation confirmation must be completed in the connected client.',
     GENERATION_CONFIRMATION_INVALID: 'The generation confirmation is invalid or belongs to another connection.',
     GENERATION_CONFIRMATION_ALREADY_USED: 'This generation confirmation has already been used.',
+    GENERATION_CONFIRMATION_PENDING: 'This generation already has a pending client confirmation. Complete that form or check the original operation.',
     PROVIDER_REVISION_CONFLICT: 'Provider settings changed; refresh and retry.', CANVAS_VERSION_CONFLICT: 'Canvas changed; refresh and retry.',
     CANVAS_FLUSH_FAILED: 'Canvas changes could not be saved.', CANVAS_FLUSH_TIMEOUT: 'Canvas save did not finish in time.',
     MCP_TOOL_UNAVAILABLE: 'This tool is unavailable.', INVALID_INPUT: 'Request parameters are invalid.',

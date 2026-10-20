@@ -1,7 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import { canCreateMcpGrant, createMcpClientGrantInput } from './mcpGrantPolicy'
+import { canCreateMcpGrant, createMcpClientGrantInput, providerGrantForPermissions, setMcpGrantPermission } from './mcpGrantPolicy'
 
 describe('MCP scoped client grants', () => {
+  it('keeps provider discovery available while configuration is selected', () => {
+    const permissions = setMcpGrantPermission(['canvas.read'], 'provider.configure', true)
+    expect(permissions).toEqual(['canvas.read', 'provider.configure', 'provider.read'])
+    expect(setMcpGrantPermission(permissions, 'provider.read', false)).toEqual(permissions)
+    const readOnly = setMcpGrantPermission(permissions, 'provider.configure', false)
+    expect(readOnly).toEqual(['canvas.read', 'provider.read'])
+    expect(setMcpGrantPermission(readOnly, 'provider.read', false)).toEqual(['canvas.read'])
+  })
+
+  it('drops hidden credential mappings from a read-only provider grant', () => {
+    const draft = { providerId: 'agnes', credentialFields: ['apiKey'],
+      credentialInputModes: ['authorized_env' as const],
+      authorizedEnv: [{ fieldName: 'apiKey', envVariableName: '' }] }
+    expect(providerGrantForPermissions(draft, false)).toEqual({
+      providerId: 'agnes', credentialFields: [], credentialInputModes: [], authorizedEnv: [],
+    })
+    expect(providerGrantForPermissions(draft, true)).toEqual(draft)
+    expect(draft.authorizedEnv).toEqual([{ fieldName: 'apiKey', envVariableName: '' }])
+  })
+
+  it('keeps task output discovery available while media reading is selected', () => {
+    const permissions = setMcpGrantPermission(['canvas.read'], 'media.read', true)
+    expect(permissions).toEqual(['canvas.read', 'media.read', 'task.read'])
+    expect(setMcpGrantPermission(permissions, 'task.read', false)).toEqual(permissions)
+    const tasksOnly = setMcpGrantPermission(permissions, 'media.read', false)
+    expect(tasksOnly).toEqual(['canvas.read', 'task.read'])
+    expect(setMcpGrantPermission(tasksOnly, 'task.read', false)).toEqual(['canvas.read'])
+  })
   it('records the displayed scope without requiring a separate disclosure checkbox', () => {
     expect(canCreateMcpGrant({
       activeCanvas: true,

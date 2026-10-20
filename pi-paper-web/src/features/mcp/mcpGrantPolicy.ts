@@ -1,4 +1,21 @@
-import type { DesktopMcpClientGrantInput } from '@/desktop/desktop-bridge'
+import type { DesktopMcpClientGrantInput, DesktopMcpPermission, DesktopMcpProviderGrantInput } from '@/desktop/desktop-bridge'
+
+export function setMcpGrantPermission(
+  current: DesktopMcpPermission[], permission: DesktopMcpPermission, enabled: boolean,
+): DesktopMcpPermission[] {
+  if (!enabled && permission === 'provider.read' && current.includes('provider.configure')) return current
+  if (!enabled && permission === 'task.read' && current.includes('media.read')) return current
+  const next = enabled ? [...new Set([...current, permission])] : current.filter((value) => value !== permission)
+  if (next.includes('provider.configure') && !next.includes('provider.read')) next.push('provider.read')
+  if (next.includes('media.read') && !next.includes('task.read')) next.push('task.read')
+  return next
+}
+
+export function providerGrantForPermissions(
+  grant: DesktopMcpProviderGrantInput, canConfigure: boolean,
+): DesktopMcpProviderGrantInput {
+  return canConfigure ? grant : { providerId: grant.providerId, credentialFields: [], credentialInputModes: [], authorizedEnv: [] }
+}
 
 export type McpGrantReadiness = {
   activeCanvas: boolean

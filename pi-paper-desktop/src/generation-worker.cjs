@@ -736,6 +736,9 @@ function buildAgnesImageRequest(job) {
 async function runImageTask(job, dependencies = {}) {
   assertAgnesJob(job, 'image')
   assertTaskOutputTarget(job)
+  const checkpoint = dependencies.checkpoint || (async () => {
+    throw new WorkerFailure('TASK_CHECKPOINT_REQUIRED', '云端图片生成需要持久化任务检查点。')
+  })
   const downloadOutput = dependencies.downloadAgnesOutput || downloadAgnesOutput
   const parameters = job.parameters && typeof job.parameters === 'object' ? job.parameters : {}
   const count = parameters.count === undefined ? 1 : parameters.count
@@ -746,6 +749,7 @@ async function runImageTask(job, dependencies = {}) {
   const outputPaths = []
   try {
     for (let index = 0; index < count; index += 1) {
+      await checkpoint({ phase: 'submitting' })
       const response = await postAgnesJson(`${AGNES_API_BASE_URL}/images/generations`,
         request, job.apiKey, 6 * 60 * 1000, dependencies)
       const candidates = [response?.data?.[0], response?.data, response]
@@ -859,16 +863,32 @@ async function runVideoTask(job, dependencies = {}) {
   assertAgnesJob(job, 'video')
   assertTaskOutputTarget(job)
   const body = buildAgnesVideoRequest(job)
+  const checkpoint = dependencies.checkpoint || (async () => {
+    throw new WorkerFailure('TASK_CHECKPOINT_REQUIRED', '云端视频生成需要持久化任务检查点。')
+  })
   const getResponse = dependencies.getAgnesResponse || getAgnesResponse
   const downloadOutput = dependencies.downloadAgnesOutput || downloadAgnesOutput
   const sleep = dependencies.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
   const now = dependencies.now || Date.now
   const pollIntervalMs = dependencies.pollIntervalMs ?? AGNES_VIDEO_POLL_INTERVAL_MS
   const timeoutMs = dependencies.timeoutMs ?? AGNES_VIDEO_TIMEOUT_MS
-  const created = await postAgnesJson(`${AGNES_API_BASE_URL}/videos`, body, job.apiKey, 60_000, dependencies)
-  const videoId = created?.video_id ?? created?.id ?? created?.task_id
-  if (typeof videoId !== 'string' && typeof videoId !== 'number') {
-    throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 未返回视频任务标识。')
+  let videoId = job.remoteTaskId
+  if (videoId !== undefined && (typeof videoId !== 'string' || !videoId.trim()
+    || videoId.trim() !== videoId || videoId.length > 2048 || /[\u0000-\u001f]/u.test(videoId))) {
+    throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 视频任务标识无效。')
+  }
+  if (videoId === undefined) {
+    await checkpoint({ phase: 'submitting' })
+    const created = await postAgnesJson(`${AGNES_API_BASE_URL}/videos`, body, job.apiKey, 60_000, dependencies)
+    const createdVideoId = created?.video_id ?? created?.id ?? created?.task_id
+    if (typeof createdVideoId !== 'string' && (typeof createdVideoId !== 'number' || !Number.isFinite(createdVideoId))) {
+      throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 未返回视频任务标识。')
+    }
+    videoId = String(createdVideoId).trim()
+    if (!videoId || videoId.length > 2048 || /[\u0000-\u001f]/u.test(videoId)) {
+      throw new WorkerFailure('CLOUD_INVALID_RESPONSE', 'Agnes 未返回有效的视频任务标识。')
+    }
+    await checkpoint({ phase: 'submitted', remoteTaskId: videoId })
   }
   const deadline = now() + timeoutMs
   let lastStatus = ''
@@ -877,7 +897,7 @@ async function runVideoTask(job, dependencies = {}) {
   let lastTransientPollFailure = null
   while (now() < deadline) {
     await sleep(nextPollDelayMs)
-    const pollUrl = `https://apihub.agnes-ai.com/agnesapi?video_id=${encodeURIComponent(String(videoId))}&model_name=${encodeURIComponent(AGNES_MODELS.video)}`
+    const pollUrl = `https://apihub.agnes-ai.com/agnesapi?video_id=${encodeURIComponent(videoId)}&model_name=${encodeURIComponent(AGNES_MODELS.video)}`
     let status
     try {
       status = await getResponse(pollUrl, job.apiKey, 60_000)
@@ -1127,6 +1147,9 @@ async function runArkVideoTask(job, dependencies = {}) {
   if (typeof job?.apiKey !== 'string' || !job.apiKey.trim()) {
     throw new WorkerFailure('CLOUD_CREDENTIAL_MISSING', '尚未配置火山方舟 API Key。')
   }
+  const checkpoint = dependencies.checkpoint || (async () => {
+    throw new WorkerFailure('TASK_CHECKPOINT_REQUIRED', '云端视频生成需要持久化任务检查点。')
+  })
   const body = buildArkVideoRequest(job)
   await assertArkReferenceHosts(body, dependencies)
   const createUrl = `${ARK_API_BASE_URL}/contents/generations/tasks`
@@ -1140,11 +1163,22 @@ async function runArkVideoTask(job, dependencies = {}) {
   const timeoutMs = dependencies.timeoutMs ?? ARK_VIDEO_TIMEOUT_MS
   let lastStatus = ''
   try {
-    const created = await post(createUrl, body, job.apiKey, 60_000)
-    const taskId = created?.id ?? created?.task_id ?? created?.data?.id ?? created?.data?.task_id
-    if ((typeof taskId !== 'string' && typeof taskId !== 'number') || !String(taskId).trim()
-      || String(taskId).length > 200 || !/^[a-z0-9_-]+$/iu.test(String(taskId))) {
-      throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '火山方舟未返回有效的视频任务标识。')
+    let taskId = job.remoteTaskId
+    if (taskId !== undefined && (typeof taskId !== 'string' || !taskId || taskId.length > 200
+      || !/^[a-z0-9_-]+$/iu.test(taskId))) {
+      throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '火山方舟视频任务标识无效。')
+    }
+    if (taskId === undefined) {
+      await checkpoint({ phase: 'submitting' })
+      const created = await post(createUrl, body, job.apiKey, 60_000)
+      const createdId = created?.id ?? created?.task_id ?? created?.data?.id ?? created?.data?.task_id
+      if ((typeof createdId !== 'string' && (typeof createdId !== 'number' || !Number.isFinite(createdId)))
+        || !String(createdId).trim() || String(createdId).length > 200
+        || !/^[a-z0-9_-]+$/iu.test(String(createdId))) {
+        throw new WorkerFailure('CLOUD_INVALID_RESPONSE', '火山方舟未返回有效的视频任务标识。')
+      }
+      taskId = String(createdId)
+      await checkpoint({ phase: 'submitted', remoteTaskId: taskId })
     }
     const deadline = now() + timeoutMs
     while (now() < deadline) {
@@ -1328,12 +1362,13 @@ if (parentPort) parentPort.on('message', async (event) => {
   }
   running = true
   try {
+    const checkpoint = (value) => checkpointToMain(request.id, value)
     const result = request.method === 'generate:official' ? await runOfficialTask(request.payload, { checkpoint: (value) => checkpointToMain(request.id, value) })
       : request.method === 'generate:text' ? await runTextTask(request.payload)
-      : request.method === 'generate:image' ? await runImageTask(request.payload)
+      : request.method === 'generate:image' ? await runImageTask(request.payload, { checkpoint })
           : request.method === 'generate:audio' ? await runAudioTask(request.payload)
           : request.method === 'generate:video' ? request.payload?.providerId === ARK_PROVIDER_ID
-            ? await runArkVideoTask(request.payload) : await runVideoTask(request.payload)
+            ? await runArkVideoTask(request.payload, { checkpoint }) : await runVideoTask(request.payload, { checkpoint })
             : request.method === 'generate:compose' ? await runComposeVideos(request.payload)
               : await runLocalMediaOperation(request.payload)
     parentPort.postMessage({ id: request.id, ok: true, result })

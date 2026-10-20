@@ -143,6 +143,7 @@ test('local asset and task-output URIs resolve to their actual bounded image byt
 
   let sentRequest
   await runImageTask(generationJob('image', parameters), {
+    checkpoint: async () => undefined,
     postJson: async (url, payload) => {
       sentRequest = { url, payload }
       return { data: [{ url: 'https://media.example-cdn.net/result.png' }] }

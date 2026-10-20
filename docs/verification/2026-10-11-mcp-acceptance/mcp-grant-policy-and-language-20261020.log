@@ -1,0 +1,12 @@
+
+> pi-paper-web@0.0.0 test
+> vitest --run src/features/mcp/mcpGrantPolicy.test.ts src/lib/i18n.test.ts
+
+
+ RUN  v4.1.9 E:/VibePaperProject/pi-paper-web
+
+
+ Test Files  2 passed (2)
+      Tests  10 passed (10)
+   Start at  16:49:26
+   Duration  794ms (transform 145ms, setup 0ms, import 463ms, tests 276ms, environment 0ms)

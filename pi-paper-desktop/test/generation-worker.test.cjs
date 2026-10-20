@@ -16,9 +16,9 @@ const {
   isPublicAddress,
   downloadAgnesOutput,
   postJson,
-  runImageTask,
-  runVideoTask,
-  runArkVideoTask,
+  runImageTask: runImageTaskWithCheckpoint,
+  runVideoTask: runVideoTaskWithCheckpoint,
+  runArkVideoTask: runArkVideoTaskWithCheckpoint,
 } = require('../src/generation-worker.cjs')
 const { AGNES_API_BASE_URL, AGNES_MODELS, AGNES_PROVIDER_ID } = require('../src/agnes-model-catalog.cjs')
 const { ARK_API_BASE_URL, ARK_MODELS, ARK_PROVIDER_ID, resolveArkVideoModelConfig } = require('../src/ark-model-catalog.cjs')
@@ -26,6 +26,21 @@ const { ARK_API_BASE_URL, ARK_MODELS, ARK_PROVIDER_ID, resolveArkVideoModelConfi
 const TASK_ID = '99999999-9999-4999-8999-999999999999'
 const VIDEO_ID = 'video/id 1'
 const CDN_URL = 'https://media.example-cdn.net/output/result.png?signature=mock'
+const acknowledgeCheckpoint = async () => undefined
+
+// Existing request-shaping tests use an in-memory acknowledgment. Tests that
+// exercise checkpoint failure or resume call the raw worker functions below.
+function runImageTask(job, dependencies = {}) {
+  return runImageTaskWithCheckpoint(job, { checkpoint: acknowledgeCheckpoint, ...dependencies })
+}
+
+function runVideoTask(job, dependencies = {}) {
+  return runVideoTaskWithCheckpoint(job, { checkpoint: acknowledgeCheckpoint, ...dependencies })
+}
+
+function runArkVideoTask(job, dependencies = {}) {
+  return runArkVideoTaskWithCheckpoint(job, { checkpoint: acknowledgeCheckpoint, ...dependencies })
+}
 
 function jobFor(modality, parameters = {}) {
   return {
@@ -415,6 +430,130 @@ test('video request maps the canvas aspect field and polls successful 2xx respon
   assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.mp4` })
 })
 
+test('Agnes video checkpoints before the paid POST and persists the upstream ID before polling', async () => {
+  const events = []
+  await runVideoTaskWithCheckpoint(jobFor('video'), {
+    checkpoint: async (value) => events.push(value),
+    postJson: async () => {
+      events.push('post')
+      return { video_id: VIDEO_ID }
+    },
+    getAgnesResponse: async () => {
+      events.push('poll')
+      return response(200, { status: 'completed', url: 'https://media.example-cdn.net/result.mp4' })
+    },
+    downloadAgnesOutput: async () => `generated/${TASK_ID}/result.mp4`,
+    sleep: async () => {},
+    now: () => 0,
+    pollIntervalMs: 0,
+    timeoutMs: 1,
+  })
+
+  assert.deepEqual(events, [
+    { phase: 'submitting' },
+    'post',
+    { phase: 'submitted', remoteTaskId: VIDEO_ID },
+    'poll',
+  ])
+})
+
+test('Agnes video resumes by querying its persisted upstream ID without another POST', async () => {
+  const pollUrls = []
+  await runVideoTaskWithCheckpoint({ ...jobFor('video'), remoteTaskId: 'restored-video-42' }, {
+    checkpoint: async () => assert.fail('a resumed upstream task does not submit or checkpoint again'),
+    postJson: async () => assert.fail('a resumed upstream task must not create another paid task'),
+    getAgnesResponse: async (url) => {
+      pollUrls.push(url)
+      return response(200, { status: 'completed', url: 'https://media.example-cdn.net/result.mp4' })
+    },
+    downloadAgnesOutput: async () => `generated/${TASK_ID}/result.mp4`,
+    sleep: async () => {},
+    now: () => 0,
+    pollIntervalMs: 0,
+    timeoutMs: 1,
+  })
+
+  assert.deepEqual(pollUrls, [
+    `https://apihub.agnes-ai.com/agnesapi?video_id=restored-video-42&model_name=${AGNES_MODELS.video}`,
+  ])
+})
+
+test('Agnes video stops after a failed submitted checkpoint without polling or downloading', async () => {
+  let posts = 0
+  let polls = 0
+  let downloads = 0
+  const checkpoints = []
+  await assert.rejects(runVideoTaskWithCheckpoint(jobFor('video'), {
+    checkpoint: async (value) => {
+      checkpoints.push(value)
+      if (value.phase === 'submitted') throw new WorkerFailure('TASK_CHECKPOINT_FAILED', 'checkpoint acknowledgment failed')
+    },
+    postJson: async () => { posts += 1; return { video_id: 'agnes-task-ack-failure' } },
+    getAgnesResponse: async () => { polls += 1; return response(200, { status: 'completed', url: 'https://media.example-cdn.net/out.mp4' }) },
+    downloadAgnesOutput: async () => { downloads += 1; return `generated/${TASK_ID}/result.mp4` },
+  }), (error) => error.code === 'TASK_CHECKPOINT_FAILED')
+
+  assert.equal(posts, 1)
+  assert.equal(polls, 0)
+  assert.equal(downloads, 0)
+  assert.deepEqual(checkpoints, [
+    { phase: 'submitting' },
+    { phase: 'submitted', remoteTaskId: 'agnes-task-ack-failure' },
+  ])
+})
+
+test('Agnes rejects invalid upstream IDs after one POST and invalid persisted IDs before any request', async (t) => {
+  for (const upstreamId of [Number.NaN, Number.POSITIVE_INFINITY, '', 'bad\u0000id']) {
+    await t.test(`upstream ${String(upstreamId)}`, async () => {
+      let posts = 0
+      let polls = 0
+      await assert.rejects(runVideoTaskWithCheckpoint(jobFor('video'), {
+        checkpoint: acknowledgeCheckpoint,
+        postJson: async () => { posts += 1; return { video_id: upstreamId } },
+        getAgnesResponse: async () => { polls += 1; return response(200, { status: 'processing' }) },
+      }), (error) => error.code === 'CLOUD_INVALID_RESPONSE')
+      assert.equal(posts, 1)
+      assert.equal(polls, 0)
+    })
+  }
+  for (const remoteTaskId of ['', ' restored-id', 'restored-id ', 42]) {
+    await t.test(`persisted ${String(remoteTaskId)}`, async () => {
+      let posts = 0
+      let polls = 0
+      await assert.rejects(runVideoTaskWithCheckpoint({ ...jobFor('video'), remoteTaskId }, {
+        checkpoint: acknowledgeCheckpoint,
+        postJson: async () => { posts += 1; return { video_id: 'unexpected' } },
+        getAgnesResponse: async () => { polls += 1; return response(200, { status: 'processing' }) },
+      }), (error) => error.code === 'CLOUD_INVALID_RESPONSE')
+      assert.equal(posts, 0)
+      assert.equal(polls, 0)
+    })
+  }
+})
+
+test('legacy Agnes calls cannot reach a paid POST when checkpoint persistence is unavailable', async (t) => {
+  for (const [modality, run] of [['image', runImageTaskWithCheckpoint], ['video', runVideoTaskWithCheckpoint]]) {
+    await t.test(modality, async () => {
+      let posts = 0
+      await assert.rejects(run(jobFor(modality), {
+        checkpoint: async () => { throw new Error('checkpoint unavailable') },
+        postJson: async () => { posts += 1; return modality === 'image' ? { data: [{ url: CDN_URL }] } : { video_id: 'never' } },
+      }), (error) => error.code === 'TASK_CHECKPOINT_REQUIRED' || error.message === 'checkpoint unavailable')
+      assert.equal(posts, 0)
+    })
+  }
+
+  for (const [modality, run] of [['image', runImageTaskWithCheckpoint], ['video', runVideoTaskWithCheckpoint]]) {
+    await t.test(`${modality} without callback`, async () => {
+      let posts = 0
+      await assert.rejects(run(jobFor(modality), {
+        postJson: async () => { posts += 1; return modality === 'image' ? { data: [{ url: CDN_URL }] } : { video_id: 'never' } },
+      }), (error) => error.code === 'TASK_CHECKPOINT_REQUIRED')
+      assert.equal(posts, 0)
+    })
+  }
+})
+
 test('video request preserves public keyframe and reference-image inputs', () => {
   const keyframes = buildAgnesVideoRequest(jobFor('video', {
     firstFrameUrl: 'https://media.example-cdn.net/frames/first.png',
@@ -716,6 +855,44 @@ test('Ark video task posts, polls and saves results without logging or returning
   assert.equal(polls[0][0], `${ARK_API_BASE_URL}/contents/generations/tasks/ark-task-123`)
   assert.deepEqual(downloads[0].slice(0, 4), ['https://result.example-cdn.net/result.mp4?token=output', arkVideoJob().outputDirectory, TASK_ID, 'video'])
   assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.mp4` })
+})
+
+test('Ark video checkpoints submission and resumes only by its persisted task ID', async () => {
+  const events = []
+  await runArkVideoTaskWithCheckpoint(arkVideoJob(), {
+    resolveReferenceHost: async () => [{ address: '93.184.216.34', family: 4 }],
+    checkpoint: async (value) => events.push(value),
+    postArkJson: async () => { events.push('post'); return { id: 'ark-resume-42' } },
+    getArkJson: async () => {
+      events.push('poll')
+      return { data: { status: 'succeeded', content: { video_url: 'https://result.example-cdn.net/result.mp4' } } }
+    },
+    downloadArkOutput: async () => { events.push('download'); return `generated/${TASK_ID}/result.mp4` },
+    sleep: async () => {},
+    now: () => 0,
+  })
+  assert.deepEqual(events, [
+    { phase: 'submitting' },
+    'post',
+    { phase: 'submitted', remoteTaskId: 'ark-resume-42' },
+    'poll',
+    'download',
+  ])
+
+  const resumedPolls = []
+  await runArkVideoTaskWithCheckpoint({ ...arkVideoJob(), remoteTaskId: 'ark-restored-42' }, {
+    resolveReferenceHost: async () => [{ address: '93.184.216.34', family: 4 }],
+    checkpoint: async () => assert.fail('resumed Ark tasks must not submit again'),
+    postArkJson: async () => assert.fail('resumed Ark tasks must not create another task'),
+    getArkJson: async (url) => {
+      resumedPolls.push(url)
+      return { data: { status: 'succeeded', content: { video_url: 'https://result.example-cdn.net/result.mp4' } } }
+    },
+    downloadArkOutput: async () => `generated/${TASK_ID}/result.mp4`,
+    sleep: async () => {},
+    now: () => 0,
+  })
+  assert.deepEqual(resumedPolls, [`${ARK_API_BASE_URL}/contents/generations/tasks/ark-restored-42`])
 })
 
 test('desktop video node reference fields route through the Main Ark model selection and save mocked output', async () => {

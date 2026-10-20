@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-20",
+  "scope": "MCP functional completion; no additional installation or uninstallation",
+  "changes": [
+    "New configuration grants include their visible provider.read dependency; media.read includes task.read. Main authorization remains unchanged.",
+    "Read-only provider grants discard hidden credential draft fields and mappings before validation and submission.",
+    "A pending generation challenge is preserved across concurrent or replayed preparation; duplicate requests return GENERATION_CONFIRMATION_PENDING without another form.",
+    "Agnes image and video creation require a persisted submitting checkpoint. Agnes and Ark video IDs require a persisted submitted checkpoint before polling; restored video tasks only poll their original upstream ID.",
+    "Updated usage guide, MCP/provider contracts, and English descriptions."
+  ],
+  "verification": {
+    "desktopRegression": {
+      "passed": 189,
+      "failed": 0,
+      "skipped": 0,
+      "log": "mcp-functional-final-20261020.log"
+    },
+    "frontendPolicyAndLanguage": {
+      "passed": 10,
+      "failed": 0,
+      "log": "mcp-grant-policy-and-language-20261020.log"
+    },
+    "standaloneStaging": {
+      "buildPassed": true,
+      "workerSkillAndFragmentRestartSmokePassed": true,
+      "path": "pi-paper-desktop/dist/app",
+      "sourceFilesMatch": {
+        "main.cjs": true,
+        "generation-worker.cjs": true,
+        "mcp-main-service.cjs": true,
+        "mcp-stdio.cjs": true
+      },
+      "log": "mcp-functional-staging-20261020.log"
+    },
+    "workerBoundary": "Full production source and parentPort routes exercised with in-memory port and network stubs; not a real provider or OS process crash test.",
+    "initialRestrictedRuns": "Node/Vite subprocess startup was denied with spawn EPERM; local test/build reruns with subprocess permissions passed. Language scan initially found untranslated MCP descriptions; entries were added and the scan passed."
+  },
+  "limits": [
+    "No real provider requests or additional paid tasks were made in this development run.",
+    "Submitting without a durable upstream ID remains blocked from task retry, including an explicit create-time 503. A newly confirmed generation is a separate request after checking provider records.",
+    "New dependency selection does not widen existing grants; recreate older grants that lack dependencies.",
+    "Native Codex desktop form rendering and the new real video full chain remain unaccepted; earlier relay evidence is retained.",
+    "Windows real uninstall read-context root cause remains unresolved; repeated install/uninstall cycles are paused.",
+    "Claude Code real session testing remains canceled by the user; macOS/Linux remain unaccepted."
+  ],
+  "sourceSha256": {
+    "main.cjs": "1681557ef54a288420797f9546235e72c80163dff20e21bb5be715ee662f936c",
+    "generation-worker.cjs": "467af2c875fb6a57b53414ee50362537a22ffe38ac4128c1a76140c4518b7107",
+    "mcp-main-service.cjs": "099088f89c0924cdde27f71680ccf0bcdb48f614506038bf526e74a8ff78d0ad",
+    "mcp-stdio.cjs": "0f6c094a280a5386c48ed09950aae9526f6b76d68e1bdf6571e630cc56d6bc64"
+  }
+}

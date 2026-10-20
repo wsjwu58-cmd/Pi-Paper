@@ -69,6 +69,8 @@ flowchart LR
 
 提供方配置是应用级设置，可能影响其他项目；授权按提供方限定，不自动随画布写权限授予。首期不开放删除全部提供方配置或清空所有 Key 的工具。
 
+授权 UI 保持可用的权限组合：`provider.configure` 同时选择并展示 `provider.read`，以获取保存所需的公开 schema、型号和 revision；`media.read` 同时选择并展示 `task.read`，以发现并调用任务结果读取工具。依赖项在对应能力启用时不可单独取消。厂商、字段、来源及媒体类别限制不变，Main 继续分别鉴权。退回仅提供方读取时，不校验或提交隐藏的凭据草稿。
+
 项目切换使旧画布授权和待处理提案失效。应用级提供方授权可保留，但旧项目关联的未完成配置流程失效；客户端须获取新上下文。绑定新项目必须由桌面授权。MCP roots、客户端传入 ID、目录或 `confirmed/consent` 字段不能授予权限。
 
 授权页披露 MCP 返回的文本、提示词、图片/视频预览等可能被外部 Agent 发往其模型服务；读取元数据不自动授权读取媒体字节。默认不读取内置会话、记忆、全局目录或凭据。撤销授权/关闭 MCP 后拒绝新请求并停止尚未提交的写操作；已提交任务仍通过 TaskStore 管理。
@@ -149,6 +151,8 @@ Agent 从 `list_provider_configuration` 获取 `credentialSources`、`allowedCre
 提案状态：`awaiting_confirmation → submitting → submitted`，另有 `rejected / expired / invalidated / failed`。提交结果不确定时返回 `submission_unknown`，查询现有账本/关联继续协调，不盲重发。`submitted` 仅表示本地任务已耐久创建；任务独立使用 `queued → running → succeeded | failed | cancelled`。
 
 确认记录绑定连接、项目、画布版本、目标、模型绑定及提供方配置 revision、完整参数及参考内容版本/哈希、操作摘要和有效期；复用原 ApprovalService 验证/消费语义。Main 为桥接签发单次挑战，桥接使用客户端 form elicitation 收集本次生成决定，再经私有 `generation/confirm` RPC 送回。挑战不进入模型工具参数、响应、会话或持久化账本，不提供模型可调用的批准工具。Main 消费挑战并复核会话/授权/版本/有效期/取消状态后才提交；结果不确定时不重放。客户端是用户信任的确认宿主，服务端不能证明宿主内部确由人点击。已提交任务按权威状态恢复。
+
+同一提案已有未过期、未消费的挑战时，并发或重放准备请求返回 `GENERATION_CONFIRMATION_PENDING`，不覆盖原挑战、不再触发第二份表单。原表单仍可正常确认。连接清理沿用原机制使其挑战失效，不能跨会话消费；已完成的提案继续查询原任务状态。
 
 外部确认在 Codex 等客户端显示目标、模型、输入、覆盖影响和云端可能费用；只接受明确确认，不采集秘密。桌面不再显示第二张外部生成确认卡。内置 Agent 的原确认卡保持不变。不支持 form 的客户端明确返回能力错误，不能降级成自动批准。
 
