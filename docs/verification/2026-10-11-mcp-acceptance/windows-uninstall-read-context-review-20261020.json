@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "accepted": false,
+  "rootCauseProven": false,
+  "diagnosticPackage": {
+    "installer": "output/mcp-windows-2026-10-20-safe-submit-diagnostic/Pi-Paper-0.1.0-win-x64.exe",
+    "sha256": "f34d459cb539b1ceac997c181a507cf101419e15e562377fa18004d007eb8868",
+    "uninstallerSha256": "62a5b9ebb4a04da3475598d9a19f9ea1d505e1cbd91f2301f12f299141f1fb27",
+    "enabledExplicitly": true,
+    "runtimePayloadReusedFromNormalPackage": true,
+    "installWizardOperatedByUser": true,
+    "reviewerObservedPages": [
+      "progress"
+    ]
+  },
+  "trace": "windows-uninstall-process-trace-20261020-113153-bd765c62.json",
+  "diagnosticLog": "windows-uninstall-diagnostic-20261020.log",
+  "interpretation": {
+    "manualNotUpdatedOrSilent": true,
+    "tempChildHashMatchedAtRun": true,
+    "tempOriginalDirectoryMatchedExpected": true,
+    "callbackPhases": [
+      "init",
+      "section-start",
+      "after-success"
+    ],
+    "nsisInstallRegistrationReadableAtInit": false,
+    "nsisTargetFilesPresentAtInit": false,
+    "externalFilesAndHkcuKeysRemain": true,
+    "userDataExact1738Preserved": true
+  },
+  "diagnosticsOwner": {
+    "sameAsCurrentUser": true,
+    "isSystem": false,
+    "isBuiltinAdministrators": false
+  },
+  "externalRegistryViewChecks": {
+    "Registry32": {
+      "installPresent": true,
+      "uninstallPresent": true
+    },
+    "Registry64": {
+      "installPresent": true,
+      "uninstallPresent": true
+    }
+  },
+  "exactCompatibilityFlagsMatched": 0,
+  "normalModeProbes": {
+    "exec": {
+      "builtin32": "readable",
+      "builtin64": "readable",
+      "native64OpenStatus": "0",
+      "exactProgramFilePresent": "true"
+    },
+    "shellLaunch": {
+      "builtin32": "readable",
+      "builtin64": "readable",
+      "native64OpenStatus": "0",
+      "exactProgramFilePresent": "true"
+    },
+    "plugins": {
+      "builtin32": "readable",
+      "builtin64": "readable",
+      "native64OpenStatus": "0",
+      "uacInner": "false",
+      "uacAdmin": "false",
+      "afterUac": "readable",
+      "afterStdUtils": "readable",
+      "exactProgramFilePresent": "true"
+    },
+    "shellToolOutcome": "No targetable window after immediate probe exit; output log confirms execution."
+  },
+  "readonlyUninstallerModeProbe": {
+    "generated": true,
+    "executedByAgent": true,
+    "userRunPending": false,
+    "userExplicitlyRequestedAgentExecution": true,
+    "exitCode": 0,
+    "results": {
+      "builtin32": "readable",
+      "builtin64": "readable",
+      "native64OpenStatus": "0",
+      "uacInner": "false",
+      "uacAdmin": "false",
+      "afterUac": "readable",
+      "afterStdUtils": "readable",
+      "exactProgramFilePresent": "true"
+    },
+    "sideEffects": "Only fixture output log; no application deletion or registry writes."
+  },
+  "secretsOrRawCommandLinesSaved": false,
+  "limits": [
+    "Both actual registry views and log owner comparisons alone do not establish the effective hive or directory inside NSIS.",
+    "Normal probe success does not explain the real uninstaller failure.",
+    "Diagnostic package is not substituted for normal-package acceptance.",
+    "Uninstaller-mode and stock-current-user probe success do not establish the cause of the actual packaged uninstaller failure.",
+    "Actual-package read mismatch remains unexplained after successful read-only full-template initialization. No speculative production change was made."
+  ],
+  "stockInitProbe": {
+    "executedByAgent": true,
+    "results": {
+      "builtin32": "readable",
+      "builtin64": "readable",
+      "native64OpenStatus": "0",
+      "uacInner": "false",
+      "uacAdmin": "false",
+      "afterUac": "readable",
+      "afterStdUtils": "readable",
+      "exactProgramFilePresent": "true",
+      "stockInitDirectoryMatchesExpected": "true",
+      "afterStockInit": "readable"
+    },
+    "limit": "Uses actual CurrentUser init macro; all-user branch records status without elevation. No actual uninstall section or process killing."
+  },
+  "fullTemplateInitProbe": {
+    "executedByAgent": true,
+    "defaultResults": {
+      "builtinSelectedView": "readable",
+      "builtinExplicit64": "readable",
+      "native64OpenStatus": "0",
+      "selectedDirectoryMatchesRegistered": "true",
+      "exactProgramFilePresent": "true"
+    },
+    "explicitOriginalDirectoryResults": {
+      "builtinSelectedView": "readable",
+      "builtinExplicit64": "readable",
+      "native64OpenStatus": "0",
+      "selectedDirectoryMatchesRegistered": "true",
+      "exactProgramFilePresent": "true"
+    },
+    "readOnly": true,
+    "actualConfigAndSharedHeaderUsed": true,
+    "emptyUninstallSection": true,
+    "processKillCheckReplacedWithNoOp": true,
+    "customInitRecordsThenQuits": true,
+    "fixtureWarningsAsErrors": false,
+    "expectedUnusedFunctionWarning": "un._GetProcessInfo",
+    "normalProductWarningsPolicyUnchanged": true
+  },
+  "explorerLaunchComparison": {
+    "accepted": false,
+    "probeNotLaunchedViaExplorer": true,
+    "errors": [
+      "window is minimized; call activate_window, refresh with get_window, then retry get_window_state",
+      "user input was detected in this window; call get_window_state before continuing"
+    ],
+    "furtherInputStopped": true
+  }
+}

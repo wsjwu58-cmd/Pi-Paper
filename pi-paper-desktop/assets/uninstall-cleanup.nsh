@@ -316,6 +316,29 @@
       !insertmacro VPUC_RESTORE_STATE ${suffix}_success
   !macroend
 
+  !macro VPUC_VERIFY_INITIAL_TARGET suffix
+    StrCmp $VPUC_IS_UPDATED "true" vpuc_initial_target_present_${suffix}
+    IfFileExists "$INSTDIR\${APP_EXECUTABLE_FILENAME}" vpuc_initial_target_present_${suffix}
+    IfFileExists "$INSTDIR\${UNINSTALL_FILENAME}" vpuc_initial_target_present_${suffix}
+    MessageBox MB_OK|MB_ICONSTOP "Pi-Paper could not find this installation's program files. Reinstall the app before retrying uninstall." /SD IDOK
+    SetErrorLevel 2
+    Quit
+    vpuc_initial_target_present_${suffix}:
+  !macroend
+
+  !macro customUnInit
+    !ifmacrodef VPUC_BEFORE_INIT_CHECK
+      !insertmacro VPUC_BEFORE_INIT_CHECK
+    !endif
+    !insertmacro VPUC_SAVE_STATE init_policy
+    StrCpy $VPUC_IS_UPDATED "false"
+    ${If} ${isUpdated}
+      StrCpy $VPUC_IS_UPDATED "true"
+    ${EndIf}
+    !insertmacro VPUC_RESTORE_STATE init_policy
+    !insertmacro VPUC_VERIFY_INITIAL_TARGET init_policy
+  !macroend
+
   !macro VPUC_VERIFY_FILES_REMOVED suffix
     ; Updates use the stock atomic move/restore lifecycle and may run the
     ; registered uninstaller in place. The installer owns their final payload.

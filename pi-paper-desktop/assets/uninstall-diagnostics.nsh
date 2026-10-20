@@ -338,7 +338,7 @@
     !insertmacro VPD_END success
   !macroend
 
-  !macro customUnInit
+  !macro VPUC_BEFORE_INIT_CHECK
     !insertmacro VPD_INIT_PHASE
   !macroend
 

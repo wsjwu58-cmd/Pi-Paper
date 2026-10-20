@@ -47,6 +47,15 @@ Function .onInit
     StrCpy $VPUC_IS_UPDATED "false"
     StrCmp $installMode "verify-update" 0 +2
       StrCpy $VPUC_IS_UPDATED "true"
+    StrCmp $installMode "verify-initial-update" 0 +2
+      StrCpy $VPUC_IS_UPDATED "true"
+    StrCmp $installMode "verify-initial" vpuc_fixture_initial_target
+    StrCmp $installMode "verify-initial-update" vpuc_fixture_initial_target vpuc_fixture_final_target
+    vpuc_fixture_initial_target:
+      !insertmacro VPUC_VERIFY_INITIAL_TARGET fixture
+      SetErrorLevel 0
+      Quit
+    vpuc_fixture_final_target:
     StrCmp $installMode "verify-files" vpuc_fixture_verify_files
     StrCmp $installMode "verify-update" vpuc_fixture_verify_files vpuc_fixture_registry_cases
     vpuc_fixture_verify_files:

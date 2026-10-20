@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "realUninstallAccepted": false,
+  "rootCauseProven": false,
+  "change": "Ordinary uninstall stops before removal when neither the main executable nor the registered uninstaller exists under its selected target. Update removal retains the stock lifecycle.",
+  "localMacroFixture": { "passed": 21, "failed": 0, "realUninstallerExecuted": false },
+  "normalInstaller": {
+    "path": "output/mcp-windows-2026-10-20-initial-target-guard/Pi-Paper-0.1.0-win-x64.exe",
+    "bytes": 120403090,
+    "sha256": "635d4128df697585bf23ba3e25daee2a555ab5bc5ff75b0e1b5324d10d266fa7",
+    "installedUninstallerSha256": "d23228229f6badef349efe3c89a1e395fe278cf6d9f3d08f7b2847188e915e4a"
+  },
+  "diagnosticInstaller": {
+    "path": "output/mcp-windows-2026-10-20-initial-target-guard-diagnostic/Pi-Paper-0.1.0-win-x64.exe",
+    "bytes": 120405047,
+    "sha256": "bc406e8771f5825224a7cf523855285975e7d3de1c201100563d924f806f193a",
+    "leftInstalled": false
+  },
+  "runtimePayload": {
+    "reusedFromPreviouslyVerifiedSafeSubmitPackage": true,
+    "installedGenerationWorkerSha256": "e0ddc3d5060431d1f03b64ec24195eb6f18de3d6423ce83741a0d4121b8ead9f"
+  },
+  "restoration": {
+    "startedBeforeUserPausedInstallUninstallLoops": true,
+    "mode": "authorized silent update",
+    "exitCodeCapturedAfterSessionCompaction": false,
+    "userDataReport": "windows-manual-20261020-initial-target-final-reinstall-data.json",
+    "userDataFiles": 1738,
+    "exactContentPreserved": true,
+    "manualWizardAcceptance": false
+  },
+  "limits": [
+    "This guard prevents an empty or unreadable selected target from being treated as a successful ordinary uninstall; it does not establish the cause of the real read-context mismatch.",
+    "If both executable files were already manually deleted, ordinary uninstall requires reinstalling first, even if other payload remains.",
+    "No new manual uninstall was performed for this package. Further install/uninstall cycles are paused at the user's request."
+  ]
+}

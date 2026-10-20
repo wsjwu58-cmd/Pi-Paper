@@ -228,6 +228,17 @@ try {
   Remove-Item -LiteralPath $mainSentinel -Force
   Remove-Item -LiteralPath $uninstallSentinel -Force
 
+  # An ordinary uninstall cannot report success for a nonexistent target. A
+  # partial installation with either executable can still reach stock cleanup.
+  Invoke-Fixture 'verify-initial' 2
+  Invoke-Fixture 'verify-initial-update'
+  Set-Content -LiteralPath $mainSentinel -Value 'fixture-only sentinel'
+  Invoke-Fixture 'verify-initial'
+  Remove-Item -LiteralPath $mainSentinel -Force
+  Set-Content -LiteralPath $uninstallSentinel -Value 'fixture-only sentinel'
+  Invoke-Fixture 'verify-initial'
+  Remove-Item -LiteralPath $uninstallSentinel -Force
+
   Set-OwnedInstallRecord $expectedInstallPath
   Set-OwnedUninstallRecord $expectedInstallPath 'currentuser'
   $deniedRegistryPath = "Registry::HKEY_CURRENT_USER\$installKey"
@@ -249,7 +260,7 @@ try {
   }
 
   Write-Output "PASS: NSIS cleanup macro fixture completed under HKCU\$relativeTestRoot."
-  Write-Output 'PASS: 17 cases covering ownership, missing paths, command/icon mismatch, hive isolation, state preservation, denied deletion, residual program files, and updater exceptions.'
+  Write-Output 'PASS: 21 cases covering ownership, missing paths, command/icon mismatch, hive isolation, state preservation, denied deletion, initial target presence, residual program files, and updater exceptions.'
 }
 finally {
   if ($deniedRegistryPath -and $originalDeniedAcl) {
