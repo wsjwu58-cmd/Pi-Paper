@@ -202,58 +202,47 @@ test('image responses accept provider CDN URLs and preserve returned media forma
   )
 })
 
-test('image creation retries transient Agnes statuses with exponential delays', async () => {
-  let attempts = 0
-  const delays = []
-  const result = await runImageTask(jobFor('image'), {
-    postJson: async () => {
-      attempts += 1
-      if (attempts < 4) throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'mock transient response', attempts === 1 ? 429 : 503)
-      return { data: [{ url: CDN_URL }] }
-    },
-    sleep: async (milliseconds) => delays.push(milliseconds),
-    downloadAgnesOutput: async () => `generated/${TASK_ID}/result.png`,
-  })
-
-  assert.equal(attempts, 4)
-  assert.deepEqual(delays, [3_000, 6_000, 12_000])
-  assert.deepEqual(result, {
-    outputPath: `generated/${TASK_ID}/result.png`,
-    outputPaths: [`generated/${TASK_ID}/result.png`],
-  })
+test('Agnes paid creation never replays HTTP failures for either modality', async (t) => {
+  for (const [modality, run] of [['image', runImageTask], ['video', runVideoTask]]) {
+    for (const statusCode of [429, 502, 503, 504]) {
+      await t.test(`${modality} HTTP ${statusCode}`, async () => {
+        let attempts = 0
+        const unexpectedEffects = []
+        await assert.rejects(run(jobFor(modality), {
+          postJson: async () => {
+            attempts += 1
+            // A second POST would succeed, making accidental replay observable.
+            if (attempts > 1) return modality === 'image' ? { data: [{ url: CDN_URL }] } : { video_id: 'duplicate' }
+            throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'mock overloaded response', statusCode)
+          },
+          sleep: async () => { unexpectedEffects.push('sleep') },
+          getAgnesResponse: async () => { unexpectedEffects.push('poll'); return response(200, {}) },
+          downloadAgnesOutput: async () => { unexpectedEffects.push('download'); return 'unreachable' },
+        }), (error) => error.code === (statusCode === 429 ? 'CLOUD_RATE_LIMITED' : 'CLOUD_REQUEST_FAILED')
+          && error.statusCode === statusCode && error.message === 'mock overloaded response')
+        assert.equal(attempts, 1)
+        assert.deepEqual(unexpectedEffects, [])
+      })
+    }
+  }
 })
 
-test('image creation stops after five attempts and preserves the final provider failure code', async () => {
-  let attempts = 0
-  const delays = []
-  await assert.rejects(
-    runImageTask(jobFor('image'), {
-      postJson: async () => {
-        attempts += 1
-        throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'mock overloaded response', 503)
-      },
-      sleep: async (milliseconds) => delays.push(milliseconds),
-      downloadAgnesOutput: async () => 'unreachable',
-    }),
-    (error) => error.code === 'CLOUD_REQUEST_FAILED' && error.statusCode === 503,
-  )
-  assert.equal(attempts, 5)
-  assert.deepEqual(delays, [3_000, 6_000, 12_000, 24_000])
-})
-
-test('Agnes rate limiting remains visible after retries are exhausted', async () => {
-  let attempts = 0
-  await assert.rejects(
-    runVideoTask(jobFor('video'), {
-      postJson: async () => {
-        attempts += 1
-        throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'mock rate limit', 429)
-      },
-      sleep: async () => {},
-    }),
-    (error) => error.code === 'CLOUD_RATE_LIMITED' && error.statusCode === 429,
-  )
-  assert.equal(attempts, 5)
+test('Agnes paid creation preserves uncertain transport failures without replay', async (t) => {
+  for (const [modality, run] of [['image', runImageTask], ['video', runVideoTask]]) {
+    for (const code of ['CLOUD_REQUEST_FAILED', 'CLOUD_TIMEOUT']) {
+      await t.test(`${modality} ${code}`, async () => {
+        const failure = new WorkerFailure(code, 'mock response lost after submission')
+        let attempts = 0
+        await assert.rejects(run(jobFor(modality), {
+          postJson: async () => { attempts += 1; throw failure },
+          sleep: async () => { assert.fail('creation must not back off for replay') },
+          getAgnesResponse: async () => { assert.fail('no remote task ID is available') },
+          downloadAgnesOutput: async () => { assert.fail('no output is available') },
+        }), (error) => error === failure)
+        assert.equal(attempts, 1)
+      })
+    }
+  }
 })
 
 test('Agnes media URLs must use HTTPS and cannot target private or local addresses', () => {
@@ -593,36 +582,7 @@ test('video status polling backs off transient connection failures and recovers'
   assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.mp4` })
 })
 
-test('video creation retries Agnes HTTP 429, 502, 503 and 504 before polling', async (t) => {
-  for (const statusCode of [429, 502, 503, 504]) {
-    await t.test(`HTTP ${statusCode}`, async () => {
-      let attempts = 0
-      const delays = []
-      const result = await runVideoTask(jobFor('video'), {
-        postJson: async () => {
-          attempts += 1
-          if (attempts === 1) throw new WorkerFailure('CLOUD_REQUEST_FAILED', 'mock transient response', statusCode)
-          return { video_id: `retry-video-${statusCode}` }
-        },
-        getAgnesResponse: async () => response(200, {
-          status: 'completed',
-          metadata: { video_url: 'https://media.example-cdn.net/result.mp4' },
-        }),
-        downloadAgnesOutput: async () => `generated/${TASK_ID}/result.mp4`,
-        sleep: async (milliseconds) => { delays.push(milliseconds) },
-        now: (() => { let now = 0; return () => ++now })(),
-        pollIntervalMs: 0,
-        timeoutMs: 10,
-      })
-
-      assert.equal(attempts, 2)
-      assert.deepEqual(delays, [3_000, 0])
-      assert.deepEqual(result, { outputPath: `generated/${TASK_ID}/result.mp4` })
-    })
-  }
-})
-
-test('video creation surfaces the final Agnes queue-full response after bounded retries', async () => {
+test('video creation surfaces the first Agnes queue-full response without replay', async () => {
   let attempts = 0
   const delays = []
   await assert.rejects(
@@ -637,8 +597,8 @@ test('video creation surfaces the final Agnes queue-full response after bounded 
       && error.statusCode === 503
       && /video queue is full, please retry later/u.test(error.message),
   )
-  assert.equal(attempts, 5)
-  assert.deepEqual(delays, [3_000, 6_000, 12_000, 24_000])
+  assert.equal(attempts, 1)
+  assert.deepEqual(delays, [])
 })
 
 test('Ark video request preserves separate HTTPS image, video, and audio reference content types', () => {

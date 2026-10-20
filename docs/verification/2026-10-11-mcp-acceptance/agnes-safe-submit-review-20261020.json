@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "accepted": false,
+  "sourceReport": "codex-agnes-acceptance-2026-10-20T02-54-27-302Z.json",
+  "realClient": "Codex app-server with QA form relay",
+  "nativeCodexPopupAccepted": false,
+  "providerConfigurationSaved": true,
+  "connectionTest": "unsupported",
+  "reusedSuccessfulImage": true,
+  "newImageGeneration": false,
+  "videoClientForms": 1,
+  "humanResponses": 1,
+  "tasks": [
+    {
+      "modality": "image",
+      "status": "succeeded",
+      "error_code": null,
+      "attempt_count": 1
+    },
+    {
+      "modality": "video",
+      "status": "failed",
+      "error_code": "CLOUD_REQUEST_FAILED",
+      "attempt_count": 1
+    }
+  ],
+  "videoProviderFailure": {
+    "http503": true,
+    "queueFull": true,
+    "creditsOrQuota": false
+  },
+  "upstreamPostCount": null,
+  "upstreamPostCountLimit": "TaskStore attempt_count is not an HTTP request count. The pre-fix legacy adapter could replay paid POSTs; the actual count and charges were not captured.",
+  "automaticPaidPostRetryRemovedInSource": true,
+  "regression": {
+    "command": "node --test pi-paper-desktop/test/generation-worker.test.cjs pi-paper-desktop/test/provider-task-checkpoint.test.cjs pi-paper-desktop/test/generation-task-error-retry-cancel.test.cjs",
+    "passed": 53,
+    "failed": 0,
+    "realProviderRequests": 0
+  },
+  "noAdditionalGenerationAfterFailure": true,
+  "rawProviderEventOrPromptSaved": false
+}

@@ -346,11 +346,8 @@
     !insertmacro VPD_SECTION_START_PHASE
   !macroend
 
-  ; customHeader is expanded after the stock NSIS includes define installMode,
-  ; registry keys, and executable names, so this callback can use those symbols.
-  !macro customHeader
-    Function un.onUninstSuccess
-      !insertmacro VPD_SUCCESS_PHASE
-    FunctionEnd
+  ; The production include owns the single success callback in both builds.
+  !macro VPUC_AFTER_SUCCESS_CHECK
+    !insertmacro VPD_SUCCESS_PHASE
   !macroend
 !endif

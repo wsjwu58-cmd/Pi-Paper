@@ -44,6 +44,16 @@ Function .onInit
     ClearErrors
     StrCpy $installMode "CurrentUser"
   vpuc_fixture_run:
+    StrCpy $VPUC_IS_UPDATED "false"
+    StrCmp $installMode "verify-update" 0 +2
+      StrCpy $VPUC_IS_UPDATED "true"
+    StrCmp $installMode "verify-files" vpuc_fixture_verify_files
+    StrCmp $installMode "verify-update" vpuc_fixture_verify_files vpuc_fixture_registry_cases
+    vpuc_fixture_verify_files:
+      !insertmacro VPUC_VERIFY_FILES_REMOVED fixture
+      SetErrorLevel 0
+      Quit
+    vpuc_fixture_registry_cases:
     StrCpy $FixtureExpectedErrors "false"
     StrCmp $installMode "CurrentUser-errorflag" 0 +3
       StrCpy $installMode "CurrentUser"

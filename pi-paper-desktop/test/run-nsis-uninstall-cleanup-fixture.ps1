@@ -211,6 +211,23 @@ try {
   # Incoming NSIS errors and working registers must survive successful cleanup.
   Invoke-Fixture 'CurrentUser-errorflag'
 
+  # These inert .exe-named sentinels are never executed. Verify the production
+  # postcondition guard without launching any real uninstaller or deleting apps.
+  Invoke-Fixture 'verify-files'
+  $null = New-Item -ItemType Directory -Path $expectedInstallPath -Force
+  $mainSentinel = Join-Path $expectedInstallPath 'Pi-Paper.exe'
+  $uninstallSentinel = Join-Path $expectedInstallPath 'Uninstall Pi-Paper.exe'
+  Set-Content -LiteralPath $mainSentinel -Value 'fixture-only sentinel'
+  Invoke-Fixture 'verify-files' 2
+  Remove-Item -LiteralPath $mainSentinel -Force
+  Set-Content -LiteralPath $uninstallSentinel -Value 'fixture-only sentinel'
+  Invoke-Fixture 'verify-files' 2
+  Invoke-Fixture 'verify-update'
+  Set-Content -LiteralPath $mainSentinel -Value 'fixture-only sentinel'
+  Invoke-Fixture 'verify-update'
+  Remove-Item -LiteralPath $mainSentinel -Force
+  Remove-Item -LiteralPath $uninstallSentinel -Force
+
   Set-OwnedInstallRecord $expectedInstallPath
   Set-OwnedUninstallRecord $expectedInstallPath 'currentuser'
   $deniedRegistryPath = "Registry::HKEY_CURRENT_USER\$installKey"
@@ -232,7 +249,7 @@ try {
   }
 
   Write-Output "PASS: NSIS cleanup macro fixture completed under HKCU\$relativeTestRoot."
-  Write-Output 'PASS: 12 cases covering ownership, absent directories, relative paths, command/icon mismatch, missing keys, hive isolation, NSIS state preservation, and denied deletion.'
+  Write-Output 'PASS: 17 cases covering ownership, missing paths, command/icon mismatch, hive isolation, state preservation, denied deletion, residual program files, and updater exceptions.'
 }
 finally {
   if ($deniedRegistryPath -and $originalDeniedAcl) {
@@ -259,5 +276,10 @@ finally {
   if ($resolvedTempDirectory.StartsWith($resolvedTempPrefix, [StringComparison]::OrdinalIgnoreCase) -and
       (Split-Path -Leaf $resolvedTempDirectory) -eq "VibePaper-NSIS-Cleanup-$testToken") {
     Remove-Item -LiteralPath $resolvedTempDirectory -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  $fixtureInstallParent = [IO.Path]::GetFullPath((Split-Path -Parent $expectedInstallPath))
+  if ($fixtureInstallParent.StartsWith($resolvedTempPrefix, [StringComparison]::OrdinalIgnoreCase) -and
+      (Split-Path -Leaf $fixtureInstallParent) -eq $testToken) {
+    Remove-Item -LiteralPath $fixtureInstallParent -Recurse -Force -ErrorAction SilentlyContinue
   }
 }

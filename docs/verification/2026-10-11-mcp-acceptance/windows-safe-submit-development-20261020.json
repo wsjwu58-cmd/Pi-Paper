@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "overallAcceptanceComplete": false,
+  "installer": {
+    "path": "output\\mcp-windows-2026-10-20-safe-submit\\Pi-Paper-0.1.0-win-x64.exe",
+    "bytes": 120402927,
+    "sha256": "91816036f645aff194679c0ae0c3f1339a16e64da67d3e8b46e78fb904df0833",
+    "diagnosticsEnabled": false,
+    "signedDistributionTrustAccepted": false
+  },
+  "sources": {
+    "generationWorkerSha256": "e0ddc3d5060431d1f03b64ec24195eb6f18de3d6423ce83741a0d4121b8ead9f",
+    "uninstallCleanupSha256": "bc9710974e75bbfd26c17fd6d750be7d0f704f362eec2af921c5aa37655ef44e"
+  },
+  "tests": {
+    "generationAndTaskStore": {
+      "passed": 53,
+      "failed": 0
+    },
+    "nsisIsolatedMacroFixture": {
+      "passed": 17,
+      "failed": 0,
+      "actualUninstallerLaunched": false
+    },
+    "buildPackagePassed": true,
+    "normalNsisBuildPassed": true,
+    "packagedRuntimeSmokePassed": true
+  },
+  "manualInstall": {
+    "scope": "CurrentUser",
+    "directory": "E:/pp/Pi-Paper",
+    "observedPages": [
+      "current-user-options",
+      "directory",
+      "progress",
+      "finish"
+    ],
+    "runCheckboxUnselected": true,
+    "finishClicked": true,
+    "installerWindowExited": true,
+    "freshInstall": false,
+    "existingRegistrationReported": true
+  },
+  "installed": {
+    "workerMatchesSource": true,
+    "uninstallerSha256": "3b8800dd26716387b91220e6451666fd083a9b5eb188aad6a1059ceeb91a665c"
+  },
+  "runtime": {
+    "normalLaunchPassed": true,
+    "normalClosePassed": true,
+    "normalReopenPassed": true,
+    "originalTwoProjectEntriesPresent": true,
+    "projectContentEdited": false,
+    "generatedMedia": false
+  },
+  "userData": {
+    "upgradeComparison": "windows-manual-20261020-safe-submit-reinstall-data.json",
+    "runtimeComparison": "windows-manual-20261020-safe-submit-runtime-data.json",
+    "runtimeBitwiseUnchanged": false
+  },
+  "uninstall": {
+    "latestPredecessorAttemptAccepted": false,
+    "predecessorTrace": "windows-uninstall-process-trace-20261020-110316-0aa33a0e.json",
+    "rootCauseProven": false,
+    "newPackageManualAccepted": false,
+    "change": "Original finish-page PRE verifies ordinary uninstall files and guarded owned registrations. Silent success callback reuses the check. No extra Components page. Updated installs keep the stock payload lifecycle.",
+    "limits": [
+      "Fixture and compilation do not prove manual uninstall success.",
+      "Temporary-child exit codes do not necessarily propagate to the outer launcher.",
+      "Stock registry deletion precedes final validation; on failure use the remaining registered uninstaller file or reinstall."
+    ]
+  },
+  "remaining": [
+    "New normal-package manual uninstall and fresh reinstall",
+    "Codex desktop native popup visual acceptance",
+    "New-policy real Agnes Video 2.5 Flash complete chain; current real task failed HTTP 503 queue full",
+    "macOS/Linux installation acceptance unavailable",
+    "Claude Code real-session acceptance canceled by user"
+  ]
+}

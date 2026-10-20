@@ -216,25 +216,16 @@ async function readResponseErrorDetail(response, apiKey = null) {
 
 async function postAgnesJson(endpoint, payload, apiKey, timeoutMs, dependencies = {}) {
   const requestJson = dependencies.postJson || postJson
-  const sleep = dependencies.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
-  let delayMs = 3_000
-  let lastError
-  for (let attempt = 1; attempt <= 5; attempt += 1) {
-    try {
-      return await requestJson(endpoint, payload, apiKey, timeoutMs)
-    } catch (error) {
-      lastError = error
-      if (!AGNES_TRANSIENT_HTTP_STATUSES.has(error?.statusCode) || attempt === 5) {
-        if (error?.statusCode === 429) {
-          throw new WorkerFailure('CLOUD_RATE_LIMITED', error.message || 'Agnes 请求过于频繁，请稍后重试。', 429)
-        }
-        throw error
-      }
-      await sleep(delayMs)
-      delayMs = Math.min(delayMs * 2, 30_000)
+  // A failed creation response does not prove the provider rejected the task.
+  // Without an upstream idempotency guarantee, replay can create another paid job.
+  try {
+    return await requestJson(endpoint, payload, apiKey, timeoutMs)
+  } catch (error) {
+    if (error?.statusCode === 429) {
+      throw new WorkerFailure('CLOUD_RATE_LIMITED', error.message || 'Agnes 请求过于频繁，请稍后重试。', 429)
     }
+    throw error
   }
-  throw lastError
 }
 
 function extractText(response) {

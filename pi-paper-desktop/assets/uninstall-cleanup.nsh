@@ -1,6 +1,6 @@
 ; Remove only Pi-Paper registration keys that still prove ownership by this install.
-; The stock NSIS uninstaller already attempts these removals; this tail section is
-; a guarded retry for keys that remain after the stock section completes.
+; The stock NSIS uninstaller already attempts these removals; its success callback
+; verifies file removal and retries only registrations owned by this installation.
 
 !ifdef BUILD_UNINSTALLER
 !ifndef VIBEPAPER_UNINSTALL_CLEANUP_INCLUDED
@@ -20,6 +20,8 @@
   Var VPUC_PATH_LAST_CHAR
   Var VPUC_KEY_ABSENT
   Var VPUC_KEY_STATE
+  Var VPUC_IS_UPDATED
+  Var VPUC_VERIFIED
 
   !ifdef APP_64
     !define VPUC_REGISTRY_VIEW 64
@@ -314,10 +316,46 @@
       !insertmacro VPUC_RESTORE_STATE ${suffix}_success
   !macroend
 
-  !macro customUnInstallSection
-    Section "-un.VibePaperRegistrationCleanup"
-      !insertmacro VPUC_CLEANUP_REGISTRATION_KEYS stock_tail
-    SectionEnd
+  !macro VPUC_VERIFY_FILES_REMOVED suffix
+    ; Updates use the stock atomic move/restore lifecycle and may run the
+    ; registered uninstaller in place. The installer owns their final payload.
+    StrCmp $VPUC_IS_UPDATED "true" vpuc_files_removed_${suffix}
+    IfFileExists "$INSTDIR\${APP_EXECUTABLE_FILENAME}" vpuc_files_remain_${suffix}
+    IfFileExists "$INSTDIR\${UNINSTALL_FILENAME}" vpuc_files_remain_${suffix} vpuc_files_removed_${suffix}
+    vpuc_files_remain_${suffix}:
+      MessageBox MB_OK|MB_ICONSTOP "Pi-Paper could not remove its program files. Close the app and retry uninstalling." /SD IDOK
+      SetErrorLevel 2
+      Quit
+    vpuc_files_removed_${suffix}:
+  !macroend
+
+  ; The template expands this immediately before MUI_UNPAGE_FINISH. Its PRE
+  ; callback validates before showing completion without adding another page.
+  !macro customUninstallPage
+    !define MUI_PAGE_CUSTOMFUNCTION_PRE un.VibePaperVerifyUninstall
+  !macroend
+
+  !macro customHeader
+    Function un.VibePaperVerifyUninstall
+      StrCmp $VPUC_VERIFIED "true" vpuc_already_verified
+      StrCpy $VPUC_IS_UPDATED "false"
+      ${If} ${isUpdated}
+        StrCpy $VPUC_IS_UPDATED "true"
+      ${EndIf}
+      !insertmacro VPUC_VERIFY_FILES_REMOVED stock_success
+      !insertmacro VPUC_CLEANUP_REGISTRATION_KEYS stock_success
+      !ifmacrodef VPUC_AFTER_SUCCESS_CHECK
+        !insertmacro VPUC_AFTER_SUCCESS_CHECK
+      !endif
+      StrCpy $VPUC_VERIFIED "true"
+      vpuc_already_verified:
+    FunctionEnd
+
+    ; Silent uninstall has no page callbacks. Reuse the same validation before
+    ; returning success; interactive uninstall has already verified at FINISH PRE.
+    Function un.onUninstSuccess
+      Call un.VibePaperVerifyUninstall
+    FunctionEnd
   !macroend
 !endif
 !endif
