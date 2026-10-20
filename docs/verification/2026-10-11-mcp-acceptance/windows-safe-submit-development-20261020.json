@@ -63,6 +63,8 @@
     "predecessorTrace": "windows-uninstall-process-trace-20261020-110316-0aa33a0e.json",
     "rootCauseProven": false,
     "newPackageManualAccepted": false,
+    "newPackageManualResult": "failed; normal completion page contradicted by final files and HKCU registrations",
+    "newPackageManualReview": "windows-safe-submit-uninstall-review-20261020.json",
     "change": "Original finish-page PRE verifies ordinary uninstall files and guarded owned registrations. Silent success callback reuses the check. No extra Components page. Updated installs keep the stock payload lifecycle.",
     "limits": [
       "Fixture and compilation do not prove manual uninstall success.",

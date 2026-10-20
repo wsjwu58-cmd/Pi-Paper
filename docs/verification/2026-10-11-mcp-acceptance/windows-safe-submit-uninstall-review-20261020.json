@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "accepted": false,
+  "sourceTrace": "windows-uninstall-process-trace-20261020-111845-575c1172.json",
+  "packageReport": "windows-safe-submit-development-20261020.json",
+  "userReportedFinalPage": "normal-uninstall-completed",
+  "stableThirtySeconds": true,
+  "finalFiles": {
+    "mainExecutablePresent": true,
+    "uninstallerPresent": true,
+    "registeredCommandTargetVerified": true,
+    "registeredCommandTargetSha256AtStart": null
+  },
+  "finalRegistry": {
+    "HKCUUninstall": true,
+    "HKCUInstall": true,
+    "HKLMUninstall": false,
+    "HKLMInstall": false
+  },
+  "observedExitStatuses": [
+    {
+      "role": "registered-uninstaller",
+      "name": "Uninstall Pi-Paper.exe",
+      "status": 0
+    },
+    {
+      "role": "observed-descendant",
+      "name": "Un_A.exe",
+      "status": 0
+    }
+  ],
+  "postExitTempCopyReview": {
+    "sameSha256AsRegisteredUninstaller": true,
+    "sha256": "3b8800dd26716387b91220e6451666fd083a9b5eb188aad6a1059ceeb91a665c",
+    "nsisHeaderMatchesRegistered": true,
+    "fileGuardMessagePresent": true,
+    "registrationGuardMessagePresent": true,
+    "reviewWasReadOnly": true,
+    "limit": "Post-exit hash equality supports the retained copy identity; the trace did not verify the child executable hash while it ran."
+  },
+  "userDataComparison": "windows-manual-20261020-safe-submit-uninstall-uninstall-data.json",
+  "sourceFixRuntimeAccepted": false,
+  "rootCauseProven": false,
+  "interpretation": "Normal completion and exit 0 are contradicted by final files and registrations. The finish-page validation is not accepted in the real package. No new cause is inferred from macro fixtures or embedded message presence.",
+  "nextStep": "Explicit diagnostic package compilation and phase/directory observation before any further source change."
+}
