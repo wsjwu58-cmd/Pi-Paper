@@ -53,6 +53,7 @@ const safeErrorCodes = new Set([
   'GENERATION_CONFIRMATION_REJECTED', 'GENERATION_CONFIRMATION_UNRESOLVED',
   'GENERATION_ACTION_AMBIGUOUS', 'EXISTING_MEDIA_TASK_TIMEOUT',
   'GENERATION_SUBMISSION_UNCERTAIN',
+  'GENERATION_CONFIRMATION_PENDING', 'TASK_CHECKPOINT_FAILED', 'TASK_CHECKPOINT_REQUIRED',
   'QA_MEDIA_SCOPE_EXCEEDED',
   'RESUME_MEDIA_TASK_INVALID', 'RESUME_MEDIA_TASK_AMBIGUOUS',
   'CODEX_APP_SERVER_TIMEOUT', 'CODEX_APP_SERVER_DISCONNECTED', 'CODEX_APP_SERVER_CLOSED',
@@ -100,9 +101,27 @@ function isAcceptanceHarnessEntry(moduleIsMain, runtime = process, argv = proces
   return moduleIsMain || Boolean(runtime.versions?.electron && runtime.type === 'browser' && argv.includes('--worker'))
 }
 
+function assertAcceptanceModeCompatibility(videoOnlyMode, resumeProjectArgument, isConfigurationOnly) {
+  if (videoOnlyMode && (resumeProjectArgument || isConfigurationOnly)) {
+    throw Object.assign(new Error('QA_ASSERTION_FAILED'), { code: 'QA_ASSERTION_FAILED' })
+  }
+}
+
+function isVideoOnlyChainAccepted(snapshot, videoResult, previewMatchesTaskStore) {
+  return snapshot?.imageTaskCount === 0 && snapshot?.imageNodeCount === 0
+    && snapshot?.allImageTaskCount === 0 && snapshot?.videoTaskCount === 1
+    && snapshot?.videoNodeCount === 1 && snapshot?.createdVideoNodeCount === 1
+    && snapshot?.allVideoTaskCount === 1 && snapshot?.videoTaskSuccess === true
+    && snapshot?.videoTaskOutputCount === 1 && snapshot?.videoReferencePresent === true
+    && snapshot?.videoReferenceToTargetEdgeCount === 1
+    && videoResult?.mediaRendered === true && videoResult?.visible === true
+    && previewMatchesTaskStore === true
+}
+
 const codexDiagnosticMode = process.argv.includes('--diagnose-codex')
 const configurationOnly = process.argv.includes('--configuration-only')
 const appServerHost = process.argv.includes('--app-server-host')
+const videoOnly = process.argv.includes('--video-only')
 const executorPreauthorizedOneImageAndVideo = process.argv.includes('--allow-one-image-and-video')
 const isEntry = isAcceptanceHarnessEntry(require.main === module)
 let originalSecret = isEntry && !codexDiagnosticMode ? process.env[secretEnvName] : undefined
@@ -942,6 +961,7 @@ async function runController() {
   if (resumeMediaProjectArgument && configurationOnly) {
     throw Object.assign(new Error('QA_ASSERTION_FAILED'), { code: 'QA_ASSERTION_FAILED' })
   }
+  assertAcceptanceModeCompatibility(videoOnly, resumeMediaProjectArgument, configurationOnly)
   const resumeProject = resumeMediaProjectArgument
     ? await validateResumeMediaProjectPath(resumeMediaProjectArgument) : null
   let secretInputTransport = 'stdin'
@@ -1000,6 +1020,7 @@ async function runController() {
   const workerArgs = [workerPath, '--worker', '--run-root', runRoot,
     ...(configurationOnly ? ['--configuration-only'] : []),
     ...(resumeProject ? ['--resume-media-project', resumeProject.projectDirectory] : []),
+    ...(videoOnly ? ['--video-only'] : []),
     ...(appServerHost ? ['--app-server-host'] : [])]
   const child = spawn(electronPath, workerArgs, {
     cwd: root, env: childEnvironment, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore', 'ipc'],
@@ -1220,6 +1241,9 @@ async function runController() {
   }
   const final = {
     ...summary,
+    videoOnly,
+    videoChainAccepted: summary.videoChainAccepted === true,
+    combinedFullMediaChain: videoOnly ? false : summary.combinedFullMediaChain === true,
     resumed: Boolean(resumeProject),
     resumedFromRun: resumeProject?.sourceRunName || null,
     resumeProjectIdentityPreserved: summary.resumeProjectIdentityPreserved === true,
@@ -1256,6 +1280,8 @@ function createAcceptanceMediaSubmissionGuard(getActiveStage = () => null, optio
   const proposals = new Map()
   const attemptedModalities = new Set()
   const startedStages = new Set()
+  let videoNodeCreationAttempted = false
+  let videoConnectionAttempted = false
   const scopeKeys = ['projectId', 'canvasId', 'clientId', 'grantId']
   const reject = () => { throw Object.assign(new Error('QA_MEDIA_SCOPE_EXCEEDED'), { code: 'QA_MEDIA_SCOPE_EXCEEDED' }) }
   const parseArguments = (payload) => {
@@ -1286,6 +1312,23 @@ function createAcceptanceMediaSubmissionGuard(getActiveStage = () => null, optio
         .every((name) => !Object.hasOwn(params, name) || !nonEmpty(params[name]))
   }
   return async function guardedRequest(invoke, method, payload) {
+    if (options.videoOnly && method === 'mcp:tool:execute') {
+      const stage = getActiveStage()
+      if (['image', 'image-query'].includes(stage)) reject()
+      if (['create_nodes', 'connect_nodes'].includes(payload?.toolName) && stage !== 'video') reject()
+      if (payload?.toolName === 'create_nodes') {
+        const args = parseArguments(payload)
+        if (videoNodeCreationAttempted || !Array.isArray(args?.nodes)
+          || args.nodes.length !== 1 || args.nodes[0]?.type !== 'video') reject()
+        videoNodeCreationAttempted = true
+      }
+      if (payload?.toolName === 'connect_nodes') {
+        const args = parseArguments(payload)
+        if (videoConnectionAttempted || !Array.isArray(args?.nodeIds) || args.nodeIds.length !== 2
+          || new Set(args.nodeIds).size !== 2) reject()
+        videoConnectionAttempted = true
+      }
+    }
     if (options.resumeMode && method === 'mcp:tool:execute'
       && ['create_nodes', 'connect_nodes'].includes(payload?.toolName)
       && ['configuration', 'image-query', 'video-query', 'readback'].includes(getActiveStage())) reject()
@@ -1308,6 +1351,7 @@ function createAcceptanceMediaSubmissionGuard(getActiveStage = () => null, optio
           || requestedModality === 'image'
           || requestedModality === 'video' && options.hasExistingVideoTask?.()) reject()
       }
+      if (options.videoOnly && (stageForPreparation !== 'video' || requestedModality !== 'video')) reject()
       if (['image', 'video'].includes(stageForPreparation)) {
         if (attemptedModalities.has(stageForPreparation) || startedStages.has(stageForPreparation)) reject()
         // Even a malformed or failed prepare consumes this stage's one attempt.
@@ -1357,6 +1401,7 @@ async function workerMain() {
   if (resumeMediaProjectArgument && configurationOnly) {
     throw Object.assign(new Error('QA_ASSERTION_FAILED'), { code: 'QA_ASSERTION_FAILED' })
   }
+  assertAcceptanceModeCompatibility(videoOnly, resumeMediaProjectArgument, configurationOnly)
   const resumeProject = resumeMediaProjectArgument
     ? await validateResumeMediaProjectPath(resumeMediaProjectArgument) : null
   const resumeMode = Boolean(resumeProject)
@@ -1472,6 +1517,7 @@ async function workerMain() {
     const workerProxies = new WeakMap()
     const guardMediaSubmission = createAcceptanceMediaSubmissionGuard(() => activeGenerationStage, {
       resumeMode,
+      videoOnly,
       hasExistingVideoTask: () => resumePlan?.videoTaskPresent === true,
       resolveModelModality: (modelType) => publicModelReferences.find((entry) =>
         entry.name === modelType || entry.id === modelType || entry.bindingId === modelType)?.modelType || null,
@@ -2190,7 +2236,9 @@ async function workerMain() {
     try {
       opened = await store.createProject(projectDirectory, 'Codex Agnes media acceptance')
       await store.createNode({ projectId: opened.project.projectId, canvasId: opened.project.canvasId,
-        expectedVersion: 0, type: 'text', params: { content: 'Agnes media acceptance canvas' },
+        expectedVersion: 0, type: 'text', params: { content: videoOnly
+          ? '蓝色陶瓷方块在白色影棚背景中缓慢旋转，固定镜头，无文字。'
+          : 'Agnes media acceptance canvas' },
         x: 100, y: 100, idempotencyKey: `codex-agnes-seed-${randomUUID()}` })
     } finally { await store.close() }
     await fs.writeFile(path.join(profile, 'recent-project.json'), JSON.stringify({ schemaVersion: 1, projectDirectory: opened.directory }))
@@ -2293,6 +2341,17 @@ async function workerMain() {
       '普通画布写入若提示版本已更新，先重新读取当前画布并核对该操作是否已经生效；只有确认没有写入时，才可按最新版本继续该普通操作，最多重试一次。生成提案和生成提交只能尝试一次，不得重放。',
       '不要生成图片，不要输出任何内部标识或凭据。结束时简要报告显示型号、任务状态、预览读取及原节点显示状态。',
     ].join('\n'),
+    videoOnly: [
+      '请读取当前授权画布、模型目录和任务。当前隔离项目只有一个文字参考节点，没有媒体节点和媒体任务。此模式只验收视频链路，不生成图片。',
+      '复用现有文字参考节点，创建且只创建一个视频目标节点，命名为“蓝色陶瓷方块旋转视频”，只将文字参考节点连接到该视频节点一次。不要创建其他节点、不要创建图片节点。画面为蓝色陶瓷方块在白色影棚背景中缓慢旋转、固定镜头、无文字，不使用图片或其他媒体输入。只使用 Agnes Video 2.5 Flash，文本模式，4 秒、720P、16:9，生成一条视频。',
+      '生成前必须通过当前 Codex 客户端的 MCP form elicitation 请求本次用户确认；不得自动批准或改用桌面确认。若客户端不支持确认，报告限制并停止。确认后查询本次视频任务并读取授权视频预览，核对结果显示在刚创建的原视频节点。若提交状态不确定，先查账本；不得重新提交。若生成失败，如实报告并停止，不要重试。',
+      '普通节点或连线写入若出现版本冲突，先重读画布，确认尚未生效后最多重试一次。生成提案和任务只允许一次。不要生成图片，不要输出提示词、内部标识或凭据。',
+    ].join('\n'),
+    videoOnlyReadback: [
+      '请重新读取当前画布和任务，只核对本轮唯一的视频任务及其结果。',
+      '读取已成功视频任务的授权预览，确认显示型号、结果类型和完成状态，并检查视频确实显示在原视频节点。不得创建节点或提交任何生成。',
+      '用简短中文总结视频任务状态、预览读取及原节点显示状态；不要生成图片，不要输出提示词、节点/任务标识或凭据。',
+    ].join('\n'),
     videoQuery: '请只查询当前授权画布上已经提交的视频任务并读取其已保存的授权视频预览，核对原视频节点结果。不要创建或修改任何节点，不要准备或提交生成，不要重新生成或重试；如任务失败请如实报告。不要运行命令、读取文件或输出内部标识与凭据。',
     readback: [
       '请重新读取当前画布、可用模型配置和已有任务，核对本次 Agnes 图片与视频结果，不要创建节点或提交任何生成。',
@@ -2335,7 +2394,7 @@ async function workerMain() {
     const imageNodes = nodes.filter((node) => node.type === 'image')
     const imageTaskNode = allImageTasks.length === 1
       ? nodes.find((node) => node.id === allImageTasks[0].nodeId && node.type === 'image') : null
-    const targetImage = resumeMode
+    const targetImage = videoOnly ? null : resumeMode
       ? imageNodes.length === 1 && allImageTasks.length === 1 ? imageTaskNode : null
       : markedImages.length === 1 ? markedImages[0] : null
     const markedReference = nodes.find((node) => node.type === 'text' && nodeHasText(node, '蓝色陶瓷方块参考说明'))
@@ -2344,20 +2403,26 @@ async function workerMain() {
     const targetIncomingEdges = targetImage ? edges.filter((edge) => edgeTarget(edge) === targetImage.id) : []
     const edgeReference = targetIncomingEdges.length === 1
       ? nodes.find((node) => node.id === edgeSource(targetIncomingEdges[0]) && node.type === 'text') : null
-    const referenceImage = resumeMode ? edgeReference : markedReference || edgeReference
+    const referenceImage = videoOnly ? null : resumeMode ? edgeReference : markedReference || edgeReference
+    const videoOnlyReference = videoOnly
+      ? nodes.find((node) => node.type === 'text' && nodeHasText(node, '蓝色陶瓷方块在白色影棚背景中缓慢旋转')) : null
     const markedVideoNodes = nodes.filter((node) => node.type === 'video' && nodeHasText(node, '蓝色陶瓷方块')
       && (nodeHasText(node, '缓慢旋转') || nodeHasText(node, '固定镜头')))
     const videoTaskNode = allVideoTasks.length === 1
       ? nodes.find((node) => node.id === allVideoTasks[0].nodeId && node.type === 'video') : null
     const videoNodes = nodes.filter((node) => node.type === 'video')
-    const videoNode = resumeMode
+    const videoOnlyNodes = videoOnly
+      ? videoNodes.filter((node) => nodeHasText(node, '蓝色陶瓷方块旋转视频')) : []
+    const videoNode = videoOnly
+      ? videoNodes.length === 1 && videoOnlyNodes.length === 1 ? videoOnlyNodes[0] : null
+      : resumeMode
       ? videoNodes.length === 1 && allVideoTasks.length <= 1 ? videoTaskNode || videoNodes[0] : null
       : markedVideoNodes.length === 1 ? markedVideoNodes[0] : null
     const expectedEdges = referenceImage && targetImage
       ? edges.filter((edge) => edgeSource(edge) === referenceImage.id && edgeTarget(edge) === targetImage.id)
       : []
     const touchingEdges = edges.filter((edge) => [edgeSource(edge), edgeTarget(edge)]
-      .some((id) => [referenceImage?.id, targetImage?.id, videoNode?.id].includes(id)))
+      .some((id) => [referenceImage?.id, targetImage?.id, videoOnlyReference?.id, videoNode?.id].includes(id)))
     const tasksFor = (node, modality) => state.tasks.filter((task) => task.nodeId === node?.id && task.modality === modality)
     const imageTasks = tasksFor(targetImage, 'image')
     const videoTasks = tasksFor(videoNode, 'video')
@@ -2375,15 +2440,19 @@ async function workerMain() {
       videoNodeCount: videoNodes.length,
       createdImageNodeCount: resumeMode
         ? targetImage && allImageTasks.length === 1 ? 1 : 0
-        : markedImages.length,
+        : videoOnly ? imageNodes.length : markedImages.length,
+      createdVideoNodeCount: videoOnly ? videoNodes.length : markedVideoNodes.length,
       imageReferencePresent: Boolean(referenceImage),
       imageTargetPresent: Boolean(targetImage),
+      videoReferencePresent: Boolean(videoOnlyReference),
       videoTargetPresent: Boolean(videoNode),
       imageTaskCount: imageTasks.length,
       videoTaskCount: videoTasks.length,
       allImageTaskCount: allImageTasks.length,
       allVideoTaskCount: allVideoTasks.length,
       imageReferenceToTargetEdgeCount: expectedEdges.length,
+      videoReferenceToTargetEdgeCount: videoOnly && videoOnlyReference && videoNode
+        ? edges.filter((edge) => edgeSource(edge) === videoOnlyReference.id && edgeTarget(edge) === videoNode.id).length : 0,
       edgesTouchingAcceptanceNodes: touchingEdges.length,
       imageTaskStatus: safeStatus(imageTask?.status || imageTask?.state),
       videoTaskStatus: safeStatus(videoTask?.status || videoTask?.state),
@@ -2452,7 +2521,13 @@ async function workerMain() {
       return
     }
     let canvas
-    if (resumeMode) {
+    if (videoOnly) {
+      paidMediaAuthorizedByOperator = await waitForOperatorContinue()
+      phase = 'codex-natural-language-video-generation'
+      await runCodexStage('video', prompts.videoOnly)
+      canvas = await settleExistingMediaTask('video')
+      latestCanvasSummary = canvas
+    } else if (resumeMode) {
       // The image task is authoritative and already succeeded. Resume may query
       // and inspect it, but never enters the image preparation stage.
       phase = 'codex-natural-language-image-query'
@@ -2503,34 +2578,39 @@ async function workerMain() {
     }
     if (!canvas.videoTargetPresent || canvas.videoTaskCount !== 1 || !canvas.videoTaskSuccess || canvas.videoTaskOutputCount !== 1
       || canvas.edgesTouchingAcceptanceNodes !== 1 || resumeMode && canvas.videoNodeCount !== 1
-      || resumeMode && canvas.allVideoTaskCount !== 1) {
+      || resumeMode && canvas.allVideoTaskCount !== 1
+      || videoOnly && (canvas.videoNodeCount !== 1 || canvas.createdVideoNodeCount !== 1
+        || canvas.loadedNodeCount !== 2 || canvas.allVideoTaskCount !== 1 || canvas.allImageTaskCount !== 0
+        || canvas.imageNodeCount !== 0 || canvas.imageTaskCount !== 0 || !canvas.videoReferencePresent
+        || canvas.videoReferenceToTargetEdgeCount !== 1)) {
       throw Object.assign(new Error('VIDEO_CHAIN_ASSERTION_FAILED'), { code: 'VIDEO_CHAIN_ASSERTION_FAILED' })
     }
-    if (!resumePlan?.videoTaskPresent && !mcpDiagnostics.mediaReads.some((entry) => entry.modality === 'video')) {
+    if (videoOnly || !resumePlan?.videoTaskPresent && !mcpDiagnostics.mediaReads.some((entry) => entry.modality === 'video')) {
       await runCodexStage('video-query', prompts.videoQuery)
     }
     videoResult = await waitForMediaNode(canvas.videoNodeId, 'video')
     phase = 'codex-natural-language-media-readback'
-    await runCodexStage('readback', prompts.readback)
+    await runCodexStage('readback', videoOnly ? prompts.videoOnlyReadback : prompts.readback)
     const current = await inspectFinalCanvas()
     latestCanvasSummary = current
     const imageRead = mcpDiagnostics.mediaReads.find((entry) => entry.modality === 'image') || null
     const videoRead = mcpDiagnostics.mediaReads.find((entry) => entry.modality === 'video') || null
     const readPreviewCount = cliTurns.reduce((count, turn) => count + turn.trace.previewReadCalls, 0)
-    if (readPreviewCount < 2 || !imageRead || !videoRead) {
+    if (readPreviewCount < (videoOnly ? 1 : 2) || (!videoOnly && !imageRead) || !videoRead) {
       throw Object.assign(new Error('MCP_MEDIA_PREVIEW_READBACK_INCOMPLETE'), { code: 'MCP_MEDIA_PREVIEW_READBACK_INCOMPLETE' })
     }
-    if (!imageResult?.mediaRendered || !imageResult?.visible || !videoResult?.mediaRendered || !videoResult?.visible) {
+    if ((!videoOnly && (!imageResult?.mediaRendered || !imageResult?.visible))
+      || !videoResult?.mediaRendered || !videoResult?.visible) {
       throw Object.assign(new Error('ORIGINAL_NODE_MEDIA_NOT_VISIBLE'), { code: 'ORIGINAL_NODE_MEDIA_NOT_VISIBLE' })
     }
-    const imageMatchesTaskStore = Boolean(current.imageTaskOutputFingerprint && imageRead
+    const imageMatchesTaskStore = videoOnly ? null : Boolean(current.imageTaskOutputFingerprint && imageRead
       && current.imageTaskOutputFingerprint.sha256 === imageRead.sha256
       && current.imageTaskOutputFingerprint.sizeBytes === imageRead.sizeBytes)
     const videoMatchesTaskStore = Boolean(current.videoTaskOutputFingerprint && videoRead
       && current.videoTaskOutputFingerprint.sha256 === videoRead.sha256
       && current.videoTaskOutputFingerprint.sizeBytes === videoRead.sizeBytes)
     previewMatchesTaskStore = { image: imageMatchesTaskStore, video: videoMatchesTaskStore }
-    if (!imageMatchesTaskStore || !videoMatchesTaskStore) {
+    if ((!videoOnly && !imageMatchesTaskStore) || !videoMatchesTaskStore) {
       throw Object.assign(new Error('MCP_MEDIA_PREVIEW_TASKSTORE_MISMATCH'), { code: 'MCP_MEDIA_PREVIEW_TASKSTORE_MISMATCH' })
     }
     const trace = aggregateToolTrace()
@@ -2541,8 +2621,10 @@ async function workerMain() {
     secretBytes.fill(0)
     const output = {
       schemaVersion: 1,
-      testType: appServerHost ? 'real Codex app-server Agnes image and video MCP acceptance'
-        : 'real Codex CLI natural-language Agnes image and video MCP acceptance',
+      testType: videoOnly
+        ? appServerHost ? 'real Codex app-server Agnes video-only MCP acceptance' : 'real Codex CLI natural-language Agnes video-only MCP acceptance'
+        : appServerHost ? 'real Codex app-server Agnes image and video MCP acceptance'
+          : 'real Codex CLI natural-language Agnes image and video MCP acceptance',
       confirmationPolicy: 'client-form-generation-only-2026-10-17',
       clientHost: appServerHost ? 'codex-app-server-qa-relay' : 'codex-cli-exec',
       nativeCodexPopupAccepted: false,
@@ -2596,7 +2678,7 @@ async function workerMain() {
       cliTurnCompletedCount: cliTurns.filter((turn) => turn.turnCompleted).length,
       cliTurnSummaries: safeCliTurnSummaries(),
       mcpPreviewReadCalls: readPreviewCount,
-      mcpMediaReads: [imageRead, videoRead],
+      mcpMediaReads: [imageRead, videoRead].filter(Boolean),
       imageTaskStatus: current.imageTaskStatus,
       videoTaskStatus: current.videoTaskStatus,
       imageTaskErrorCode: current.imageTaskErrorCode,
@@ -2609,6 +2691,9 @@ async function workerMain() {
       videoOutputCount: current.videoTaskOutputCount,
       taskStoreSuccessfulMediaTaskCount: Number(current.imageTaskSuccess) + Number(current.videoTaskSuccess),
       taskStoreSubmittedMediaTaskCount: current.imageTaskCount + current.videoTaskCount,
+      videoOnly,
+      videoChainAccepted: videoOnly && isVideoOnlyChainAccepted(current, videoResult, videoMatchesTaskStore),
+      combinedFullMediaChain: videoOnly ? false : current.imageTaskSuccess && current.videoTaskSuccess,
       actualProviderHttpRequestCount: null,
       actualProviderHttpRequestCountRecorded: false,
       mcpPreviewMatchesTaskStore: previewMatchesTaskStore,
@@ -2617,6 +2702,7 @@ async function workerMain() {
       imageAndVideoEachSucceededOnce: current.imageTaskSuccess && current.videoTaskSuccess
         && current.imageTaskOutputCount === 1 && current.videoTaskOutputCount === 1,
       imageReferenceToTargetEdgeCount: current.imageReferenceToTargetEdgeCount,
+      videoReferenceToTargetEdgeCount: current.videoReferenceToTargetEdgeCount,
       credentialsClearedViaDesktopIpc: providerCredentialCleared,
       testGrantRevoked: grantRevoked,
       rawClientTranscriptSaved: false,
@@ -2651,6 +2737,9 @@ async function workerMain() {
       success: false,
       phase,
       errorCode: code,
+      videoOnly,
+      videoChainAccepted: false,
+      combinedFullMediaChain: false,
       resumed: resumeMode,
       resumedFromRun: resumeProject?.sourceRunName || null,
       resumeProjectIdentityPreserved: resumeIdentityPreserved,
@@ -2706,6 +2795,11 @@ async function workerMain() {
       videoTaskErrorCode: lastCanvas?.videoTaskErrorCode || null,
       imageTaskCount: lastCanvas?.imageTaskCount ?? null,
       videoTaskCount: lastCanvas?.videoTaskCount ?? null,
+      imageNodeCount: lastCanvas?.imageNodeCount ?? null,
+      videoNodeCount: lastCanvas?.videoNodeCount ?? null,
+      allImageTaskCount: lastCanvas?.allImageTaskCount ?? null,
+      allVideoTaskCount: lastCanvas?.allVideoTaskCount ?? null,
+      videoReferenceToTargetEdgeCount: lastCanvas?.videoReferenceToTargetEdgeCount ?? null,
       imageTaskOutputCount: lastCanvas?.imageTaskOutputCount ?? null,
       videoTaskOutputCount: lastCanvas?.videoTaskOutputCount ?? null,
       imageTaskOutputFingerprint: lastCanvas?.imageTaskOutputFingerprint || null,
@@ -2739,6 +2833,8 @@ if (!isEntry) {
     createAcceptanceMediaSubmissionGuard,
     describeResumeMediaProjectPath,
     isAcceptanceHarnessEntry,
+    assertAcceptanceModeCompatibility,
+    isVideoOnlyChainAccepted,
     readResumeMediaProjectArgument,
     validateResumeMediaProjectPath,
   }
@@ -2760,6 +2856,7 @@ if (!isEntry) {
       bootstrapErrorKind: ['Error', 'TypeError', 'ReferenceError', 'RangeError', 'SyntaxError'].includes(error?.name)
         ? error.name : 'other', bootstrapFailureLine: failureLine ? Number(failureLine) : null,
       resumed: process.argv.includes('--resume-media-project'), resumedFromRun: null,
+      videoOnly, videoChainAccepted: false, combinedFullMediaChain: false,
       resumeProjectIdentityPreserved: false, existingTasksReusedCount: 0, viewportFocusedForInspection: false,
       confirmationPolicy: 'client-form-generation-only-2026-10-17',
       clientHost: appServerHost ? 'codex-app-server-qa-relay' : 'codex-cli-exec',

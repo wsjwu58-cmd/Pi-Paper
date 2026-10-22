@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "testType": "manual-native-codex-mcp-form-elicitation",
+  "status": "finished",
+  "finishReason": "operator_stopped",
+  "startedAt": "2026-10-22T12:48:00.831Z",
+  "finishedAt": "2026-10-22T12:48:45.644Z",
+  "serverName": "vibepaper_native_acceptance",
+  "profileIsolated": true,
+  "originalMainCanvas": true,
+  "fixtureModelSource": "127.0.0.1-localhost-fixed-text-substitute",
+  "apiKeyConfigured": false,
+  "providerGrantCount": 0,
+  "grantedPermissions": [
+    "canvas.read",
+    "canvas.write",
+    "generation.propose",
+    "task.read"
+  ],
+  "realProviderRequests": 0,
+  "fixtureGenerationRequests": 0,
+  "fixtureModelListRequests": 0,
+  "taskStatusCounts": {},
+  "pendingDesktopActionCount": 0,
+  "codexGrantConnected": false,
+  "desktopConfirmationVisibleAtAnyPoint": false,
+  "nativeClientFormObserved": null,
+  "challengeTokenSaved": false,
+  "conversationSaved": false,
+  "credentialMaterialSavedToEvidence": false,
+  "cleanup": {
+    "grantRevoked": true,
+    "mcpDisabled": true,
+    "fixtureListenerClosed": true
+  }
+}

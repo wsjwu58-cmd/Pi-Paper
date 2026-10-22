@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "testType": "recover-existing-approved-video-without-resubmission",
+  "sourceRun": "mcp-codex-agnes-2026-10-20T09-08-01-160Z-8120f1de-0821-4917-8e14-5b6f2b647b5a",
+  "startedAt": "2026-10-22T12:41:17.373Z",
+  "success": false,
+  "nativeCodexPopupAccepted": false,
+  "newGenerationRequested": false,
+  "credentialPassedToRenderer": false,
+  "rawTranscriptSaved": false,
+  "taskStatus": "failed",
+  "taskErrorCode": "CLOUD_REQUEST_FAILED",
+  "taskCount": 1,
+  "originalTaskIdentityPreserved": true,
+  "originalRemoteIdentityPreserved": true,
+  "newProviderCheckpoints": 0,
+  "phase": "original-main-task-recovery",
+  "guardedWorkerCalls": 1,
+  "blockedWorkerCalls": 0,
+  "credentialsCleared": true,
+  "completedAt": "2026-10-22T12:41:29.790Z",
+  "combinedRealCodexFullChainAccepted": false
+}

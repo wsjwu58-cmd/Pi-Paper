@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "reviewDate": "2026-10-22",
+  "scope": "Windows MCP acceptance; no further install or uninstall",
+  "productionSourceCommit": "a57b0ce",
+  "configurationEvidence": "codex-agnes-acceptance-2026-10-20T08-57-13-571Z.json",
+  "configurationAccepted": true,
+  "safeProviderTestStatus": "unsupported",
+  "independentAuthenticationTestAccepted": false,
+  "existingMediaReadEvidence": [
+    "mcp-real-image-read-20261020-20261020090219830-23020.json",
+    "mcp-real-video-read-20261020-20261020090616295-22460.json"
+  ],
+  "existingMediaSdkAndOriginalNodeDomAccepted": true,
+  "newReviewerVisualScreenshotAccepted": false,
+  "mediaReadTaskLedgerUnchanged": true,
+  "latestVideoSubmissionEvidence": "codex-agnes-acceptance-2026-10-20T09-08-01-160Z.json",
+  "latestVideoRecoveryEvidence": "mcp-video-recovery-2026-10-22T12-40-35-045Z-951d6637-6a3b-4b8a-b45b-b08aca224985.json",
+  "originalVideoTaskCountBeforeRecovery": 1,
+  "originalVideoTaskCountAfterRecovery": 1,
+  "providerCheckpointCountBeforeRecovery": 2,
+  "providerCheckpointCountAfterRecovery": 2,
+  "recoveryFailureClassification": {
+    "source": "read-only failed task event; no raw error body retained here",
+    "httpStatusCodes": [404],
+    "notFound": true,
+    "queueFull": false,
+    "causeDetermined": false
+  },
+  "latestVideoGenerationAccepted": false,
+  "combinedRealCodexMediaChainAccepted": false,
+  "actualProviderHttpRequestCountRecorded": false,
+  "nativeCodexFormAccepted": false,
+  "nativeFormPreparation": {
+    "fixtureOnly": true,
+    "apiKeyConfigured": false,
+    "originalMainCanvasOpened": true,
+    "codexConfigParserRecognizesEnabledServer": true,
+    "userReportsPluginListShowsServer": true,
+    "userReportsCurrentConversationMcpListMissingServer": true,
+    "currentAssistantToolCatalogContainsServer": false,
+    "status": "pending-client-tool-catalog-refresh"
+  },
+  "localRegression": {
+    "tests": 34,
+    "passed": 34,
+    "failed": 0,
+    "files": [
+      "provider-task-checkpoint.test.cjs",
+      "mcp-stdio.test.cjs",
+      "smoke-mcp-codex-agnes-resume.test.cjs"
+    ]
+  },
+  "claudeRealSession": "cancelled-by-user",
+  "macOsLinux": "not-accepted-no-test-machines"
+}

@@ -10,6 +10,8 @@ const {
   createAcceptanceMediaSubmissionGuard,
   describeResumeMediaProjectPath,
   isAcceptanceHarnessEntry,
+  assertAcceptanceModeCompatibility,
+  isVideoOnlyChainAccepted,
   validateResumeMediaProjectPath,
 } = require('../scripts/smoke-mcp-codex-agnes.cjs')
 
@@ -150,4 +152,69 @@ test('resume query-only stages reject canvas mutations before dispatch', async (
     }
   }
   assert.equal(invoked, false)
+})
+
+test('video-only mode rejects resume and configuration-only combinations', () => {
+  assert.equal(assertAcceptanceModeCompatibility(true, null, false), undefined)
+  assert.throws(() => assertAcceptanceModeCompatibility(true, 'project-path', false), { code: 'QA_ASSERTION_FAILED' })
+  assert.throws(() => assertAcceptanceModeCompatibility(true, null, true), { code: 'QA_ASSERTION_FAILED' })
+  assert.equal(assertAcceptanceModeCompatibility(false, 'project-path', false), undefined)
+})
+
+test('video-only submission guard permits one video node, one connection and one video proposal only', async () => {
+  let stage = 'video'
+  const calls = []
+  const guard = createAcceptanceMediaSubmissionGuard(() => stage, {
+    videoOnly: true,
+    resolveModelModality: (modelType) => modelType === 'image-binding' ? 'image' : 'video',
+  })
+  const invoke = async () => { calls.push('invoked'); return { structuredContent: { status: 'created' } } }
+  await assert.rejects(guard(invoke, 'mcp:tool:execute', {
+    toolName: 'create_nodes', arguments: { nodes: [{ type: 'text' }] },
+  }), { code: 'QA_MEDIA_SCOPE_EXCEEDED' })
+  await guard(invoke, 'mcp:tool:execute', {
+    toolName: 'create_nodes', arguments: { nodes: [{ type: 'video' }] },
+  })
+  await assert.rejects(guard(invoke, 'mcp:tool:execute', {
+    toolName: 'create_nodes', arguments: { nodes: [{ type: 'video' }] },
+  }), { code: 'QA_MEDIA_SCOPE_EXCEEDED' })
+  await guard(invoke, 'mcp:tool:execute', {
+    toolName: 'connect_nodes', arguments: { nodeIds: ['text-1', 'video-1'] },
+  })
+  await assert.rejects(guard(invoke, 'mcp:tool:execute', {
+    toolName: 'connect_nodes', arguments: { nodeIds: ['text-1', 'video-1'] },
+  }), { code: 'QA_MEDIA_SCOPE_EXCEEDED' })
+  await assert.rejects(guard(invoke, 'mcp:tool:execute', {
+    toolName: 'prepare_generation', arguments: { generations: [{ modelType: 'image-binding', modelParams: {} }] },
+  }), { code: 'QA_MEDIA_SCOPE_EXCEEDED' })
+  await guard(invoke, 'mcp:tool:execute', {
+    toolName: 'prepare_generation', arguments: { generations: [{ modelType: 'video-binding', modelParams: {
+      duration: 4, resolution: '720P', aspectRatio: '16:9',
+    } }] },
+  })
+  await assert.rejects(guard(invoke, 'mcp:tool:execute', {
+    toolName: 'prepare_generation', arguments: { generations: [{ modelType: 'video-binding', modelParams: {
+      duration: 4, resolution: '720P', aspectRatio: '16:9',
+    } }] },
+  }), { code: 'QA_MEDIA_SCOPE_EXCEEDED' })
+  stage = 'readback'
+  await assert.rejects(guard(invoke, 'mcp:tool:execute', {
+    toolName: 'create_nodes', arguments: { nodes: [{ type: 'video' }] },
+  }), { code: 'QA_MEDIA_SCOPE_EXCEEDED' })
+  assert.equal(calls.length, 3)
+})
+
+test('video-only chain acceptance requires zero images and exactly one visible, matched video result', () => {
+  const snapshot = {
+    imageTaskCount: 0, imageNodeCount: 0, allImageTaskCount: 0,
+    videoTaskCount: 1, videoNodeCount: 1, createdVideoNodeCount: 1, allVideoTaskCount: 1,
+    videoTaskSuccess: true, videoTaskOutputCount: 1, videoReferencePresent: true,
+    videoReferenceToTargetEdgeCount: 1,
+  }
+  const rendered = { mediaRendered: true, visible: true }
+  assert.equal(isVideoOnlyChainAccepted(snapshot, rendered, true), true)
+  assert.equal(isVideoOnlyChainAccepted({ ...snapshot, imageTaskCount: 1 }, rendered, true), false)
+  assert.equal(isVideoOnlyChainAccepted({ ...snapshot, videoTaskCount: 2 }, rendered, true), false)
+  assert.equal(isVideoOnlyChainAccepted(snapshot, { ...rendered, visible: false }, true), false)
+  assert.equal(isVideoOnlyChainAccepted(snapshot, rendered, false), false)
 })
