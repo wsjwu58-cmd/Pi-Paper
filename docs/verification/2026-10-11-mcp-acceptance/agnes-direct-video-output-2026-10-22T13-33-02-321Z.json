@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "testType": "read-only-direct-Agnes-video-output-verification",
+  "success": true,
+  "cloudRequestsMade": false,
+  "credentialAccessed": false,
+  "output": {
+    "path": "E:\\VibePaperProject\\.test-temp\\agnes-direct-video-2026-10-22T13-25-59-874Z-3d5c93b3-d8ce-4343-aed5-d16b245f58a0\\generated\\a32dcf0b-f909-4379-91cd-1f7680291daa\\result.mp4",
+    "sizeBytes": 286396,
+    "sha256": "f2ca57e81aa2f950bee712d06795bfe4cb5ecae5e4bf668055cdb64485fa6bdd",
+    "width": 1280,
+    "height": 720,
+    "duration": 4.48,
+    "fullDecodePassed": true
+  },
+  "verifiedAt": "2026-10-22T13:33:02.321Z"
+}

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "testType": "direct-authorized-Agnes-video-account-test",
+  "startedAt": "2026-10-22T13:25:59.876Z",
+  "provider": "agnes",
+  "model": "agnes-video-2.5-flash",
+  "requested": {
+    "count": 1,
+    "seconds": 4,
+    "size": "720P",
+    "aspectRatio": "16:9",
+    "referenceMedia": false
+  },
+  "success": false,
+  "mcpClientAcceptance": false,
+  "nativeConfirmationAcceptance": false,
+  "creationPostCalls": 1,
+  "statusGetCalls": 27,
+  "httpStatusCodes": [
+    200
+  ],
+  "providerStatuses": [
+    "pending",
+    "completed"
+  ],
+  "checkpointPhases": [
+    "submitting",
+    "submitted"
+  ],
+  "apiKeySaved": false,
+  "rawResponseSaved": false,
+  "creationResponseIdentifiers": {
+    "videoIdPresent": true,
+    "idPresent": true,
+    "taskIdPresent": true
+  },
+  "errorCode": "ENOENT",
+  "errorHttpStatus": null,
+  "queueFull": false,
+  "notFound": false,
+  "completedAt": "2026-10-22T13:31:32.716Z",
+  "checkpointContainsPlaintextKey": false
+}

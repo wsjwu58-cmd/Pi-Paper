@@ -1,5 +1,9 @@
 # MCP 真实客户端、账号与 Windows 交付验收
 
+10-22 按用户“直接调用 Key 真实生成测试”的新要求，[Agnes Video 2.5 Flash 直接账号生成已通过审查](agnes-direct-video-review-20261022.json)：仅 1 次创建 POST、27 次状态 GET，厂商状态由 pending 变 completed，真实 MP4 已落盘。4 秒请求的实际文件为 1280×720、4.48 秒、286,396 bytes，SHA256 `f2ca57e81aa2f950bee712d06795bfe4cb5ecae5e4bf668055cdb64485fa6bdd`；全片解码通过，审查者查看 1 秒帧确认蓝色陶瓷方块和白色影棚画面。[视频文件](agnes-direct-video-20261022.mp4)保留供复核。Key 仅经无回显 stdin 进入内存，未写配置或证据。
+
+[原始直接生成报告](agnes-direct-video-2026-10-22T13-25-59-874Z.json)仍保留 `success=false/ENOENT`：厂商已完成且下载成功，QA 随后误把 Worker 的项目相对路径当成 cwd 相对路径，读取失败。修正 QA 路径及本机 ffmpeg 定位后，[同一文件的只读复核](agnes-direct-video-output-2026-10-22T13-33-02-321Z.json)通过，未再次访问厂商、未重新生成。此结果只接受官方账号/Worker 生成及文件验证，不补认 MCP 客户端确认、TaskStore/原节点或 Codex 原生弹窗链路。
+
 10-22 客户端重启后，[当前 Codex 会话的原生 MCP 上下文调用](native-client-context-review-20261022.json)已成功：第一次因隔离桌面进程停止返回 `DESKTOP_NOT_RUNNING`，恢复同一画布和未撤销授权后调用返回 `canvasReady=true`，无人工连接批准。桥接此前公布的离线单工具目录未自行刷新，现已增加 `tools.listChanged` 和首次鉴权成功后的目录变更通知，[110 项 MCP 回归](mcp-offline-recovery-tests-20261022.log)通过；当前旧桥接的成功读取不能替代新通知的真实客户端刷新验收。随后用户要求直接使用 Key 做真实官方生成，暂停原生表单测试；本地 fixture 已撤销授权并关闭，临时全局服务的两个 TOML 表已移除，保留其他配置。原生生成弹窗仍未验收。
 
 10-22 接续审查收录 [10-20 真实 Codex 配置复测](codex-agnes-acceptance-2026-10-20T08-57-13-571Z.json)：自动鉴权、自然语言保存并启用 Agnes 图片/视频型号通过，无配对、披露或生成确认窗口；安全检测明确返回 `unsupported`，不计独立鉴权成功。原 IPC 凭据清理、授权撤销和退出后明文扫描通过。最新已有真实[图片读取](mcp-real-image-read-20261020-20261020090219830-23020.json)及[视频读取](mcp-real-video-read-20261020-20261020090616295-22460.json)在无凭据 profile 上通过官方 SDK stdio；预览大小及 SHA256 匹配 TaskStore/文件，原节点 DOM 解码及视频播放、全片解码通过，历史 4 个任务和 12 个事件不变，原生对话框为零。本次未另取得审查者窗口视觉证据，不补认客户端自身媒体展示通过。
