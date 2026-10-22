@@ -7,7 +7,7 @@ const { EventEmitter } = require('node:events')
 const test = require('node:test')
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js')
 const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js')
-const { ElicitRequestSchema } = require('@modelcontextprotocol/sdk/types.js')
+const { ElicitRequestSchema, ToolListChangedNotificationSchema } = require('@modelcontextprotocol/sdk/types.js')
 const {
   BridgeFailure,
   callProviderWithCredentialPreflight,
@@ -442,6 +442,58 @@ test('official SDK client initializes offline and receives an explicit DESKTOP_N
   await bridge.close()
   await running
   await client.close()
+})
+
+test('offline catalogue refreshes once after an authenticated recovery without replaying tools', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'VibePaper MCP offline recovery '))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const instanceId = '00000000-0000-4000-8000-000000000091'
+  const connectionId = '00000000-0000-4000-8000-000000000092'
+  let calls = 0
+  let notifications = 0
+  const send = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(Buffer.from(init.body).toString('utf8'))
+    if (new URL(url).pathname === '/bootstrap') {
+      assert.equal(body.bridgeSecret, BRIDGE_SECRET)
+      return send({ instanceId, connectionId, accessToken: 'offline-recovery-token-that-stays-private',
+        expiresAt: Date.now() + 60000, credentialSources: [] })
+    }
+    if (new URL(url).pathname === '/close') return send({ closed: true })
+    if (body.method === 'tools/list') return send({ tools: ['get_context', 'list_models'].map(name => ({
+      name, description: name, inputSchema: { type: 'object', properties: {} },
+    })) })
+    assert.equal(body.method, 'tools/call')
+    assert.equal(body.params.name, 'get_context')
+    calls++
+    return send({ content: [{ type: 'text', text: 'ready' }], structuredContent: { canvasReady: true } })
+  }
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  const bridge = createMcpStdioBridge({ appDataPath: root, instanceFilePath: fixedInstancePath(root),
+    clientId: '00000000-0000-4000-8000-000000000093', grantId: '00000000-0000-4000-8000-000000000094',
+    fetchImpl, transportOverride: serverTransport, stdin: new (require('node:stream').PassThrough)(),
+    stderr: { write() {} }, processLike: new EventEmitter() })
+  const client = new Client({ name: 'offline-recovery-client', version: '1.0.0' })
+  client.setNotificationHandler(ToolListChangedNotificationSchema, () => { notifications++ })
+  const running = bridge.start()
+  try {
+    await client.connect(clientTransport)
+    assert.equal(client.getServerCapabilities().tools.listChanged, true)
+    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ['get_context'])
+    assert.equal((await client.callTool({ name: 'get_context', arguments: {} })).structuredContent.errorCode, 'DESKTOP_NOT_RUNNING')
+    assert.equal(notifications, 0)
+    await writeMcpAuthFiles(root, { schemaVersion: 1, instanceId, host: '127.0.0.1', port: 32188, protocolVersion: 1, pid: process.pid })
+    assert.equal((await client.callTool({ name: 'get_context', arguments: {} })).structuredContent.canvasReady, true)
+    assert.equal(notifications, 1)
+    await client.callTool({ name: 'get_context', arguments: {} })
+    assert.equal(notifications, 1)
+    assert.equal(calls, 2)
+    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name), ['get_context', 'list_models'])
+  } finally {
+    await bridge.close()
+    await running
+    await client.close()
+  }
 })
 
 test('SDK stdio adapter authenticates from the private instance file, isolates inline secrets, and never retries RPC', async (t) => {

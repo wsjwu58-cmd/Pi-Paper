@@ -155,14 +155,26 @@ async function controllerMain() {
   const timeoutMs = parseTimeout(process.argv.slice(2))
   await fs.mkdir(temporaryRoot, { recursive: true })
   const runId = `${new Date().toISOString().replace(/[:.]/gu, '-')}-${randomUUID()}`
-  const runRoot = assertRunDirectory(path.join(temporaryRoot, `vibepaper-native-form-${runId}`))
+  const resumeIndex = process.argv.indexOf('--resume-run')
+  const resume = resumeIndex >= 0
+  const runRoot = assertRunDirectory(resume ? process.argv[resumeIndex + 1]
+    : path.join(temporaryRoot, `vibepaper-native-form-${runId}`))
   const appDataRoot = runRoot
   const readyPath = path.join(runRoot, 'ready.json')
   const statusPath = path.join(runRoot, 'status.json')
   const resultPath = path.join(runRoot, 'result.json')
   const stopPath = path.join(runRoot, 'stop.request')
-  await fs.mkdir(runRoot, { recursive: true })
-  protectRunDirectory(runRoot)
+  if (resume) {
+    if (fsSync.lstatSync(runRoot).isSymbolicLink() || path.relative(runRoot, fsSync.realpathSync(runRoot)) !== '') {
+      throw new Error('unsafe_resume_directory')
+    }
+    if (fsSync.existsSync(resultPath) || fsSync.existsSync(stopPath)) throw new Error('completed_fixture_cannot_resume')
+    await fs.access(path.join(runRoot, 'codex-native-confirmation.toml'))
+    await fs.rm(readyPath, { force: true })
+  } else {
+    await fs.mkdir(runRoot, { recursive: true })
+    protectRunDirectory(runRoot)
+  }
 
   let electronPath
   try { electronPath = await resolveElectronPath() } catch (error) {
@@ -173,7 +185,7 @@ async function controllerMain() {
 
   const workerPath = path.resolve(__filename)
   const environment = safeEnvironment(appDataRoot)
-  const child = spawn(electronPath, [workerPath, '--worker', '--run-root', runRoot,
+  const child = spawn(electronPath, [workerPath, '--worker', ...(resume ? ['--resume-run', runRoot] : []), '--run-root', runRoot,
     '--timeout-ms', String(timeoutMs)], {
     cwd: desktopRoot,
     env: environment,
@@ -277,6 +289,7 @@ function workerMain() {
   const runRoot = path.resolve(args[args.indexOf('--run-root') + 1] || '')
   assertRunDirectory(runRoot)
   const timeoutMs = Number(args[args.indexOf('--timeout-ms') + 1])
+  const resume = args.includes('--resume-run')
   if (!runRoot || !Number.isSafeInteger(timeoutMs) || timeoutMs < 60_000 || timeoutMs > maxRuntimeMs) {
     throw new Error('worker_arguments_invalid')
   }
@@ -350,6 +363,19 @@ function workerMain() {
   }
 
   async function prepareProject() {
+    if (resume) {
+      if (fsSync.lstatSync(runRoot).isSymbolicLink() || path.relative(runRoot, fsSync.realpathSync(runRoot)) !== '') {
+        throw new Error('unsafe_resume_directory')
+      }
+      const recent = JSON.parse(await fs.readFile(path.join(profilePath, 'recent-project.json'), 'utf8'))
+      if (path.dirname(path.resolve(recent.projectDirectory)) !== projectPath) throw new Error('unsafe_resume_project')
+      const { DatabaseSync } = require('node:sqlite')
+      const database = new DatabaseSync(path.join(recent.projectDirectory, '.vibepaper/project.sqlite'), { readOnly: true })
+      try { assert.equal(database.prepare('SELECT COUNT(*) AS count FROM tasks').get().count, 0) } finally { database.close() }
+      const store = createLocalProjectStore()
+      try { project = (await store.openProject(recent.projectDirectory)).project } finally { await store.close() }
+      return
+    }
     await fs.mkdir(profilePath, { recursive: true })
     await fs.mkdir(projectPath, { recursive: true })
     const store = createLocalProjectStore()
@@ -573,7 +599,7 @@ function workerMain() {
     assert.equal(state?.canvasReady, true)
     assert.equal(state?.activeCanvas?.projectId, project.projectId)
     assert.equal(state?.activeCanvas?.canvasId, project.canvasId)
-    const created = await evaluate(`window.vibepaperDesktop.createMcpClientGrant(${JSON.stringify({
+    const created = resume ? null : await evaluate(`window.vibepaperDesktop.createMcpClientGrant(${JSON.stringify({
       clientName: 'codex',
       displayName: 'Native Codex Form Acceptance',
       permissions: acceptancePermissions,
@@ -582,7 +608,7 @@ function workerMain() {
       disclosureVersion: state.connectionDisclosureVersion || 'desktop-mcp-provider-disclosure-v1',
       accepted: true,
     })})`)
-    if (typeof created?.config?.codex !== 'string') throw new Error('codex_config_export_missing')
+    if (!resume && typeof created?.config?.codex !== 'string') throw new Error('codex_config_export_missing')
     const grantState = await evaluate('window.vibepaperDesktop.getMcpState()')
     const grant = grantState.clients.find((client) => client.clientName === 'codex'
       && client.displayName === 'Native Codex Form Acceptance' && !client.revokedAt)
@@ -590,14 +616,21 @@ function workerMain() {
     assert.deepEqual([...grant.permissions].sort(), [...acceptancePermissions].sort())
     assert.deepEqual(grant.providerGrants, [])
     grantClientId = grant.clientId
-    const exported = parseDesktopCodexConfig(created.config.codex)
-    const expectedInstanceFile = path.join(runRoot, 'VibePaper', 'mcp-instance.json')
-    const instanceArgument = exported.args.indexOf('--mcp-instance-file')
-    if (instanceArgument < 0 || path.resolve(exported.args[instanceArgument + 1] || '') !== path.resolve(expectedInstanceFile)) {
-      throw new Error('isolated_appdata_bridge_path_mismatch')
-    }
     const codexTomlPath = path.join(runRoot, 'codex-native-confirmation.toml')
-    await fs.writeFile(codexTomlPath, createCodexToml({ command: exported.command, args: exported.args, appDataRoot: runRoot }), { flag: 'wx' })
+    if (resume) {
+      const oldArgs = JSON.parse((await fs.readFile(codexTomlPath, 'utf8')).match(/^args = (.+)$/mu)[1])
+      assert.equal(oldArgs[oldArgs.indexOf('--mcp-client-id') + 1], grant.clientId)
+      // Public state intentionally omits grantId. The unchanged bridge args are
+      // authenticated by Main; never reconstruct or un-revoke a grant here.
+    } else {
+      const exported = parseDesktopCodexConfig(created.config.codex)
+      const expectedInstanceFile = path.join(runRoot, 'VibePaper', 'mcp-instance.json')
+      const instanceArgument = exported.args.indexOf('--mcp-instance-file')
+      if (instanceArgument < 0 || path.resolve(exported.args[instanceArgument + 1] || '') !== path.resolve(expectedInstanceFile)) {
+        throw new Error('isolated_appdata_bridge_path_mismatch')
+      }
+      await fs.writeFile(codexTomlPath, createCodexToml({ command: exported.command, args: exported.args, appDataRoot: runRoot }), { flag: 'wx' })
+    }
     ready = true
     await writeStatus(false)
     await writeJsonAtomically(readyPath, {

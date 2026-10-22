@@ -629,7 +629,7 @@ function createMcpStdioBridge(options = {}) {
     throw new BridgeFailure('MCP_LAUNCH_CONFIGURATION_INVALID')
   }
 
-  const server = new Server({ name: 'vibepaper-desktop-mcp', version: '0.1.0' }, { capabilities: { tools: {} } })
+  const server = new Server({ name: 'vibepaper-desktop-mcp', version: '0.1.0' }, { capabilities: { tools: { listChanged: true } } })
   const transport = transportOverride || new StdioServerTransport(stdin, stdout, { maxBufferSize: 1024 * 1024 })
   let instance = null
   let session = null
@@ -637,6 +637,7 @@ function createMcpStdioBridge(options = {}) {
   let credentialSources = []
   let bootstrapPromise = null
   let bootstrapFailureCode = null
+  let offlineCatalogAdvertised = false
   let closed = false
   let closePromise = null
   let resolveStopped
@@ -805,7 +806,15 @@ function createMcpStdioBridge(options = {}) {
 
   async function callMain(method, params, prepared = null, signal) {
     const live = await bootstrap()
-    return callMainOnSession(method, params, live, prepared, signal)
+    const result = await callMainOnSession(method, params, live, prepared, signal)
+    if (method !== 'tools/list' && result?.isError !== true && offlineCatalogAdvertised && !closed) {
+      // A client may have cached the offline get_context-only catalogue. Once
+      // an authenticated call succeeds, invite it to rediscover scoped tools.
+      // This notification never retries the tool call or changes permissions.
+      offlineCatalogAdvertised = false
+      try { await server.sendToolListChanged() } catch { offlineCatalogAdvertised = true }
+    }
+    return result
   }
 
   async function callMainOnSession(method, params, live, prepared = null, signal) {
@@ -918,9 +927,13 @@ function createMcpStdioBridge(options = {}) {
     try {
       const result = await callMain('tools/list', {})
       if (!isPlainObject(result) || !Array.isArray(result.tools)) throw new BridgeFailure('MCP_RESPONSE_INVALID')
+      offlineCatalogAdvertised = false
       return { tools: result.tools }
     } catch (error) {
-      if (error.code === 'DESKTOP_NOT_RUNNING') return { tools: toolDefinitions() }
+      if (error.code === 'DESKTOP_NOT_RUNNING') {
+        offlineCatalogAdvertised = true
+        return { tools: toolDefinitions() }
+      }
       const code = safeCode(error.code)
       throw new McpError(ErrorCode.InvalidRequest, `${code}: ${messageForCode(code)}`)
     }

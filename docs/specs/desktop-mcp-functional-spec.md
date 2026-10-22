@@ -52,6 +52,7 @@ flowchart LR
 - 内部 loopback RPC 是私有通信，首期不承诺对外 HTTP MCP。HTTP 实现只绑定 `127.0.0.1`，校验 Host、存在时的 Origin、请求大小和时限，禁止代理转发与重定向，设置独立连接/请求上限。连接凭证不是模型 API Key。
 - 安装包提供 stdio 启动器及兼容运行时，不依赖全局 Node、npx 下载或仓库当前工作目录；含空格路径及 Windows/macOS/Linux 分别验收。启动器不复用正常 GUI 标准输出作为 MCP 输出。
 - 桌面未运行时明确返回 `DESKTOP_NOT_RUNNING`；首期不自动启动后台桌面或创建/打开项目。MCP 协议初始化可以成功后报告应用不可用，具体行为在 SDK smoke 中固定。
+- 离线时只公布用于说明状态的 `get_context`。桌面恢复后，首次鉴权成功的普通调用会发送一次 `notifications/tools/list_changed`，提示客户端重新读取当前授权范围内的工具目录；桥接声明 `tools.listChanged`，不通过重放调用或扩大权限来刷新目录。客户端是否自动刷新仍依其实现，未响应通知时可重启该 MCP 服务。
 
 ### 3.2 权限与项目绑定
 

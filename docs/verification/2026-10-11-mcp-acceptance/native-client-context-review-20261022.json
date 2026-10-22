@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-22",
+  "testType": "current-Codex-conversation-native-MCP-context-call",
+  "firstCall": { "success": false, "errorCode": "DESKTOP_NOT_RUNNING" },
+  "recoveredCall": { "success": true, "canvasReady": true, "canvasVersion": 1 },
+  "sameIsolatedProjectAndUnrevokedGrantReused": true,
+  "mcpConfigChangedForRecovery": false,
+  "manualConnectionApprovalRequired": false,
+  "fixtureGenerationRequests": 0,
+  "cloudGenerationRequests": 0,
+  "nativeGenerationFormTested": false,
+  "nativeGenerationFormAccepted": false,
+  "scopeChange": "User requested a direct official API generation test instead of continuing the native form test.",
+  "cleanup": {
+    "grantRevoked": true,
+    "mcpDisabled": true,
+    "fixtureListenerClosed": true,
+    "temporaryGlobalMcpTablesRemoved": true,
+    "otherGlobalConfigContentPreserved": true
+  },
+  "offlineCatalogueFix": {
+    "toolsListChangedAdvertised": true,
+    "notificationAfterFirstAuthenticatedRecoveredCall": true,
+    "toolCallReplayAdded": false,
+    "localMcpRegressionTests": 110,
+    "localMcpRegressionPassed": 110,
+    "testLog": "mcp-offline-recovery-tests-20261022.log",
+    "nativeClientAutomaticRefreshAccepted": false
+  },
+  "limitations": [
+    "The recovered running bridge predated the notification fix; current client catalogue refresh is not accepted from its SDK test.",
+    "The first QA restore attempt incorrectly expected grantId in public client state; the assertion was removed and the original bridge args were left to Main authentication. No grant was recreated or un-revoked."
+  ]
+}
