@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Check, Clipboard, PlugZap, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
 import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { desktopProviderLabel } from '@/desktop/providerModels'
-import { canCreateMcpGrant, createMcpClientGrantInput, providerGrantForPermissions, setMcpGrantPermission } from './mcpGrantPolicy'
+import { canCreateMcpGrant, createMcpClientGrantInput, getMcpClientConfigText, providerGrantForPermissions, setMcpGrantPermission } from './mcpGrantPolicy'
 import type {
   DesktopMcpClientGrantInput,
+  DesktopMcpClientGrantResult,
+  DesktopMcpClientName,
   DesktopMcpCredentialInputMode,
   DesktopMcpEvent,
   DesktopMcpPermission,
@@ -15,6 +17,14 @@ import type {
 
 const bridge = window.vibepaperDesktop
 const DISCLOSURE_VERSION = 'desktop-mcp-provider-disclosure-v1'
+const clientOptions: Array<{ id: DesktopMcpClientName; label: string; documentationUrl: string }> = [
+  { id: 'codex', label: 'Codex', documentationUrl: 'https://developers.openai.com/codex/mcp/' },
+  { id: 'claude-code', label: 'Claude Code', documentationUrl: 'https://code.claude.com/docs/en/mcp' },
+  { id: 'cursor', label: 'Cursor', documentationUrl: 'https://cursor.com/docs/mcp' },
+  { id: 'workbuddy', label: 'WorkBuddy', documentationUrl: 'https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide' },
+  { id: 'trae', label: 'TRAE', documentationUrl: 'https://docs.trae.cn/ide_add-mcp-servers' },
+  { id: 'other', label: '其他 MCP 客户端', documentationUrl: 'https://modelcontextprotocol.io/specification/2025-11-25/basic/transports' },
+]
 const permissionOptions: Array<{ id: DesktopMcpPermission; label: string; note: string }> = [
   { id: 'canvas.read', label: '读取画布', note: '读取授权画布摘要、节点和素材元数据。' },
   { id: 'canvas.write', label: '编辑画布', note: '创建或修改授权画布中的节点、连线和布局。' },
@@ -70,12 +80,12 @@ export function DesktopMcpSettingsPage() {
   const [state, setState] = useState<DesktopMcpState | null>(null)
   const [permissions, setPermissions] = useState<DesktopMcpPermission[]>(['canvas.read', 'canvas.write'])
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({})
-  const [clientName, setClientName] = useState<'codex' | 'claude-code' | 'other'>('codex')
+  const [clientName, setClientName] = useState<DesktopMcpClientName>('codex')
   const [displayName, setDisplayName] = useState('')
   const [mediaTypes, setMediaTypes] = useState<string[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ tone: 'error' | 'success' | 'info'; text: string } | null>(null)
-  const [lastCreated, setLastCreated] = useState<{ clientId: string; config: { codex: string; claudeCode: string } } | null>(null)
+  const [lastCreated, setLastCreated] = useState<{ clientId: string; clientName: DesktopMcpClientName; config: DesktopMcpClientGrantResult['config'] } | null>(null)
 
   const refresh = useCallback(async () => {
     if (!bridge) throw new Error(uiText('桌面 MCP 接口尚未接入。'))
@@ -179,7 +189,7 @@ export function DesktopMcpSettingsPage() {
         disclosureVersion: state?.connectionDisclosureVersion ?? DISCLOSURE_VERSION,
       })
       const result = await bridge.createMcpClientGrant(input)
-      setLastCreated({ clientId: result.clientId, config: result.config })
+      setLastCreated({ clientId: result.clientId, clientName, config: result.config })
       setMessage({ tone: 'success', text: uiText('已记录所选访问范围并生成连接配置。客户端将按此范围自动连接；生成时由客户端表单确认。') })
       setDisplayName('')
       await refresh()
@@ -228,7 +238,7 @@ export function DesktopMcpSettingsPage() {
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#66748d]">{uiText('桌面连接')}</p>
           <h1 className="mt-1 text-2xl font-bold text-[#172238]">{uiText('外部 Agent / MCP')}</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#526079]">{uiText('授权 Codex、Claude Code 等本机 Agent 操作当前本地画布。生成只在所选客户端中确认一次，桌面不会重复确认；不支持确认表单的客户端无法生成。')}</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#526079]">{uiText('授权 Codex、Claude Code、Cursor、WorkBuddy、TRAE 等本机 Agent 操作当前本地画布。生成只在所选客户端中确认一次，桌面不会重复确认；不支持确认表单的客户端无法生成。')}</p>
         </div>
         <button type="button" onClick={() => void refresh()} disabled={Boolean(busy)} className="inline-flex items-center gap-2 rounded-lg border border-[#d7deea] bg-white px-3 py-2 text-sm font-medium text-[#43516a] disabled:opacity-50">
           <RefreshCw size={15} />{uiText('刷新状态')}
@@ -263,14 +273,15 @@ export function DesktopMcpSettingsPage() {
         <p className="mt-1 text-sm text-[#69768c]">{uiText('每个客户端单独设置权限范围。配置片段只含本机启动参数，不包含连接秘密或模型 API Key；连接会自动验证受限本地凭据。')}</p>
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           <label className="block text-sm font-medium text-[#35435a]">{uiText('客户端')}
-            <select value={clientName} onChange={(event) => setClientName(event.target.value as typeof clientName)} className="mt-1.5 w-full rounded-lg border border-[#d5ddea] bg-white px-3 py-2.5 text-sm">
-              <option value="codex">Codex</option><option value="claude-code">Claude Code</option><option value="other">{uiText('其他 MCP 客户端')}</option>
+            <select value={clientName} onChange={(event) => { setClientName(event.target.value as DesktopMcpClientName); setLastCreated(null) }} className="mt-1.5 w-full rounded-lg border border-[#d5ddea] bg-white px-3 py-2.5 text-sm">
+              {clientOptions.map((client) => <option key={client.id} value={client.id}>{client.id === 'other' ? uiText(client.label) : client.label}</option>)}
             </select>
           </label>
           <label className="block text-sm font-medium text-[#35435a]">{uiText('显示名称（可选）')}
             <input value={displayName} maxLength={80} onChange={(event) => setDisplayName(event.target.value)} className="mt-1.5 w-full rounded-lg border border-[#d5ddea] px-3 py-2.5 text-sm" placeholder={uiText('例如：个人 Codex')} />
           </label>
         </div>
+        {clientName === 'trae' && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">{uiText('TRAE 要求 command 不含空格。若 VibePaper 运行路径包含空格，设置页会隐藏无法运行的 TRAE 配置。')}</p>}
 
         <div className="mt-5 grid gap-2 md:grid-cols-2">
           {permissionOptions.map((option) => (
@@ -368,15 +379,21 @@ export function DesktopMcpSettingsPage() {
       {lastCreated && (
         <section className="rounded-2xl border border-emerald-200 bg-white p-5 shadow-sm" data-testid="mcp-client-config">
           <h2 className="font-semibold text-[#1d2b43]">{uiText('客户端连接配置')}</h2>
-          <p className="mt-1 text-sm text-[#69768c]">{uiText('选择对应客户端复制。配置不含连接秘密或模型凭据；连接会在当前授权范围内自动建立。')}</p>
-          {(['codex', 'claudeCode'] as const).map((key) => {
-            const label = key === 'codex' ? 'Codex' : 'Claude Code'
-            const value = configText(lastCreated.config[key])
-            return <div key={key} className="mt-4">
+          <p className="mt-1 text-sm text-[#69768c]">{uiText('此授权对应 {0}。复制下方配置到该客户端；配置不含连接秘密或模型凭据。', { 0: clientOptions.find((client) => client.id === lastCreated.clientName)?.label ?? lastCreated.clientName })}</p>
+          <a className="mt-2 inline-block text-sm text-[#315d9d] underline" href={clientOptions.find((client) => client.id === lastCreated.clientName)?.documentationUrl} target="_blank" rel="noreferrer">{uiText('查看客户端官方 MCP 配置说明')}</a>
+          <p className="mt-2 text-xs leading-5 text-[#69768c]">{uiText('本次 MCP 生成确认尚未在该客户端通过本项目的真实客户端验收。若客户端不支持 MCP 表单确认，生成会返回明确错误且不会提交任务。')}</p>
+          {lastCreated.clientName === 'trae' && !lastCreated.config.traeCommandCompatible ? (
+            <p role="alert" className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{uiText('当前 VibePaper 可执行文件路径含空格，违反 TRAE 对 command 的限制，因此未生成 TRAE 配置。请从不含空格的路径启动 VibePaper（例如 E:\\pp\\Pi-Paper\\Pi-Paper.exe），然后重新创建授权。')}</p>
+          ) : (() => {
+            const value = getMcpClientConfigText(lastCreated.config, lastCreated.clientName)
+            if (!value) return null
+            const label = clientOptions.find((client) => client.id === lastCreated.clientName)?.label ?? lastCreated.clientName
+            const key = lastCreated.clientName
+            return <div className="mt-4">
               <div className="mb-1 flex items-center justify-between"><label htmlFor={`mcp-config-${key}`} className="text-sm font-semibold text-[#35435a]">{label}</label><button type="button" onClick={() => void copyConfig(label, value)} className="inline-flex items-center gap-1.5 rounded-md border border-[#d7deea] px-2.5 py-1 text-xs text-[#43516a]"><Clipboard size={13} />{uiText('复制')}</button></div>
-              <textarea id={`mcp-config-${key}`} readOnly value={value} rows={5} className="w-full resize-y rounded-lg border border-[#d5ddea] bg-[#f7f8fa] p-3 font-mono text-xs text-[#35435a]" />
+              <textarea id={`mcp-config-${key}`} readOnly value={configText(value)} rows={8} className="w-full resize-y rounded-lg border border-[#d5ddea] bg-[#f7f8fa] p-3 font-mono text-xs text-[#35435a]" />
             </div>
-          })}
+          })()}
         </section>
       )}
 
@@ -386,7 +403,7 @@ export function DesktopMcpSettingsPage() {
           {(state?.clients ?? []).length === 0 ? <p className="rounded-xl bg-[#f6f8fb] px-4 py-4 text-sm text-[#69768c]">{uiText('当前没有客户端授权。')}</p> : state?.clients.map((client) => (
             <div key={client.clientId} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e7ebf2] p-4" data-testid={`mcp-client-${client.clientId}`}>
               <div className="min-w-0">
-                <p className="font-semibold text-[#26364f]">{client.displayName || client.clientName}</p>
+                <p className="font-semibold text-[#26364f]">{client.displayName || (clientOptions.find((option) => option.id === client.clientName)?.id === 'other' ? uiText('其他 MCP 客户端') : clientOptions.find((option) => option.id === client.clientName)?.label) || client.clientName}</p>
                 <p className="mt-1 text-xs text-[#69768c]">{uiText('画布')} · {client.canvasId} · {client.permissions.map((permission) => uiText(permissionLabels[permission] ?? permission)).join('、')}</p>
                 {client.providerGrants.length > 0 && <p className="mt-1 text-xs text-[#69768c]">{client.providerGrants.map((grant) => {
                   const provider = providerById.get(grant.providerId)

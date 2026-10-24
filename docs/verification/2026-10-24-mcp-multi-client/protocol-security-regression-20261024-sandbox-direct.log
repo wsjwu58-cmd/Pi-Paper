@@ -1,0 +1,450 @@
+--- mcp-launcher.test.cjs ---
+✔ Node mode bridge resolves the same Electron appData directory without loading Electron (0.8859ms)
+✔ launcher parses the development Electron entry and paths containing spaces without shell tokenization (1.6672ms)
+✔ launcher accepts the packaged Electron form with no main.cjs argument (0.114ms)
+✔ launcher rejects arbitrary entry files, extra flags, duplicate flags, and instance paths outside fixed userData (0.7414ms)
+✔ launcher keeps only runtime and grant-listed environment values for the stdio bridge (0.2535ms)
+✔ environment filtering is case-insensitive and rejects arbitrary mapping values (0.1176ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7.4874
+--- mcp-local-generation-task-main.test.cjs ---
+✔ Main accepts exact local text, SAPI, and postprocess bindings while keeping cloud providers scoped (4.6535ms)
+✔ MCP authorization is rechecked after provider resolution before task:create (1.5135ms)
+✔ authorized MCP generation dispatches one task without forwarding the authorization callback (1.1134ms)
+✔ a disconnected caller does not cause task:create to be replayed after dispatch begins (1.7981ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11.9934
+--- mcp-provider-controller.test.cjs ---
+✔ inline configuration is disclosed and authorized before reading the key, then only returns public state (47.5183ms)
+✔ inline opaque source refs are resolved only after disclosure authorization (29.5401ms)
+✔ disclosure pending does not read inline secret values or resolve authorized environment sources (3.1391ms)
+✔ configuration authorization fails closed for missing, revoked, expired, and unscoped grants (1.6503ms)
+✔ the same operation replays a saved key, while a different key conflicts without another write (33.5798ms)
+✔ provider operation ledger adapts the durable MCP control store started/replay records (55.8797ms)
+✔ a pending operation recovers after settings committed but before its public ledger result (29.6766ms)
+✔ a saved settings commit survives ledger completion failure and replays without another write (33.1794ms)
+✔ operation replay across later revisions does not overwrite current settings and stale new operations conflict (54.2482ms)
+✔ authorized_env reads only the registered field and desktop_input is limited to grant fields (48.207ms)
+✔ live grant revocation during authorized source resolution prevents credential persistence (7.1971ms)
+✔ live grant revocation while ledger begin waits prevents desktop-input proposal creation (5.6389ms)
+✔ live grant revocation during provider snapshot prevents the official probe request (2.8041ms)
+✔ live grant revocation at the provider-settings revision commit rolls back staged credentials (27.7117ms)
+✔ restart rolls back an interrupted authorized journal until the same operation is reauthorized (47.6569ms)
+✔ probe returns an explicit unsupported result and secure-storage errors remain stable (25.5941ms)
+✔ provider read is provider-scoped and never returns saved credential values (22.2617ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 17
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 479.7596
+--- mcp-provider-main-integration.test.cjs ---
+✔ Main, SQLite provider ledger, secure settings, and SDK stdio keep image/video credential writes secret-safe and idempotent (293.769ms)
+✔ desktop_input saves the exact proposal with the canvas unavailable and a live revoke blocks a later save (91.8528ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 388.5698
+--- mcp-review-main.test.cjs ---
+✔ concurrent starts on one Main instance share one bridge credential and listener (38.6572ms)
+✔ external write settles the exact renderer flush request (38.888ms)
+✔ failed renderer save releases the same barrier without executing worker writes (32.8552ms)
+✔ saving dirty renderer changes rejects stale external CAS and releases the barrier (34.8866ms)
+✔ generation preparation returns a client confirmation challenge without a desktop card (25.5996ms)
+✔ bridge bootstrap rejects a bad secret and connects with the private per-instance credential (27.8133ms)
+✔ normal RPC traffic does not consume the bootstrap rate budget (40.0663ms)
+✔ bootstrap rate bucket returns 429 after eight requests in its window (29.0016ms)
+✔ RPC address rate bucket returns 429 after 120 requests despite per-session limits (112.5901ms)
+✔ generation confirmation rejects wrong tokens and another live client session (25.3071ms)
+✔ generation confirmation submits once and an exact replay returns the prior task state (30.515ms)
+▶ replayed and concurrent generation preparation preserve the first pending client confirmation
+  ✔ sequential replay (29.0645ms)
+  ✔ concurrent requests (29.322ms)
+✔ replayed and concurrent generation preparation preserve the first pending client confirmation (58.8135ms)
+✔ generation rejection is one use and never submits a task (22.9771ms)
+✔ renderer action resolution cannot approve an external client proposal (33.0853ms)
+✔ expired generation confirmation is rejected before task submission (149.8635ms)
+✔ canvas version and project changes invalidate the generation confirmation (48.6977ms)
+✔ disconnecting while the renderer save barrier is pending cancels generation before Worker submission (78.86ms)
+✔ generation Core authorization rejects a session revoked during provider revision lookup (21.1008ms)
+✔ Main tools reject extra fields instead of silently dropping them (27.3841ms)
+✔ loopback Origin and invalid bearer are rejected before business operations (22.8995ms)
+✔ revocation immediately denies the active connection (23.4951ms)
+✔ client config has separate usable Codex TOML and Claude Code JSON (23.8777ms)
+✔ Codex config forwards only deduplicated authorized environment variable names (29.8405ms)
+✔ restarting the device store invalidates unfinished desktop authorization actions (16.1953ms)
+✔ original provider page can finish independent provider flows while canvas writes are unavailable (27.1041ms)
+✔ a completed external operation replays after the canvas version advances (25.8174ms)
+✔ stopping Main removes only its own private bridge credential (23.1926ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1074.2598
+--- mcp-review-runtime.test.cjs ---
+✔ external runtime rejects the hidden original tool delete_nodes before reading domain state (6094.9072ms)
+✔ external runtime rejects the hidden original tool submit_generation before reading domain state (1.6132ms)
+✔ external runtime rejects the hidden original tool submit_generation_batch before reading domain state (1.5046ms)
+✔ external runtime rejects the hidden original tool request_render_audit before reading domain state (1.3627ms)
+✔ external prepare_generation rejects fields absent from its advertised schema before execution (1.9991ms)
+✔ external connect_nodes rejects fields absent from its advertised schema before execution (1.6794ms)
+✔ external create_nodes rejects fields absent from its advertised schema before execution (3.2866ms)
+✔ stale external canvas version never reaches the domain write gateway (11.4853ms)
+✔ MCP tool discovery omits private confirmation and destructive tools (1.7885ms)
+✔ runtime text and structured responses share the same public projection (2.8283ms)
+✔ model binding projection does not retain a second unprojected result array (1.7843ms)
+✔ node configuration cannot route credentials into project parameters (1.6311ms)
+✔ generation proposal persists the original approval and requires desktop confirmation before creating tasks (6.3864ms)
+✔ completed write replay survives the canvas version advanced by its first execution (3.3174ms)
+✔ serialized original node arrays cannot bypass credential parameter validation (2.1948ms)
+✔ replaying a pending generation after canvas edits invalidates the proposal (4.061ms)
+✔ expired generation replay cannot revive the old confirmation (2.6639ms)
+✔ completed domain steps use the same first response and durable replay projection (20.3323ms)
+✔ partial domain writes retain completed IDs and uncertainty without resubmitting (3.0065ms)
+ℹ tests 19
+ℹ suites 0
+ℹ pass 19
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6178.492
+--- mcp-stdio.test.cjs ---
+✔ inline credential values are not read before authorized disclosure preflight (2.4092ms)
+✔ provider credential source metadata survives reply scrubbing while values stay hidden (0.2708ms)
+✔ desktop_input forwards only the no-secret marker and rejects added values (0.3357ms)
+✔ authorized environment credentials resolve only an exact provider, field, sourceRef, and registered variable (0.2876ms)
+✔ credential source descriptors are exact, bounded, unexpired, and bound to the session (0.2653ms)
+✔ task output bridge rejects malformed media blobs and mismatched metadata (4.383ms)
+✔ SDK bridge carries a bounded video resource larger than the former HTTP response cap (55.7764ms)
+✔ instance discovery accepts only the fixed file in the application data directory and rejects symlinks (15.1825ms)
+✔ bridge authorization file is fixed-path, per-instance, bounded, and private on POSIX (14.4021ms)
+✔ private generation confirmation fields are stripped recursively from public results (0.2874ms)
+✔ official SDK client initializes offline and receives an explicit DESKTOP_NOT_RUNNING tool result (4.7196ms)
+✔ offline catalogue refreshes once after an authenticated recovery without replaying tools (16.5128ms)
+✔ SDK stdio adapter authenticates from the private instance file, isolates inline secrets, and never retries RPC (59.0362ms)
+✔ a first direct configure call waits for bootstrap before resolving registered environment sources (25.9722ms)
+✔ an SDK cancellation aborts only the pending RPC and keeps the approved connection available (3095.5873ms)
+✔ generation is confirmed through the SDK form elicitation before Main receives approve (22.0921ms)
+✔ declined and cancelled generation forms send only a reject decision (20.7523ms)
+✔ clients without form elicitation fail before a generation proposal is created (4.9256ms)
+✔ malformed private confirmation data returns a safe error without leaking its challenge (5.2161ms)
+✔ invalid form answers fail closed without forwarding an approval decision (7.3799ms)
+✔ form elicitation timeout leaves the proposal unsubmitted (46.5937ms)
+✔ cancelling the MCP call while the form is open rejects the pending proposal without approval (7.5489ms)
+✔ disconnecting the client while the form is open sends no confirmation (7.4573ms)
+✔ instance and bridge credential changes during elicitation invalidate the proposal without an RPC (23.0368ms)
+ℹ tests 24
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3525.6994
+--- mcp-task-output-main.test.cjs ---
+✔ MCP reads task text with bounded Unicode pagination and standard text content (50.2915ms)
+✔ MCP reads a selected image output as standard image content only after explicit preview (30.9549ms)
+✔ MCP returns video preview bytes in an embedded standard resource (33.7621ms)
+✔ MCP checks independent media permission and media type, task project, canvas, and status (90.7093ms)
+✔ MCP cancellation after a media read starts clears returned bytes and does not publish them (34.9957ms)
+✔ MCP validates the expanded shared task output schema (236.7838ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 481.4285
+--- mcp-task-output-store.test.cjs ---
+✔ Local Core returns only the selected bounded image output from the active project (67.2524ms)
+✔ Local Core rejects MCP outputs above the image cap before reading bytes and rejects MIME mismatch (102.3006ms)
+✔ Local Core rejects task output directories replaced with a junction (46.9905ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 219.476
+--- codex-app-server-acceptance-host.test.cjs ---
+✔ uses the same client catalog default only for an explicitly opted-in QA thread (5.2746ms)
+✔ does not start a model turn for a missing, ambiguous, hidden or paginated client default (2.5879ms)
+✔ starts an ephemeral read-only turn, adapts safe trace events, and closes on completion (1.1509ms)
+✖ speaks JSONL to a local fake app-server process and checks runtime scope before turn/start (1.7854ms)
+✔ turn completion remains authoritative when close races its cleanup (0.6088ms)
+✔ fails closed on active or ambiguous MCP entries, pagination, or a missing VibePaper server (2.182ms)
+✖ builds global and per-profile disable overrides from TOML names only (1.4026ms)
+✔ fails closed on duplicate, malformed, or unsupported Codex TOML configuration (0.7539ms)
+✔ accepts an 8 MiB app-server line within the 16 MiB protocol bound (17.2843ms)
+✔ rejects an app-server protocol line that exceeds 16 MiB (30.5596ms)
+✔ forwards the generation form and returns only an explicit accepted decision (1.1416ms)
+✔ returns an explicit user decline for a valid generation form (0.5246ms)
+✔ declines malformed or foreign elicitation and denies shell, file, and permission requests (0.6845ms)
+✔ never treats malformed callback output as acceptance (0.6152ms)
+✔ cancels a pending form and rejects the turn on timeout (307.6854ms)
+✔ rejects a disconnected turn and aborts its pending confirmation callback (1.3051ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 14
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1023.8262
+
+✖ failing tests:
+
+test at pi-paper-desktop\test\codex-app-server-acceptance-host.test.cjs:224:1
+✖ speaks JSONL to a local fake app-server process and checks runtime scope before turn/start (1.7854ms)
+  Error: CODEX_PROCESS_SPAWN_FAILED
+      at failure (E:\VibePaperProject\pi-paper-desktop\scripts\codex-app-server-acceptance-host.cjs:11:24)
+      at startCodexAppServerTurn (E:\VibePaperProject\pi-paper-desktop\scripts\codex-app-server-acceptance-host.cjs:265:11)
+      at TestContext.<anonymous> (E:\VibePaperProject\pi-paper-desktop\test\codex-app-server-acceptance-host.test.cjs:254:22)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    code: 'CODEX_PROCESS_SPAWN_FAILED'
+  }
+
+test at pi-paper-desktop\test\codex-app-server-acceptance-host.test.cjs:303:1
+✖ builds global and per-profile disable overrides from TOML names only (1.4026ms)
+  Error: CODEX_MCP_CONFIG_INVALID
+      at failure (E:\VibePaperProject\pi-paper-desktop\scripts\codex-app-server-acceptance-host.cjs:11:24)
+      at configFailure (E:\VibePaperProject\pi-paper-desktop\scripts\codex-app-server-acceptance-host.cjs:92:10)
+      at createVibePaperOnlyOverride (E:\VibePaperProject\pi-paper-desktop\scripts\codex-app-server-acceptance-host.cjs:135:11)
+      at TestContext.<anonymous> (E:\VibePaperProject\pi-paper-desktop\test\codex-app-server-acceptance-host.test.cjs:320:21)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+    code: 'CODEX_MCP_CONFIG_INVALID'
+  }
+--- smoke-mcp-codex-agnes-resume.test.cjs ---
+✔ resume path accepts only a direct project child in a named acceptance run (0.8366ms)
+✔ harness dispatch recognizes Electron browser worker entry but keeps imports inert (0.1079ms)
+✔ resume path validation rejects symlinked project storage and accepts regular project files (16.2993ms)
+✔ resume classifier accepts the exact existing image and optional single reusable video task (0.808ms)
+✔ resume classifier fails closed on invalid or ambiguous media tasks and nodes (0.3222ms)
+✔ resume media submission guard rejects every image preparation and existing video preparation (0.4143ms)
+✔ resume query-only stages reject canvas mutations before dispatch (0.2075ms)
+✔ video-only mode rejects resume and configuration-only combinations (0.1222ms)
+✔ video-only submission guard permits one video node, one connection and one video proposal only (0.3963ms)
+✔ video-only chain acceptance requires zero images and exactly one visible, matched video result (0.1375ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 22.445
+--- legacy-credential-read.test.cjs ---
+✔ Agnes: absent legacy key allows catalog reads without a vault; existing keys remain protected (2.3775ms)
+✔ Ark: absent legacy key allows catalog reads without a vault; existing keys remain protected (1.0515ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9.0601
+--- renderer-trust.test.cjs ---
+✔ production navigation retains IPC trust on the original desktop SPA routes (0.6496ms)
+✔ assets, arbitrary routes, credentials and other origins never gain renderer IPC trust (0.1923ms)
+✔ development renderer retains its configured origin boundary (0.0965ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4.588
+--- provider-settings.test.cjs ---
+✔ unfiltered snapshots remain unfiltered after queued reads and saves (52.4169ms)
+✔ per-model visual defaults persist across restart and reject unsupported fields or bounds (54.9466ms)
+✔ ratio-specific model defaults reject invalid combinations and persist exact supported dimensions (35.958ms)
+✔ Kling official AK/SK configuration is encrypted, usable without API Key, and never returned to Renderer (4183.8177ms)
+✔ per-model voice credentials gate speech without disabling other modalities (73.5912ms)
+✔ Wan workspace routing uses exact official regions and cannot inject arbitrary hosts (41.8952ms)
+✔ pending providers have no usable credentials or endpoint and do not break configured catalogs (6.007ms)
+✔ model-specific media API paths remain on the configured official origin (28.6233ms)
+✔ static catalog models become usable only when implemented, enabled, and backed by credentials (29.6675ms)
+✔ official HTTPS host, port, userinfo, query, and fragment restrictions reject endpoint overrides safely (15.6155ms)
+✔ existing Agnes and Ark keys remain readable through legacy credential aliases (116.4955ms)
+✔ connection test uses an unsaved OpenAI key for the non-billing models probe and redacts failures (7.792ms)
+✔ providers without a safe authentication probe return unsupported instead of claiming validation (7.7514ms)
+✔ connection testing only requires authentication secrets, not a non-secret voice ID (3.156ms)
+✔ provider save, clear, and probe enforce revision CAS; clear tombstone prevents legacy secret resurrection (75.5198ms)
+✔ schema 1 provider settings migration uses an exact durable backup and is idempotent (27.9196ms)
+✔ schema 1 migration keeps an existing encrypted credential readable at revision zero (13.494ms)
+✔ credentials directory symlinks are rejected before settings or credential access (2.8236ms)
+✔ transaction recovery is durable at every injected save boundary and journal never contains credentials (223.3157ms)
+✔ operation equality uses a protected HMAC and changes when only the submitted key changes (15.9755ms)
+✔ provider settings refuse cleartext fallback when secure storage is unavailable (2.7019ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5024.0389
+--- provider-network.test.cjs ---
+✔ provider probes use the injected system transport and preserve authentication and cancellation (0.6739ms)
+✔ injecting a transport does not bypass official HTTPS origin restrictions (0.7ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5.111
+--- reference-media.test.cjs ---
+✔ voice conversion can upload bounded local WAV only through the explicit audio capability (70.5653ms)
+✔ local asset and task-output URIs resolve to their actual bounded image bytes and provider payloads (61.8173ms)
+✔ confirmed batch first-frame task URI resolves for Agnes and Ark video requests (49.9479ms)
+✔ local reference resolver rejects forged URLs, untrusted paths, MIME mismatches, and oversized images (35.6774ms)
+✔ local media URL parser only accepts exact app asset and successful-output forms (0.2323ms)
+✔ local video references are ownership and metadata checked, then visibly blocked without an Ark upload contract (52.396ms)
+✔ the same local URI is rechecked when it is reused under a different reference kind (35.8224ms)
+✔ Agnes image request rejects unsupported data-image MIME types and mismatched signatures (0.2442ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 310.1352
+--- media-task-store.test.cjs ---
+✔ video frame extraction stores an image output with operation-aware preview and backup validation (143.3783ms)
+✔ video frame operation cannot claim a video output format or a mismatched output kind (36.1737ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 182.1286
+--- media-postprocess.test.cjs ---
+✔ three-view font resolution accepts an explicit portable font override (4.4604ms)
+✔ local media references are project scoped and modality checked (8.4243ms)
+✖ local crop and three-view transform the supplied image into readable outputs (2.3406ms)
+✖ video trim, frame extraction, and upscale use the source video (1.4786ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 2
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 19.57
+
+✖ failing tests:
+
+test at pi-paper-desktop\test\media-postprocess.test.cjs:100:1
+✖ local crop and three-view transform the supplied image into readable outputs (2.3406ms)
+  AssertionError [ERR_ASSERTION]: C:\Users\WSJ\AppData\Local\Microsoft\WinGet\Links\ffmpeg.EXE failed
+  
+  null !== 0
+  
+      at runCommand (E:\VibePaperProject\pi-paper-desktop\test\media-postprocess.test.cjs:36:10)
+      at TestContext.<anonymous> (E:\VibePaperProject\pi-paper-desktop\test\media-postprocess.test.cjs:106:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at pi-paper-desktop\test\media-postprocess.test.cjs:128:1
+✖ video trim, frame extraction, and upscale use the source video (1.4786ms)
+  AssertionError [ERR_ASSERTION]: C:\Users\WSJ\AppData\Local\Microsoft\WinGet\Links\ffmpeg.EXE failed
+  
+  null !== 0
+  
+      at runCommand (E:\VibePaperProject\pi-paper-desktop\test\media-postprocess.test.cjs:36:10)
+      at TestContext.<anonymous> (E:\VibePaperProject\pi-paper-desktop\test\media-postprocess.test.cjs:134:3)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+--- pi-media-worker.test.cjs ---
+✔ Pi media bridge writes all indexed image outputs and retains validated references (17.7105ms)
+✔ Pi audio bridge validates and persists binary speech output (13.9393ms)
+✔ canvas controls normalize to provider params without losing user style or references (5.9392ms)
+✔ Pi asynchronous bridge waits for persisted submission before obtaining its output (4.5346ms)
+✔ Pi asynchronous bridge refuses to submit without durable checkpoint storage (2.1932ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 47.3339
+--- pi-canvas-media-integration.test.cjs ---
+✔ catalog video defaults reach actual Pi adapters with persisted submission before GET and local output (385.1241ms)
+✔ Vidu canvas frame aliases deduplicate reference images and preserve image-derived aspect ratio (6.3173ms)
+✔ actual Pi image adapters consume catalog defaults and canvas metadata end to end (59.8506ms)
+✔ configured audio operations reach actual Pi adapters and persist MP3 results (51.5737ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 505.7435
+--- provider-task-checkpoint.test.cjs ---
+✔ submitted cloud tasks resume the original upstream ID after a restart; ambiguous submission cannot retry (69.6978ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 72.4416

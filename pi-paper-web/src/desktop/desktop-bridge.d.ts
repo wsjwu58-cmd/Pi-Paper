@@ -897,8 +897,10 @@ export interface DesktopMcpProviderGrantInput {
   authorizedEnv: DesktopMcpAuthorizedEnvField[]
 }
 
+export type DesktopMcpClientName = 'codex' | 'claude-code' | 'cursor' | 'workbuddy' | 'trae' | 'other'
+
 export interface DesktopMcpClientGrantInput {
-  clientName: 'codex' | 'claude-code' | 'other'
+  clientName: DesktopMcpClientName
   displayName?: string
   permissions: DesktopMcpPermission[]
   providerGrants: DesktopMcpProviderGrantInput[]
@@ -926,7 +928,7 @@ export interface DesktopMcpClientProviderGrant {
 
 export interface DesktopMcpClientGrant {
   clientId: string
-  clientName: 'codex' | 'claude-code' | 'other' | string
+  clientName: DesktopMcpClientName | string
   displayName?: string
   permissions: DesktopMcpPermission[]
   projectId: string
@@ -956,7 +958,15 @@ export interface DesktopMcpClientGrantResult {
   clientId: string
   grant: DesktopMcpClientGrant
   /** Client-specific snippets contain launcher and opaque client ID only, never credentials. */
-  config: { codex: string; claudeCode: string }
+  config: {
+    codex: string
+    claudeCode: string
+    cursor: string
+    workbuddy: string
+    trae: string | null
+    traeCommandCompatible: boolean
+    other: string
+  }
 }
 
 export interface DesktopMcpPendingAction {

@@ -1,4 +1,27 @@
-import type { DesktopMcpClientGrantInput, DesktopMcpPermission, DesktopMcpProviderGrantInput } from '@/desktop/desktop-bridge'
+import type {
+  DesktopMcpClientGrantInput,
+  DesktopMcpClientGrantResult,
+  DesktopMcpClientName,
+  DesktopMcpPermission,
+  DesktopMcpProviderGrantInput,
+} from '@/desktop/desktop-bridge'
+
+const clientConfigKeys: Record<DesktopMcpClientName, keyof DesktopMcpClientGrantResult['config']> = {
+  codex: 'codex',
+  'claude-code': 'claudeCode',
+  cursor: 'cursor',
+  workbuddy: 'workbuddy',
+  trae: 'trae',
+  other: 'other',
+}
+
+export function getMcpClientConfigText(
+  config: DesktopMcpClientGrantResult['config'],
+  clientName: DesktopMcpClientName,
+): string | null {
+  const value = config[clientConfigKeys[clientName]]
+  return typeof value === 'string' ? value : null
+}
 
 export function setMcpGrantPermission(
   current: DesktopMcpPermission[], permission: DesktopMcpPermission, enabled: boolean,

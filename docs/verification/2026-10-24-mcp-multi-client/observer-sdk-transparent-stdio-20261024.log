@@ -1,0 +1,40 @@
+Local official MCP SDK transparent stdio fixture.
+Network/provider calls: 0. Real clients: none.
+
+SDK client ↔ QA observer ↔ SDK fake server:
+{
+  "schemaVersion": 1,
+  "testType": "local-official-mcp-sdk-transparent-stdio-fixture",
+  "networkCalls": 0,
+  "providerCalls": 0,
+  "realClientsTested": [],
+  "runs": [
+    {
+      "evidencePath": "evidence-observer-audit-form-sdk.json",
+      "eventCount": 14,
+      "formElicitation": true,
+      "legacyEmptyElicitation": false,
+      "urlElicitation": true,
+      "largePayloadRoundTrip": true,
+      "errorFlagObserved": true,
+      "formForwardedAndCancelled": true,
+      "secretsExcluded": true,
+      "gracefulExitCode": 0
+    },
+    {
+      "evidencePath": "evidence-observer-audit-legacy-sdk.json",
+      "eventCount": 14,
+      "formElicitation": false,
+      "legacyEmptyElicitation": true,
+      "urlElicitation": false,
+      "largePayloadRoundTrip": false,
+      "errorFlagObserved": true,
+      "formForwardedAndCancelled": true,
+      "secretsExcluded": true,
+      "gracefulExitCode": 0
+    }
+  ]
+}
+
+Unexpected child termination:
+{"testType":"observer-unexpected-child-signal","observerExitCode":1,"childExitSignal":null,"evidencePath":"evidence-observer-unexpected-signal.json"}

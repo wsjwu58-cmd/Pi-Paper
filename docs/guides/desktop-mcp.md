@@ -1,14 +1,32 @@
-# 用 Codex / Claude Code 操作桌面画布
+# 用 Codex、Claude Code、Cursor、WorkBuddy、TRAE 操作桌面画布
 
 适用范围：桌面本地 MCP 开发版本及本轮构建包。功能实现与验收状态见[最新验收记录](../verification/2026-10-11-mcp-acceptance/README.md)，已发布的旧安装包不会因源码更新自动获得接口。
 
 ## 建立连接
 
 1. 启动桌面应用，选择本地项目并打开原画布创作页。
-2. 在“外部 Agent / MCP”设置中启用服务，为 Codex 或 Claude Code 创建独立授权。选择画布读取、编辑、生成提案、任务读取等需要的权限；图片/视频提供方配置权限须单独选择厂商、字段和输入方式。
+2. 在“外部 Agent / MCP”设置中启用服务，选择 Codex、Claude Code、Cursor、WorkBuddy、TRAE 或其他客户端，分别创建独立授权。选择画布读取、编辑、生成提案、任务读取等需要的权限；图片/视频提供方配置权限须单独选择厂商、字段和输入方式。
 3. 阅读外部 Agent 的数据发送说明，创建授权后复制桌面实际生成的客户端配置，再返回原画布创作页。配置只包含本机启动路径和公开连接标识，不填写模型 Key。
 4. 将对应配置加入客户端的 MCP 设置并启动连接。已配置范围内自动鉴权，无须短码核对或返回桌面批准连接。
 5. 让外部 Agent 读取当前上下文并操作画布。停留在导航/设置页时不能开始新的画布写入或提交生成；已授权的提供方配置请求可在原配置页完成。
+
+## 配置放在哪里
+
+设置页只显示当前所选客户端的配置，并提供其官方说明链接。合并对应服务条目，保留已有 MCP 服务；配置里的绝对路径须来自自己的桌面应用。Windows 下 `~` 表示当前用户目录。
+
+| 客户端 | 配置入口 | 本轮确认能力 |
+| --- | --- | --- |
+| Codex | `~/.codex/config.toml`；复制桌面生成的 TOML，再重启该 MCP 服务。可信项目也可使用项目内 `.codex/config.toml` | 历史真实上下文调用已通过，当前桌面原生生成表单仍待验收 |
+| Claude Code | 项目根目录 `.mcp.json`，合并生成的 JSON；用 `claude mcp list` 检查，用 `/mcp` 查看状态。客户端首次项目配置可能有自己的信任检查 | 本机 2.1.170 实际握手和 14 项工具发现通过；旧式空 elicitation 能力已兼容，原生表单未实测 |
+| Cursor | 用户级 `~/.cursor/mcp.json` 或项目级 `.cursor/mcp.json`；在 Customize → MCPs 查看 | 本机 3.15.6 握手、14 项工具发现通过，明确声明表单能力；原生表单未实测 |
+| WorkBuddy | 插件/连接器中的 MCP 配置入口；官方说明支持 `~/.workbuddy/mcp.json` 和项目内 `.workbuddy/mcp.json` | 配置导出与协议测试通过，桌面实际连接及原生表单仍待验收 |
+| TRAE | 设置 → MCP → 本地 → 添加 → 手动添加，粘贴 JSON；项目配置为 `.trae/mcp.json`，须在客户端启用项目 MCP | 本机 TRAE CN 3.3.94 实际握手、14 项工具发现通过，但未声明 elicitation，因此生成会被拒绝 |
+
+TRAE 官方文档限制 `command` 不能含空格。应用可执行路径不符合时设置页会给出原因并停止导出 TRAE 配置；使用可从不含空格路径启动的应用后重新导出。`args` 内的路径仍是独立 JSON 字符串，不需要拼成 shell 命令。
+
+建立连接不代表客户端能够显示生成确认。支持 `elicitation.form` 或标准规定的兼容声明 `elicitation: {}` 的客户端才可请求生成；只有 URL 能力或完全缺失能力时明确拒绝。客户端/组织自己的工具许可和信任提示由客户端管理，桌面不会绕过。不要设置自动回答生成表单的 Hook 来把验收伪装成人工确认。
+
+官方配置参考：[Codex](https://developers.openai.com/codex/mcp/)、[Claude Code](https://code.claude.com/docs/en/mcp)、[Cursor](https://cursor.com/docs/mcp)、[WorkBuddy](https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide)、[TRAE](https://docs.trae.cn/ide_add-mcp-servers)。实测结论与这些客户端的通用文档分开，见 [2026-10-24 多客户端验收](../verification/2026-10-24-mcp-multi-client/README.md)。
 
 勾选“配置模型”会同时选中其必需的“读取模型配置”，供 Agent 获取公开字段、型号与配置版本；勾选“读取媒体”会同时选中“读取任务”。这两项依赖会在授权页显示，厂商和媒体类别仍须单独指定。取消配置权限后，尚未完成的凭据输入方式和环境变量草稿不会进入只读授权。
 

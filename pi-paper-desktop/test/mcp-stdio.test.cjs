@@ -108,7 +108,15 @@ async function createGenerationFixture(t, options = {}) {
   }
   await writeMcpAuthFiles(appDataPath, instance, activeBridgeSecret)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
-  const clientOptions = options.clientSupportsForm === false ? {} : { capabilities: { elicitation: { form: {} } } }
+  const clientMessages = []
+  const sendClientMessage = clientTransport.send.bind(clientTransport)
+  clientTransport.send = async (message, sendOptions) => {
+    clientMessages.push(message)
+    return sendClientMessage(message, sendOptions)
+  }
+  const clientCapabilities = options.clientCapabilities
+    ?? (options.clientSupportsForm === false ? {} : { elicitation: { form: {} } })
+  const clientOptions = { capabilities: clientCapabilities }
   const client = new Client({ name: 'generation-fixture-client', version: '1.0.0' }, clientOptions)
   if (options.elicitationHandler) {
     client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
@@ -128,7 +136,8 @@ async function createGenerationFixture(t, options = {}) {
     elicitationTimeoutMs: options.elicitationTimeoutMs ?? 120_000,
   })
   const running = bridge.start()
-  await client.connect(clientTransport)
+  const connect = () => client.connect(clientTransport)
+  if (options.connect !== false) await connect()
   const changeInstance = async (nextInstanceId) => {
     activeInstanceId = nextInstanceId
     activeBridgeSecret = Buffer.from('fedcba9876543210fedcba9876543210').toString('base64url')
@@ -139,10 +148,10 @@ async function createGenerationFixture(t, options = {}) {
     await running
     if (closeClient) await client.close().catch(() => {})
   }
-  return { bridge, client, running, close, changeInstance, initialInstanceId,
+  return { bridge, client, running, close, connect, changeInstance, initialInstanceId,
     state: { get bootstrapCalls() { return bootstrapCalls }, get prepareCalls() { return prepareCalls },
       get confirmationCalls() { return confirmationCalls }, get approvedTasks() { return approvedTasks },
-      confirmations, elicitationRequests, confirmationCalled, proposal }, }
+      confirmations, elicitationRequests, clientMessages, confirmationCalled, proposal }, }
 }
 
 test('inline credential values are not read before authorized disclosure preflight', async () => {
@@ -835,12 +844,93 @@ test('declined and cancelled generation forms send only a reject decision', asyn
   }
 })
 
+test('legacy empty elicitation capability supports accept and decline through the protocol SDK', async (t) => {
+  for (const [elicitationResult, expectedStatus, expectedDecision] of [
+    [{ action: 'accept', content: { confirm: true } }, 'submitted', 'approve'],
+    [{ action: 'decline' }, 'rejected', 'reject'],
+  ]) {
+    const fixture = await createGenerationFixture(t, {
+      clientCapabilities: { elicitation: {} },
+      elicitationResult,
+    })
+    try {
+      const initialize = fixture.state.clientMessages.find((message) => message.method === 'initialize')
+      assert.deepEqual(initialize.params.capabilities.elicitation, {})
+      const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+      assert.equal(result.structuredContent.status, expectedStatus)
+      assert.equal(fixture.state.prepareCalls, 1)
+      assert.equal(fixture.state.elicitationRequests.length, 1)
+      assert.equal(fixture.state.elicitationRequests[0].mode, 'form')
+      assert.equal(fixture.state.confirmationCalls, 1)
+      assert.equal(fixture.state.confirmations[0].decision, expectedDecision)
+      assert.equal(fixture.state.approvedTasks, expectedDecision === 'approve' ? 1 : 0)
+    } finally {
+      await fixture.close()
+    }
+  }
+})
+
+test('explicit form capability remains usable with URL and future capability fields', async (t) => {
+  for (const elicitation of [
+    { form: {}, url: {} },
+    { form: {}, futureCapability: { enabled: true } },
+  ]) {
+    const fixture = await createGenerationFixture(t, {
+      clientCapabilities: { elicitation },
+    })
+    try {
+      const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+      assert.equal(result.structuredContent.status, 'submitted')
+      assert.equal(fixture.state.elicitationRequests.length, 1)
+      assert.equal(fixture.state.confirmations[0].decision, 'approve')
+      assert.equal(fixture.state.approvedTasks, 1)
+    } finally {
+      await fixture.close()
+    }
+  }
+})
+
 test('clients without form elicitation fail before a generation proposal is created', async (t) => {
   const fixture = await createGenerationFixture(t, { clientSupportsForm: false })
   try {
     const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
     assert.equal(result.isError, true)
     assert.equal(result.structuredContent.errorCode, 'CLIENT_CONFIRMATION_UNSUPPORTED')
+    assert.equal(fixture.state.prepareCalls, 0)
+    assert.equal(fixture.state.confirmationCalls, 0)
+    assert.equal(fixture.state.approvedTasks, 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('URL-only and unknown elicitation capabilities cannot confirm generation', async (t) => {
+  for (const clientCapabilities of [
+    { elicitation: { url: {} } },
+    { elicitation: { futureCapability: {} } },
+  ]) {
+    const fixture = await createGenerationFixture(t, { clientCapabilities })
+    try {
+      const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+      assert.equal(result.isError, true)
+      assert.equal(result.structuredContent.errorCode, 'CLIENT_CONFIRMATION_UNSUPPORTED')
+      assert.equal(fixture.state.prepareCalls, 0)
+      assert.equal(fixture.state.elicitationRequests.length, 0)
+      assert.equal(fixture.state.confirmationCalls, 0)
+      assert.equal(fixture.state.approvedTasks, 0)
+    } finally {
+      await fixture.close()
+    }
+  }
+})
+
+test('the protocol SDK rejects malformed elicitation capability values during initialize', async (t) => {
+  const fixture = await createGenerationFixture(t, {
+    clientCapabilities: { elicitation: { form: false } },
+    connect: false,
+  })
+  try {
+    await assert.rejects(fixture.connect())
     assert.equal(fixture.state.prepareCalls, 0)
     assert.equal(fixture.state.confirmationCalls, 0)
     assert.equal(fixture.state.approvedTasks, 0)
@@ -875,6 +965,22 @@ test('invalid form answers fail closed without forwarding an approval decision',
     assert.equal(fixture.state.confirmations[0].decision, 'reject')
     assert.equal(fixture.state.approvedTasks, 0)
     assert.equal(JSON.stringify(result).includes(fixture.state.proposal.challengeToken), false)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('invalid elicitation protocol results are rejected by the public result schema', async (t) => {
+  const fixture = await createGenerationFixture(t, {
+    elicitationResult: { action: 'accept', content: { confirm: true, unexpected: { value: 'invalid' } } },
+  })
+  try {
+    const result = await fixture.client.callTool({ name: 'prepare_generation', arguments: {} })
+    assert.equal(result.isError, true)
+    assert.equal(result.structuredContent.errorCode, 'GENERATION_CONFIRMATION_UNRESOLVED')
+    assert.equal(fixture.state.confirmationCalls, 1)
+    assert.equal(fixture.state.confirmations[0].decision, 'reject')
+    assert.equal(fixture.state.approvedTasks, 0)
   } finally {
     await fixture.close()
   }

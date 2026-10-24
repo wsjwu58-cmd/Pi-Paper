@@ -30,6 +30,17 @@ const TOOL_PERMISSION = new Map([
   ['test_provider_connection', 'provider.configure'], ['get_provider_operation', 'provider.configure'],
 ])
 
+function createTraeMcpConfig(command, args) {
+  const commandCompatible = typeof command === 'string' && command.length > 0 && !/\s/u.test(command)
+  if (!commandCompatible) return { config: null, commandCompatible: false }
+  return {
+    config: JSON.stringify({ mcpServers: { vibepaper: {
+      command, args, env: { ELECTRON_RUN_AS_NODE: '1' },
+    } } }, null, 2),
+    commandCompatible: true,
+  }
+}
+
 function createMcpMainService(options) {
   const {
     userDataDirectory, ipcMain, getMainWindow, assertTrustedSender,
@@ -268,10 +279,25 @@ function createMcpMainService(options) {
       'ELECTRON_RUN_AS_NODE = "1"',
       '',
     ].join('\n')
-    const claudeCode = JSON.stringify({ mcpServers: { vibepaper: {
+    const jsonClientConfig = JSON.stringify({ mcpServers: { vibepaper: {
       command: process.execPath, args, env: { ELECTRON_RUN_AS_NODE: '1' },
     } } }, null, 2)
-    return { codex, claudeCode }
+    const typedStdioJsonClientConfig = JSON.stringify({ mcpServers: { vibepaper: {
+      type: 'stdio', command: process.execPath, args, env: { ELECTRON_RUN_AS_NODE: '1' },
+    } } }, null, 2)
+    // TRAE parses `command` as a single executable and explicitly rejects
+    // whitespace in it. Keep the JSON shape usable for other clients, but do
+    // not export a known-invalid TRAE snippet or wrap it in a shell command.
+    const trae = createTraeMcpConfig(process.execPath, args)
+    return {
+      codex,
+      claudeCode: jsonClientConfig,
+      cursor: typedStdioJsonClientConfig,
+      workbuddy: typedStdioJsonClientConfig,
+      trae: trae.config,
+      traeCommandCompatible: trae.commandCompatible,
+      other: jsonClientConfig,
+    }
   }
 
   function validateGrantInput(input, context, descriptors) {
@@ -279,7 +305,7 @@ function createMcpMainService(options) {
       || Object.keys(input).some((key) => !['clientName', 'displayName', 'permissions', 'providerGrants', 'mediaTypes', 'disclosureVersion', 'accepted'].includes(key))) {
       throw fixedError('INVALID_INPUT')
     }
-    if (!['codex', 'claude-code', 'other'].includes(input.clientName) || input.accepted !== true
+    if (!['codex', 'claude-code', 'cursor', 'workbuddy', 'trae', 'other'].includes(input.clientName) || input.accepted !== true
       || input.disclosureVersion !== DISCLOSURE_VERSION
       || !Array.isArray(input.permissions) || input.permissions.length < 1 || input.permissions.some((value) => !PERMISSIONS.has(value))
       || new Set(input.permissions).size !== input.permissions.length
@@ -1935,4 +1961,4 @@ function projectProviderPublicConfig(value) {
   return result
 }
 
-module.exports = { createMcpMainService, MAX_BODY_BYTES, PROTOCOL_VERSION }
+module.exports = { createMcpMainService, createTraeMcpConfig, MAX_BODY_BYTES, PROTOCOL_VERSION }

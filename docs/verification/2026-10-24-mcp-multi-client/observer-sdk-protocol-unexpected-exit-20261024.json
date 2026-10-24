@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "testType": "local-sdk-fixture-protocol-observation",
+  "payloadsRecorded": false,
+  "observerAnswersRequests": false,
+  "events": [
+    {
+      "at": "2026-10-24T15:23:31.840Z",
+      "direction": "client-to-server",
+      "method": "initialize",
+      "clientName": "other",
+      "clientVersionPresent": true,
+      "protocolVersion": "2025-11-25",
+      "formElicitation": false,
+      "legacyEmptyElicitation": false,
+      "effectiveFormElicitation": false,
+      "urlElicitation": false,
+      "legacyElicitation": false
+    },
+    {
+      "at": "2026-10-24T15:23:32.055Z",
+      "direction": "server-to-client",
+      "responseTo": "initialize",
+      "isError": false
+    },
+    {
+      "at": "2026-10-24T15:23:32.061Z",
+      "direction": "client-to-server",
+      "method": "notifications/initialized"
+    },
+    {
+      "at": "2026-10-24T15:23:32.065Z",
+      "direction": "client-to-server",
+      "method": "tools/call",
+      "toolName": "crash_signal"
+    },
+    {
+      "at": "2026-10-24T15:23:32.068Z",
+      "direction": "server-to-client",
+      "responseTo": "tools/call",
+      "isError": false
+    },
+    {
+      "event": "bridge_closed",
+      "childExitCode": 1,
+      "childExitSignal": null,
+      "observerExitCode": 1
+    }
+  ]
+}

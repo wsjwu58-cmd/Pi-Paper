@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-24",
+  "testType": "local-official-MCP-SDK-stdio-transparent-observer-fixture",
+  "sdk": "@modelcontextprotocol/sdk 1.32.1",
+  "nodeVersion": "v25.9.0",
+  "networkCalls": 0,
+  "providerCalls": 0,
+  "realClientsTested": [],
+  "runs": [
+    {
+      "largePayloadRoundTrip": true,
+      "payloadArgsResultPromptAndEnvironmentExcluded": true,
+      "capabilities": "elicitation.form + elicitation.url",
+      "events": 14,
+      "formForwardedToSdkClientAndCancelled": true,
+      "largeRequestAndResponseBytes": 3145728,
+      "evidence": "observer-sdk-protocol-explicit-form-url-20261024.json",
+      "normalExitCode": 0,
+      "errorFlagObserved": true
+    },
+    {
+      "events": 14,
+      "errorFlagObserved": true,
+      "capabilities": "legacy empty elicitation object {}",
+      "evidence": "observer-sdk-protocol-legacy-empty-20261024.json",
+      "payloadArgsResultPromptAndEnvironmentExcluded": true,
+      "largePayloadRoundTrip": false,
+      "normalExitCode": 0,
+      "formForwardedToSdkClientAndCancelled": true
+    },
+    {
+      "observerExitCode": 1,
+      "evidence": "observer-sdk-protocol-unexpected-exit-20261024.json",
+      "windowsChildExitSignal": null,
+      "termination": "unexpected local server process termination",
+      "windowsChildExitCode": 1
+    }
+  ],
+  "observerChanges": [
+    "UTF-8 incremental decoding",
+    "backpressure via pause/drain for both stdio directions",
+    "oversize observation lines are skipped while raw bytes continue unchanged",
+    "separate explicit/legacy/effective form and URL capability flags",
+    "realpath validation keeps evidence under workspace .test-temp, including symlink targets",
+    "unexpected child termination and telemetry write failures return nonzero"
+  ]
+}

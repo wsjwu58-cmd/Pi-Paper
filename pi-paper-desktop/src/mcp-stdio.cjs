@@ -8,6 +8,7 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 const {
   CallToolRequestSchema,
   CallToolResultSchema,
+  ElicitResultSchema,
   ErrorCode,
   ListToolsRequestSchema,
   McpError,
@@ -829,7 +830,17 @@ function createMcpStdioBridge(options = {}) {
 
   function clientSupportsFormElicitation() {
     const capabilities = server.getClientCapabilities?.()
-    return Boolean(capabilities?.elicitation?.form)
+    const elicitation = capabilities?.elicitation
+    if (!isPlainObject(elicitation)) return false
+
+    // Protocol 2025-11-25 treats an empty elicitation capability as the
+    // legacy form capability. Keep this deliberately strict: URL-only,
+    // unknown-only, or malformed form capability fields do not authorize confirmation.
+    const keys = Object.keys(elicitation)
+    if (keys.length === 0) return true
+    if (!Object.prototype.hasOwnProperty.call(elicitation, 'form') || !isPlainObject(elicitation.form)) return false
+    return !Object.prototype.hasOwnProperty.call(elicitation.form, 'applyDefaults')
+      || typeof elicitation.form.applyDefaults === 'boolean'
   }
 
   async function assertGenerationSession(live, signal) {
@@ -882,15 +893,26 @@ function createMcpStdioBridge(options = {}) {
     try {
       if (!clientSupportsFormElicitation()) throw new BridgeFailure('CLIENT_CONFIRMATION_UNSUPPORTED')
       await assertGenerationSession(live, signal)
-      elicitation = await server.elicitInput({
-        mode: 'form',
-        message: generationConfirmationMessage(confirmation.items),
-        requestedSchema: {
-          type: 'object',
-          properties: { confirm: { type: 'boolean', title: '确认提交本次生成' } },
-          required: ['confirm'],
+      // Server.elicitInput checks the SDK's private form capability field,
+      // which rejects the protocol's legacy empty elicitation capability.
+      // Use the public request API and public result schema instead, then
+      // validate the requested confirmation field below.
+      elicitation = await server.request({
+        method: 'elicitation/create',
+        params: {
+          mode: 'form',
+          message: generationConfirmationMessage(confirmation.items),
+          requestedSchema: {
+            type: 'object',
+            properties: { confirm: { type: 'boolean', title: '确认提交本次生成' } },
+            required: ['confirm'],
+          },
         },
-      }, { signal, timeout: elicitationTimeoutMs })
+      }, ElicitResultSchema, { signal, timeout: elicitationTimeoutMs })
+      if (elicitation?.action === 'accept'
+        && (!isPlainObject(elicitation.content) || typeof elicitation.content.confirm !== 'boolean')) {
+        throw new BridgeFailure('GENERATION_CONFIRMATION_UNRESOLVED')
+      }
     } catch (error) {
       await rejectPendingGeneration(confirmation, live)
       if (signal?.aborted) throw new BridgeFailure('REQUEST_CANCELLED', { cause: error })

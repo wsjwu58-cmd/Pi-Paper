@@ -1,0 +1,409 @@
+✖ E:\VibePaperProject\pi-paper-desktop\test\codex-app-server-acceptance-host.test.cjs (15.6979ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\legacy-credential-read.test.cjs (13.6983ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-launcher.test.cjs (13.0375ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-local-generation-task-main.test.cjs (12.4808ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-provider-controller.test.cjs (11.8978ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-provider-main-integration.test.cjs (11.134ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-review-main.test.cjs (10.6346ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-review-runtime.test.cjs (10.0505ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-stdio.test.cjs (9.439ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-task-output-main.test.cjs (8.9067ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-task-output-store.test.cjs (8.4238ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\media-postprocess.test.cjs (7.6757ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\media-task-store.test.cjs (7.0373ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\pi-canvas-media-integration.test.cjs (6.2001ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\pi-media-worker.test.cjs (5.3847ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\provider-network.test.cjs (4.7968ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\provider-settings.test.cjs (4.3ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\provider-task-checkpoint.test.cjs (3.8274ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\reference-media.test.cjs (3.2527ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\renderer-trust.test.cjs (2.7074ms)
+✖ E:\VibePaperProject\pi-paper-desktop\test\smoke-mcp-codex-agnes-resume.test.cjs (2.1777ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 0
+ℹ fail 21
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 26.7168
+
+✖ failing tests:
+
+test at pi-paper-desktop\test\codex-app-server-acceptance-host.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\codex-app-server-acceptance-host.test.cjs (15.6979ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\legacy-credential-read.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\legacy-credential-read.test.cjs (13.6983ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\mcp-launcher.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-launcher.test.cjs (13.0375ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\mcp-local-generation-task-main.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-local-generation-task-main.test.cjs (12.4808ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\mcp-provider-controller.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-provider-controller.test.cjs (11.8978ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\mcp-provider-main-integration.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-provider-main-integration.test.cjs (11.134ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\mcp-review-main.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-review-main.test.cjs (10.6346ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\mcp-review-runtime.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-review-runtime.test.cjs (10.0505ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\mcp-stdio.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-stdio.test.cjs (9.439ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\mcp-task-output-main.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-task-output-main.test.cjs (8.9067ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\mcp-task-output-store.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\mcp-task-output-store.test.cjs (8.4238ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\media-postprocess.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\media-postprocess.test.cjs (7.6757ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\media-task-store.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\media-task-store.test.cjs (7.0373ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\pi-canvas-media-integration.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\pi-canvas-media-integration.test.cjs (6.2001ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\pi-media-worker.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\pi-media-worker.test.cjs (5.3847ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\provider-network.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\provider-network.test.cjs (4.7968ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\provider-settings.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\provider-settings.test.cjs (4.3ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\provider-task-checkpoint.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\provider-task-checkpoint.test.cjs (3.8274ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\reference-media.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\reference-media.test.cjs (3.2527ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\renderer-trust.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\renderer-trust.test.cjs (2.7074ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }
+
+test at pi-paper-desktop\test\smoke-mcp-codex-agnes-resume.test.cjs:1:1
+✖ E:\VibePaperProject\pi-paper-desktop\test\smoke-mcp-codex-agnes-resume.test.cjs (2.1777ms)
+  Error: spawn EPERM
+      at ChildProcess.spawn (node:internal/child_process:440:11)
+      at spawn (node:child_process:796:9)
+      at TestContext.<anonymous> (node:internal/test_runner/runner:442:19)
+      at FileTest.runInAsyncScope (node:async_hooks:226:14)
+      at FileTest.run (node:internal/test_runner/test:1201:25)
+      at FileTest.start (node:internal/test_runner/test:1096:17)
+      at runTestFile (node:internal/test_runner/runner:524:32)
+      at node:internal/test_runner/runner:856:25
+      at node:internal/per_context/primordials:561:37
+      at new Promise (<anonymous>) {
+    errno: -4048,
+    code: 'EPERM',
+    syscall: 'spawn'
+  }

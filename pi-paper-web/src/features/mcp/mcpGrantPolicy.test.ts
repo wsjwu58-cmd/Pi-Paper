@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canCreateMcpGrant, createMcpClientGrantInput, providerGrantForPermissions, setMcpGrantPermission } from './mcpGrantPolicy'
+import { canCreateMcpGrant, createMcpClientGrantInput, getMcpClientConfigText, providerGrantForPermissions, setMcpGrantPermission } from './mcpGrantPolicy'
 
 describe('MCP scoped client grants', () => {
   it('keeps provider discovery available while configuration is selected', () => {
@@ -48,6 +48,24 @@ describe('MCP scoped client grants', () => {
       mediaTypes: [],
       disclosureVersion: 'desktop-mcp-provider-disclosure-v1',
     })).toMatchObject({ accepted: true, permissions: ['canvas.read', 'generation.propose'] })
+  })
+
+  it('selects only the configuration format for the selected client', () => {
+    const config = {
+      codex: '[mcp_servers.vibepaper]',
+      claudeCode: '{"mcpServers":{"vibepaper":{"legacy":true}}}',
+      cursor: '{"mcpServers":{"vibepaper":{"cursor":true}}}',
+      workbuddy: '{"mcpServers":{"vibepaper":{"workbuddy":true}}}',
+      trae: null,
+      traeCommandCompatible: false,
+      other: '{"mcpServers":{"vibepaper":{"other":true}}}',
+    }
+    expect(getMcpClientConfigText(config, 'codex')).toBe(config.codex)
+    expect(getMcpClientConfigText(config, 'claude-code')).toBe(config.claudeCode)
+    expect(getMcpClientConfigText(config, 'cursor')).toBe(config.cursor)
+    expect(getMcpClientConfigText(config, 'workbuddy')).toBe(config.workbuddy)
+    expect(getMcpClientConfigText(config, 'trae')).toBeNull()
+    expect(getMcpClientConfigText(config, 'other')).toBe(config.other)
   })
 
   it('still requires an active canvas and valid selected scopes', () => {

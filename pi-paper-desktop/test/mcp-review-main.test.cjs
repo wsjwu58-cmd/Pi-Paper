@@ -4,7 +4,7 @@ const { createHash } = require('node:crypto')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const http = require('node:http')
-const { createMcpMainService } = require('../src/mcp-main-service.cjs')
+const { createMcpMainService, createTraeMcpConfig } = require('../src/mcp-main-service.cjs')
 const { createMcpControlStore } = require('../src/mcp-control-store.cjs')
 
 async function fixture(t, overrides = {}, behavior = {}) {
@@ -487,8 +487,62 @@ test('client config has separate usable Codex TOML and Claude Code JSON', async 
   assert.doesNotMatch(f.created.config.codex, /\benv_vars\s*=/u)
   assert.equal(JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper.env.ELECTRON_RUN_AS_NODE, '1')
   assert(JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper)
+  assert.equal(JSON.parse(f.created.config.cursor).mcpServers.vibepaper.type, 'stdio')
+  assert.equal(JSON.parse(f.created.config.workbuddy).mcpServers.vibepaper.type, 'stdio')
+  assert.equal(JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper.type, undefined)
+  assert.deepEqual(JSON.parse(f.created.config.cursor).mcpServers.vibepaper.args,
+    JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper.args)
+  assert.deepEqual(JSON.parse(f.created.config.workbuddy).mcpServers.vibepaper.args,
+    JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper.args)
+  assert.deepEqual(JSON.parse(f.created.config.other).mcpServers.vibepaper.args,
+    JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper.args)
+  assert.equal(f.created.config.traeCommandCompatible, !/\s/u.test(process.execPath))
+  if (f.created.config.traeCommandCompatible) {
+    const traeServer = JSON.parse(f.created.config.trae).mcpServers.vibepaper
+    assert.equal(traeServer.type, undefined)
+    assert.deepEqual(traeServer.args, JSON.parse(f.created.config.claudeCode).mcpServers.vibepaper.args)
+  } else {
+    assert.equal(f.created.config.trae, null)
+  }
   assert(!f.created.config.codex.includes('accessToken'))
+  assert(!JSON.stringify(f.created.config).includes(f.authRecord.secret))
   assert.equal(f.dialogCallCount(), 0)
+})
+
+test('TRAE config exports a no-space executable as JSON arguments without secret values', () => {
+  const executable = 'E:\\pp\\Pi-Paper\\Pi-Paper.exe'
+  const args = ['mcp-node-entry.cjs', '--mcp-stdio', '--mcp-env-name', 'VIBEPAPER_PROVIDER_API_KEY']
+  const result = createTraeMcpConfig(executable, args)
+  assert.equal(result.commandCompatible, true)
+  const server = JSON.parse(result.config).mcpServers.vibepaper
+  assert.equal(server.command, executable)
+  assert.deepEqual(server.args, args)
+  assert.deepEqual(server.env, { ELECTRON_RUN_AS_NODE: '1' })
+  assert.doesNotMatch(result.config, /secret-value-canary/u)
+  assert.doesNotMatch(result.config, /shell|cmd\.exe|powershell\.exe/iu)
+
+  const spaced = createTraeMcpConfig('C:\\Program Files\\Pi Paper\\Pi-Paper.exe', args)
+  assert.equal(spaced.commandCompatible, false)
+  assert.equal(spaced.config, null)
+})
+
+test('Cursor, WorkBuddy, and TRAE are accepted as separate client identities', async (t) => {
+  const f = await fixture(t)
+  for (const clientName of ['cursor', 'workbuddy', 'trae']) {
+    const created = await f.invoke('client:create', {
+      clientName,
+      permissions: ['canvas.read'],
+      providerGrants: [],
+      mediaTypes: [],
+      disclosureVersion: 'desktop-mcp-provider-disclosure-v1',
+      accepted: true,
+    })
+    assert.equal(created.grant.clientName, clientName)
+    assert.equal(typeof created.config.claudeCode, 'string')
+    assert.equal(typeof created.config.cursor, 'string')
+    assert.equal(typeof created.config.workbuddy, 'string')
+    if (!created.config.traeCommandCompatible) assert.equal(created.config.trae, null)
+  }
 })
 
 test('Codex config forwards only deduplicated authorized environment variable names', async (t) => {

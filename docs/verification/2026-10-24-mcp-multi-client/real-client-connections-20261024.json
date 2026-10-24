@@ -1,0 +1,52 @@
+{
+  "date": "2026-10-24",
+  "transport": "actual-client-to-transparent-observer-to-production-bridge",
+  "profileIsolated": true,
+  "originalMainCanvas": true,
+  "apiKeyConfigured": false,
+  "clients": [
+    {
+      "client": "claude",
+      "installedVersion": "2.1.170",
+      "protocolVersion": "2025-11-25",
+      "formElicitation": false,
+      "legacyEmptyElicitation": true,
+      "effectiveFormElicitation": true,
+      "initialized": true,
+      "toolCounts": [
+        14
+      ],
+      "toolCalls": [],
+      "nativeFormObserved": false
+    },
+    {
+      "client": "cursor",
+      "installedVersion": "3.15.6",
+      "protocolVersion": "2025-11-25",
+      "formElicitation": true,
+      "legacyEmptyElicitation": false,
+      "effectiveFormElicitation": true,
+      "initialized": true,
+      "toolCounts": [],
+      "toolCalls": [],
+      "nativeFormObserved": false
+    },
+    {
+      "client": "trae",
+      "installedVersion": "3.3.94",
+      "protocolVersion": "2025-11-25",
+      "formElicitation": false,
+      "legacyEmptyElicitation": false,
+      "effectiveFormElicitation": false,
+      "initialized": true,
+      "toolCounts": [
+        14,
+        14
+      ],
+      "toolCalls": [],
+      "nativeFormObserved": false
+    }
+  ],
+  "workbuddy": "no-handshake-observed",
+  "fullNaturalLanguageAcceptance": false
+}
