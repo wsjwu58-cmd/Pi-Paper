@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "testType": "manual-codex-tui-agnes-image-video-media-acceptance-host",
+  "status": "finished",
+  "startedAt": "2026-11-01T10:16:32.979Z",
+  "finishedAt": "2026-11-01T10:30:57.891Z",
+  "finishReason": "operator_stopped",
+  "provider": "agnes",
+  "models": {
+    "image": "target-agnes-image-2-5-flash",
+    "video": "target-agnes-video-2-5-flash"
+  },
+  "modelLabels": {
+    "image": "Agnes Image 2.5 Flash",
+    "video": "Agnes Video 2.5 Flash"
+  },
+  "providerKeyInput": "hidden_stdin_to_desktop_safeStorage_ipc",
+  "providerCredentialSaved": true,
+  "naturalLanguageProviderConfigurationAcceptance": false,
+  "providerConnectionTest": "not_run_no_network_request",
+  "realGenerationRequestsStartedByHost": 0,
+  "generationSubmissionStartedByHost": false,
+  "profileIsolated": true,
+  "projectIsolated": true,
+  "serverName": "vibepaper_native_agnes_media",
+  "keyInToml": false,
+  "nodes": [
+    {
+      "nodeId": "5396e926-6f3d-41a7-b4d7-05f5adf2503f",
+      "type": "text",
+      "label": null
+    },
+    {
+      "nodeId": "5e81d9e9-a479-4a1c-b00e-95de6e3054cc",
+      "type": "image",
+      "label": "A blue ceramic cube on a white studio background, with soft natural shadows. No text."
+    },
+    {
+      "nodeId": "d2caedaa-b0d8-41e5-8b53-6c04db397f36",
+      "type": "video",
+      "label": "A blue ceramic cube slowly rotates in a white studio. Fixed camera. No text."
+    }
+  ],
+  "edgeCount": 0,
+  "tasks": [
+    {
+      "taskId": "23ccebbb-f7b7-49ea-a004-fb37b7bde6f6",
+      "nodeId": "d2caedaa-b0d8-41e5-8b53-6c04db397f36",
+      "modality": "video",
+      "providerId": "agnes",
+      "modelId": "target-agnes-video-2-5-flash",
+      "status": "succeeded",
+      "errorCode": null,
+      "outputs": [
+        {
+          "index": 0,
+          "verified": true,
+          "filename": "result.mp4",
+          "sizeBytes": 971780,
+          "sha256": "d7e5e731c3d7f9e4a1fe9eee3a829554cbc758d2a03b2c58f7389afb65c00895"
+        }
+      ],
+      "originalNodeMedia": {
+        "nodeRendered": true,
+        "mediaElementPresent": true,
+        "displayedInOriginalNode": false,
+        "mediaLoaded": true,
+        "currentSrcIsVibeScheme": true,
+        "readyState": 4,
+        "videoWidth": 1280,
+        "videoHeight": 720,
+        "duration": 4.48
+      }
+    },
+    {
+      "taskId": "de396127-9d5a-4de6-aa83-705a021629c2",
+      "nodeId": "5e81d9e9-a479-4a1c-b00e-95de6e3054cc",
+      "modality": "image",
+      "providerId": "agnes",
+      "modelId": "target-agnes-image-2-5-flash",
+      "status": "succeeded",
+      "errorCode": null,
+      "outputs": [
+        {
+          "index": 0,
+          "verified": true,
+          "filename": "result.png",
+          "sizeBytes": 748928,
+          "sha256": "a16e298277dc275abff339f1e857692f76f766e15a1ed2171fe6d6759826354c"
+        }
+      ],
+      "originalNodeMedia": {
+        "nodeRendered": true,
+        "mediaElementPresent": true,
+        "displayedInOriginalNode": true,
+        "mediaLoaded": true,
+        "currentSrcIsVibeScheme": true,
+        "complete": true,
+        "naturalWidth": 1024,
+        "naturalHeight": 1024
+      }
+    }
+  ],
+  "confirmationDecisions": {
+    "image": {
+      "decision": "accepted",
+      "evidence": "launcher_or_operator_report",
+      "taskCount": 1
+    },
+    "video": {
+      "decision": "accepted",
+      "evidence": "launcher_or_operator_report",
+      "taskCount": 1
+    }
+  },
+  "failure": null,
+  "cleanup": {
+    "providerCredentialCleared": true,
+    "grantRevoked": true,
+    "mcpDisabled": true,
+    "isolatedProfileRetainedForRecovery": true
+  },
+  "reportPath": "E:\\VibePaperProject\\docs\\verification\\2026-11-01-mcp-native-agnes\\2026-11-01T10-16-32-458Z-e4a7eed9-e093-48c9-a677-d1f17fe92590.json"
+}

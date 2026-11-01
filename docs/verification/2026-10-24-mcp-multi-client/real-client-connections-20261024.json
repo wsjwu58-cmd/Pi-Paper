@@ -45,8 +45,21 @@
       ],
       "toolCalls": [],
       "nativeFormObserved": false
+    },
+    {
+      "client": "workbuddy-bundled-cli",
+      "installedVersion": "5.5.6",
+      "protocolVersion": "2025-11-25",
+      "effectiveFormElicitation": false,
+      "initialized": true,
+      "toolCounts": [
+        14,
+        14
+      ],
+      "toolCalls": [],
+      "nativeFormObserved": false
     }
   ],
-  "workbuddy": "no-handshake-observed",
+  "workbuddy": "bundled-cli-connected; desktop-window-not-verified",
   "fullNaturalLanguageAcceptance": false
 }

@@ -1,0 +1,112 @@
+{
+  "test": "live-codex-tui-official-agnes",
+  "phase": "video",
+  "codexSession": {
+    "model": "gpt-6.1-terra",
+    "reasoning_effort": "max",
+    "created_at": 1793528465
+  },
+  "toolsDiscovered": 15,
+  "toolsCalled": [
+    "get_context",
+    "list_models",
+    "get_canvas_summary",
+    "list_models",
+    "check_task_status",
+    "create_nodes",
+    "get_node_detail",
+    "prepare_generation",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "check_task_status",
+    "read_task_output",
+    "read_task_output"
+  ],
+  "formRequests": 1,
+  "formReplies": [
+    {
+      "action": "accept",
+      "isError": false
+    }
+  ],
+  "taskCount": 1,
+  "status": "succeeded",
+  "errorCode": null,
+  "model": "target-agnes-video-2-5-flash",
+  "provider": "agnes",
+  "file": [
+    {
+      "index": 0,
+      "verified": true,
+      "filename": "result.mp4",
+      "sizeBytes": 971780,
+      "sha256": "d7e5e731c3d7f9e4a1fe9eee3a829554cbc758d2a03b2c58f7389afb65c00895"
+    }
+  ],
+  "originalNode": {
+    "nodeRendered": true,
+    "mediaElementPresent": true,
+    "displayedInOriginalNode": false,
+    "mediaLoaded": true,
+    "currentSrcIsVibeScheme": true,
+    "readyState": 4,
+    "videoWidth": 1280,
+    "videoHeight": 720,
+    "duration": 4.48
+  },
+  "previews": [
+    {
+      "mimeType": "video/mp4",
+      "sizeBytes": 971780,
+      "sha256": "d7e5e731c3d7f9e4a1fe9eee3a829554cbc758d2a03b2c58f7389afb65c00895"
+    }
+  ],
+  "requestedParameters": {
+    "resolution": "720P",
+    "duration": 4,
+    "ratio": "16:9",
+    "size": null,
+    "count": null
+  },
+  "submissionCheckpoints": [
+    {
+      "phase": "submitting",
+      "upstreamIdPresent": 0
+    },
+    {
+      "phase": "submitted",
+      "upstreamIdPresent": 1
+    }
+  ],
+  "decodedMetadata": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 1280,
+        "height": 720
+      }
+    ],
+    "format": {
+      "duration": "4.480000"
+    }
+  },
+  "fullDecode": true,
+  "fullChainVerified": false,
+  "requestAndOutputMatch": true
+}

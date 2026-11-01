@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "testType": "manual-codex-tui-agnes-image-video-media-acceptance-host",
+  "status": "finished",
+  "startedAt": "2026-11-01T10:14:43.548Z",
+  "finishedAt": "2026-11-01T10:15:12.012Z",
+  "finishReason": "operator_stopped",
+  "provider": "agnes",
+  "models": {
+    "image": "target-agnes-image-2-5-flash",
+    "video": "target-agnes-video-2-5-flash"
+  },
+  "modelLabels": {
+    "image": "Agnes Image 2.5 Flash",
+    "video": "Agnes Video 2.5 Flash"
+  },
+  "providerKeyInput": "hidden_stdin_to_desktop_safeStorage_ipc",
+  "providerCredentialSaved": true,
+  "naturalLanguageProviderConfigurationAcceptance": false,
+  "providerConnectionTest": "not_run_no_network_request",
+  "realGenerationRequestsStartedByHost": 0,
+  "generationSubmissionStartedByHost": false,
+  "profileIsolated": true,
+  "projectIsolated": true,
+  "serverName": "vibepaper_native_agnes_media",
+  "keyInToml": false,
+  "nodes": [
+    {
+      "nodeId": "153a6ccf-12a7-4ee1-8490-27e84fc3f4e5",
+      "type": "text",
+      "label": ""
+    }
+  ],
+  "edgeCount": 0,
+  "tasks": [],
+  "confirmationDecisions": {
+    "image": {
+      "decision": "uncompleted",
+      "evidence": "no_task_submission_observed",
+      "taskCount": 0
+    },
+    "video": {
+      "decision": "uncompleted",
+      "evidence": "no_task_submission_observed",
+      "taskCount": 0
+    }
+  },
+  "failure": null,
+  "cleanup": {
+    "providerCredentialCleared": true,
+    "grantRevoked": true,
+    "mcpDisabled": true,
+    "isolatedProfileRetainedForRecovery": true
+  },
+  "reportPath": "E:\\VibePaperProject\\docs\\verification\\2026-11-01-mcp-native-agnes\\2026-11-01T10-14-42-999Z-f97fcda5-aa0a-4c1f-9bbe-6a3dee8c91ab.json"
+}

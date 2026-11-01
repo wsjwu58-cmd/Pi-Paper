@@ -1,0 +1,31 @@
+{
+  "success": true,
+  "platform": "Windows",
+  "client": "interactive Codex CLI",
+  "model": "gpt-6.1-terra",
+  "reasoningEffort": "max",
+  "nativeFormDecline": "terra-max-native-local.json",
+  "image": {
+    "success": true,
+    "evidence": "terra-max-image.json",
+    "file": "agnes-flash-image.png"
+  },
+  "video": {
+    "success": true,
+    "liveEvidence": "terra-max-video.json",
+    "visibilityAndPlaybackAfterReopen": "native-video-reopen-20261101103245507-47372.json",
+    "file": "agnes-flash-video.mp4"
+  },
+  "nativePaidFormCount": 2,
+  "finalTaskCount": 2,
+  "sameHashesAcrossTaskStoreDiskAndMcp": true,
+  "activeGrantsInReadbackProfile": 0,
+  "cleanup": {
+    "providerCredentialCleared": true,
+    "grantRevoked": true,
+    "mcpDisabled": true,
+    "isolatedProfileRetainedForRecovery": true
+  },
+  "installerInvocations": 0,
+  "providerCleanupReport": "2026-11-01T10-16-32-458Z-e4a7eed9-e093-48c9-a677-d1f17fe92590.json"
+}

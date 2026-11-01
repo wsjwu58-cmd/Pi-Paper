@@ -1,0 +1,89 @@
+{
+  "test": "live-codex-tui-official-agnes",
+  "phase": "image",
+  "codexSession": {
+    "model": "gpt-6.1-terra",
+    "reasoning_effort": "max",
+    "created_at": 1793528352
+  },
+  "toolsDiscovered": 15,
+  "toolsCalled": [
+    "get_canvas_summary",
+    "list_models",
+    "get_context",
+    "list_models",
+    "create_nodes",
+    "get_node_detail",
+    "prepare_generation",
+    "check_task_status",
+    "check_task_status",
+    "read_task_output",
+    "read_task_output",
+    "get_node_detail"
+  ],
+  "formRequests": 1,
+  "formReplies": [
+    {
+      "action": "accept",
+      "isError": false
+    }
+  ],
+  "taskCount": 1,
+  "status": "succeeded",
+  "errorCode": null,
+  "model": "target-agnes-image-2-5-flash",
+  "provider": "agnes",
+  "file": [
+    {
+      "index": 0,
+      "verified": true,
+      "filename": "result.png",
+      "sizeBytes": 748928,
+      "sha256": "a16e298277dc275abff339f1e857692f76f766e15a1ed2171fe6d6759826354c"
+    }
+  ],
+  "originalNode": {
+    "nodeRendered": true,
+    "mediaElementPresent": true,
+    "displayedInOriginalNode": true,
+    "mediaLoaded": true,
+    "currentSrcIsVibeScheme": true,
+    "complete": true,
+    "naturalWidth": 1024,
+    "naturalHeight": 1024
+  },
+  "previews": [
+    {
+      "mimeType": "image/png",
+      "sizeBytes": 748928,
+      "sha256": "a16e298277dc275abff339f1e857692f76f766e15a1ed2171fe6d6759826354c"
+    }
+  ],
+  "requestedParameters": {
+    "resolution": null,
+    "duration": null,
+    "ratio": "1:1",
+    "size": "1K",
+    "count": 1
+  },
+  "submissionCheckpoints": [
+    {
+      "phase": "submitting",
+      "upstreamIdPresent": 0
+    }
+  ],
+  "decodedMetadata": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "png",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "format": {}
+  },
+  "fullDecode": true,
+  "fullChainVerified": true
+}

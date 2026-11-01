@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-25",
+  "testServer": "vibepaper_acceptance_20261024",
+  "results": [
+    {
+      "client": "cursor",
+      "status": "original-bytes-restored"
+    },
+    {
+      "client": "trae",
+      "status": "original-bytes-restored"
+    },
+    {
+      "client": "workbuddy",
+      "status": "only-owned-entry-removed"
+    }
+  ],
+  "fixtureStopRequested": true,
+  "fixtureCleanup": {
+    "grantRevoked": true,
+    "mcpDisabled": true,
+    "fixtureListenerClosed": true
+  },
+  "realProviderRequests": 0,
+  "fixtureGenerationRequests": 0,
+  "taskStatusCounts": {}
+}

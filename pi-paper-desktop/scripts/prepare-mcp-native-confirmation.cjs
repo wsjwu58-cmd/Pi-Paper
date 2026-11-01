@@ -16,7 +16,7 @@ const acceptancePermissions = ['canvas.read', 'canvas.write', 'generation.propos
 const enabledTools = [
   'get_context', 'get_operation', 'get_canvas_summary', 'get_selected_nodes', 'get_node_detail',
   'list_models', 'create_nodes', 'update_node_config', 'connect_nodes', 'layout_nodes',
-  'prepare_generation', 'check_task_status', 'read_task_output',
+  'prepare_generation', 'check_task_status', 'read_task_output', 'list_canvas_tasks',
 ]
 const defaultTimeoutMs = 10 * 60 * 1000
 const maxRuntimeMs = 30 * 60 * 1000
@@ -86,13 +86,14 @@ function parseDesktopCodexConfig(configText) {
   return { command, args }
 }
 
-function createCodexToml({ command, args, appDataRoot }) {
+function createCodexToml({ command, args, appDataRoot, serverName: configuredServerName = serverName,
+  tools = enabledTools }) {
   const argsToml = args.map(tomlString).join(', ')
-  const toolsToml = enabledTools.map(tomlString).join(', ')
+  const toolsToml = tools.map(tomlString).join(', ')
   return [
-    '# Local MCP form-elicitation acceptance only. No provider key is configured.',
+    '# Isolated VibePaper MCP acceptance. Never place provider keys in this file.',
     '# APPDATA points to this run\'s isolated profile so the production bridge can validate its instance file.',
-    `[mcp_servers.${serverName}]`,
+    `[mcp_servers.${configuredServerName}]`,
     `command = ${tomlString(command)}`,
     `args = [${argsToml}]`,
     `enabled_tools = [${toolsToml}]`,
@@ -100,7 +101,7 @@ function createCodexToml({ command, args, appDataRoot }) {
     'tool_timeout_sec = 660',
     'startup_timeout_sec = 150',
     '',
-    `[mcp_servers.${serverName}.env]`,
+    `[mcp_servers.${configuredServerName}.env]`,
     'ELECTRON_RUN_AS_NODE = "1"',
     `APPDATA = ${tomlString(appDataRoot)}`,
     '',
@@ -676,8 +677,16 @@ function workerMain() {
   })
 }
 
-if (process.versions?.electron && process.type === 'browser' && process.argv.includes('--worker')) workerMain()
-else if (require.main !== module) module.exports = { protectRunDirectory, safeEnvironment }
+function isDirectElectronWorkerEntry() {
+  if (!process.versions?.electron || process.type !== 'browser' || !process.argv.includes('--worker')) return false
+  try { return fsSync.realpathSync(process.argv[1]) === fsSync.realpathSync(__filename) } catch { return false }
+}
+
+if (isDirectElectronWorkerEntry()) workerMain()
+else if (require.main !== module) module.exports = {
+  protectRunDirectory, safeEnvironment, createCodexToml,
+  parseDesktopCodexConfig, serverName, acceptancePermissions, enabledTools,
+}
 else controllerMain().catch((error) => {
   const message = error?.message && /^[a-z0-9_-]{1,80}$/iu.test(error.message) ? error.message : 'native_form_harness_failed'
   console.error(message)

@@ -5,6 +5,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
 const { StringDecoder } = require('node:string_decoder')
+const { createHash } = require('node:crypto')
 const specification = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
 const workspace = path.resolve(__dirname, '../..')
 const root = path.resolve(__dirname, '../../.test-temp')
@@ -39,6 +40,10 @@ if (outputStat) {
 }
 const events = []
 const pending = new Map()
+const mediaReads = new Set()
+// Opt in only for the isolated Agnes run. Compare the bytes crossing stdio
+// with the local file without persisting the response or any media bytes.
+const fingerprintPreviews = specification.fingerprintMediaPreviews === true
 let telemetryWriteFailed = false
 let shutdownRequestedSignal = null
 function save() {
@@ -55,14 +60,15 @@ function safeClientLabel(value) {
   const labels = new Map([
     ['codex', 'Codex'], ['codex-cli', 'Codex'], ['codex_cli_rs', 'Codex'],
     ['claude code', 'Claude Code'], ['claude-code', 'Claude Code'],
-    ['cursor', 'Cursor'], ['workbuddy', 'WorkBuddy'], ['trae', 'TRAE'],
+    ['cursor', 'Cursor'], ['cursor-vscode', 'Cursor'], ['workbuddy', 'WorkBuddy'],
+    ['codebuddy', 'CodeBuddy'], ['codebuddy-code', 'CodeBuddy'], ['trae', 'TRAE'],
   ])
   return labels.get(normalized) || 'other'
 }
 function observe(line, direction) {
   let message
   try { message = JSON.parse(line) } catch { return }
-  if (events.length >= 300) return
+  if (!message || typeof message !== 'object' || events.length >= 300) return
   const event = { at: new Date().toISOString(), direction }
   if (message.method === 'initialize' && direction === 'client-to-server') {
     event.method = 'initialize'
@@ -87,21 +93,43 @@ function observe(line, direction) {
       if (/^[a-z_]{1,80}$/.test(name || '')) event.toolName = name
     }
   } else if (message.id !== undefined && pending.has(`${direction}:${message.id}`)) {
-    event.responseTo = pending.get(`${direction}:${message.id}`)
-    pending.delete(`${direction}:${message.id}`)
+    const key = `${direction}:${message.id}`
+    event.responseTo = pending.get(key)
+    pending.delete(key)
     event.isError = Boolean(message.error || message.result?.isError)
+    if (mediaReads.delete(key) && !event.isError && Array.isArray(message.result?.content)) {
+      for (const part of message.result.content) {
+        const value = part?.type === 'image' ? part : part?.type === 'resource' ? part.resource : null
+        if (!value || !['image/png','image/jpeg','image/webp','video/mp4','video/webm','video/quicktime'].includes(value.mimeType)) continue
+        const encoded = part.type === 'image' ? value.data : value.blob
+        if (typeof encoded !== 'string' || !encoded.length || encoded.length > Math.ceil(8 * 1024 * 1024 / 3) * 4) continue
+        const bytes = Buffer.from(encoded, 'base64')
+        try {
+          event.preview = { mimeType: value.mimeType, sizeBytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }
+        } finally { bytes.fill(0) }
+        break
+      }
+    }
     if (event.responseTo === 'tools/list') event.toolCount = message.result?.tools?.length ?? null
     if (event.responseTo === 'elicitation/create') event.action = ['accept', 'decline', 'cancel'].includes(message.result?.action) ? message.result.action : 'other'
   } else return
-  if (message.method && message.id !== undefined) pending.set(`${direction === 'client-to-server' ? 'server-to-client' : 'client-to-server'}:${message.id}`, message.method)
+  if (message.method && message.id !== undefined) {
+    const key = `${direction === 'client-to-server' ? 'server-to-client' : 'client-to-server'}:${message.id}`
+    pending.set(key, message.method)
+    if (fingerprintPreviews && direction === 'client-to-server' && message.method === 'tools/call'
+      && message.params?.name === 'read_task_output') mediaReads.add(key)
+  }
   events.push(event)
+  // Some clients keep a healthy stdio child alive after their health-check
+  // command returns. Retain the bounded safe metadata before graceful close.
+  save()
 }
 function mirror(input, outputStream, direction) {
   const decoder = new StringDecoder('utf8')
   let lineBuffer = ''
   let lineBytes = 0
   let droppingOversizedLine = false
-  const maxObservedLineBytes = 2 * 1024 * 1024
+  const maxObservedLineBytes = (fingerprintPreviews ? 12 : 2) * 1024 * 1024
   const consume = text => {
     let start = 0
     let end

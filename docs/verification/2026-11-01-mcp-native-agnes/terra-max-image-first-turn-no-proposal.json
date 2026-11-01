@@ -1,0 +1,25 @@
+{
+  "test": "live-codex-tui-official-agnes",
+  "phase": "image",
+  "codexSession": {
+    "model": "gpt-6.1-terra",
+    "reasoning_effort": "max",
+    "created_at": 1793528223
+  },
+  "toolsDiscovered": 15,
+  "toolsCalled": [
+    "get_context",
+    "get_canvas_summary",
+    "list_models",
+    "list_models",
+    "get_node_detail",
+    "get_operation"
+  ],
+  "formRequests": 0,
+  "formReplies": [],
+  "taskCount": 0,
+  "status": null,
+  "errorCode": null,
+  "previews": [],
+  "fullChainVerified": false
+}

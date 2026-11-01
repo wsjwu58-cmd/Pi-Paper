@@ -91,3 +91,5 @@ Ark Seedance 视频同样保存上游标识并在重启后继续查询；这不�
 Windows 10-17 诊断包卸载清理通过；10-19 正式包的升级及正常启动、关闭、重开通过，但实际卸载后仍留有两个 HKCU 注册项，用户资料内容不变。随后补充的清理只删除能证明属于当前安装目录的注册项，12 个独立测试通过不能替代修复包的手工卸载验收。旧失败证据继续保留。Claude Code 真实会话按用户要求取消，不计作兼容性通过。
 
 协议 fixture、隔离开发实例、真实 Codex/Claude Code 连接、真实官方图片/视频账号生成及安装包分别记录。最新结果见 [2026-10-11 验收记录](../verification/2026-10-11-mcp-acceptance/README.md) 与[功能规格](../specs/desktop-mcp-functional-spec.md)；定向单元测试或构建成功不代表三平台交付已完成。本轮按用户要求先验收 Windows。
+
+本仓库在 Windows 验收 VibePaper MCP 时，真实 Codex 客户端使用 **Terra max**（`gpt-6.1-terra`，推理强度 `max`）。这是验收脚本的设置，不要求普通用户更改 Codex 默认模型，也不更改画布上的图片或视频型号。见[原生终端验收记录](../verification/2026-11-01-mcp-native-agnes/README.md)。

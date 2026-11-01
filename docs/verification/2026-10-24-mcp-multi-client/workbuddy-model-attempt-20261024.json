@@ -1,0 +1,14 @@
+{
+  "date": "2026-10-24",
+  "testType": "workbuddy-bundled-cli-real-model-readonly-attempt",
+  "exitCode": 0,
+  "timedOut": false,
+  "toolsRestrictedToContext": true,
+  "otherMcpDisabled": true,
+  "cloudMediaRequested": false,
+  "authOrAccountError": true,
+  "quotaOrBillingError": false,
+  "modelError": false,
+  "mcpGetContextMentioned": false,
+  "rawTranscriptSaved": false
+}

@@ -11,12 +11,14 @@ const { Client } = require('@modelcontextprotocol/sdk/client/index.js')
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js')
 
 const root = path.resolve(__dirname, '../..')
-const evidenceDirectory = path.join(root, 'docs/verification/2026-10-11-mcp-acceptance')
+const nativeRunIndex = process.argv.indexOf('--native-run')
+const nativeRun = nativeRunIndex < 0 ? null : path.resolve(process.argv[nativeRunIndex + 1])
+const evidenceDirectory = path.join(root, 'docs/verification', nativeRun ? '2026-11-01-mcp-native-agnes' : '2026-10-11-mcp-acceptance')
 const acceptanceReportPath = path.join(evidenceDirectory, 'agnes-real-account.json')
 const runId = `${new Date().toISOString().replace(/[^0-9]/gu, '')}-${process.pid}`
-const runRoot = path.join(root, '.test-temp', `mcp-media-read-${runId}`)
+const runRoot = path.join(root, '.test-temp', `${nativeRun ? 'vibepaper-native-form-readback' : 'mcp-media-read'}-${runId}`)
 const profile = path.join(runRoot, 'VibePaper')
-const evidencePath = path.join(evidenceDirectory, `mcp-real-video-read-20261020-${runId}.json`)
+const evidencePath = path.join(evidenceDirectory, `${nativeRun ? 'native-video-reopen' : 'mcp-real-video-read-20261020'}-${runId}.json`)
 const originalGetPath = app.getPath.bind(app)
 const originalSetPath = app.setPath.bind(app)
 app.getPath = (name) => name === 'appData' ? runRoot : originalGetPath(name)
@@ -118,6 +120,21 @@ function videoVisibilityProbeSource(nodeSelector, taskId) {
 }
 
 async function readAcceptanceTarget() {
+  if (nativeRun) {
+    const realRun = await fs.realpath(nativeRun)
+    assert.equal(path.dirname(realRun), await fs.realpath(path.join(root, '.test-temp')))
+    assert(/^vibepaper-native-form-agnes-[\dTZ-]+-[\da-f-]{36}$/u.test(path.basename(realRun)))
+    const source = JSON.parse(await fs.readFile(path.join(realRun, 'result.json'), 'utf8'))
+    assert(source.cleanup?.grantRevoked && source.cleanup?.providerCredentialCleared && source.cleanup?.mcpDisabled)
+    const ready = JSON.parse(await fs.readFile(path.join(realRun, 'ready.json'), 'utf8'))
+    assert.equal(path.dirname(await fs.realpath(ready.projectPath)), path.join(realRun, 'project'))
+    const videos = source.tasks.filter(task => task.modality === 'video')
+    assert.equal(videos.length, 1)
+    const [video] = videos
+    assert(video.status === 'succeeded' && video.providerId === 'agnes' && video.outputs?.[0]?.verified)
+    return { projectDirectory: ready.projectPath, taskId: video.taskId, evidenceSizeBytes: video.outputs[0].sizeBytes,
+      evidenceSha256: video.outputs[0].sha256, evidenceFileName: 'agnes-flash-video.mp4' }
+  }
   const report = JSON.parse(await fs.readFile(acceptanceReportPath, 'utf8'))
   const video = Array.isArray(report.results)
     ? report.results.find((result) => result?.taskId === '55bffcd0-b59b-4e95-94b0-763937a61c15'
@@ -218,10 +235,10 @@ async function main() {
   const realProjectDirectory = await fs.realpath(target.projectDirectory)
   const projectRelative = path.relative(resolvedRoot, realProjectDirectory)
   const projectRun = projectRelative.split(path.sep)[0]
-  assert(/^mcp-agnes-\d+$/u.test(projectRun)
+  assert((nativeRun ? projectRun === path.basename(nativeRun) : /^mcp-agnes-\d+$/u.test(projectRun))
     && !path.isAbsolute(projectRelative) && !projectRelative.startsWith(`..${path.sep}`),
   'PROJECT_IS_NOT_THE_REPORTED_ISOLATED_AGNES_PROJECT')
-  assert.equal(path.basename(realProjectDirectory), 'Agnes real account acceptance')
+  assert.equal(path.basename(realProjectDirectory), nativeRun ? 'Codex Agnes Native Media Acceptance' : 'Agnes real account acceptance')
   target.projectDirectory = realProjectDirectory
   const taskLedgerBefore = readTaskLedgerSnapshot(target.projectDirectory)
   assert.equal(taskLedgerBefore.userVersion, 17, 'PROJECT_SCHEMA_WOULD_MIGRATE_ON_OPEN')
@@ -231,6 +248,7 @@ async function main() {
   const persisted = await readPersistedTaskOutput(target)
 
   await fs.mkdir(runRoot, { recursive: false })
+  if (nativeRun) require('./prepare-mcp-native-confirmation.cjs').protectRunDirectory(runRoot)
   await fs.mkdir(profile, { recursive: false })
   await fs.mkdir(evidenceDirectory, { recursive: true })
   await fs.writeFile(path.join(profile, 'recent-project.json'), JSON.stringify({
@@ -348,6 +366,12 @@ async function main() {
     env: { ...server.env, APPDATA: runRoot }, stderr: 'pipe' })
   await client.connect(transport, { timeout: 60_000 })
   const definitions = await client.listTools()
+  if (nativeRun) {
+    assert(definitions.tools.some(tool => tool.name === 'list_canvas_tasks'), 'MISSING_SCOPED_TASK_LIST')
+    const found = await client.callTool({name: 'list_canvas_tasks', arguments: {modality:'video', limit:1}})
+    assert.equal(found.structuredContent?.hasMore, false)
+    assert.equal(found.structuredContent?.tasks?.[0]?.taskId, target.taskId)
+  }
   assert(definitions.tools.some((tool) => tool.name === 'read_task_output'), 'READ_TASK_OUTPUT_TOOL_NOT_DISCOVERED')
   phase = 'read-video-metadata'
   const metadata = await client.callTool({ name: 'read_task_output', arguments: {
@@ -382,7 +406,9 @@ async function main() {
   assert.equal(previewSha256, persisted.sha256, 'MCP_PREVIEW_DIGEST_DOES_NOT_MATCH_TASK_OUTPUT_FILE')
 
   phase = 'probe-video-and-decode-persisted-output'
-  const ffprobe = require('node:child_process').spawnSync('ffprobe', [
+  const decoder = nativeRun ? require('../src/compose-provider.cjs').resolveFfmpegPath() : 'ffmpeg'
+  const probeExecutable = nativeRun ? path.join(path.dirname(decoder), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe') : 'ffprobe'
+  const ffprobe = require('node:child_process').spawnSync(probeExecutable, [
     '-v', 'error', '-show_entries', 'format=duration:stream=codec_type,width,height,duration', '-of', 'json', persisted.outputPath,
   ], { encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 1_000_000 })
   assert.equal(ffprobe.error, undefined, 'FFPROBE_FAILED_TO_START')
@@ -394,7 +420,7 @@ async function main() {
   assert.equal(videoStream.width, 1280, 'FFPROBE_WIDTH_NOT_720P')
   assert.equal(videoStream.height, 720, 'FFPROBE_HEIGHT_NOT_720P')
   assert(durationSeconds >= 3.5 && durationSeconds <= 5.0, 'FFPROBE_DURATION_NOT_APPROX_FOUR_SECONDS')
-  const ffmpeg = require('node:child_process').spawnSync('ffmpeg', [
+  const ffmpeg = require('node:child_process').spawnSync(decoder, [
     '-v', 'error', '-xerror', '-i', persisted.outputPath, '-f', 'null', '-',
   ], { encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 1_000_000 })
   assert.equal(ffmpeg.error, undefined, 'FFMPEG_FAILED_TO_START')
@@ -455,7 +481,8 @@ async function main() {
       ffprobeConfirmedApproximatelyFourSeconds720p: durationSeconds >= 3.5 && durationSeconds <= 5.0
         && videoStream.width === 1280 && videoStream.height === 720,
       ffmpegDecodedEntirePersistedVideo: true,
-      existingProjectReopened: true, newGrantIsReadOnlyForMedia: true },
+      existingProjectReopened: true, newGrantIsReadOnlyForMedia: true,
+      ...(nativeRun ? { scopedVideoTaskDiscovered: true } : {}) },
     taskLedgerUnchanged: { taskCount: taskLedgerAfter.tasks.length,
       taskEventCountBefore: taskLedgerBefore.taskEventCount, taskEventCountAfter: taskLedgerAfter.taskEventCount,
       statusesAndUpdatedAtUnchanged: true, schemaVersionUnchanged: taskLedgerAfter.userVersion === taskLedgerBefore.userVersion },
@@ -475,7 +502,7 @@ async function main() {
   console.log(`Read-only MCP video media acceptance passed for task ${target.taskId}; stdio resource, TaskStore digest, and decoded video match.`)
   console.log(`Evidence: ${evidencePath}`)
   console.log('Original CanvasPage remains visible for parent review for 30 seconds.')
-  await new Promise((resolve) => setTimeout(resolve, 120_000))
+  if (!nativeRun) await new Promise((resolve) => setTimeout(resolve, 120_000))
   app.quit()
 }
 

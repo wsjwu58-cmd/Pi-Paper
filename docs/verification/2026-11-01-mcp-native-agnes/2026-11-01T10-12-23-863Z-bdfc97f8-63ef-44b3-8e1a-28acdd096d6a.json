@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "status": "failed",
+  "errorCode": "DESKTOP_WORKER_EXITED_BEFORE_READY",
+  "profileIsolated": true,
+  "providerKeyInEvidence": false,
+  "keyInToml": false,
+  "generationSubmissionStartedByHost": false,
+  "failure": {
+    "errorCode": "DESKTOP_WORKER_EXITED_BEFORE_READY",
+    "failureStage": "wait-for-worker-ready",
+    "failureLine": 199,
+    "errorKind": "Error"
+  },
+  "reportPath": "E:\\VibePaperProject\\docs\\verification\\2026-11-01-mcp-native-agnes\\2026-11-01T10-12-23-863Z-bdfc97f8-63ef-44b3-8e1a-28acdd096d6a.json"
+}

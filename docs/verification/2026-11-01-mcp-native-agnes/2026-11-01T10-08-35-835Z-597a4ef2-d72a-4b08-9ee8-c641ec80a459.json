@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "status": "failed",
+  "errorCode": "native_agnes_host_failed",
+  "profileIsolated": true,
+  "keyInToml": false,
+  "providerKeyInEvidence": false,
+  "reportPath": "E:\\VibePaperProject\\docs\\verification\\2026-11-01-mcp-native-agnes\\2026-11-01T10-08-35-835Z-597a4ef2-d72a-4b08-9ee8-c641ec80a459.json"
+}
