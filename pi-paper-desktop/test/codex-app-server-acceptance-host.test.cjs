@@ -7,6 +7,7 @@ const { PassThrough } = require('node:stream')
 const test = require('node:test')
 
 const { createVibePaperOnlyOverride, startCodexAppServerTurn } = require('../scripts/codex-app-server-acceptance-host.cjs')
+const { codexAppServerModelOverrides } = require('../scripts/codex-qa-model.cjs')
 
 class FakeChild extends EventEmitter {
   constructor() {
@@ -85,7 +86,6 @@ const baseOptions = {
 
 async function startHarness(overrides = {}) {
   const {
-    modelCatalog = { data: [{ model: 'client-default-fixture', isDefault: true, hidden: false }], nextCursor: null },
     inventoryResponse = {
       data: [
         { name: 'vibepaper', runtimeStatus: 'connected', authStatus: 'unknown', resourceTemplates: [], resources: [], tools: {} },
@@ -110,10 +110,6 @@ async function startHarness(overrides = {}) {
   child.respond({ id: initialize.id, result: { userAgent: 'Codex test fixture' } })
   const initialized = await child.next((message) => message.method === 'initialized')
   assert.deepEqual(initialized.params, {})
-  if (hostOverrides.useClientDefaultModel) {
-    const modelRequest = await child.next((message) => message.method === 'model/list')
-    child.respond({ id: modelRequest.id, result: modelCatalog })
-  }
   const threadStart = await child.next((message) => message.method === 'thread/start')
   child.respond({ id: threadStart.id, result: { thread: { id: 'thread-test-1', ephemeral: true } } })
   const inventoryRequest = await child.next((message) => message.method === 'mcpServerStatus/list')
@@ -156,32 +152,19 @@ function completeTurn(child) {
   })
 }
 
-test('uses the same client catalog default only for an explicitly opted-in QA thread', async (t) => {
-  const { child, host, threadStart } = await startHarness({ useClientDefaultModel: true })
+test('pins every app-server QA relay to Terra/max and never consults the client default', async (t) => {
+  const { child, host, spawnCall, threadStart } = await startHarness()
   t.after(() => host.close())
-  assert.equal(threadStart.params.model, 'client-default-fixture')
+
+  assert.deepEqual(spawnCall.args, [
+    '-c', baseOptions.override,
+    ...codexAppServerModelOverrides().flatMap((entry) => ['-c', entry]),
+    '--disable', 'shell_tool', 'app-server', '--listen', 'stdio://',
+  ])
+  assert.equal(threadStart.params.model, undefined)
+  assert.equal(child.outgoing.some((message) => message.method === 'model/list'), false)
   completeTurn(child)
   assert.equal((await host.result).status, 'completed')
-})
-
-test('does not start a model turn for a missing, ambiguous, hidden or paginated client default', async () => {
-  const catalogs = [
-    { data: [], nextCursor: null },
-    { data: [{ model: 'hidden', isDefault: true, hidden: true }], nextCursor: null },
-    { data: [{ model: 'a', isDefault: true }, { model: 'b', isDefault: true }], nextCursor: null },
-    { data: [{ model: 'a', isDefault: true }], nextCursor: 'more' },
-  ]
-  for (const catalog of catalogs) {
-    const child = new FakeChild()
-    const started = startCodexAppServerTurn({ ...baseOptions, useClientDefaultModel: true, spawnImpl: () => child })
-    const rejected = assert.rejects(started, { code: 'CODEX_APP_SERVER_MODEL_UNAVAILABLE' })
-    const initialize = await child.next((message) => message.method === 'initialize')
-    child.respond({ id: initialize.id, result: {} })
-    const request = await child.next((message) => message.method === 'model/list')
-    child.respond({ id: request.id, result: catalog })
-    await rejected
-    assert.equal(child.outgoing.some((message) => message.method === 'thread/start' || message.method === 'turn/start'), false)
-  }
 })
 
 test('starts an ephemeral read-only turn, adapts safe trace events, and closes on completion', async (t) => {
@@ -189,7 +172,11 @@ test('starts an ephemeral read-only turn, adapts safe trace events, and closes o
   const { child, host, spawnCall, threadStart, inventoryRequest, turnStart } = await startHarness({ onTrace: (event) => traces.push(event) })
   t.after(() => host.close())
 
-  assert.deepEqual(spawnCall.args, ['-c', baseOptions.override, '--disable', 'shell_tool', 'app-server', '--listen', 'stdio://'])
+  assert.deepEqual(spawnCall.args, [
+    '-c', baseOptions.override,
+    ...codexAppServerModelOverrides().flatMap((entry) => ['-c', entry]),
+    '--disable', 'shell_tool', 'app-server', '--listen', 'stdio://',
+  ])
   assert.equal(spawnCall.executable, baseOptions.executable)
   assert.equal(spawnCall.options.cwd, baseOptions.cwd)
   assert.deepEqual(spawnCall.options.env, baseOptions.environment)
@@ -262,7 +249,11 @@ test('speaks JSONL to a local fake app-server process and checks runtime scope b
   t.after(() => host.close())
 
   assert.equal(launched.executable, baseOptions.executable)
-  assert.deepEqual(launched.args, ['-c', baseOptions.override, '--disable', 'shell_tool', 'app-server', '--listen', 'stdio://'])
+  assert.deepEqual(launched.args, [
+    '-c', baseOptions.override,
+    ...codexAppServerModelOverrides().flatMap((entry) => ['-c', entry]),
+    '--disable', 'shell_tool', 'app-server', '--listen', 'stdio://',
+  ])
   assert.deepEqual(await host.result, { status: 'completed' })
 })
 

@@ -1,6 +1,7 @@
 'use strict'
 
 const { spawn, spawnSync } = require('node:child_process')
+const { codexAppServerModelOverrides } = require('./codex-qa-model.cjs')
 
 const DEFAULT_TIMEOUT_MS = 15 * 60_000
 const CLOSE_GRACE_MS = 1_000
@@ -235,7 +236,7 @@ function summarizeMcpScope(response) {
 async function startCodexAppServerTurn(options = {}) {
   const {
     executable, override, overrides, cwd, environment, prompt,
-    onTrace = () => {}, onStderr = () => {}, onScope = () => {}, onRequestError = () => {}, onElicitation, useClientDefaultModel = false,
+    onTrace = () => {}, onStderr = () => {}, onScope = () => {}, onRequestError = () => {}, onElicitation,
     timeoutMs = DEFAULT_TIMEOUT_MS, spawnImpl = spawn,
   } = options
   const configOverrides = Array.isArray(overrides) ? overrides
@@ -245,13 +246,16 @@ async function startCodexAppServerTurn(options = {}) {
     || typeof cwd !== 'string' || cwd.length === 0
     || !isRecord(environment) || typeof prompt !== 'string' || prompt.length === 0
     || typeof onTrace !== 'function' || typeof onStderr !== 'function' || typeof onScope !== 'function' || typeof onRequestError !== 'function'
-    || typeof useClientDefaultModel !== 'boolean'
     || (onElicitation !== undefined && typeof onElicitation !== 'function')
     || typeof spawnImpl !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw failure('CODEX_APP_SERVER_CONFIGURATION_INVALID')
   }
 
-  const args = [...configOverrides.flatMap((entry) => ['-c', entry]), '--disable', 'shell_tool', 'app-server', '--listen', 'stdio://']
+  const args = [
+    ...configOverrides.flatMap((entry) => ['-c', entry]),
+    ...codexAppServerModelOverrides().flatMap((entry) => ['-c', entry]),
+    '--disable', 'shell_tool', 'app-server', '--listen', 'stdio://',
+  ]
   let child
   try {
     child = spawnImpl(executable, args, {
@@ -553,17 +557,8 @@ async function startCodexAppServerTurn(options = {}) {
       clientInfo: { name: 'vibepaper-acceptance-host', title: 'VibePaper acceptance host', version: '1.0.0' },
     })
     await writeMessage({ method: 'initialized', params: {} })
-    let selectedModel
-    if (useClientDefaultModel) {
-      const catalog = await request('model/list', { includeHidden: false, limit: 100 })
-      const defaults = Array.isArray(catalog?.data) ? catalog.data.filter((entry) => entry?.isDefault === true && entry.hidden !== true) : []
-      if (catalog?.nextCursor != null || defaults.length !== 1 || typeof defaults[0].model !== 'string'
-        || !/^[A-Za-z0-9._:/-]{1,200}$/u.test(defaults[0].model)) throw failure('CODEX_APP_SERVER_MODEL_UNAVAILABLE')
-      selectedModel = defaults[0].model
-    }
     const threadResponse = await request('thread/start', {
       cwd,
-      ...(selectedModel ? { model: selectedModel } : {}),
       sandbox: 'read-only',
       approvalPolicy: 'on-request',
       ephemeral: true,

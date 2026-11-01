@@ -16,6 +16,7 @@ const crypto = require('node:crypto')
 const readline = require('node:readline')
 const { spawn, execFileSync } = require('node:child_process')
 const { randomUUID } = require('node:crypto')
+const { CODEX_QA_MODEL, CODEX_QA_REASONING_EFFORT, codexExecBaseArguments } = require('./codex-qa-model.cjs')
 
 const root = path.resolve(__dirname, '../..')
 const evidenceDirectory = path.join(root, 'docs/verification/2026-10-11-mcp-acceptance')
@@ -494,12 +495,7 @@ async function runCodexDiagnostic() {
     const environment = builtEnvironment.environment
     systemProxyAddressProvided = builtEnvironment.systemProxyAddressProvided
     delete environment[secretEnvName]
-    const args = [
-      '--ask-for-approval', 'on-request',
-      'exec', '--ignore-user-config', '--ephemeral', '--disable', 'shell_tool',
-      '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '--cd', diagnosticDirectory,
-      '请仅回复连接正常',
-    ]
+    const args = [...codexExecBaseArguments(), '--cd', diagnosticDirectory, '请仅回复连接正常']
     child = spawn(executable, args, { cwd: diagnosticDirectory, env: environment,
       windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     let settled = false
@@ -530,12 +526,14 @@ async function runCodexDiagnostic() {
     })
     console.log(JSON.stringify({ diagnostic: 'codex-cli-connectivity', ...result,
       exitCode, terminationSignal, timedOut, processSpawnError, systemProxyAddressProvided,
+      codexModelRequested: CODEX_QA_MODEL, codexReasoningEffortRequested: CODEX_QA_REASONING_EFFORT,
       rawOutputSaved: false, promptSaved: false, environmentValuesSaved: false,
       mediaKeyProvided: false, electronStarted: false, mcpServerConfigured: false }))
   } catch {
     if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
     console.log(JSON.stringify({ diagnostic: 'codex-cli-connectivity', ...capture.summary(),
       exitCode, terminationSignal, timedOut, processSpawnError: true, systemProxyAddressProvided,
+      codexModelRequested: CODEX_QA_MODEL, codexReasoningEffortRequested: CODEX_QA_REASONING_EFFORT,
       rawOutputSaved: false, promptSaved: false, environmentValuesSaved: false,
       mediaKeyProvided: false, electronStarted: false, mcpServerConfigured: false }))
     process.exitCode = 1
@@ -1241,6 +1239,8 @@ async function runController() {
   }
   const final = {
     ...summary,
+    codexModelRequested: CODEX_QA_MODEL,
+    codexReasoningEffortRequested: CODEX_QA_REASONING_EFFORT,
     videoOnly,
     videoChainAccepted: summary.videoChainAccepted === true,
     combinedFullMediaChain: videoOnly ? false : summary.combinedFullMediaChain === true,
@@ -1484,6 +1484,8 @@ async function workerMain() {
   function safeCliTurnSummaries() {
     return cliTurns.map((turn) => ({
       stage: ['configuration', 'configuration-resume', 'image', 'image-query', 'video', 'video-query', 'readback'].includes(turn.stage) ? turn.stage : 'unknown',
+      codexModelRequested: CODEX_QA_MODEL,
+      codexReasoningEffortRequested: CODEX_QA_REASONING_EFFORT,
       exitCode: Number.isInteger(turn.exitCode) ? turn.exitCode : null,
       terminationSignal: [null, 'SIGINT', 'SIGTERM', 'SIGKILL', 'spawn-error'].includes(turn.terminationSignal)
         ? turn.terminationSignal : null,
@@ -1973,7 +1975,6 @@ async function workerMain() {
       const host = await startCodexAppServerTurn({
         executable,
         overrides: appServerOverrides,
-        useClientDefaultModel: true,
         cwd,
         environment,
         prompt,
@@ -1981,7 +1982,7 @@ async function workerMain() {
         onTrace: (event) => trace.accept(JSON.stringify(event)),
         onStderr: (chunk) => stderrDiagnostics.accept(chunk),
         onRequestError: ({ method, code }) => {
-          const safeMethod = ['initialize', 'model/list', 'thread/start', 'mcpServerStatus/list', 'turn/start'].includes(method)
+          const safeMethod = ['initialize', 'thread/start', 'mcpServerStatus/list', 'turn/start'].includes(method)
             ? method.replaceAll('/', '_').toUpperCase() : 'OTHER'
           status(`CODEX_RPC_${safeMethod}_ERROR_${safeJsonRpcErrorCodes.has(code) ? code : 'OTHER'}`)
         },
@@ -2018,11 +2019,7 @@ async function workerMain() {
       })
       return { child: host.child, result, trace, close: host.close }
     }
-    const args = [
-      '--ask-for-approval', 'on-request', '-c', override,
-      'exec', '--ignore-user-config', '--ephemeral', '--disable', 'shell_tool',
-      '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '--cd', cwd, prompt,
-    ]
+    const args = [...codexExecBaseArguments([override]), '--cd', cwd, prompt]
     const child = spawn(executable, args, { cwd, env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     environment[secretEnvName] = ''
     cliChild = child
@@ -2841,6 +2838,7 @@ if (!isEntry) {
 } else if (codexDiagnosticMode) {
   runCodexDiagnostic().catch(() => {
     console.log(JSON.stringify({ diagnostic: 'codex-cli-connectivity', processSpawnError: true,
+      codexModelRequested: CODEX_QA_MODEL, codexReasoningEffortRequested: CODEX_QA_REASONING_EFFORT,
       rawOutputSaved: false, promptSaved: false, environmentValuesSaved: false,
       mediaKeyProvided: false, electronStarted: false, mcpServerConfigured: false }))
     process.exitCode = 1

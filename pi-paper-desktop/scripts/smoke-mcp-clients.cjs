@@ -9,6 +9,7 @@ const fs = require('node:fs/promises')
 const os = require('node:os')
 const { randomUUID } = require('node:crypto')
 const { spawn, execFileSync } = require('node:child_process')
+const { CODEX_QA_MODEL, CODEX_QA_REASONING_EFFORT, codexExecBaseArguments } = require('./codex-qa-model.cjs')
 
 const root = path.resolve(__dirname, '../..')
 const evidenceDirectory = path.join(root, 'docs/verification/2026-10-11-mcp-acceptance')
@@ -687,11 +688,7 @@ async function startClientProcess(clientKey, exportedConfig, fixtureRoot, client
       otherMcpEnabledCount: userConfig.otherMcpEnabledCount,
     }
     executable = executablePath
-    args = [
-      '--ask-for-approval', 'on-request', '-c', override,
-      'exec', '--ignore-user-config', '--ephemeral', '--disable', 'shell_tool',
-      '--sandbox', 'read-only', '--json', '--skip-git-repo-check', '--cd', clientCwd, prompt,
-    ]
+    args = [...codexExecBaseArguments([override]), '--cd', clientCwd, prompt]
   } else {
     const server = parseClaudeConfig(exportedConfig)
     const configPath = path.join(fixtureRoot, 'claude-mcp-config.json')
@@ -1285,6 +1282,8 @@ function workerMain() {
     return {
       success: true,
       client: clientKey,
+      codexModelRequested: clientKey === 'codex' ? CODEX_QA_MODEL : null,
+      codexReasoningEffortRequested: clientKey === 'codex' ? CODEX_QA_REASONING_EFFORT : null,
       cliVersionPreviouslyObserved: clientKey === 'codex' ? '0.154.0' : '2.1.170',
       naturalLanguageTurn: true,
       cliExitCode: cliResult.exitCode,
@@ -1371,6 +1370,8 @@ function workerMain() {
     const failure = {
       success: false,
       client: clientKey,
+      codexModelRequested: clientKey === 'codex' ? CODEX_QA_MODEL : null,
+      codexReasoningEffortRequested: clientKey === 'codex' ? CODEX_QA_REASONING_EFFORT : null,
       failureCategory: cliResult?.failureCategory || classifyFailure(diagnosticText, cliResult?.exitCode, cliResult?.terminationSignal, cliResult?.timedOut) || safeError,
       phase,
       pageState,

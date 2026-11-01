@@ -1,0 +1,47 @@
+{
+  "run": "native-codex-tui-local-decline",
+  "observedAt": "2026-11-01T10:04:26.414Z",
+  "codexSession": {
+    "model": "gpt-6.1-terra",
+    "reasoning_effort": "max",
+    "created_at": 1793527316
+  },
+  "source": "Codex local session metadata, transparent stdio, Main control ledger, project TaskStore",
+  "toolsDiscovered": 14,
+  "toolsCalled": [
+    "get_canvas_summary",
+    "list_models",
+    "get_node_detail",
+    "prepare_generation"
+  ],
+  "formRequests": 1,
+  "formResponses": [
+    {
+      "action": "accept",
+      "isError": false
+    }
+  ],
+  "actions": [],
+  "proposalStatuses": [
+    {
+      "status": "rejected",
+      "count": 1
+    }
+  ],
+  "approvalStatuses": [
+    {
+      "status": "rejected",
+      "count": 1
+    }
+  ],
+  "tasks": [],
+  "fixtureGenerations": 0,
+  "realProviderRequests": 0,
+  "userVisualConfirmation": "not-yet-recorded",
+  "mediaGenerationPass": false,
+  "cleanup": {
+    "grantRevoked": true,
+    "mcpDisabled": true,
+    "fixtureListenerClosed": true
+  }
+}
