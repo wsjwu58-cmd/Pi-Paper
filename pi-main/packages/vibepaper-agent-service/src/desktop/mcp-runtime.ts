@@ -206,6 +206,15 @@ export function listMcpAuxiliaryTools(): McpDesktopToolDefinition[] {
 	});
 	return [
 		auxiliaryTool("get_context", "读取授权上下文", "读取当前桌面连接授权范围内的项目、画布和能力状态。", object({})),
+		auxiliaryTool(
+			"list_canvas_tasks",
+			"列出当前画布任务",
+			"按创建时间倒序列出当前连接已授权画布中的任务概况。需要判断特定模态是否有任务时传 modality（如 image 或 video）；服务端会先按画布和模态过滤，再应用 limit。hasMore 只表示本次过滤条件下仍有后续条目。仅返回任务标识、节点标识、状态、模态和时间；不返回提示词、参数、模型、凭据、路径或结果内容。",
+			object({
+				modality: { type: "string", enum: ["text", "image", "video", "audio", "compose"] },
+				limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+			}),
+		),
 		auxiliaryTool("get_operation", "查询操作状态", "查询当前连接发起的画布操作或生成提案状态。", {
 			...object({
 				operationId: { type: "string", minLength: 1, maxLength: MAX_OPERATION_ID_LENGTH },

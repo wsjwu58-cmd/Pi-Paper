@@ -5079,12 +5079,28 @@ function createLocalProjectStore() {
     })
   }
 
-  function listTasks(projectId, limit = 100) {
+  function listTasks(projectId, limit = 100, canvasId, modality) {
     return enqueue(() => {
       if (!active || projectId !== active.metadata.projectId) throw new Error('当前项目已更改，无法读取任务。')
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error('任务列表上限无效。')
-      return active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} ORDER BY tasks.created_at DESC, tasks.task_id LIMIT ?`)
-        .all(limit).map(taskFromRow)
+      if (canvasId !== undefined && (typeof canvasId !== 'string' || canvasId.length < 1 || canvasId.length > 128)) {
+        throw new Error('画布标识无效。')
+      }
+      if (modality !== undefined && !TASK_SEARCH_MODALITIES.has(modality)) throw new Error('任务模态无效。')
+      const clauses = []
+      const values = []
+      if (canvasId !== undefined) {
+        clauses.push('tasks.canvas_id = ?')
+        values.push(canvasId)
+      }
+      if (modality !== undefined) {
+        clauses.push('tasks.modality = ?')
+        values.push(modality)
+      }
+      const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
+      values.push(limit)
+      return active.database.prepare(`${TASKS_WITH_OUTPUT_METADATA} ${where} ORDER BY tasks.created_at DESC, tasks.task_id LIMIT ?`)
+        .all(...values).map(taskFromRow)
     })
   }
 

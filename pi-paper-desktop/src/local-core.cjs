@@ -207,7 +207,7 @@ async function dispatch(method, payload) {
     case 'task:retry':
       return store.retryTask(payload?.projectId, payload?.taskId)
     case 'task:list':
-      return store.listTasks(payload?.projectId, payload?.limit)
+      return store.listTasks(payload?.projectId, payload?.limit, payload?.canvasId, payload?.modality)
     case 'task:search':
       return store.searchTasks(payload?.projectId, payload?.query)
     case 'task:get':

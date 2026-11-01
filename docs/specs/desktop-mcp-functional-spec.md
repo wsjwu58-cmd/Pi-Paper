@@ -95,6 +95,7 @@ flowchart LR
 `prepare_generation.generations[].modelType` 是兼容原生成 DTO 的字段名，其值须从 `list_models` 返回的精确 `name` 或 `bindingId` 复制。它不是目录的模态字段 `modelType`，也不是供应商调用 ID `apiModelId`；服务端只做精确查找并规范为目录 `name`，不按展示名称、简称或相似文字推断模型。
 | `get_operation` | operationId 或 proposalId | 本连接可查询的权威执行/确认状态、任务关联与错误 |
 | `check_task_status` | taskId | 状态、错误、结果元数据；成功以文件已落盘且可读取为准 |
+| `list_canvas_tasks` | 可选 modality（text/image/video/audio/compose）、limit（1–100，默认 50） | 只列当前授权画布的有限任务概况；支持在 limit 前按画布/模态筛选，返回任务/节点标识、状态（含 interrupted）、模态和时间，不返回提示词、参数、模型、凭据、路径或结果内容；`hasMore` 表示当前过滤范围仍有后续条目，需要判断某模态是否存在时应指定 modality |
 | `read_task_output` | taskId、outputIndex（0–3，默认 0）、mode（metadata/preview）、文本 offset/limit | 文本分页；图片/视频默认元数据，显式 preview 返回受限媒体内容；不给任意目录读取能力 |
 | `list_provider_configuration` | providerId（必填，限定已授权厂商） | 凭据字段定义、configured、公开配置、revision、检测状态与官方披露版本；有配置授权时另返回该厂商允许的字段、输入方式及不含值的来源引用 |
 | `configure_provider` | providerId、expectedRevision、operationId、公开配置、凭据来源 | 保存/授权状态及公开快照；只写凭据，不回显 |

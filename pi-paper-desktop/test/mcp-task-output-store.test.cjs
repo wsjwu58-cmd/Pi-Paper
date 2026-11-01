@@ -67,6 +67,22 @@ test('Local Core returns only the selected bounded image output from the active 
     (error) => error.code === 'INVALID_INPUT')
 
   const queued = await createImageTask(store, project, 'queued')
+  await new Promise((resolve) => setTimeout(resolve, 15))
+  const textCanvas = await store.loadCanvas(project.projectId, project.canvasId)
+  const textNode = await store.createNode({ projectId: project.projectId, canvasId: project.canvasId,
+    idempotencyKey: 'mcp-output-node-newer-text', expectedVersion: textCanvas.version,
+    type: 'text', params: { prompt: 'newer text task fixture' } })
+  const textTask = await store.createTask({ projectId: project.projectId, canvasId: project.canvasId,
+    canvasVersion: textNode.version, nodeId: textNode.node.id, modality: 'text', providerType: 'cloud',
+    providerId: 'agnes', modelId: 'agnes-text-fixture', idempotencyKey: 'mcp-output-task-newer-text',
+    parameters: { prompt: 'newer text task fixture' } })
+  const scopedTasks = await store.listTasks(project.projectId, 100, project.canvasId)
+  assert.equal(scopedTasks.some((entry) => entry.taskId === queued.task.taskId), true)
+  assert.equal(scopedTasks[0].taskId, textTask.taskId)
+  const imageTasks = await store.listTasks(project.projectId, 1, project.canvasId, 'image')
+  assert.equal(imageTasks.length, 1)
+  assert.equal(imageTasks[0].taskId, queued.task.taskId)
+  assert.deepEqual(await store.listTasks(project.projectId, 100, 'another-canvas'), [])
   await assert.rejects(store.readTaskOutputMedia(project.projectId, queued.task.taskId, 0),
     (error) => error.code === 'TASK_NOT_FOUND')
 })

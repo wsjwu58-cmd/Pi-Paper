@@ -24,7 +24,7 @@ const TOOL_PERMISSION = new Map([
   ['get_canvas_summary', 'canvas.read'], ['get_selected_nodes', 'canvas.read'], ['get_node_detail', 'canvas.read'],
   ['list_models', 'canvas.read'], ['search_assets', 'canvas.read'],
   ['create_nodes', 'canvas.write'], ['update_node_config', 'canvas.write'], ['connect_nodes', 'canvas.write'], ['layout_nodes', 'canvas.write'],
-  ['prepare_generation', 'generation.propose'], ['check_task_status', 'task.read'], ['read_task_output', 'task.read'],
+  ['prepare_generation', 'generation.propose'], ['check_task_status', 'task.read'], ['list_canvas_tasks', 'task.read'], ['read_task_output', 'task.read'],
   ['get_context', null], ['get_operation', null],
   ['list_provider_configuration', 'provider.read'], ['configure_provider', 'provider.configure'],
   ['test_provider_connection', 'provider.configure'], ['get_provider_operation', 'provider.configure'],
@@ -833,6 +833,58 @@ function createMcpMainService(options) {
     }
   }
 
+  async function listCanvasTasks(session, client, args, requestControl) {
+    if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
+    const context = await currentContext()
+    assertSessionActive(session, requestControl)
+    if (!context || context.projectId !== client.projectId || context.canvasId !== client.canvasId
+      || context.projectId !== session.projectId || context.canvasId !== session.canvasId) {
+      throw fixedError('PROJECT_CHANGED', 403)
+    }
+    const core = getLocalCore?.()
+    if (!core) throw fixedError('LOCAL_CORE_UNAVAILABLE', 503)
+    const limit = args.limit ?? 50
+    const modalities = new Set(['text', 'image', 'video', 'audio', 'compose'])
+    let rows
+    try {
+      rows = await core.request('task:list', {
+        projectId: client.projectId,
+        canvasId: client.canvasId,
+        ...(args.modality ? { modality: args.modality } : {}),
+        limit: limit + 1,
+      }, 15_000)
+    } catch (error) {
+      const code = error?.code === 'PROJECT_CHANGED' ? 'PROJECT_CHANGED' : 'TASK_LIST_UNAVAILABLE'
+      throw fixedError(code, code === 'PROJECT_CHANGED' ? 403 : 503)
+    }
+    if (!Array.isArray(rows)) throw fixedError('TASK_LIST_UNAVAILABLE', 503)
+    if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
+    const latestClient = await liveClient(client.clientId, client.grantId)
+    assertSessionActive(session, requestControl)
+    if (!latestClient.permissions.includes('task.read')) throw fixedError('PERMISSION_DENIED', 403)
+    const latestContext = await currentContext()
+    assertSessionActive(session, requestControl)
+    if (!latestContext || latestContext.projectId !== client.projectId || latestContext.canvasId !== client.canvasId) {
+      throw fixedError('PROJECT_CHANGED', 403)
+    }
+
+    const safeRows = rows.filter((task) => task && task.canvasId === client.canvasId
+      && (task.projectId === undefined || task.projectId === client.projectId)
+      && typeof task.taskId === 'string' && task.taskId.length > 0 && task.taskId.length <= 128
+      && ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'].includes(task.status)
+      && modalities.has(task.modality) && (!args.modality || task.modality === args.modality))
+    const tasks = safeRows.slice(0, limit).map((task) => ({
+      taskId: task.taskId,
+      ...(typeof task.nodeId === 'string' && task.nodeId.length <= 256 ? { nodeId: task.nodeId } : {}),
+      status: task.status,
+      modality: task.modality,
+      ...(typeof task.createdAt === 'string' && task.createdAt.length <= 64 ? { createdAt: task.createdAt } : {}),
+      ...(typeof task.updatedAt === 'string' && task.updatedAt.length <= 64 ? { updatedAt: task.updatedAt } : {}),
+    }))
+    const structuredContent = { tasks, hasMore: safeRows.length > limit }
+    return { content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent }
+  }
+
   function assertMainToolArguments(name, args) {
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw fixedError('INVALID_INPUT')
     const keys = Object.keys(args)
@@ -850,6 +902,15 @@ function createMcpMainService(options) {
         return
       case 'get_operation':
         assertOperationArguments(args)
+        return
+      case 'list_canvas_tasks':
+        allow(['limit', 'modality'])
+        if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 100)) {
+          throw fixedError('INVALID_INPUT')
+        }
+        if (args.modality !== undefined && !['text', 'image', 'video', 'audio', 'compose'].includes(args.modality)) {
+          throw fixedError('INVALID_INPUT')
+        }
         return
       case 'read_task_output':
         allow(['taskId', 'outputIndex', 'mode', 'offset', 'limit'], ['taskId'])
@@ -985,6 +1046,8 @@ function createMcpMainService(options) {
       structuredContent: { projectId: context.projectId, canvasId: context.canvasId, ...(context.name ? { name: context.name } : {}), version: context.version, canvasReady: await isCanvasReady(context) } }
     }
     if (name === 'get_operation') return getOperation(session, params.arguments)
+
+    if (name === 'list_canvas_tasks') return listCanvasTasks(session, client, params.arguments, requestControl)
 
     if (name === 'list_provider_configuration' || name === 'configure_provider'
       || name === 'test_provider_connection' || name === 'get_provider_operation') {
