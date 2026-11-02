@@ -15,12 +15,15 @@
       sessions/<cwd-key>/*.jsonl
       memory/**/*.md
       skills/**/*.md
+      skills/.marketplace/state.json
       session-memory/**/*.md
 ```
 
 不把当前绝对路径写入项目身份。项目搬迁后，用户打开新位置即可通过 `projectId`、`canvasId` 恢复相同项目身份。操作系统用户数据目录保存非密钥 `settings.json`、最近项目 `recent-projects.json` 和兼容旧版单项恢复的 `recent-project.json`。最近项目清单只由 Main 读取，Renderer 只能拿到经过身份校验的 `{projectId, canvasId, name}`；打开时 Main 按项目 ID 查回内部路径并再次验证 `project.json` 与 SQLite 身份。迁移只读取旧 `recent-project.json` 并建立新清单，不删除该文件。此目录清单记录用户明确创建或打开过的本地项目；每个项目当前仍只对应一张画布。Agnes API Key 经 Electron `safeStorage` 使用 OS 密钥能力加密后，单独保存为 `credentials/agnes-api-key.bin`；Linux 未提供 Secret Service/KWallet/Secret Portal 时拒绝保存。凭据不进入普通设置文件、项目目录或项目备份。
 
 ## 项目级 Skill
+
+市场安装记录位于项目的 `.vibepaper/agent/skills/.marketplace/state.json`。它记录格式版本、包清单快照、安装的组件及启用位，并保留更新前的版本供回退。安装在本项目的创作包随备份迁移；导入供以后选择的目录位于操作系统用户数据目录的 `marketplace-catalog.json`。应用后的节点和素材使用原画布与素材的数据格式。个人另存的模板是独立包，可导出为 JSON。参见[插件市场设计和包格式](../plans/2026-11-02-desktop-plugin-marketplace.md)。
 
 项目自定义 Skill 保存在 `.vibepaper/agent/skills/`，不读写用户目录里的全局 Skill。Agent Worker 使用 Pi 原始 `loadSkillsFromDir` 发现这些 Markdown 文件，运行时只把当前项目内启用的 Skill 提供给原 Agent 工具。原 `AgentPanel` Skills 面板提供列表、分类与搜索、创建、Markdown 文件导入、详情、编辑、启停和删除；导入文件上限为 512 KB。
 
