@@ -5,18 +5,13 @@ import { defaultDesktopModelId, toAvailableDesktopModels } from '@/desktop/provi
 import type { Edge } from '@xyflow/react'
 import type { CanvasDetail, GroupPayload, StackPayload } from '@/lib/types'
 import type { FlowNode } from './canvasStore'
-import { canonicalCanvasEdges } from './canvasEdges'
+import { canonicalCanvasEdges, isEdgeTypeCompatible } from './canvasEdges'
+import { portableTemplateGraph } from './pluginTemplateGraph'
 import { getNodeResolutionMap, getVideoDurationCapability, resolveNodeResolution } from './nodes/videoNodeParameters'
 
 export type PluginTemplate = MarketplaceTemplateData
 
 const nodeTypes = new Set(['text', 'image', 'video', 'audio', 'compose', 'director'])
-const compatibleTargets: Record<string, string[]> = {
-  text: ['text', 'image', 'video', 'audio', 'director'],
-  image: ['image', 'video', 'director'],
-  video: ['video', 'compose'], audio: ['audio', 'video'],
-  compose: ['video', 'compose'], director: ['image', 'video'],
-}
 const reusableTextKeys = new Set(['title', 'prompt', 'content', 'style', 'camera'])
 const specificationKeys = new Set(['model', 'aspect', 'ratio', 'size', 'resolution', 'resKey', 'duration', 'count', 'generate_audio'])
 export function isPluginModelParameter(key: string): boolean { return specificationKeys.has(key) }
@@ -73,7 +68,7 @@ export function readPluginTemplate(value: unknown): PluginTemplate {
     const edge = object(raw)
     if (!edge || typeof edge.source !== 'string' || typeof edge.target !== 'string'
       || edge.source === edge.target || !ids.has(edge.source) || !ids.has(edge.target)
-      || !compatibleTargets[ids.get(edge.source)!]?.includes(ids.get(edge.target)!)
+      || !isEdgeTypeCompatible(ids.get(edge.source)!, ids.get(edge.target)!)
       || (edge.sourcePort !== undefined && (typeof edge.sourcePort !== 'string' || !edge.sourcePort.trim() || edge.sourcePort.length > 80))
       || (edge.targetPort !== undefined && (typeof edge.targetPort !== 'string' || !edge.targetPort.trim() || edge.targetPort.length > 80))) {
       throw new Error(uiText('模板包含无效的连线。'))
@@ -195,24 +190,11 @@ export function templateFromSelection(nodes: FlowNode[], edges: Edge[], ids: str
 /** Prepare a graph entirely in memory; the caller commits it in one canvas CAS. */
 export function buildPluginTemplateGraph(template: PluginTemplate, origin: { x: number; y: number },
   onConfig: (id: string) => void, makeId: () => string = () => crypto.randomUUID()): { nodes: FlowNode[]; edges: Edge[] } {
-  const ids = new Map(template.nodes.map((node) => [node.id, makeId()]))
-  const minX = Math.min(...template.nodes.map((node) => node.x))
-  const minY = Math.min(...template.nodes.map((node) => node.y))
-  const nodes = template.nodes.map((node): FlowNode => {
-    const id = ids.get(node.id)!
-    const x = origin.x + node.x - minX
-    const y = origin.y + node.y - minY
-    return { id, type: node.type, position: { x, y }, data: {
-      node: { id, type: node.type, x, y, params: { ...node.params }, status: 'idle' },
-      selected: false, onConfig, models: [],
-    } }
-  })
-  const edges = template.edges.map((edge): Edge => ({
-    id: makeId(), source: ids.get(edge.source)!, target: ids.get(edge.target)!,
-    sourceHandle: edge.sourcePort ?? 'output', targetHandle: edge.targetPort ?? 'input',
-    style: { stroke: '#93c5fd', strokeWidth: 1.5 }, data: { valid: true },
-  }))
-  return { nodes, edges }
+  const graph = portableTemplateGraph(template, origin, makeId)
+  return {
+    nodes: graph.nodes.map((node) => ({ ...node, data: { ...node.data, onConfig } })) as FlowNode[],
+    edges: graph.edges,
+  }
 }
 
 export interface PluginGraphSnapshot {

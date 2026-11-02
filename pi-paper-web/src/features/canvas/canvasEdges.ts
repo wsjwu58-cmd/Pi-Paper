@@ -19,3 +19,13 @@ export function canonicalCanvasEdges(nodes: Pick<Node, 'id'>[], edges: Edge[]): 
     return true
   })
 }
+
+/** Shared frontend view of the local core's node-port compatibility. */
+export const EDGE_COMPATIBLE_TARGET_TYPES: Record<string, ReadonlySet<string>> = {
+  text: new Set(['text', 'image', 'video', 'audio', 'director']),
+  image: new Set(['image', 'video', 'director']), video: new Set(['video', 'compose']),
+  audio: new Set(['audio', 'video']), compose: new Set(['video', 'compose']), director: new Set(['image', 'video']),
+}
+export function isEdgeTypeCompatible(sourceType?: string, targetType?: string): boolean {
+  return Boolean(sourceType && targetType && Object.hasOwn(EDGE_COMPATIBLE_TARGET_TYPES, sourceType) && EDGE_COMPATIBLE_TARGET_TYPES[sourceType].has(targetType))
+}

@@ -20,6 +20,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { ArrowUpFromLine, AudioLines, Clapperboard, Files, Grid2X2, Image as ImageIcon, Layers, List, Mic, Trash2, Type, Upload, Video, X } from 'lucide-react'
 import { CanvasWelcome } from '@/features/canvas/CanvasWelcome'
+import { EDGE_COMPATIBLE_TARGET_TYPES, isEdgeTypeCompatible } from '@/features/canvas/canvasEdges'
 import { AgentLauncher, AgentPanel, type AgentPanelDesktopAdapter } from '@/features/canvas/AgentPanel'
 import { reduceAgentEvent, type AgentEventState } from '@/features/canvas/agentEventEnvelope'
 import { isChatVisibleMessage } from '@/features/canvas/agentEventHandlers'
@@ -489,19 +490,6 @@ const DESKTOP_NODE_MENU = [
   { type: 'compose', label: '合成', icon: Clapperboard },
   { type: 'director', label: '导演台', icon: Layers },
 ] as const
-
-const EDGE_COMPATIBLE_TARGET_TYPES: Record<string, ReadonlySet<string>> = {
-  text: new Set(['text', 'image', 'video', 'audio', 'director']),
-  image: new Set(['image', 'video', 'director']),
-  video: new Set(['video', 'compose']),
-  audio: new Set(['audio', 'video']),
-  compose: new Set(['video', 'compose']),
-  director: new Set(['image', 'video']),
-}
-
-function isEdgeTypeCompatible(sourceType?: string, targetType?: string) {
-  return Boolean(sourceType && targetType && EDGE_COMPATIBLE_TARGET_TYPES[sourceType]?.has(targetType))
-}
 
 function LoadingScreen() {
   return <div className="flex min-h-screen items-center justify-center bg-[#f7f7f8] text-sm text-[#666]">正在打开本地项目…</div>
