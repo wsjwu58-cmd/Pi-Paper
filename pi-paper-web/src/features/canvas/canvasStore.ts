@@ -17,6 +17,7 @@ export interface CreateCanvasGroupOptions {
 export interface FlowNode extends Node {
   data: {
     node: NodePayload
+    params?: Record<string, unknown>
     selected: boolean
     onConfig: (nodeId: string) => void
     models: import('@/lib/types').ModelInfo[]

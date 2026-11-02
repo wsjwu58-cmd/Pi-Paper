@@ -83,3 +83,17 @@ node pi-paper-desktop/scripts/smoke-installed-marketplace-macos.cjs \
 离线扩展与真实在线验收均通过系统启动安装副本，使用独立的临时项目、原 Main 和 Renderer。两个项目的生成任务、MCP 客户端授权均为零。此阶段验收的是编辑器运镜预览数据与本地图片处理。供应商视频生成及 Codex 原生生成确认仍按既有 MCP 记录单独验收。
 
 **复现。** 运行上一节的 Mac 烟测命令可复验离线场景。另用新的证据目录，在同一命令末尾加 `--online-director` 可从公开目录验收导演包；环境变量 `PI_PAPER_EXPECTED_ONLINE_COMMIT` 可指定当次预期的目录提交。前端全套 35 个文件、171 项测试通过，lint 退出码为 0。市场套件覆盖创作包从 1.0 升级、保留启用状态、回退，以及目录摘要与参数校验。
+
+### Mac 安装版海报 PNG 与分镜 CSV（2026-11-02）
+
+从 `/Applications/Pi-Paper.app` 通过 Launch Services 启动，在隔离项目中通过原图片编辑器、市场组件面板和分镜导出窗口操作。最终 DMG 的 SHA-256 为 `6a765a1064c797c870c096b277fdf8e8a38bf88fd482617e063ac06f677c4f3c`。只读挂载、复制和更新系统应用后，比对了 3,016 个文件及符号链接。两个正常退出之间重开同一项目，生成任务与 MCP 客户端授权均为零。[验收数据](macos-exports/checks.json)
+
+| 验收对象 | 实际文件和读回结果 |
+| --- | --- |
+| 可编辑海报 | 在 384×384 源图节点填写提示词，修改海报宽、高和标题，输出 1200×1500 PNG。按项目素材逐字节核对 SHA-256，并解码核对背景色、源图中心和标题像素。重启后源图与结果图的哈希、连线、排版和提示词一致，从源节点重开海报编辑器仍可修改标题。[输出 PNG](macos-exports/poster-result.png) · [重启后的编辑器](macos-exports/reopened-poster.jpg) |
+| 文本分镜 | 选中两个文本节点，调整字段和镜头顺序，下载 237 字节 CSV。核对 UTF-8 BOM、行序、字段顺序、中文、逗号、引号、单元格内换行以及公式前缀保护。独立 CSV 解析器读出两行数据，其余节点未混入。[文本 CSV](macos-exports/storyboard-exports/storyboard-text.csv) · [导出选区](macos-exports/storyboard-selection.jpg) |
+| 导演分镜 | 分别选择静态和动态导演节点，单独导出运镜列。静态文件含方向、俯仰与距离；动态文件另含 -30° 到 30° 的起止视角和 6 秒时长。重启后项目的原文本、相机和运镜参数均匹配，三份下载文件的 SHA-256 与首次导出一致。[静态 CSV](macos-exports/storyboard-exports/storyboard-director-static.csv) · [动态 CSV](macos-exports/storyboard-exports/storyboard-director-motion.csv) |
+
+旧包实测曾将有运镜的导演镜头导出为空单元格。现保留普通文本运镜，并按导演节点实际保存的结构输出机位和运动参数。海报在全图保存时也曾覆盖源图的已有提示词字段。修复后，桌面导入素材沿用 Local Core 返回的节点，原图提示词编辑和海报保存同步写入存储所读取的字段。回归覆盖数据镜像不一致及并发编辑，完整前端测试 177 项通过。
+
+复验时用 Node 24 ARM64 运行 `pi-paper-desktop/scripts/smoke-installed-marketplace-macos.cjs`，在前述 Mac 验收命令末尾加 `--exports`。脚本将真实 PNG 和三份 CSV 保存到指定证据目录。PNG 来自项目素材，CSV 通过原下载按钮生成，仅将下载目的地定向到隔离目录。

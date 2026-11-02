@@ -298,7 +298,7 @@ export async function createCanvasNodePort(input: {
   x: number
   y: number
   params: Record<string, unknown>
-}): Promise<{ id: string; type: string; version?: number }> {
+}): Promise<{ id: string; type: string; version?: number; node?: NodePayload }> {
   const bridge = window.vibepaperDesktop
   if (!isDesktopRuntime()) {
     const created = await api<{ id: string | number; type: string }>(`/canvases/${input.canvasId}/nodes`, {
@@ -319,7 +319,20 @@ export async function createCanvasNodePort(input: {
     y: input.y,
     params: input.params,
   })
-  return { id: sid(created.node.id), type: String(created.node.type ?? input.type), version: created.version }
+  return { id: sid(created.node.id), type: String(created.node.type ?? input.type), version: created.version, node: desktopNodePayload(created.node) }
+}
+
+/** The local core returns the authoritative node, including normalized parameters. */
+export function importedAssetNodePayload(
+  created: { id: string; node?: NodePayload },
+  asset: Pick<AssetView, 'id' | 'assetType' | 'name' | 'url'>,
+  x: number,
+  y: number,
+): NodePayload {
+  return created.node ?? {
+    id: sid(created.id), type: asset.assetType, x, y,
+    params: { assetId: sid(asset.id), name: asset.name, url: asset.url }, status: 'idle',
+  }
 }
 
 export function desktopCanvasDetail(canvas: DesktopCanvas, project: DesktopProject): CanvasDetail {

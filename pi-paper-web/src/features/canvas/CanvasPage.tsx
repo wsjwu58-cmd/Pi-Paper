@@ -34,7 +34,7 @@ import { CanvasTopBar } from './CanvasTopBar'
 import { CanvasToolbar } from './CanvasToolbar'
 import { CanvasPlugins } from './CanvasPlugins'
 import { PosterEditor } from './PosterEditor'
-import { mergePosterResult } from './posterGraph'
+import { mergePosterResult, withPosterLayout } from './posterGraph'
 import { StoryboardEditor } from './StoryboardEditor'
 import { arrangeCreativeSelection, readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard, resolveUnchangedCreativeSelection } from './creativePluginRuntime'
 import type { PosterLayout, StoryboardField } from './creativePluginTypes'
@@ -53,7 +53,7 @@ import { AccountSidePanels } from './AccountSidePanels'
 import { CanvasWelcome } from './CanvasWelcome'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { Spinner } from '@/components/ui/Spinner'
-import { applySavedCanvasStaleNodeIds, createCanvasNodePort, deleteCanvasEdgePort, desktopAssetView, desktopCanvasDetail, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
+import { applySavedCanvasStaleNodeIds, createCanvasNodePort, deleteCanvasEdgePort, desktopAssetView, desktopCanvasDetail, importedAssetNodePayload, isDesktopRuntime, loadCanvasPort, saveCanvasPort } from './canvasPort'
 import {
   createMcpCanvasFlushResponse,
   flushCanvasPersistence,
@@ -1571,14 +1571,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           type: asset.assetType,
           position: { x, y },
           data: {
-            node: {
-              id: sid(n.id),
-              type: asset.assetType,
-              x,
-              y,
-              params: { assetId: sid(asset.id), name: asset.name, url: asset.url },
-              status: 'idle',
-            },
+            node: importedAssetNodePayload(n, asset, x, y),
             selected: false,
             onConfig: selectNode,
             models: models ?? [],
@@ -1914,7 +1907,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       const output: FlowNode = { id, type: 'image', position: { x, y }, data: {
         node: { id, type: 'image', x, y, params, status: 'idle' }, selected: false, onConfig: selectNode, models: source.data.models ?? [],
       } }
-      const updatedSource: FlowNode = { ...source, data: { ...source.data, node: { ...source.data.node, params: { ...source.data.node.params, posterLayout: layout } } } }
+      const updatedSource = withPosterLayout(source, layout)
       const edge: Edge = { id: crypto.randomUUID(), source: posterDraft.sourceNodeId, target: id, sourceHandle: 'output', targetHandle: 'input', style: { stroke: '#93c5fd', strokeWidth: 1.5 }, data: { valid: true } }
       const submittedNodes = [...snapshot.nodes.map((item) => item === source ? updatedSource : item), output]
       const submittedEdges = canonicalCanvasEdges(submittedNodes, [...snapshot.edges, edge])

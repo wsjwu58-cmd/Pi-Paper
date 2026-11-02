@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Installed macOS ARM64 smoke. Run with Node 24 against an app copied from the DMG:
-// node smoke-installed-marketplace-macos.cjs --app /absolute/Pi-Paper.app --output /absolute/evidence-directory [--dmg /absolute/release.dmg] [--online-director]
+// node smoke-installed-marketplace-macos.cjs --app /absolute/Pi-Paper.app --output /absolute/evidence-directory [--dmg /absolute/release.dmg] [--online-director | --exports]
+// --exports verifies saved PNG/CSV files and project content after restart.
 // --online-director uses a fresh isolated profile to refresh the official GitHub catalog.
 // Optionally set PI_PAPER_EXPECTED_ONLINE_COMMIT to require one specific catalog commit.
 // The optional DMG is hashed for correlation; this script does not establish that
@@ -24,15 +25,15 @@ function argumentsFrom(argv) {
   const values = {}
   for (let i = 0; i < argv.length;) {
     const key = argv[i++]
-    if (key === '--online-director') {
-      if (values[key]) throw new Error('INVALID_ARGUMENTS')
+    if (key === '--online-director' || key === '--exports') {
+      if (values['--online-director'] || values['--exports']) throw new Error('INVALID_ARGUMENTS')
       values[key] = true
       continue
     }
     if (!['--app', '--output', '--dmg'].includes(key) || !argv[i] || values[key]) throw new Error('INVALID_ARGUMENTS')
     values[key] = argv[i++]
   }
-  if (REQUIREMENTS.some((key) => !values[key]) || Object.entries(values).some(([key, value]) => key !== '--online-director' && !path.isAbsolute(value))) throw new Error('ABSOLUTE_PATHS_REQUIRED')
+  if (REQUIREMENTS.some((key) => !values[key]) || Object.values(values).some(value => typeof value === 'string' && !path.isAbsolute(value))) throw new Error('ABSOLUTE_PATHS_REQUIRED')
   return values
 }
 function requireCheck(value) { assert.ok(value) }
@@ -460,7 +461,15 @@ async function main() {
     const { createLocalProjectStore } = require(projectStore)
     const store = createLocalProjectStore()
     let created
-    try { created = await store.createProject(projects, PROJECT_NAME) } finally { await store.close() }
+    let storyboardFixture
+    try {
+      created = await store.createProject(projects, PROJECT_NAME)
+      if (args['--exports']) {
+        storyboardFixture = await require('./smoke-installed-marketplace-storyboard.cjs').seedStoryboard(store, created.project)
+      }
+    } finally {
+      await store.close()
+    }
     const project = created.project
     await fs.writeFile(path.join(profile, 'recent-project.json'), JSON.stringify({ schemaVersion: 1, projectDirectory: created.directory }), { flag: 'wx', mode: 0o600 })
     await fs.writeFile(path.join(profile, 'ui-settings.json'), JSON.stringify({ schemaVersion: 1, language: 'zh' }), { flag: 'wx', mode: 0o600 })
@@ -473,7 +482,47 @@ async function main() {
     await checkTasksAndMcp(cdp, project.projectId)
     await capture(cdp, '01-workspace.png')
     report.checks.originalWorkspace = true
-    if (args['--online-director']) {
+    if (args['--exports']) {
+      const poster = require('./smoke-installed-marketplace-poster.cjs')
+      const storyboard = require('./smoke-installed-marketplace-storyboard.cjs')
+      const helpers = { button, until, clickComponent, capture, checkTasksAndMcp, imageMetadata, canvasDetails, selectTwoNodes }
+      const context = () => ({ cdp, browser: active.browser, project, directory: created.directory, output: runRoot, helpers })
+      stage = 'install-export-components'
+      await anchor(cdp, '/marketplace')
+      await button(cdp, '商品棚拍工作流')
+      await selectComponents(cdp, ['中性灰棚拍背景'], 4)
+      await button(cdp, '返回插件市场')
+      await button(cdp, '创作工作室')
+      await selectComponents(cdp, ['商品标题海报', '分镜表'], 8)
+      await button(cdp, '返回画布')
+      await until(cdp, "location.pathname.startsWith('/canvas/') && Boolean(document.querySelector('.react-flow'))")
+      stage = 'poster-png'
+      const posterResult = await poster.runPoster(context())
+      report.checks.poster = posterResult.summary
+      stage = 'storyboard-csv'
+      const csvResult = await storyboard.runStoryboard(context(), storyboardFixture)
+      report.checks.storyboard = csvResult.summary
+      await checkTasksAndMcp(cdp, project.projectId)
+      stage = 'export-restart'
+      report.checks.firstExit = await closeNormally(active)
+      active = null
+      try { active = await launch(app, executable, profile) } catch (error) { active = error.launch; throw error }
+      cdp = active.renderer
+      const card = `Array.from(document.querySelectorAll('[role=button]')).find(el => el.innerText.includes(${JSON.stringify(PROJECT_NAME)}))`
+      await until(cdp, `location.pathname === '/workspace' && Boolean(${card})`)
+      await cdp.evaluate(`(${card}).click(); true`)
+      await until(cdp, "location.pathname.startsWith('/canvas/') && Boolean(document.querySelector('.react-flow'))")
+      stage = 'poster-readback'
+      await poster.verifyPoster(context(), posterResult)
+      stage = 'csv-readback'
+      await storyboard.verifyStoryboard(context(), storyboardFixture, csvResult)
+      await checkTasksAndMcp(cdp, project.projectId)
+      report.checks.restart = { posterVerified: true, csvVerified: true, tasks: 0, mcpEnabled: false, clients: 0 }
+      stage = 'final-exit'
+      report.checks.secondExit = await closeNormally(active)
+      active = null
+      report.result = 'passed'
+    } else if (args['--online-director']) {
       stage = 'online-open-project'
       await cdp.evaluate(`Array.from(document.querySelectorAll('[role=button]')).find(el => el.innerText.includes(${JSON.stringify(PROJECT_NAME)})).click(); true`)
       await until(cdp, "location.pathname.startsWith('/canvas/') && Boolean(document.querySelector('[data-testid=mcp-canvas-page] .react-flow'))")
@@ -734,6 +783,10 @@ async function main() {
     }
   } catch (error) {
     report.failure = { stage, type: error?.code === 'ERR_ASSERTION' ? 'assertion-failed' : 'operation-failed' }
+    if (args['--exports']) {
+      const caller = /smoke-installed-marketplace-(poster|storyboard)\.cjs:(\d+):\d+/.exec(error?.stack ?? '')
+      if (caller) report.failure.check = caller[1] + ':' + caller[2]
+    }
     if (stage.startsWith('arrange-')) { report.failure.step = arrangeDetail; report.failure.state = arrangeFacts }
     if (stage === 'online-director' && ['preconditions', 'index', 'download', 'install', 'director', 'save'].includes(error?.onlineStage)) report.failure.step = error.onlineStage
     if (active?.renderer) await capture(active.renderer, 'failure-state.png').catch(() => {})

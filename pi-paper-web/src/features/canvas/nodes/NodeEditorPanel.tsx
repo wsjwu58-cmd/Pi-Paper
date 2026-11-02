@@ -39,6 +39,7 @@ import { MediaSpecificationPicker } from './MediaSpecificationPicker'
 import { buildMediaReferenceParameters, getNodeResolutionMap, getVideoDurationCapability, getVideoFrameReferences, normalizeRemoteMediaReferenceUrl, resolveNodeResolution } from './videoNodeParameters'
 import { downloadNodeOutput } from './nodeDownloads'
 import type { CropMode } from './cropGeometry'
+import { promptEditPatch } from './promptEdit'
 
 const STYLE_PRESETS = ['赛博朋克', '水彩', '写实', '动漫', '电影感', '产品渲染', '三视图']
 const DESKTOP_MEDIA_TOOL_MODEL_ID = 'ffmpeg-media-1'
@@ -1081,9 +1082,7 @@ export function NodeEditorDialog({
   const persistPrompt = (value: string) => {
     setPrompt(value)
     const current = useCanvasStore.getState().nodes.find((n) => sid(n.id) === nodeId)?.data.node
-    useCanvasStore.getState().updateNodePayload(nodeId, {
-      params: { ...(current?.params ?? node.params), prompt: value },
-    })
+    useCanvasStore.getState().updateNodePayload(nodeId, promptEditPatch(current?.params ?? node.params, value, desktopMode))
   }
 
   const persistNodeParams = (patch: Record<string, unknown>, remove: string[] = []) => {

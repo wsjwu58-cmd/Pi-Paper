@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "purpose": "isolated installed macOS ARM64 marketplace smoke",
+  "result": "passed",
+  "runtime": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "nodeMajor": 24
+  },
+  "artifact": {
+    "appVersion": "0.1.0",
+    "executableSha256": "3372e5d62bac849a884052852d7dda7dd07a73f3c3791794c7d231d6854bc03f",
+    "packageJsonSha256": "220afa1eab206d3d9508c9b1b5b0288e68c82087fff110f9eb95700090be4c01",
+    "dmgAssociationVerified": true,
+    "dmgSha256": "6a765a1064c797c870c096b277fdf8e8a38bf88fd482617e063ac06f677c4f3c"
+  },
+  "checks": {
+    "originalWorkspace": true,
+    "poster": {
+      "source": {
+        "width": 384,
+        "height": 384,
+        "sha256": "f1c78a18216d863e82dec4c39474ac8f291fa30e8ab776324498b1400d47bc29",
+        "unchanged": true
+      },
+      "png": {
+        "filename": "poster-result.png",
+        "width": 1200,
+        "height": 1500,
+        "sha256": "7828e8c8a22d2b92268555b7642e9016dfc24441633ddb3231c16f9b2c44d805"
+      },
+      "changedFields": [
+        "width",
+        "height",
+        "title"
+      ],
+      "pixelChecks": [
+        "background",
+        "source-center",
+        "title"
+      ],
+      "sourcePromptPreserved": true,
+      "sourceLinked": true,
+      "layoutPersisted": true,
+      "tasks": 0
+    },
+    "storyboard": {
+      "textCsv": "storyboard-exports/storyboard-text.csv",
+      "directorCsv": "storyboard-exports/storyboard-director-motion.csv",
+      "staticCsv": "storyboard-exports/storyboard-director-static.csv",
+      "csvSha256": {
+        "text": "057500bdc2742a63c0f74ff490c23622a3c2b8e0f60840792450e7d871ca2590",
+        "director": "e6bea65ee4952cd09ac985d523ce39ba4b250fdb614d60d1e465bc2679773031",
+        "static": "249930fea57095f5eb35d8a350426e11750eb3bb948b4c0bbb78a328e041afd1"
+      },
+      "csvBytes": {
+        "text": 237,
+        "director": 179,
+        "static": 77
+      },
+      "textRows": 2,
+      "selectedOnly": true,
+      "rowAndFieldOrder": true,
+      "utf8Bom": true,
+      "formulaEscaping": true,
+      "csvQuoting": true,
+      "multiline": true,
+      "directorCamera": true,
+      "directorMotion": true,
+      "staticCamera": true,
+      "taskCount": 0,
+      "mcpEnabled": false,
+      "clientCount": 0,
+      "downloadControl": "browser"
+    },
+    "firstExit": "cdp-browser-close",
+    "restart": {
+      "posterVerified": true,
+      "csvVerified": true,
+      "tasks": 0,
+      "mcpEnabled": false,
+      "clients": 0
+    },
+    "secondExit": "cdp-browser-close"
+  },
+  "bundleEntriesCompared": 3016,
+  "bundleContentAndSymlinkDigest": "3e13d1f4b4e4769092b1e3e88612b253f015f4e229a5de2f5f55480fe681cacf",
+  "systemInstall": "/Applications/Pi-Paper.app"
+}

@@ -8,12 +8,43 @@ import type { StoryboardField } from './creativePluginTypes'
 const fields: StoryboardField[] = ['title', 'type', 'prompt', 'camera', 'content']
 const labels: Record<StoryboardField, string> = { title: '标题', type: '类型', prompt: '提示词', camera: '运镜', content: '内容' }
 export interface StoryboardRow { id: string; values: Record<StoryboardField, string> }
+
+function directorCameraText(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const { yaw, pitch, distance } = value as Record<string, unknown>
+  if (![yaw, pitch, distance].every((item) => typeof item === 'number' && Number.isFinite(item))) return null
+  return uiText('方向 {0}°，俯仰 {1}°，距离 {2}', { 0: yaw, 1: pitch, 2: distance })
+}
+
+/** Keep existing textual directions and describe the director's structured view and motion. */
+function storyboardCamera(params: Record<string, unknown>): string {
+  const camera = params.camera
+  const view = directorCameraText(camera)
+  const parts: string[] = []
+  if (typeof camera === 'string') {
+    if (camera) parts.push(camera)
+  } else if (camera != null) {
+    parts.push(view ? uiText('机位：{0}', { 0: view }) : uiText('机位数据格式无效'))
+  }
+  if (params.motion != null) {
+    const motion = params.motion && typeof params.motion === 'object' && !Array.isArray(params.motion)
+      ? params.motion as Record<string, unknown> : null
+    const from = directorCameraText(motion?.from)
+    const to = directorCameraText(motion?.to)
+    const duration = motion?.duration
+    parts.push(from && to && typeof duration === 'number' && Number.isFinite(duration)
+      ? uiText('运镜：{0} → {1}，{2} 秒', { 0: from, 1: to, 2: duration })
+      : uiText('运镜数据格式无效'))
+  }
+  return parts.length === 2 ? uiText('{0}；{1}', { 0: parts[0], 1: parts[1] }) : parts[0] ?? ''
+}
+
 export function storyboardRows(nodes: FlowNode[]): StoryboardRow[] {
   return [...nodes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x).map((node, index) => {
     const params = node.data.node.params ?? {}
     const asText = (value: unknown) => typeof value === 'string' ? value : ''
     return { id: String(node.id), values: { title: asText(params.title) || asText(params.name) || uiText('镜头 {0}', { 0: index + 1 }), type: node.data.node.type,
-      prompt: asText(params.prompt), camera: asText(params.camera), content: textNodeContent(node.data.node.output?.text, params) } }
+      prompt: asText(params.prompt), camera: node.data.node.type === 'director' ? storyboardCamera(params) : asText(params.camera), content: textNodeContent(node.data.node.output?.text, params) } }
   })
 }
 /** Quote CSV values and neutralize spreadsheet formula prefixes, including leading whitespace. */

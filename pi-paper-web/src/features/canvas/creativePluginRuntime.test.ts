@@ -92,6 +92,41 @@ describe('declarative creative components', () => {
     expect(context.drawImage).toHaveBeenCalledWith(expect.anything(), 80, 80, 920, 960)
     expect(context.fillText).toHaveBeenCalledWith('商品名称', 100, 1190, 980)
   })
+  it('exports director camera and motion in localized form while retaining textual camera directions', async () => {
+    const camera = { yaw: 30, pitch: 20, distance: 8.5 }
+    const motion = { from: { yaw: -30, pitch: 20, distance: 8.5 }, to: camera, duration: 6 }
+    const make = (id: string, params: Record<string, unknown>): FlowNode => ({ id, type: 'director', position: { x: 0, y: 0 }, data: {
+      node: { id, type: 'director', x: 0, y: 0, params, status: 'idle' }, selected: false, onConfig: () => {}, models: [],
+    } })
+    const staticNode = make('static', { camera })
+    const moving = make('motion', { camera, motion })
+    const textCamera = make('text', { camera: '手持慢推' })
+    expect(storyboardRows([staticNode])[0].values.camera).toBe('机位：方向 30°，俯仰 20°，距离 8.5')
+    expect(storyboardRows([moving])[0].values.camera).toBe('机位：方向 30°，俯仰 20°，距离 8.5；运镜：方向 -30°，俯仰 20°，距离 8.5 → 方向 30°，俯仰 20°，距离 8.5，6 秒')
+    expect(storyboardRows([textCamera])[0].values.camera).toBe('手持慢推')
+    const other = { ...textCamera, type: 'video', data: { ...textCamera.data, node: { ...textCamera.data.node, type: 'video', params: { camera: '慢推', motion: '其他业务参数' } } } }
+    expect(storyboardRows([other])[0].values.camera).toBe('慢推')
+    expect(storyboardRows([make('invalid', { camera: {}, motion: {} })])[0].values.camera).toBe('机位数据格式无效；运镜数据格式无效')
+    const { setUiLanguage } = await import('@/lib/i18n')
+    vi.stubGlobal('window', {})
+    vi.stubGlobal('document', { documentElement: {}, title: '' })
+    try {
+      await setUiLanguage('en')
+      expect(storyboardRows([moving])[0].values.camera).toBe('Camera: Yaw 30°, pitch 20°, distance 8.5; Camera motion: Yaw -30°, pitch 20°, distance 8.5 → Yaw 30°, pitch 20°, distance 8.5, 6 seconds')
+    } finally {
+      await setUiLanguage('zh')
+      vi.unstubAllGlobals()
+    }
+  })
+  it('neutralizes all four spreadsheet formula prefixes without changing multiline Chinese CSV data', () => {
+    const make = (id: string, y: number, params: Record<string, unknown>): FlowNode => ({ id, type: 'text', position: { x: 0, y }, data: {
+      node: { id, type: 'text', x: 0, y, params, status: 'idle' }, selected: false, onConfig: () => {}, models: [],
+    } })
+    const first = make('first', 0, { title: '=镜头甲,"特写"', content: '第一行，中文\n第二行 "原样"', prompt: ' -1+2', camera: '静态文本' })
+    const second = make('second', 100, { title: '镜头乙', content: '\t+SUM(2,3)\n下一行 "你好"', prompt: '正常提示', camera: ' @HYPERLINK("x")' })
+    const csv = storyboardCsv(storyboardRows([first, second]).reverse(), ['prompt', 'camera', 'content', 'title'])
+    expect(csv).toBe(`\ufeff"序号","提示词","运镜","内容","标题"\r\n"1","正常提示","' @HYPERLINK(""x"")","'\t+SUM(2,3)\n下一行 ""你好""","镜头乙"\r\n"2","' -1+2","静态文本","第一行，中文\n第二行 ""原样""","'=镜头甲,""特写"""\r\n`)
+  })
   it('exports ordered rows with escaped values and blocks spreadsheet formula injection', () => {
     const make = (id: string, x: number, content: string): FlowNode => ({ id, type: 'text', position: { x, y: 0 }, data: {
       node: { id, type: 'text', x, y: 0, params: { title: id, content }, status: 'idle' }, selected: false, onConfig: () => {}, models: [],
@@ -124,5 +159,30 @@ describe('poster save merge', () => {
     expect(unchanged.sourceRetained).toBe(true)
     expect(unchanged.nodes[0].data.node.params.posterLayout).toEqual(layout)
     expect(unchanged.edges).toEqual([edge])
+  })
+
+  it('persists the layout alongside existing and concurrently edited mirrored parameters', async () => {
+    const { mergePosterResult, withPosterLayout } = await import('./posterGraph')
+    vi.stubGlobal('localStorage', { getItem: () => null })
+    const { desktopNodePayload } = await import('./canvasPort')
+    const params = { url: 'vibe://source', prompt: 'original prompt', model: 'image-binding' }
+    const source: FlowNode = { id: 'source', type: 'image', position: { x: 0, y: 0 }, data: {
+      node: { id: 'source', type: 'image', params, status: 'idle' }, params, selected: false, onConfig: () => {}, models: [],
+    } }
+    const output: FlowNode = { id: 'poster', type: 'image', position: { x: 100, y: 0 }, data: {
+      node: { id: 'poster', type: 'image', params: {}, status: 'idle' }, selected: false, onConfig: () => {}, models: [],
+    } }
+    const layout = readPosterLayout(data('poster_layout'))
+    expect(desktopNodePayload(withPosterLayout(source, layout)).params).toEqual({ ...params, posterLayout: layout })
+    const mirror = { ...params, prompt: 'current mirrored edit', custom: { strength: 0.5 } }
+    const divergent: FlowNode = { ...source, data: { ...source.data, params: mirror } }
+    expect(desktopNodePayload(withPosterLayout(divergent, layout)).params).toEqual({ ...mirror, posterLayout: layout })
+    const editedParams = { ...params, prompt: 'edited while saving' }
+    const current: FlowNode = { ...source, data: { ...source.data, params: editedParams, node: { ...source.data.node, params: editedParams } } }
+    const merged = mergePosterResult({ nodes: [current], edges: [], source, sourceUrl: params.url, output,
+      edge: { id: 'edge', source: 'source', target: 'poster' }, layout, mediaUrl: (node) => String(node.params.url) })
+    expect(merged.sourceRetained).toBe(true)
+    expect(desktopNodePayload(merged.nodes[0]).params).toEqual({ ...editedParams, posterLayout: layout })
+    vi.unstubAllGlobals()
   })
 })
