@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "scene-composition",
+      "version": "1.0.0",
+      "name": "场景构图灵感",
+      "description": "两个可编辑的图片构图提示词预设，帮助整理主体与空间关系。",
+      "author": "Pi-Paper",
+      "kind": "package",
+      "components": [
+        "preset"
+      ],
+      "path": "marketplace/packages/scene-composition-1.0.0.json",
+      "size": 1037,
+      "sha256": "67a0bfb1e73b3bda87d4067f4ad01b66c6f1db4a64e2b588edc841c3a43f0c98",
+      "target": {
+        "product": "Pi-Paper",
+        "minVersion": "0.1.0",
+        "maxVersion": "0.1.99999"
+      }
+    },
+    {
+      "id": "pi-storyboard-brief",
+      "version": "1.0.0",
+      "name": "storyboard-brief",
+      "description": "将用户的故事想法整理为可编辑的分镜创作简报，明确主体、场景、景别和镜头意图。",
+      "author": "Pi-Paper",
+      "kind": "pi-skill",
+      "components": [
+        "skill"
+      ],
+      "path": "marketplace/skills/storyboard-brief/SKILL.md",
+      "size": 735,
+      "sha256": "f579633e03cef1a102aad211361fbb16f320318186e629ebe3c584c526c1ae88",
+      "target": {
+        "product": "Pi-Paper",
+        "minVersion": "0.1.0",
+        "maxVersion": "0.1.99999"
+      }
+    }
+  ]
+}
