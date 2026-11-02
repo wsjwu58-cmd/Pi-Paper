@@ -167,6 +167,13 @@ export type RuntimeToolGateway = ReadToolsGateway &
 			targetNodeId: string,
 			requestId?: string,
 		): Promise<string>;
+		resolveDefinitionGenerationParams?(
+			userId: string,
+			canvasId: string,
+			canvasVersion: number,
+			nodeId: string,
+			modelParams: Record<string, unknown>,
+		): Promise<Record<string, unknown> | undefined>;
 		estimateGeneration?(input: {
 			userId: string;
 			modelType: string;
@@ -1076,6 +1083,16 @@ async function withAuthoritativePrompt(
 	nodeId: string,
 	modelParams: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+	if (context.desktopMode && context.gateway.resolveDefinitionGenerationParams) {
+		const resolved = await context.gateway.resolveDefinitionGenerationParams(
+			context.userId,
+			context.canvasId,
+			context.canvasVersion,
+			nodeId,
+			modelParams,
+		);
+		if (resolved) return resolved;
+	}
 	if (nonEmptyString(modelParams.prompt)) return modelParams;
 	const node = await read.getNodeDetail(context.userId, context.canvasId, nodeId, context.requestId);
 	const params = node.params;

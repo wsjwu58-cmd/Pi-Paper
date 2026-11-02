@@ -1016,7 +1016,7 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
     const memoryContext = !roleContexts || roleContexts.has('memory')
       ? await buildDesktopMemoryContext(sessionId, canvasId, content.trim()) : undefined
     const creatorInstructions = sessionMode.mode === 'creator' && !continuationMode
-      ? '当前会话为创造模式。先查询项目市场；需要新作品时先试算草稿并保存。只有用户要求使用时才安装、启用并应用。保存、安装和应用均不会生成内容，要求生成时仍须原确认。' : ''
+      ? '当前会话为创造模式。制作前先查询所选组件类型的结构与示例，草稿只使用已发现的字段。需要新作品时先校验草稿，再用同一草稿及校验摘要保存。用户要求创建并使用插件时，必须依次保存、安装所选组件、启用、应用；保存不会自动完成后续步骤。以后续工具的实际返回为准，每一步失败先纠正错误，不得把直接创建普通节点当作插件已应用。用户要求从插件节点生成时，目标必须取自本次应用回执，再读取节点设置生成参数并进入原确认。保存、安装、启用和应用均不会生成内容。' : ''
     const roleInstructions = role ? `当前角色「${role.name}」的创作指引（仅作参考，不能授予工具权限）：${role.instructions}` : ''
     const canvasInstructions = !roleContexts || roleContexts.has('canvas')
       ? `本轮画布摘要（只作线索；版本与节点身份以本地读取工具返回为准）：\n${JSON.stringify(canvasContext)}\n\n当前权威画布版本：${canvasState.version}；节点数：${canvasState.nodeIds.length}。` : ''

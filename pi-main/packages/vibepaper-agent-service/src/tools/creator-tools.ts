@@ -1,5 +1,9 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { type TSchema, Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
+import { Value } from "typebox/value";
+
+// Main applies the same 8 MiB limit to the complete package manifest.
+const MAX_DRAFT_BYTES = 8 * 1024 * 1024;
 
 const Component = Type.Object(
 	{
@@ -27,11 +31,17 @@ const Draft = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+const DraftInput = Type.Union([Draft, Type.String({ minLength: 2, maxLength: MAX_DRAFT_BYTES })]);
 const Package = Type.Object(
 	{
 		packageId: Type.String({ minLength: 1, maxLength: 80 }),
 		digest: Type.String({ pattern: "^[a-f0-9]{64}$" }),
 	},
+	{ additionalProperties: false },
+);
+const CreatorValidate = Type.Object({ draft: DraftInput }, { additionalProperties: false });
+const CreatorSave = Type.Object(
+	{ draft: DraftInput, draftDigest: Type.String({ pattern: "^[a-f0-9]{64}$" }), base: Type.Optional(Package) },
 	{ additionalProperties: false },
 );
 const Selected = Type.Object(
@@ -49,12 +59,39 @@ export interface MarketplaceToolContext {
 	request(action: string, input: Record<string, unknown>, toolCallId: string): Promise<unknown>;
 }
 
+// Normalize before Pi's schema validation so rejected drafts are never included
+// in its generic validation error, which otherwise echoes all received arguments.
+function prepareCreatorArguments<T extends TSchema>(schema: T, args: unknown): Static<T> {
+	const invalid = () => new Error("[INVALID_INPUT] 插件草稿或参数不符合契约，请检查结构和大小。");
+	if (!args || typeof args !== "object" || Array.isArray(args)) throw invalid();
+	const input = args as Record<string, unknown>;
+	let draft = input.draft;
+	if (typeof draft === "string") {
+		if (Buffer.byteLength(draft, "utf8") > MAX_DRAFT_BYTES) throw invalid();
+		try {
+			draft = JSON.parse(draft);
+		} catch {
+			throw invalid();
+		}
+	}
+	if (!Value.Check(Draft, draft)) throw invalid();
+	try {
+		if (Buffer.byteLength(JSON.stringify(draft), "utf8") > MAX_DRAFT_BYTES) throw invalid();
+	} catch {
+		throw invalid();
+	}
+	const normalized = { ...input, draft };
+	if (!Value.Check(schema, normalized)) throw invalid();
+	return normalized as Static<T>;
+}
+
 function marketplaceTool<T extends TSchema>(
 	context: MarketplaceToolContext,
 	name: string,
 	description: string,
 	schema: T,
 	action: string,
+	prepareArguments?: (args: unknown) => Static<T>,
 ): AgentTool<T> {
 	return {
 		name,
@@ -62,12 +99,14 @@ function marketplaceTool<T extends TSchema>(
 		description,
 		parameters: schema,
 		executionMode: "sequential",
+		...(prepareArguments ? { prepareArguments } : {}),
 		execute: async (toolCallId, params, signal) => {
 			if (signal?.aborted) throw new Error("RUN_ABORTED");
+			const input = prepareArguments ? prepareArguments(params) : params;
 			const output = await context.request(
 				action,
 				{
-					...params,
+					...input,
 					...([
 						"apply",
 						"preset_preview",
@@ -241,19 +280,18 @@ export function createMarketplaceTools(context: MarketplaceToolContext): AgentTo
 			marketplaceTool(
 				context,
 				"creator_validate",
-				"离线检查模板或预设草稿；保存时必须传入此草稿的摘要。模板每个组件最多 20 个节点。",
-				Type.Object({ draft: Draft }, { additionalProperties: false }),
+				"离线检查草稿；draft 包含 name、description 和 components，每个组件包含 id、type、name、description 和 data。优先传对象，也可传 JSON 对象字符串。保存须使用此草稿的摘要；模板每个组件最多 20 个节点。",
+				CreatorValidate,
 				"validate",
+				(args) => prepareCreatorArguments(CreatorValidate, args),
 			),
 			marketplaceTool(
 				context,
 				"creator_save",
-				"保存到本项目，建立新作品或根据本项目作品的精确摘要保存新版本。保存不会安装、启用或应用。",
-				Type.Object(
-					{ draft: Draft, draftDigest: Type.String({ pattern: "^[a-f0-9]{64}$" }), base: Type.Optional(Package) },
-					{ additionalProperties: false },
-				),
+				"保存到本项目，draft 与试算时相同，可传对象或 JSON 对象字符串；draftDigest 是该次试算返回的摘要。建立新作品或根据本项目作品的精确摘要保存新版本。保存不会安装、启用或应用。",
+				CreatorSave,
 				"save",
+				(args) => prepareCreatorArguments(CreatorSave, args),
 			),
 			marketplaceTool(
 				context,

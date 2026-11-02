@@ -35,7 +35,7 @@ const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'sessi
 const AGENT_BACKUP_EXTENSIONS = new Set(['.jsonl', '.json', '.md', '.zst'])
 const DIRECTOR_CAPTURE_ASSET_URL = /^vibe:\/\/app\/assets\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/iu
 const { EDGE_COMPATIBLE_TARGET_TYPES } = require('./canvas-edge-types.cjs')
-const { validateNodeInstance, definitionDigest, renderDefinitionPrompt, sameDefinition } = require('./node-definition.cjs')
+const { validateNodeInstance, definitionDigest, resolveDefinitionGeneration, sameDefinition } = require('./node-definition.cjs')
 const { readState: readMarketplaceState } = require('./marketplace-storage.cjs')
 const ASSET_NODE_MIME_PREFIX = Object.freeze({
   image: 'image/',
@@ -4987,19 +4987,12 @@ function createLocalProjectStore() {
       const definition = taskNode && nodePayloadFromFlowNode(taskNode).params.nodeDefinition
       if (definition) {
         const payload = nodePayloadFromFlowNode(taskNode)
-        const resolved = renderDefinitionPrompt(definition, taskNode.type).trim()
+        const resolved = resolveDefinitionGeneration(definition, taskNode.type, payload.params)
         const parameters = JSON.parse(parametersJson)
-        const references = payload.params.nodeDefinitionReferenceTexts ?? []
         const suppliedReferences = parameters.referenceTexts ?? []
-        const suffix = typeof payload.params.prompt === 'string' ? payload.params.prompt
-          .replaceAll('严格参考输入图片的主体、构图与风格，仅按提示词做有限调整，勿整体重绘成另一张图。', '')
-          .replaceAll('严格保持与参考首帧同一主体、构图、服装与色调；只描述运动与镜头变化，勿重新创造形象。', '')
-          .replace(/\n{3,}/gu, '\n\n').trim() : ''
-        if (!resolved || !Array.isArray(references) || references.length > 100
-          || references.some((value) => typeof value !== 'string' || !value.trim() || value.length > 20000)
-          || !Array.isArray(suppliedReferences) || JSON.stringify(references) !== JSON.stringify(suppliedReferences)
+        if (!Array.isArray(suppliedReferences) || JSON.stringify(resolved.referenceTexts) !== JSON.stringify(suppliedReferences)
           || normalized.modality !== taskNode.type || typeof parameters.prompt !== 'string'
-          || parameters.prompt !== [...references, resolved, suffix].filter(Boolean).join('\n\n').trim()) {
+          || parameters.prompt !== resolved.prompt) {
           throw new Error('NODE_DEFINITION_PROMPT_MISMATCH: 节点提示词与已保存的预览不一致，请重新检查后提交。')
         }
       }

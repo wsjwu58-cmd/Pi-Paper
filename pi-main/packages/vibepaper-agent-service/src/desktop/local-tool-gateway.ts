@@ -209,6 +209,51 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 		return model.name;
 	}
 
+	async resolveDefinitionGenerationParams(
+		userId: string,
+		canvasId: string,
+		canvasVersion: number,
+		nodeId: string,
+		modelParams: Record<string, unknown>,
+	): Promise<Record<string, unknown> | undefined> {
+		if (userId !== this.projectId) throw gatewayError("PERMISSION_DENIED", "当前项目已更改", 403);
+		const canvas = await this.loadCanvas(canvasId);
+		const node = canvas.nodes.find((candidate) => candidate.id === nodeId);
+		if (!node) throw gatewayError("NOT_FOUND", "节点不存在", 404);
+		const data = recordValue(node.data);
+		const params = isRecord(data.params) ? data.params : recordValue(recordValue(data.node).params);
+		if (!params.nodeDefinition) return undefined;
+		const response = await this.call("agent:core:load-canvas", {
+			projectId: this.projectId,
+			canvasId,
+			canvasVersion,
+			generationNodeId: nodeId,
+		});
+		if (
+			!isRecord(response) ||
+			response.canvasId !== canvasId ||
+			response.version !== canvasVersion ||
+			!isRecord(response.definitionGeneration) ||
+			typeof response.definitionGeneration.prompt !== "string" ||
+			!response.definitionGeneration.prompt.trim() ||
+			!Array.isArray(response.definitionGeneration.referenceTexts) ||
+			!response.definitionGeneration.referenceTexts.every((value) => typeof value === "string" && value.trim())
+		) {
+			throw gatewayError("INVALID_INPUT", "节点字段或参考内容无效，请检查后重试", 400);
+		}
+		const resolved = response.definitionGeneration;
+		if (
+			(typeof modelParams.prompt === "string" &&
+				modelParams.prompt.trim() &&
+				modelParams.prompt !== resolved.prompt) ||
+			(modelParams.referenceTexts !== undefined &&
+				JSON.stringify(modelParams.referenceTexts) !== JSON.stringify(resolved.referenceTexts))
+		) {
+			throw gatewayError("INVALID_INPUT", "生成输入与节点字段或已保存参考不一致，请先更新节点", 400);
+		}
+		return { ...modelParams, prompt: resolved.prompt, referenceTexts: resolved.referenceTexts };
+	}
+
 	async createGenerationTask(input: {
 		userId: string;
 		canvasId: string;
@@ -227,11 +272,23 @@ export class DesktopLocalToolGateway implements ReadToolsGateway, CanvasCommandG
 		const providerType = model.providerType;
 		const providerId = model.providerId;
 		const modelId = model.name;
-		const prompt = stringValue(input.modelParams.prompt)?.trim() ?? "";
+		// Old confirmations may have selected the canvas node without supplying a
+		// prompt. Resolve that same version-bound node before dispatch as well.
+		const modelParams =
+			node.hasNodeDefinition === true
+				? ((await this.resolveDefinitionGenerationParams(
+						input.userId,
+						input.canvasId,
+						input.canvasVersion,
+						input.nodeId,
+						input.modelParams,
+					)) ?? input.modelParams)
+				: input.modelParams;
+		const prompt = stringValue(modelParams.prompt)?.trim() ?? "";
 		if (modality !== "compose" && !prompt) {
 			throw new ToolGatewayError("INVALID_INPUT", "模型、生成类型或提示词无效", {}, 400);
 		}
-		const parameters = Object.fromEntries(Object.entries(input.modelParams).filter(([key]) => key !== "prompt"));
+		const parameters = Object.fromEntries(Object.entries(modelParams).filter(([key]) => key !== "prompt"));
 		const response = await this.call("agent:core:create-generation-task", {
 			projectId: this.projectId,
 			canvasId: input.canvasId,
@@ -657,6 +714,7 @@ function projectNode(node: Record<string, unknown>): Record<string, unknown> {
 		height: node.height ?? nested.height,
 		creativeType: data.creativeType ?? nested.creativeType,
 		params: boundValue(stripPrivateFields(params), 0) as Record<string, unknown>,
+		...(params.nodeDefinition ? { hasNodeDefinition: true } : {}),
 		prompt: data.prompt ?? nested.prompt ?? params.prompt,
 		output: boundValue(stripPrivateFields(output), 0) as Record<string, unknown>,
 		status: data.status ?? nested.status,

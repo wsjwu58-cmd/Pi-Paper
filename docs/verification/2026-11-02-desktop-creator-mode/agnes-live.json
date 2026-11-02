@@ -1,0 +1,127 @@
+{
+  "timestamp": "2026-11-02T08:43:04.343Z",
+  "provider": "agnes",
+  "agentModel": "agnes-2.5-flash",
+  "projectId": "1a4fae39-c97c-493c-b6e2-67d1cd6a594f",
+  "canvasId": "0b861f0f-4493-4ec2-8355-2640f8417ad8",
+  "packageId": "project-412cbc9a-6591-43fe-9f14-2f1765cba4e4",
+  "componentId": "perfume-studio",
+  "version": "1.0.0",
+  "packageDigest": "2785b46067fe9855f1f6476b2e95cebd364305ecf6a66e0d0f57c48181ab7caf",
+  "applicationOperation": "ee48b8ff115f7c270ee4951b9013ac2b5ee7638a6766d592a874e087e9814ef6",
+  "appliedNodeId": "434e6cfc-6d48-4276-995c-614b75b5f8a2",
+  "definitionDigest": "f312164891477d5e84e99e5a4182faedb2995bb9cffe2477ccf3b06c47fdca33",
+  "sessionId": "01a19b64-b9b3-79a2-bb27-d1b116ba2515",
+  "toolResults": [
+    {
+      "name": "marketplace_inspect",
+      "ok": true
+    },
+    {
+      "name": "list_models",
+      "ok": true
+    },
+    {
+      "name": "creator_validate",
+      "ok": true
+    },
+    {
+      "name": "creator_save",
+      "ok": true
+    },
+    {
+      "name": "creator_install",
+      "ok": true
+    },
+    {
+      "name": "creator_enable",
+      "ok": true
+    },
+    {
+      "name": "marketplace_apply",
+      "ok": true
+    },
+    {
+      "name": "get_node_detail",
+      "ok": true
+    },
+    {
+      "name": "list_models",
+      "ok": true
+    },
+    {
+      "name": "submit_generation",
+      "ok": true
+    },
+    {
+      "name": "get_canvas_summary",
+      "ok": true
+    },
+    {
+      "name": "get_node_detail",
+      "ok": true
+    },
+    {
+      "name": "submit_generation",
+      "ok": true
+    },
+    {
+      "name": "get_node_detail",
+      "ok": true
+    },
+    {
+      "name": "list_models",
+      "ok": true
+    },
+    {
+      "name": "submit_generation",
+      "ok": true
+    }
+  ],
+  "tasksBeforeGeneration": 0,
+  "authorPrompt": "制作一个叫“香水棚拍”的本项目单节点插件，提供可编辑的主体、背景两个字段，默认主体是无字钴蓝色陶瓷香水瓶，默认背景是象牙白。提示词还包括正面居中、柔和侧光、产品摄影、无文字。请查询可用的单节点定义结构，创建并校验插件，保存，安装该组件，启用，再从这个插件在当前空画布新增一次图片节点。生成目标就用这个插件创建的节点。先完成到节点可见即可。",
+  "confirmation": {
+    "status": "accepted",
+    "recoveredOriginalOperation": true
+  },
+  "generation": {
+    "taskId": "ce0f95b6-dd59-4a6c-bd78-b1f5e13accec",
+    "targetNodeId": "434e6cfc-6d48-4276-995c-614b75b5f8a2",
+    "status": "succeeded",
+    "provider": "agnes",
+    "model": "target-agnes-image-2-5-flash",
+    "file": ".vibepaper/generated/ce0f95b6-dd59-4a6c-bd78-b1f5e13accec/result.png",
+    "bytes": 2229710,
+    "sha256": "f743026222c6628c3cf9665b93b8c983a82c6a2176aa1fbe153caff98023463b",
+    "displayed": {
+      "width": 2048,
+      "height": 2048,
+      "local": true
+    },
+    "persistedPrompt": "无字钴蓝色陶瓷香水瓶，象牙白，正面居中，柔和侧光，产品摄影，无文字"
+  },
+  "draftTransport": [
+    {
+      "tool": "creator_validate",
+      "draftType": "string"
+    },
+    {
+      "tool": "creator_save",
+      "draftType": "string"
+    }
+  ],
+  "taskCountAfterRecovery": 1,
+  "approvalCounts": {
+    "accepted": 1,
+    "invalidated": 2
+  },
+  "verification": {
+    "desktopRegression": {
+      "passed": 534,
+      "failed": 24,
+      "skipped": 5,
+      "newFailures": 0
+    },
+    "creatorTransportTestsPassed": 3
+  }
+}

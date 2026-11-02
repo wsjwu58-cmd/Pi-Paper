@@ -10,14 +10,14 @@ const { executeCreatorMarketplace } = require('../src/creator-marketplace.cjs')
 const { createLocalProjectStore } = require('../src/project-store.cjs')
 const { portableTemplateGraph } = require('../dist/plugin-template-graph.cjs')
 
-test('offline OpenAI-compatible fixture drives a real Worker creator turn through the project and canvas', { timeout: 30000 }, async (t) => {
+test('serialized draft fixture drives a real Worker creator turn through the project and canvas', { timeout: 30000 }, async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'creator-worker-fixture-')))
   const projects = path.join(root, 'projects'), userdata = path.join(root, 'userdata')
   await fs.mkdir(projects); await fs.mkdir(userdata)
   const store = createLocalProjectStore(), project = await store.createProject(projects, '三视图项目')
   const projectId = project.project.projectId, canvasId = project.project.canvasId
   const service = createMarketplaceService(userdata)
-  const fixture = await startCreatorModelFixture()
+  const fixture = await startCreatorModelFixture({ serializedDraft: true })
   const { calls, seenSchemas, server } = fixture
   const workerBundle = path.resolve(__dirname, '../dist/agent-worker.cjs')
   const worker = new Worker(`const { parentPort } = require('node:worker_threads'); process.parentPort = { on: (...args) => parentPort.on(...args), postMessage: (...args) => parentPort.postMessage(...args) }; require(${JSON.stringify(workerBundle)})`, { eval: true })

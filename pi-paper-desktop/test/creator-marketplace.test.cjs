@@ -162,6 +162,15 @@ test('capability discovery returns metadata by default and exact component data 
   const detailed = await executeCreatorMarketplace({ ...common, input: { packageId: saved.packageId, componentId: 'three-views', componentType: 'template' } })
   assert.equal(detailed.packages[0].components[0].data.nodes.length, 6)
   assert.equal(detailed.schema.maxNodes, 20)
+  const templateExample = { name: '发现的模板', description: '', components: [{
+    id: 'example', type: 'template', name: '示例', description: '', data: detailed.schema.fields,
+  }] }
+  assert.equal(service.validateCreatorDraft(templateExample, true).components[0].nodeCount, 2)
+  const definition = await executeCreatorMarketplace({ ...common, input: { componentType: 'node_definition' } })
+  const definitionExample = { name: '发现的节点', description: '', components: [{
+    id: 'example', type: 'node_definition', name: '示例', description: '', data: definition.schema.example,
+  }] }
+  assert.equal(service.validateCreatorDraft(definitionExample, true).components[0].type, 'node_definition')
 })
 
 test('Agent-authored and manually authored node definitions share validation and create equivalent editable instances', async (t) => {

@@ -7,7 +7,7 @@ const draft = { name: '商品三视图', description: '', components: [{ id: 'th
   ]), edges: ['front', 'side', 'back'].map((name) => ({ source: `${name}-text`, target: `${name}-image` })),
 } }] }
 
-async function startCreatorModelFixture() {
+async function startCreatorModelFixture({ serializedDraft = false } = {}) {
   const calls = [], seenSchemas = []
   let step = 0, draftDigest, packageId, packageDigest
   const respond = async (req, res) => {
@@ -22,8 +22,8 @@ async function startCreatorModelFixture() {
     }
     let name, args
     if (step === 0) { name = 'marketplace_inspect'; args = { componentType: 'template' } }
-    else if (step === 1) { name = 'creator_validate'; args = { draft } }
-    else if (step === 2) { draftDigest = last.draftDigest; name = 'creator_save'; args = { draft, draftDigest } }
+    else if (step === 1) { name = 'creator_validate'; args = { draft: serializedDraft ? JSON.stringify(draft) : draft } }
+    else if (step === 2) { draftDigest = last.draftDigest; name = 'creator_save'; args = { draft: serializedDraft ? JSON.stringify(draft) : draft, draftDigest } }
     else if (step === 3) { packageId = last.packageId; packageDigest = last.digest; name = 'creator_install'; args = { packageId, digest: packageDigest, componentIds: ['three-views'] } }
     else if (step === 4) { name = 'creator_enable'; args = { packageId, digest: packageDigest, componentId: 'three-views', enabled: true } }
     else if (step === 5) { name = 'marketplace_apply'; args = { packageId, digest: packageDigest, componentId: 'three-views' } }

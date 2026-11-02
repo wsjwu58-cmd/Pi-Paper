@@ -86,8 +86,32 @@ function renderDefinitionPrompt(instance, baseType) {
   if (prompt.length > 20000) invalidInstance()
   return prompt
 }
+function resolveDefinitionGeneration(instance, baseType, params) {
+  const resolved = renderDefinitionPrompt(instance, baseType).trim()
+  const references = params.nodeDefinitionReferenceTexts ?? []
+  const suffix = typeof params.prompt === 'string' ? params.prompt
+    .replaceAll('严格参考输入图片的主体、构图与风格，仅按提示词做有限调整，勿整体重绘成另一张图。', '')
+    .replaceAll('严格保持与参考首帧同一主体、构图、服装与色调；只描述运动与镜头变化，勿重新创造形象。', '')
+    .replace(/\n{3,}/gu, '\n\n').trim() : ''
+  if (!resolved || !Array.isArray(references) || references.length > 100
+    || references.some((value) => typeof value !== 'string' || !value.trim() || value.length > 20000)) {
+    throw new Error('NODE_DEFINITION_PROMPT_MISMATCH: 节点提示词与已保存的预览不一致，请重新检查后提交。')
+  }
+  const prompt = [...references, resolved, suffix].filter(Boolean).join('\n\n').trim()
+  if (prompt.length > 200000) throw new Error('NODE_DEFINITION_PROMPT_MISMATCH: 节点提示词超过生成上限，请精简参考内容。')
+  return { prompt, referenceTexts: references }
+}
+function resolveCanvasNodeDefinitionGeneration(canvas, nodeId, canvasVersion) {
+  if (!canvas || canvas.version !== canvasVersion || !Array.isArray(canvas.nodes)) throw new Error('AGENT_CANVAS_CHANGED')
+  const node = canvas.nodes.find((entry) => entry.id === nodeId)
+  if (!node) throw new Error('NOT_FOUND')
+  const data = record(node.data) ? node.data : {}
+  const nested = record(data.node) ? data.node : {}
+  const params = record(data.params) ? data.params : record(nested.params) ? nested.params : {}
+  return params.nodeDefinition ? resolveDefinitionGeneration(params.nodeDefinition, node.type, params) : null
+}
 function sameDefinition(left, right) {
   return JSON.stringify(canonical(left ? { ref: left.ref, snapshot: left.snapshot } : null))
     === JSON.stringify(canonical(right ? { ref: right.ref, snapshot: right.snapshot } : null))
 }
-module.exports = { validateNodeDefinition, validateNodeInstance, definitionDigest, renderDefinitionPrompt, sameDefinition }
+module.exports = { validateNodeDefinition, validateNodeInstance, definitionDigest, renderDefinitionPrompt, resolveDefinitionGeneration, resolveCanvasNodeDefinitionGeneration, sameDefinition }

@@ -53,6 +53,7 @@ const { buildDesktopAgentModelDirectory, isDesktopAgentGenerationTarget } = requ
 const { ALLOWED_AGENT_CORE_METHODS, getAgentCanvasDomain, safeAgentCoreErrorCode } = require('./agent-local-tools.cjs')
 const { deleteAgentNodes } = require('./agent-node-deletion.cjs')
 const { readAgentTaskAuthority } = require('./agent-task-authority.cjs')
+const { resolveCanvasNodeDefinitionGeneration } = require('./node-definition.cjs')
 const { createRecentProjectCatalog } = require('./recent-project-catalog.cjs')
 const { isDesktopRendererRoute, isTrustedRendererUrl: checkRendererUrl } = require('./renderer-trust.cjs')
 const { resolveGenerationMediaReferences } = require('./reference-media.cjs')
@@ -543,7 +544,7 @@ async function createAgentWorker() {
       throw new Error('AGENT_LOCAL_CORE_INPUT_INVALID')
     }
     const allowedKeys = {
-      'agent:core:load-canvas': ['projectId', 'canvasId'],
+      'agent:core:load-canvas': ['projectId', 'canvasId', 'generationNodeId', 'canvasVersion'],
       'agent:core:create-node': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'type', 'creativeType', 'prompt', 'params', 'x', 'y', 'width', 'height', 'modelRef'],
       'agent:core:update-node': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'nodeId', 'x', 'y', 'width', 'height', 'params', 'prompt', 'modelRef', 'creativeType', 'status', 'execStatus', 'output', 'currentOutputId', 'groupId', 'stackId', 'stale'],
       'agent:core:delete-nodes': ['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'nodeIds'],
@@ -585,8 +586,21 @@ async function createAgentWorker() {
     delete coreInput.mcpCommandId
     if (mutating && input.runId && workerReference.cancelledRunIds.has(input.runId)) throw new Error('RUN_ABORTED')
     switch (method) {
-      case 'agent:core:load-canvas':
-        return localCore.request('canvas:load', { projectId: input.projectId, canvasId: active.canvasId }, 15_000)
+      case 'agent:core:load-canvas': {
+        const canvas = await localCore.request('canvas:load', { projectId: input.projectId, canvasId: active.canvasId }, 15_000)
+        if (input.generationNodeId === undefined && input.canvasVersion === undefined) return canvas
+        if (typeof input.generationNodeId !== 'string' || !input.generationNodeId || input.generationNodeId.length > 200
+          || !Number.isSafeInteger(input.canvasVersion) || input.canvasVersion < 0) throw codedError('INVALID_INPUT')
+        try {
+          return { canvasId: canvas.canvasId, version: canvas.version,
+            definitionGeneration: resolveCanvasNodeDefinitionGeneration(canvas, input.generationNodeId, input.canvasVersion) }
+        } catch (error) {
+          if (error?.message?.startsWith('NODE_DEFINITION_')) {
+            throw codedError('INVALID_INPUT', '请检查节点字段和参考内容，确保生成提示词有效。')
+          }
+          throw error
+        }
+      }
       case 'agent:core:create-node':
         return localCore.request('canvas:create-node', coreInput, 30_000)
       case 'agent:core:update-node':

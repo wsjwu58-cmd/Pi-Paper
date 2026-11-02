@@ -40,10 +40,14 @@ async function executeCreatorMarketplace({ service, directory, projectId, canvas
       || (input.componentId !== undefined && typeof input.packageId !== 'string')) throw new Error('INVALID_INPUT')
     const supported = {
       template: { maxNodes: 20, nodeTypes: ['text', 'image', 'video', 'audio', 'compose', 'director'],
+        note: 'data 必须含 nodes 和 edges。可应用的模板 params 使用 content、prompt、title、style、camera；模型、画幅和分辨率在应用后设置。',
         fields: { nodes: [{ id: 'brief', type: 'text', x: 0, y: 0, params: { content: '拍摄要求' } },
           { id: 'result', type: 'image', x: 350, y: 0, params: {} }], edges: [{ source: 'brief', target: 'result' }] } },
       preset: { nodeTypes: ['text', 'image', 'video', 'audio'], fields: { nodeType: 'image', params: { prompt: '柔光' } } },
-      node_definition: { baseTypes: ['text', 'image', 'video', 'audio'], fields: ['schemaVersion', 'baseType', 'promptTemplate', 'fields'] },
+      node_definition: { baseTypes: ['text', 'image', 'video', 'audio'], fields: ['schemaVersion', 'baseType', 'promptTemplate', 'fields'],
+        example: { schemaVersion: 1, baseType: 'image', promptTemplate: '{{subject}}，{{lighting}}',
+          fields: [{ id: 'subject', label: '主体', kind: 'text', default: '陶瓷瓶' },
+            { id: 'lighting', label: '光线', kind: 'enum', options: ['柔光', '侧光'], default: '柔光' }] } },
       agent_role: { profiles: ['canvas-general', 'vertical-short-drama', 'asset-assistant', 'audit-readonly'], fields: ['profile', 'tools', 'skills', 'contexts', 'instructions'], note: '角色权限只能收窄宿主权限。' },
       workflow_recipe: { fields: ['steps'], stepKinds: ['check_missing_prompt', 'arrange', 'storyboard_preview'], note: '只能引用同包内已启用组件。' },
       storyboard: { example: { fields: ['title', 'type', 'prompt', 'camera', 'content'] } },
