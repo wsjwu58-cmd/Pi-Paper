@@ -2,7 +2,7 @@ import { vi } from 'vitest'
 vi.mock('@/lib/media', () => ({ fetchAuthedBlob: vi.fn() }))
 import { describe, expect, it } from 'vitest'
 import { createRequire } from 'node:module'
-import { arrangeCreativeSelection, cameraAt, readCreativeMotion, readCreativeScene, readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard } from './creativePluginRuntime'
+import { arrangeCreativeSelection, cameraAt, readCreativeMotion, readCreativeScene, readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard, resolveUnchangedCreativeSelection } from './creativePluginRuntime'
 import { paintPoster } from './PosterEditor'
 import { storyboardCsv, storyboardRows } from './StoryboardEditor'
 import { splitCropIntoPixels } from './nodes/cropGeometry'
@@ -57,6 +57,29 @@ describe('declarative creative components', () => {
       { x: 0, y: 40, width: 50, height: 40, column: 0, row: 1 },
       { x: 50, y: 40, width: 50, height: 40, column: 1, row: 1 },
     ])
+  })
+  it('accepts view remeasurement during confirmation but rejects changes to selected nodes', () => {
+    const make = (id: string, x: number, height: number): FlowNode => ({
+      id, type: 'image', position: { x, y: 20 }, measured: { width: 100, height }, data: {
+        node: { id, type: 'image', x, y: 20, params: { title: id, settings: { prompt: 'unchanged' } }, status: 'idle' },
+        selected: true, onConfig: () => {}, models: [],
+      },
+    })
+    const before = [make('a', 10, 40), make('b', 200, 50)]
+    const remeasured = before.map((node) => ({ ...node, measured: { width: 130, height: 90 },
+      data: { ...node.data, selected: false, node: { ...node.data.node, params: { ...node.data.node.params, settings: { prompt: 'unchanged' } } } } }))
+    const selection = resolveUnchangedCreativeSelection(before, remeasured, ['b', 'a'])
+    expect(selection).toEqual(remeasured)
+    expect(selection?.[0]).toBe(remeasured[0])
+    expect(arrangeCreativeSelection(remeasured, selection!, readSelectionCommand({ command: 'arrange', orientation: 'vertical', gap: 17 })).map((node) => node.position))
+      .toEqual([{ x: 10, y: 20 }, { x: 10, y: 127 }])
+    expect(resolveUnchangedCreativeSelection(before, remeasured, ['a'])).toBeNull()
+    expect(resolveUnchangedCreativeSelection(before, remeasured, ['a', 'a'])).toBeNull()
+    expect(resolveUnchangedCreativeSelection(before, remeasured, ['a', 'b', 'other'])).toBeNull()
+    expect(resolveUnchangedCreativeSelection(before, remeasured.slice(0, 1), ['a', 'b'])).toBeNull()
+    expect(resolveUnchangedCreativeSelection(before, [{ ...remeasured[0], position: { x: 11, y: 20 } }, remeasured[1]], ['a', 'b'])).toBeNull()
+    expect(resolveUnchangedCreativeSelection(before, [{ ...remeasured[0], data: { ...remeasured[0].data,
+      node: { ...remeasured[0].data.node, params: { title: 'a', settings: { prompt: 'edited' } } } } }, remeasured[1]], ['a', 'b'])).toBeNull()
   })
   it('paints the local source in the editable frame and clips cover mode before rendering text', () => {
     const layout = readPosterLayout(data('poster_layout'))

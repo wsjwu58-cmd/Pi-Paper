@@ -36,7 +36,7 @@ import { CanvasPlugins } from './CanvasPlugins'
 import { PosterEditor } from './PosterEditor'
 import { mergePosterResult } from './posterGraph'
 import { StoryboardEditor } from './StoryboardEditor'
-import { arrangeCreativeSelection, readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard } from './creativePluginRuntime'
+import { arrangeCreativeSelection, readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard, resolveUnchangedCreativeSelection } from './creativePluginRuntime'
 import type { PosterLayout, StoryboardField } from './creativePluginTypes'
 import { buildPluginTemplateGraph, changedPluginPresetPatch, commitPluginTemplateGraph, isPluginModelParameter, overwrittenPluginPresetFields, pluginPresetPatch, readPluginTemplate, templateFromSelection } from './pluginComponents'
 import { CanvasGroupView } from './CanvasGroupView'
@@ -1759,8 +1759,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         await assertPluginContext()
         if (JSON.stringify(latestComponent.data) !== JSON.stringify(component.data)) throw new Error(uiText('组件内容已变更，请重新应用。'))
         const latest = useCanvasStore.getState()
-        if (selected.some((node) => latest.nodes.find((item) => sid(item.id) === sid(node.id)) !== node)) throw new Error(uiText('选区已变更，请重新操作。'))
-        setNodes(arrangeCreativeSelection(latest.nodes, selected, command))
+        const latestSelection = resolveUnchangedCreativeSelection(selected, latest.nodes, pluginTarget ? [pluginTarget.nodeId] : currentPluginSelection())
+        if (!latestSelection) throw new Error(uiText('选区已变更，请重新操作。'))
+        setNodes(arrangeCreativeSelection(latest.nodes, latestSelection, command))
         setDirty(true)
         await persistDesktopChanges()
         toastSuccess(uiText('已排列所选节点。'))

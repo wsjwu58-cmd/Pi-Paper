@@ -1,4 +1,5 @@
 import { t as uiText } from '@/lib/i18n'
+import { sid } from '@/lib/ids'
 import type { DirectorCamera, DirectorObject } from './director/types'
 import { CHARACTER_POSES, PROP_KINDS, PRIMITIVE_KINDS } from './director/catalog'
 import { arrangeCanvasGroupNodes } from './canvasGroupUtils'
@@ -60,6 +61,31 @@ export function readSelectionCommand(raw: unknown): CreativeSelectionCommand {
   const v = exact(raw, ['command', 'orientation', 'gap'])
   if (v.command !== 'arrange' || (v.orientation !== 'horizontal' && v.orientation !== 'vertical')) return invalid()
   return { command: v.command, orientation: v.orientation, gap: number(v.gap, 0, 500) }
+}
+function equalNodeData(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => equalNodeData(value, right[index]))
+  }
+  const a = left as Record<string, unknown>, b = right as Record<string, unknown>
+  const keys = Object.keys(a)
+  return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && equalNodeData(a[key], b[key]))
+}
+/** Ignore React Flow view updates while rejecting changed selection, positions, or business data. */
+export function resolveUnchangedCreativeSelection(previous: FlowNode[], current: FlowNode[], selectedIds: Array<string | number>): FlowNode[] | null {
+  const expectedIds = previous.map((node) => sid(node.id))
+  const expected = new Set(expectedIds)
+  const selected = new Set(selectedIds.map(sid))
+  if (expected.size !== previous.length || selected.size !== selectedIds.length || selected.size !== expected.size || [...expected].some((id) => !selected.has(id))) return null
+  const currentById = new Map(current.map((node) => [sid(node.id), node]))
+  const result: FlowNode[] = []
+  for (const old of previous) {
+    const node = currentById.get(sid(old.id))
+    if (!node || node.position.x !== old.position.x || node.position.y !== old.position.y || !equalNodeData(old.data.node, node.data.node)) return null
+    result.push(node)
+  }
+  return result
 }
 /** Preserve the selected nodes' spatial order on the axis being arranged. */
 export function arrangeCreativeSelection(nodes: FlowNode[], selected: FlowNode[], command: CreativeSelectionCommand): FlowNode[] {

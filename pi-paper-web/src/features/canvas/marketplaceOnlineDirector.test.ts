@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { cameraAt, readCreativeCamera, readCreativeMotion, readCreativeScene } from './creativePluginRuntime'
-import interview from '../../../../marketplace/packages/interview-two-camera-1.0.0.json'
+import { readFileSync } from 'node:fs'
+
+const fixture = new URL('../../../../marketplace/packages/interview-two-camera-1.0.0.json', import.meta.url)
+const interview: { components: { id: string; data: unknown }[] } = JSON.parse(readFileSync(fixture, 'utf8'))
 
 const component = (id: string) => {
   const item = interview.components.find((candidate) => candidate.id === id)

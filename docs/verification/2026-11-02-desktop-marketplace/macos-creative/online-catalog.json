@@ -1,0 +1,31 @@
+{
+  "repository": "wsjwu58-cmd/Pi-Paper",
+  "branch": "feat/desktop-local-migration",
+  "commit": "5451518e213b5985cdf120ffbf29a0fc7d669c51",
+  "imported": [
+    {
+      "id": "scene-composition",
+      "version": "1.0.0",
+      "kind": "package",
+      "sha256": "67a0bfb1e73b3bda87d4067f4ad01b66c6f1db4a64e2b588edc841c3a43f0c98",
+      "size": 1037
+    },
+    {
+      "id": "interview-two-camera",
+      "version": "1.0.0",
+      "kind": "package",
+      "sha256": "9a51b4be0dcbf61b77787ecc657b6773049a21a9f751379f94a1a6f754066530",
+      "size": 3468
+    },
+    {
+      "id": "pi-storyboard-brief",
+      "version": "1.0.0",
+      "kind": "pi-skill",
+      "sha256": "f579633e03cef1a102aad211361fbb16f320318186e629ebe3c584c526c1ae88",
+      "size": 735
+    }
+  ],
+  "skipped": [],
+  "offlineCached": true,
+  "offlineImported": true
+}

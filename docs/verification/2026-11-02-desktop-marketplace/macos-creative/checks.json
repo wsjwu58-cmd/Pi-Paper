@@ -1,0 +1,126 @@
+{
+  "platform": "macOS 26.4.1 ARM64",
+  "appVersion": "0.1.0",
+  "dmgSha256": "0209158cf393af5215dde98553b98fa1d4c558f6c59bf439e02ceeb62aa63d85",
+  "executableSha256": "d3512b1674aca497f0e1587dff4ed2c46762fa938ecb032227d2c824b67328de",
+  "bundleEntriesCompared": 3016,
+  "bundleContentAndSymlinkDigest": "b2dac88550592636f8fe88aa3b535439454ee85bf5d31a0ef904c74653227d91",
+  "offline": {
+    "originalWorkspace": true,
+    "templateOnlyInstalled": true,
+    "canvas": {
+      "nodes": 7,
+      "edges": 6,
+      "topologyValidated": true
+    },
+    "mcp": {
+      "prefilledClient": "codex",
+      "prefilledPermissions": [
+        "canvas.read",
+        "canvas.write"
+      ],
+      "enabled": false,
+      "clients": 0,
+      "tasks": 0
+    },
+    "firstExit": "cdp-browser-close",
+    "restart": {
+      "graphUnchanged": true,
+      "nodes": 7,
+      "edges": 6,
+      "installedComponentsPreserved": true,
+      "mcpEnabled": false,
+      "clients": 0,
+      "tasks": 0
+    },
+    "skill": {
+      "installed": true,
+      "source": "marketplace",
+      "selectableInAgent": true
+    },
+    "asset": {
+      "importedPng": true,
+      "width": 384,
+      "height": 384
+    },
+    "crop": {
+      "mode": "four",
+      "outputCount": 4,
+      "sizes": [
+        {
+          "width": 177,
+          "height": 177
+        },
+        {
+          "width": 177,
+          "height": 177
+        },
+        {
+          "width": 177,
+          "height": 177
+        },
+        {
+          "width": 177,
+          "height": 177
+        }
+      ],
+      "sourceUnchanged": true,
+      "allAssetsReadable": true,
+      "grouped": true
+    },
+    "arrangement": {
+      "selectedNodes": 2,
+      "horizontal": true,
+      "vertical": true,
+      "gap": 28
+    },
+    "secondExit": "cdp-browser-close",
+    "extendedRestart": {
+      "nodes": 12,
+      "edges": 6,
+      "sourceAndCropsReadable": true,
+      "cropGroupPreserved": true,
+      "positionsPreserved": true,
+      "skillAvailable": true,
+      "clients": 0,
+      "tasks": 0
+    },
+    "thirdExit": "cdp-browser-close"
+  },
+  "online": {
+    "originalWorkspace": true,
+    "onlineDirector": {
+      "source": "official-github-online",
+      "repository": "wsjwu58-cmd/Pi-Paper",
+      "branch": "feat/desktop-local-migration",
+      "commit": "5451518e213b5985cdf120ffbf29a0fc7d669c51",
+      "version": "1.0.0",
+      "sha256": "9a51b4be0dcbf61b77787ecc657b6773049a21a9f751379f94a1a6f754066530",
+      "size": 3468,
+      "isolatedEmptyProject": true,
+      "freshCache": true,
+      "userRefreshAndDownload": true,
+      "componentCount": 4,
+      "sceneObjects": 6,
+      "sceneVerified": true,
+      "leftCameraYawVerified": true,
+      "rightCameraVerified": true,
+      "motionVerified": true,
+      "persistedReadback": true,
+      "taskCount": 0,
+      "mcpEnabled": false,
+      "clientCount": 0
+    },
+    "onlineFirstExit": "cdp-browser-close",
+    "onlineRestart": {
+      "sceneVerified": true,
+      "cameraVerified": true,
+      "motionVerified": true,
+      "componentsEnabled": 4,
+      "tasks": 0,
+      "mcpEnabled": false,
+      "clients": 0
+    },
+    "onlineFinalExit": "cdp-browser-close"
+  }
+}
