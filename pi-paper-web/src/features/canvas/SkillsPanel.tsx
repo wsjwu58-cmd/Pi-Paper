@@ -6,6 +6,7 @@ import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import type { MouseEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   ArrowLeft,
   Camera,
@@ -147,7 +148,7 @@ export function SkillsPanel({
   sessionId: string | number | null
   onClose: () => void
   onBackToChat: () => void
-  onApplied?: (name: string) => void
+  onApplied?: (skill: SkillView) => void
   desktopSkills?: readonly SkillView[]
   loadedSkillIds?: readonly string[]
   desktopProjectId?: string
@@ -241,7 +242,7 @@ export function SkillsPanel({
         toastError(uiText("请先启用此 Skill"))
         return
       }
-      onApplied?.(active.name)
+      onApplied?.(active)
       toastSuccess(uiText("已选择 Skill：{0}", { 0: active.name }))
       onBackToChat()
       return
@@ -253,7 +254,7 @@ export function SkillsPanel({
     try {
       await api(`/agent/sessions/${sessionId}/skills/${active.id}:attach`, { method: 'POST' })
       toastSuccess(uiText("已应用 Skill：{0}", { 0: active.name }))
-      onApplied?.(active.name)
+      onApplied?.(active)
       onBackToChat()
     } catch (e) {
       toastError((e as Error).message)
@@ -400,6 +401,15 @@ export function SkillsPanel({
               <Pencil size={16} />
             </button>
           )}
+          {desktopMode && active.source === 'marketplace' && (
+            <button type="button" onClick={() => {
+              setEditingSkillId(null)
+              setDraft({ name: uiText('{0} 副本', { 0: active.name }).slice(0, 64), description: active.description ?? '', instructions: active.instructions, category: active.category ?? 'general' })
+              setView('create')
+            }} className="rounded-full px-2 py-1.5 text-xs font-semibold text-[#555] hover:bg-black/[0.04]">
+              {uiText('另存为项目 Skill')}
+            </button>
+          )}
           <button type="button" onClick={onClose} className="rounded-full p-1.5 text-[#888] hover:bg-black/[0.04]">
             <X size={18} />
           </button>
@@ -427,7 +437,9 @@ export function SkillsPanel({
                 <Trash2 size={16} />
               </button>
             )}
-            <button
+            {desktopMode && active.source === 'marketplace' ? (
+              <Link to="/marketplace" className="rounded-xl px-2 py-2 text-xs font-semibold text-[#315a96]">{uiText('在插件市场管理')}</Link>
+            ) : <button
               type="button"
               role="switch"
               aria-checked={enabledLocal}
@@ -443,7 +455,7 @@ export function SkillsPanel({
                   enabledLocal ? 'left-[22px]' : 'left-0.5'
                 }`}
               />
-            </button>
+            </button>}
           </div>
           <button
             type="button"

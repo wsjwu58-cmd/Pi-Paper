@@ -61,6 +61,8 @@ const { exportNodeOutput } = require('./node-export.cjs')
 const { registerCanvasMediaIpc } = require('./canvas-media.cjs')
 const { createProviderSettings } = require('./provider-settings.cjs')
 const { createMcpMainService } = require('./mcp-main-service.cjs')
+const { registerMarketplaceIpc } = require('./marketplace-ipc.cjs')
+const { listMarketplaceSkills, listMarketplaceSkillIds, marketplaceSkillId } = require('./marketplace-storage.cjs')
 const { isOfficialDocumentationUrl } = require('./official-documentation.cjs')
 const { createUiLanguageSettings } = require('./ui-language.cjs')
 const uiEnglish = require('./ui-english.cjs')
@@ -1686,6 +1688,40 @@ function localAssetImportName(sourcePath) {
 }
 
 function registerProjectIpc() {
+  registerMarketplaceIpc(ipcMain, {
+    assertTrustedSender,
+    window: () => mainWindow,
+    dialog,
+    userDataDirectory,
+    tempDirectory: () => app.getPath('temp'),
+    importImage: (projectId, sourcePath) => localCore.request('asset:import', { projectId, sourcePath, assetKind: 'image' }, 5 * 60 * 1000),
+    withProject: async (projectId, operation) => {
+      await assertActiveAssetProject(projectId)
+      beginTaskCreation()
+      try {
+        await assertActiveAssetProject(projectId)
+        if (!activeProjectDirectory) throw codedError('AGENT_PROJECT_CHANGED')
+        return await operation(activeProjectDirectory)
+      } finally { finishTaskCreation() }
+    },
+    checkSkills: async (directory, state) => {
+      const active = await localCore.request('project:get-active')
+      if (!active || directory !== activeProjectDirectory) throw codedError('AGENT_PROJECT_CHANGED')
+      const worker = agentWorker
+      if (!worker || agentProjectId !== active.projectId) throw codedError('AGENT_PROJECT_CHANGED')
+      const existing = (await worker.request('agent:list-skills', { projectId: active.projectId })).items
+      const currentMarketIds = new Set((await listMarketplaceSkills(directory)).map((skill) => skill.id))
+      const names = new Set(existing.filter((skill) => !currentMarketIds.has(skill.id)).map((skill) => skill.name.trim().toLocaleLowerCase()))
+      const existingIds = new Set(existing.filter((skill) => !currentMarketIds.has(skill.id)).map((skill) => skill.id))
+      for (const entry of state.packages) for (const installed of entry.components) {
+        const component = entry.manifest.components.find((item) => item.id === installed.id)
+        if (component?.type !== 'skill') continue
+        const key = component.name.trim().toLocaleLowerCase()
+        if (names.has(key) || existingIds.has(marketplaceSkillId(entry.manifest.id, component.id))) throw codedError('SKILL_NAME_COLLISION')
+        names.add(key)
+      }
+    },
+  })
   ipcMain.handle('desktop:ui-language:get', (event) => {
     assertTrustedSender(event)
     return uiLanguageSettings.get()
@@ -2998,7 +3034,20 @@ function registerAgentIpc() {
       throw codedError('AGENT_SKILL_QUERY_INVALID')
     }
     const worker = await getAgentWorker(projectId)
-    return worker.request('agent:list-skills', { projectId, sessionId, keyword })
+    const directory = activeProjectDirectory
+    const result = await worker.request('agent:list-skills', { projectId, sessionId, keyword })
+    if (!directory || worker !== agentWorker || directory !== activeProjectDirectory || agentProjectId !== projectId) {
+      throw codedError('AGENT_PROJECT_CHANGED')
+    }
+    const marketIds = await listMarketplaceSkillIds(directory)
+    const items = await Promise.all(result.items.map(async (skill) => {
+      if (!marketIds.has(skill.id)) return skill
+      // Preserve manually owned project skills even if an old marketplace ID was retired.
+      const file = path.join(directory, '.vibepaper', 'agent', 'skills', `${skill.id}.md`)
+      const ownFile = await fs.lstat(file).catch(() => null)
+      return ownFile?.isFile() ? skill : { ...skill, source: 'marketplace' }
+    }))
+    return { ...result, items }
   })
   ipcMain.handle('desktop:agent:skill:create', async (event, projectId, draft) => {
     assertTrustedSender(event)

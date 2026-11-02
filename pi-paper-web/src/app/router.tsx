@@ -16,6 +16,7 @@ import { AdminPage } from '@/features/admin/AdminPage'
 import { CanvasPage } from '@/features/canvas/CanvasPage'
 import { ProviderConfigurationPage } from '@/features/providers/ProviderConfigurationPage'
 import { DesktopMcpSettingsPage } from '@/features/mcp/DesktopMcpSettingsPage'
+import { MarketplacePage } from '@/features/marketplace/MarketplacePage'
 import { Spinner } from '@/components/ui/Spinner'
 import { isDesktopRuntime } from '@/features/canvas/canvasPort'
 
@@ -47,6 +48,7 @@ export function AppRouter() {
         <Route element={<HubLayout />}>
           <Route path="/workspace" element={<WorkspacePage />} />
           <Route path="/history" element={<HistoryPage />} />
+          <Route path="/marketplace" element={<MarketplacePage />} />
           <Route path="/settings/providers" element={<ProviderConfigurationPage />} />
           <Route path="/settings/mcp" element={<DesktopMcpSettingsPage />} />
         </Route>

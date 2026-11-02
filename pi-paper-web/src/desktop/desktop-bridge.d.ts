@@ -11,6 +11,40 @@ export interface DesktopProject {
   thumbnailUrl?: string | null
 }
 
+export interface MarketplaceTemplateData {
+  nodes: Array<{ id: string; type: 'text' | 'image' | 'video' | 'audio' | 'compose' | 'director'; x: number; y: number; params: Record<string, unknown> }>
+  edges: Array<{ source: string; target: string; sourcePort?: string; targetPort?: string }>
+}
+
+export type MarketplaceComponent = {
+  id: string
+  name: string
+  description: string
+  installed: boolean
+  enabled: boolean
+  updateConflict: 'removed' | 'type_changed' | null
+} & (
+  | { type: 'template'; data: MarketplaceTemplateData }
+  | { type: 'asset'; data: { kind: 'image'; mime: 'image/png'; base64: string } }
+  | { type: 'preset'; data: { nodeType: 'text' | 'image' | 'video' | 'audio'; params: Record<string, unknown> } }
+  | { type: 'skill'; data: { category: 'general' | 'image' | 'video' | 'text' | 'canvas'; instructions: string } }
+)
+
+export interface MarketplacePackage {
+  id: string
+  name: string
+  description: string
+  version: string
+  author: string
+  source: 'builtin' | 'local'
+  installed: boolean
+  enabled: boolean
+  installedVersion: string | null
+  updateAvailable: boolean
+  rollbackVersion: string | null
+  components: MarketplaceComponent[]
+}
+
 export interface DesktopProviderCredentialField {
   name: string
   label: string
@@ -750,7 +784,7 @@ export interface DesktopAgentSkill {
   name: string
   description: string
   instructions: string
-  source: 'builtin' | 'system_dynamic' | 'project'
+  source: 'builtin' | 'system_dynamic' | 'project' | 'marketplace'
   category: string
   version: number
   enabled: boolean
@@ -1059,6 +1093,17 @@ export interface DesktopMcpProviderInputRequest {
 }
 
 export interface DesktopBridge {
+  marketplace: {
+    list(projectId?: string): Promise<MarketplacePackage[]>
+    install(projectId: string, packageId: string, componentIds: string[]): Promise<MarketplacePackage>
+    setEnabled(projectId: string, packageId: string, componentId: string, enabled: boolean): Promise<MarketplacePackage>
+    uninstall(projectId: string, packageId: string, componentId: string): Promise<MarketplacePackage>
+    rollback(projectId: string, packageId: string): Promise<MarketplacePackage>
+    importPackage(): Promise<MarketplacePackage | null>
+    exportPackage(projectId: string, packageId: string): Promise<boolean>
+    saveTemplate(projectId: string, draft: { name: string; description?: string; data: MarketplaceTemplateData }): Promise<MarketplacePackage>
+    importAsset(projectId: string, packageId: string, componentId: string): Promise<DesktopAsset>
+  }
   getUiLanguage(): Promise<{ preference: 'system' | 'zh' | 'en'; language: 'zh' | 'en'; systemLanguage: 'zh' | 'en' }>
   setUiLanguage(preference: 'system' | 'zh' | 'en'): Promise<{ preference: 'system' | 'zh' | 'en'; language: 'zh' | 'en'; systemLanguage: 'zh' | 'en' }>
   getMcpState(): Promise<DesktopMcpState>

@@ -4,6 +4,7 @@ const fs = require('node:fs/promises')
 const { loadSkillsFromDir } = require('../../pi-main/packages/coding-agent/src/core/skill-loader.ts')
 const { parseFrontmatter } = require('../../pi-main/packages/coding-agent/src/utils/frontmatter.ts')
 const { stringify } = require('../../pi-main/node_modules/yaml')
+const { listMarketplaceSkills } = require('./marketplace-storage.cjs')
 
 const MAX_SKILL_BYTES = 512 * 1024
 const MAX_TREE_ENTRIES = 10_000
@@ -163,6 +164,7 @@ async function listProjectAgentSkills(projectDirectory, keyword) {
       throw error
     }
   }
+  skills.push(...await listMarketplaceSkills(projectDirectory))
   const normalizedKeyword = typeof keyword === 'string' ? keyword.trim().toLocaleLowerCase() : ''
   return skills.filter((skill) => !normalizedKeyword || [skill.id, skill.name, skill.description, skill.instructions]
     .some((value) => value.toLocaleLowerCase().includes(normalizedKeyword)))

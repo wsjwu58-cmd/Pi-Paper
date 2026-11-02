@@ -1,7 +1,7 @@
 import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { useEffect } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Bot, Clock, LayoutGrid, Settings2 } from 'lucide-react'
+import { ArrowLeft, Bot, Clock, LayoutGrid, Puzzle, Settings2 } from 'lucide-react'
 import { PillNav } from '@/components/ui/PillNav'
 import { isDesktopRuntime } from '@/features/canvas/canvasPort'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
@@ -35,7 +35,7 @@ export function HubLayout() {
     }
   }, [desktop, location.pathname, navigate])
 
-  if (desktop && location.pathname.startsWith('/settings/')) {
+  if (desktop && (location.pathname.startsWith('/settings/') || location.pathname === '/marketplace')) {
     return (
       <div className="min-h-screen bg-[#f6f8fb] text-[#172238]">
         <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-[#e4e9f1] bg-[#f9fbfd] px-5 lg:px-8">
@@ -53,6 +53,7 @@ export function HubLayout() {
               {[
                 { to: '/workspace', label: uiText("画布管理"), icon: LayoutGrid },
                 { to: '/history', label: uiText("历史记录"), icon: Clock },
+                { to: '/marketplace', label: uiText("插件市场"), icon: Puzzle },
                 { to: '/settings/providers', label: uiText("API 配置"), icon: Settings2 },
                 { to: '/settings/mcp', label: uiText("外部 Agent"), icon: Bot },
               ].map((item) => <NavLink key={item.to} to={item.to} className={({ isActive }) => `flex items-center gap-3 rounded-xl px-3 py-3 text-[15px] transition ${isActive ? 'bg-[#e9eef7] font-semibold text-[#173f85]' : 'text-[#526079] hover:bg-[#edf1f7]'}`}><item.icon size={20} />{item.label}</NavLink>)}

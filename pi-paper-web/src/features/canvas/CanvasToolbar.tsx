@@ -18,6 +18,7 @@ import {
   Video,
   Mic,
   Clapperboard,
+  Puzzle,
 } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { api, uploadAsset } from '@/lib/api'
@@ -48,6 +49,7 @@ export function CanvasToolbar({
   onFitView,
   onAutoLayout,
   onAddNode,
+  onOpenPlugins,
   desktopMode = false,
   projectId,
 }: {
@@ -56,6 +58,7 @@ export function CanvasToolbar({
   onFitView: () => void
   onAutoLayout: () => void
   onAddNode: (type: string) => void
+  onOpenPlugins?: () => void
   desktopMode?: boolean
   projectId?: string
 }) {
@@ -373,6 +376,11 @@ export function CanvasToolbar({
       <ToolButton onClick={() => setAssetOpen(true)} title={uiText("素材库")}>
         <Library size={17} />
       </ToolButton>
+      {isDesktop && onOpenPlugins && (
+        <ToolButton onClick={onOpenPlugins} title={uiText('插件组件')}>
+          <Puzzle size={17} />
+        </ToolButton>
+      )}
 
       <div className="mx-2 my-1 h-px bg-white/10" />
 

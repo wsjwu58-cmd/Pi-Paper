@@ -1037,6 +1037,12 @@ export function NodeEditorDialog({
     setCount(desktopMode && node.type === 'image' ? Math.min(next, 4) : next)
   }, [desktopMode, node.id, node.params.count, node.type])
 
+  // Presets can update these fields while the editor is already mounted.
+  useEffect(() => {
+    setStyle(typeof node.params.style === 'string' ? node.params.style : '')
+    setCamera(typeof node.params.camera === 'string' ? node.params.camera : '')
+  }, [node.id, node.params.style, node.params.camera])
+
   useEffect(() => {
     if (!autoFocusPrompt) return
     const t = window.setTimeout(() => {
@@ -1636,6 +1642,10 @@ export function NodeEditorDialog({
           resolution={selectedResKey} resolutionOptions={resolutionOptions}
           duration={node.type === 'video' ? duration : undefined} durationCapability={durationCapability}
           onAspectChange={changeAspect} onResolutionChange={changeResolution} onDurationChange={changeDuration} />
+      )}
+      {desktopMode && ['text', 'image', 'video', 'audio'].includes(node.type) && (
+        <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('vp-open-node-plugin-presets', { detail: { nodeId, nodeType: node.type } }))}
+          className="rounded-lg border border-black/10 px-2 py-1 text-[11px] text-[#555] hover:bg-black/5">{uiText('插件预设')}</button>
       )}
       {!desktopMode && (node.type === 'image' || node.type === 'video') && (
         <>

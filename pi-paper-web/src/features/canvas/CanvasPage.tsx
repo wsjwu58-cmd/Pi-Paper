@@ -30,6 +30,8 @@ import { isGenerationInFlight } from './nodes/generation-progress'
 import { textNodeContent } from './nodes/textContent'
 import { CanvasTopBar } from './CanvasTopBar'
 import { CanvasToolbar } from './CanvasToolbar'
+import { CanvasPlugins } from './CanvasPlugins'
+import { buildPluginTemplateGraph, changedPluginPresetPatch, commitPluginTemplateGraph, isPluginModelParameter, overwrittenPluginPresetFields, pluginPresetPatch, readPluginTemplate, templateFromSelection } from './pluginComponents'
 import { CanvasGroupView } from './CanvasGroupView'
 import { arrangeCanvasGroupNodes, canvasGroupMemberIds, getCanvasGroupBounds, getCanvasGroupDownloadCandidates, moveCanvasGroupNodes, detachOutsideGroup, type CanvasGroupBounds } from './canvasGroupUtils'
 import { GenerationReferenceEdge } from './GenerationReferenceEdge'
@@ -118,6 +120,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const agentOpen = useCanvasStore((s) => s.agentOpen)
   const setAgentOpen = useCanvasStore((s) => s.setAgentOpen)
   const [mode, setMode] = useState<'select' | 'pan'>('select')
+  const [pluginsOpen, setPluginsOpen] = useState(false)
+  const [pluginTarget, setPluginTarget] = useState<{ nodeId: string; nodeType: string } | null>(null)
+  const [pluginBusy, setPluginBusy] = useState(false)
+  const pluginBusyRef = useRef(false)
+  const [pluginConfirmation, setPluginConfirmation] = useState<{ message: string; resolve: (confirmed: boolean) => void } | null>(null)
+  const pluginConfirmationRef = useRef<{ resolve: (confirmed: boolean) => void } | null>(null)
   const [addMenu, setAddMenu] = useState<{
     x: number
     y: number
@@ -210,6 +218,22 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingUploadPos = useRef<{ x: number; y: number } | null>(null)
   const pendingEdgeDelete = useRef<{ dirtyBefore: boolean; edgesBefore: Edge[] } | null>(null)
+
+  useEffect(() => () => {
+    pluginConfirmationRef.current?.resolve(false)
+    pluginConfirmationRef.current = null
+  }, [])
+
+  useEffect(() => {
+    const openNodePresets = (event: Event) => {
+      const detail = (event as CustomEvent<{ nodeId?: string; nodeType?: string }>).detail
+      if (!detail?.nodeId || !detail.nodeType) return
+      setPluginTarget({ nodeId: sid(detail.nodeId), nodeType: detail.nodeType })
+      setPluginsOpen(true)
+    }
+    window.addEventListener('vp-open-node-plugin-presets', openNodePresets)
+    return () => window.removeEventListener('vp-open-node-plugin-presets', openNodePresets)
+  }, [])
 
   const {
     data: loadedCanvas,
@@ -865,6 +889,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       y,
       params,
     })
+    if (window.vibepaperDesktop && sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) {
+      throw new Error(uiText('当前画布已切换，请在原画布核实节点。'))
+    }
     if (created.version !== undefined && current) {
       const latest = useCanvasStore.getState().canvas ?? current
       const wasEditedAgain = useCanvasStore.getState().dirty
@@ -1551,6 +1578,179 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     [createNodeInCanvas, models, selectNode, setDirty, setNodes],
   )
 
+  const askPluginConfirmation = useCallback((message: string) => new Promise<boolean>((resolve) => {
+    const request = { message, resolve }
+    pluginConfirmationRef.current = request
+    setPluginConfirmation(request)
+  }), [])
+
+  const assertPluginContext = useCallback(async () => {
+    const bridge = window.vibepaperDesktop
+    if (!bridge?.marketplace || !desktopProjectId) throw new Error(uiText('本地插件服务尚未就绪。'))
+    const project = await bridge.getActiveProject()
+    if (!project || project.projectId !== desktopProjectId || project.canvasId !== canvasId
+      || sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) {
+      throw new Error(uiText('当前项目或画布已更改，请重新操作。'))
+    }
+    if (mcpCanvasBarrierPhaseRef.current !== 'idle') throw new Error(uiText('画布正在同步，请稍后重试。'))
+    return bridge
+  }, [canvasId, desktopProjectId])
+
+  const enabledPluginComponent = useCallback(async (packageId: string, componentId: string) => {
+    const bridge = await assertPluginContext()
+    const packages = await bridge.marketplace.list(desktopProjectId!)
+    await assertPluginContext()
+    const component = packages.find((item) => item.id === packageId)?.components.find((item) => item.id === componentId)
+    if (!component?.installed || !component.enabled) throw new Error(uiText('该组件已停用或卸载，请刷新后重试。'))
+    return component
+  }, [assertPluginContext, desktopProjectId])
+
+  const currentPluginSelection = useCallback(() => {
+    const state = useCanvasStore.getState()
+    const selected = state.nodes.filter((node) => node.selected).map((node) => sid(node.id))
+    return selected.length ? selected : state.selectedNodeId ? [state.selectedNodeId] : []
+  }, [])
+
+  const savePluginSelection = useCallback(async (name: string): Promise<boolean> => {
+    if (pluginBusyRef.current) return false
+    pluginBusyRef.current = true
+    setPluginBusy(true)
+    try {
+      const bridge = await assertPluginContext()
+      const snapshot = useCanvasStore.getState()
+      const data = templateFromSelection(snapshot.nodes, snapshot.edges, currentPluginSelection())
+      await bridge.marketplace.saveTemplate(desktopProjectId!, { name, data })
+      toastSuccess(uiText('已保存本地模板，可在插件组件中使用。'))
+      return true
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : uiText('保存模板失败。'))
+      return false
+    } finally {
+      pluginBusyRef.current = false
+      setPluginBusy(false)
+    }
+  }, [assertPluginContext, currentPluginSelection, desktopProjectId])
+
+  const usePluginComponent = useCallback(async (packageId: string, componentId: string) => {
+    if (pluginBusyRef.current) return
+    pluginBusyRef.current = true
+    setPluginBusy(true)
+    const selectedIds = pluginTarget ? [pluginTarget.nodeId] : currentPluginSelection()
+    try {
+      const component = await enabledPluginComponent(packageId, componentId)
+      const bridge = await assertPluginContext()
+      const position = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
+      if (component.type === 'asset') {
+        const asset = await bridge.marketplace.importAsset(desktopProjectId!, packageId, componentId)
+        window.dispatchEvent(new Event('vp-assets-updated'))
+        try {
+          await assertPluginContext()
+          await addAssetNode(desktopAssetView(asset), position.x, position.y)
+        } catch (error) {
+          throw new Error(uiText('素材已导入素材库；画布节点结果未确认：{0}', { 0: error instanceof Error ? error.message : String(error) }))
+        }
+        return
+      }
+      if (component.type === 'template') {
+        const template = readPluginTemplate(component.data)
+        // Portable packages currently contain text fields only. Keep the
+        // capability check at the consumption boundary if that schema grows.
+        const needsCatalog = template.nodes.some((node) => Object.keys(node.params).some(isPluginModelParameter))
+        const configuration = needsCatalog ? await bridge.getProviderConfiguration() : { providers: [], models: [] }
+        template.nodes = template.nodes.map((node) => ({ ...node, params: pluginPresetPatch({ nodeType: node.type, params: node.params }, node.type,
+          typeof node.params.model === 'string' ? { model: node.params.model } : {}, configuration) }))
+        const currentComponent = await enabledPluginComponent(packageId, componentId)
+        if (JSON.stringify(currentComponent.data) !== JSON.stringify(component.data)) throw new Error(uiText('组件内容已变更，请重新应用。'))
+        // This must be the final await before acquiring the save lock: edits
+        // made while checking the component are flushed into the snapshot.
+        await flushDesktopEdits()
+        if (mcpCanvasBarrierPhaseRef.current !== 'idle') throw new Error(uiText('画布正在同步，请稍后重试。'))
+        const snapshot = useCanvasStore.getState()
+        if (!snapshot.canvas || sid(snapshot.canvas.canvas.id) !== canvasId) throw new Error(uiText('当前项目或画布已更改，请重新操作。'))
+        const additions = buildPluginTemplateGraph(template, position, selectNode)
+        const version = snapshot.canvas.canvas.version
+        const idempotencyKey = crypto.randomUUID()
+        // Make MCP flushes and debounced saves wait for this transaction.
+        setDirty(true)
+        let mergedInCurrentCanvas = false
+        const pending = commitPluginTemplateGraph({ canvasId, snapshot, additions, getCurrent: useCanvasStore.getState,
+          save: (nodes, edges) => saveCanvasPort({ projectId: desktopProjectId!, canvasId, expectedVersion: version,
+            idempotencyKey, nodes, edges, groups: snapshot.groups, stacks: snapshot.stacks }),
+          apply: ({ current, nodes, edges, version: saved, staleNodeIds, dirty: editedAgain }) => {
+            if (!current.canvas) return
+            setCanvas({ ...current.canvas, canvas: { ...current.canvas.canvas, version: saved } })
+            setSavedVersion(saved)
+            setNodes(applySavedCanvasStaleNodeIds(nodes, staleNodeIds))
+            setEdges(edges)
+            setDirty(editedAgain)
+            for (const node of additions.nodes) markNodeArrival(sid(node.id))
+          },
+        }).then((merged) => { mergedInCurrentCanvas = merged })
+        desktopSaveInFlight.current = pending
+        try {
+          await pending
+        } catch (error) {
+          const latest = useCanvasStore.getState()
+          if (latest.canvas && sid(latest.canvas.canvas.id) === canvasId) {
+            setDirty(latest.nodes !== snapshot.nodes || latest.edges !== snapshot.edges || latest.groups !== snapshot.groups || latest.stacks !== snapshot.stacks)
+          }
+          throw new Error(uiText('模板保存结果未确认，请先核实画布后重试：{0}', { 0: error instanceof Error ? error.message : String(error) }))
+        } finally {
+          if (desktopSaveInFlight.current === pending) desktopSaveInFlight.current = null
+        }
+        toastSuccess(mergedInCurrentCanvas ? uiText('模板已插入画布，可继续编辑。') : uiText('模板已保存，请在原项目中查看。'))
+        return
+      }
+      if (component.type === 'preset') {
+        const data = component.data as { nodeType?: unknown; params?: unknown }
+        const snapshot = useCanvasStore.getState()
+        const targets = snapshot.nodes.filter((node) => selectedIds.includes(sid(node.id)) && node.type === data?.nodeType)
+        if (!targets.length) throw new Error(uiText('请先选择与预设类型匹配的节点。'))
+        const params = data.params && typeof data.params === 'object' ? data.params as Record<string, unknown> : {}
+        const needsCatalog = Object.keys(params).some(isPluginModelParameter)
+        const configuration = needsCatalog ? await bridge.getProviderConfiguration() : { providers: [], models: [] }
+        const patches = targets.map((node) => {
+          const before = node.data.node.params
+          const patch = pluginPresetPatch(component.data, node.data.node.type, before, configuration)
+          return { id: sid(node.id), before, patch: changedPluginPresetPatch(before, patch) }
+        }).filter((item) => Object.keys(item.patch).length)
+        if (!patches.length) { toastSuccess(uiText('节点已与预设一致。')); return }
+        const labels: Record<string, string> = { prompt: uiText('提示词'), content: uiText('内容'), title: uiText('标题'), style: uiText('风格'), camera: uiText('运镜'), model: uiText('模型'), aspect: uiText('比例'), ratio: uiText('比例'), size: uiText('尺寸'), resolution: uiText('分辨率'), resKey: uiText('分辨率'), duration: uiText('时长'), count: uiText('数量'), generate_audio: uiText('音频') }
+        const conflicts = patches.flatMap((item, index) => overwrittenPluginPresetFields(item.before, item.patch)
+          .map((key) => `${index + 1}. ${labels[key] ?? key}: ${String(item.before[key])} → ${String(item.patch[key])}`))
+        if (conflicts.length && !await askPluginConfirmation(uiText('将更新 {0} 个节点的预设字段。请确认覆盖影响：\n{1}', { 0: patches.length, 1: conflicts.join('\n').slice(0, 3000) }))) return
+        const currentComponent = await enabledPluginComponent(packageId, componentId)
+        if (JSON.stringify(currentComponent.data) !== JSON.stringify(component.data)) throw new Error(uiText('组件内容已变更，请重新应用。'))
+        const currentConfiguration = needsCatalog ? await bridge.getProviderConfiguration() : configuration
+        await assertPluginContext()
+        const latest = useCanvasStore.getState()
+        if (patches.some((item) => latest.nodes.find((node) => sid(node.id) === item.id)?.data.node.params !== item.before)) {
+          throw new Error(uiText('节点内容已变更，请重新检查预设。'))
+        }
+        for (const item of patches) {
+          const node = latest.nodes.find((entry) => sid(entry.id) === item.id)!
+          const fresh = pluginPresetPatch(currentComponent.data, node.data.node.type, node.data.node.params, currentConfiguration)
+          const changed = changedPluginPresetPatch(item.before, fresh)
+          if (JSON.stringify(changed) !== JSON.stringify(item.patch)) throw new Error(uiText('模型能力已变更，请重新检查预设。'))
+        }
+        setNodes(latest.nodes.map((node) => {
+          const item = patches.find((patch) => patch.id === sid(node.id))
+          return item ? { ...node, data: { ...node.data, node: { ...node.data.node, params: { ...item.before, ...item.patch } } } } : node
+        }))
+        setDirty(true)
+        await persistDesktopChanges()
+        toastSuccess(uiText('预设已应用到 {0} 个节点。', { 0: patches.length }))
+        return
+      }
+      throw new Error(uiText('该组件不能在画布中使用。'))
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : uiText('使用插件组件失败。'))
+    } finally {
+      pluginBusyRef.current = false
+      setPluginBusy(false)
+    }
+  }, [addAssetNode, askPluginConfirmation, assertPluginContext, canvasId, currentPluginSelection, desktopProjectId, enabledPluginComponent, flushDesktopEdits, persistDesktopChanges, pluginTarget, screenToFlowPosition, selectNode, setCanvas, setDirty, setEdges, setNodes])
+
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
@@ -1767,6 +1967,18 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           </div>
         </div>
       )}
+      {pluginConfirmation && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label={uiText('确认应用预设')}>
+          <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl">
+            <p className="text-base font-bold">{uiText('确认应用预设')}</p>
+            <p className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-sm leading-6 text-[#555]">{pluginConfirmation.message}</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" className="rounded-lg border border-black/15 px-4 py-2 text-sm" onClick={() => { pluginConfirmation.resolve(false); pluginConfirmationRef.current = null; setPluginConfirmation(null) }}>{uiText('取消')}</button>
+              <button type="button" className="rounded-lg bg-[#222] px-4 py-2 text-sm font-semibold text-white" onClick={() => { pluginConfirmation.resolve(true); pluginConfirmationRef.current = null; setPluginConfirmation(null) }}>{uiText('应用')}</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="relative min-h-0 min-w-0 flex-1">
       <input
         ref={fileInputRef}
@@ -1801,10 +2013,13 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           onFitView={() => void fitView({ duration: canvasMotionDuration(CANVAS_MOTION.viewport) })}
           onAutoLayout={onAutoLayout}
           onAddNode={(t) => void addNode(t)}
+          onOpenPlugins={() => { setPluginTarget(null); setPluginsOpen(true) }}
           desktopMode={desktopMode}
           projectId={desktopProjectId}
         />
       </div>
+      {desktopMode && <CanvasPlugins projectId={desktopProjectId} open={pluginsOpen} busy={pluginBusy} presetNodeType={pluginTarget?.nodeType}
+        onClose={() => setPluginsOpen(false)} onUse={usePluginComponent} onSaveSelection={savePluginSelection} />}
       <AssetLibrary desktopMode={desktopMode} projectId={desktopProjectId} />
       {!agentOpen ? <AgentLauncher onOpen={() => setAgentOpen(true)} /> : null}
       {!desktopMode && <SubscriptionMenu />}

@@ -1,6 +1,6 @@
 import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { LayoutGrid, Clock, Compass, User, Building2, ShieldCheck, LogOut, Settings2 } from 'lucide-react'
+import { LayoutGrid, Clock, Compass, User, Building2, ShieldCheck, LogOut, Settings2, Puzzle } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
 import { cn } from '@/lib/cn'
 import { isDesktopRuntime } from '@/features/canvas/canvasPort'
@@ -25,10 +25,11 @@ export function PillNav() {
     const desktopItems = [
       { to: '/workspace', label: uiText("画布展示"), icon: LayoutGrid },
       { to: '/history', label: uiText("历史记录"), icon: Clock },
+      { to: '/marketplace', label: uiText("插件市场"), icon: Puzzle },
       { to: '/settings/providers', label: uiText("API 配置"), icon: Settings2 },
     ]
     return (
-      <nav className="mx-auto flex w-fit max-w-[calc(100vw-1.5rem)] items-center gap-1 rounded-full border border-black/[0.05] bg-white px-1.5 py-1.5 shadow-[0_8px_28px_rgba(15,23,42,0.08)]">
+      <nav className="mx-auto flex w-fit max-w-[calc(100vw-1.5rem)] items-center gap-1 overflow-x-auto whitespace-nowrap rounded-full border border-black/[0.05] bg-white px-1.5 py-1.5 shadow-[0_8px_28px_rgba(15,23,42,0.08)]">
         {desktopItems.map((item) => (
           <NavLink
             key={item.to}

@@ -1541,12 +1541,9 @@ function WebAgentPanel({
           loadedSkillIds={desktop ? desktopAdapter?.loadedSkillIds : undefined}
           desktopProjectId={desktop ? desktopAdapter?.projectId : undefined}
           onDesktopSkillsChanged={desktop ? desktopAdapter?.refreshSkills : undefined}
-          onApplied={(name) => {
-            if (!name) return
-            const skill = panelSkills.find((item) => item.name === name)
-            const skillId = skill ? String(skill.id) : name
-            if (desktop && skill) setSelectedSkill(skill)
-            setComposerRefs((prev) => upsertRefs(prev, [{ id: `skill:${skillId}`, kind: 'skill', title: name }]))
+          onApplied={(skill) => {
+            if (desktop) setSelectedSkill(skill)
+            setComposerRefs((prev) => upsertRefs(prev, [{ id: `skill:${skill.id}`, kind: 'skill', title: skill.name }]))
           }}
         />
       )}

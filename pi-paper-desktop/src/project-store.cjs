@@ -34,14 +34,7 @@ const MAX_AGENT_SESSION_HEADER_BYTES = 1024 * 1024
 const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'session-memory', 'daily-memory', 'fragments'])
 const AGENT_BACKUP_EXTENSIONS = new Set(['.jsonl', '.json', '.md', '.zst'])
 const DIRECTOR_CAPTURE_ASSET_URL = /^vibe:\/\/app\/assets\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/iu
-const EDGE_COMPATIBLE_TARGET_TYPES = Object.freeze({
-  text: new Set(['text', 'image', 'video', 'audio', 'director']),
-  image: new Set(['image', 'video', 'director']),
-  video: new Set(['video', 'compose']),
-  audio: new Set(['audio', 'video']),
-  compose: new Set(['video', 'compose']),
-  director: new Set(['image', 'video']),
-})
+const { EDGE_COMPATIBLE_TARGET_TYPES } = require('./canvas-edge-types.cjs')
 const ASSET_NODE_MIME_PREFIX = Object.freeze({
   image: 'image/',
   video: 'video/',
