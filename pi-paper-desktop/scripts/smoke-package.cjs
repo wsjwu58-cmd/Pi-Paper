@@ -189,7 +189,9 @@ async function smokePackagedMcpNodeEntry(root, directory) {
 
 async function main() {
   if (!process.argv[2]) throw new Error('Usage: node scripts/smoke-package.cjs <packaged-app-directory>')
-  const root = path.resolve(process.argv[2])
+  // Node resolves required modules through symlinks. Use the same real root
+  // for path assertions (for example, macOS /var and /private/var).
+  const root = await fs.realpath(path.resolve(process.argv[2]))
   for (const file of ['package.json', 'src/main.cjs', 'src/preload.cjs', 'src/mcp-node-entry.cjs', 'src/local-core.cjs',
     'src/generation-worker.cjs', 'src/ui-language.cjs', 'src/ui-english.cjs', 'dist/agent-worker.cjs', 'dist/pi-official-media.cjs',
     'dist/mcp-launcher.cjs', 'dist/mcp-stdio.cjs',
