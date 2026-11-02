@@ -60,6 +60,18 @@ test('builtin three-scenario pack installs selected components and exposes proje
   await assert.rejects(service.getInstalledComponent(directory, builtin.id, 'neutral-background', 'asset'), /MARKETPLACE_COMPONENT_NOT_AVAILABLE/)
 })
 
+test('studio image component can be used without installing the workflow or Skill', async (t) => {
+  const { service, project, store } = await fixture(t)
+  const pack = await service.install(project.directory, builtin.id, ['studio-image'])
+  assert.deepEqual(pack.components.filter((part) => part.enabled).map((part) => part.id), ['studio-image'])
+  const component = await service.getInstalledComponent(project.directory, builtin.id, 'studio-image', 'node_definition')
+  assert.equal(component.data.baseType, 'image')
+  assert.deepEqual(component.data.fields.map((field) => field.id), ['feature', 'backdrop', 'lighting'])
+  assert.deepEqual(await listMarketplaceSkills(project.directory), [])
+  const canvas = store.loadCanvas(project.project.projectId, project.project.canvasId)
+  assert.equal(canvas.nodes.length, 0)
+})
+
 test('updates retain installed snapshots and states, rollback swaps versions, other projects stay isolated', async (t) => {
   const { service, project, dirs, store } = await fixture(t)
   const directory = project.directory

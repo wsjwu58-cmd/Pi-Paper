@@ -16,6 +16,8 @@ export interface CreateDramaAgentOptions {
 	runtimeTools?: AgentTool[];
 	desktopMemoryTools?: AgentTool[];
 	profile?: AgentProfile;
+	allowedToolNames?: readonly string[];
+	authorizeToolCall?(toolName: string): Promise<void>;
 	desktopMode?: boolean;
 	transformContext?: AgentOptions["transformContext"];
 	shouldStopAfterTurn?: AgentOptions["shouldStopAfterTurn"];
@@ -30,9 +32,11 @@ export function createDramaAgent(store: DramaStateStore | undefined, options: Cr
 	const profileToolNames = options.profile
 		? new Set(getToolsForProfile(options.profile).map((entry) => entry.name))
 		: undefined;
+	const roleToolNames = options.allowedToolNames ? new Set(options.allowedToolNames) : undefined;
 	const profileTools = [...dramaTools, ...(options.runtimeTools ?? []), ...(options.extraTools ?? [])].filter(
 		(tool) =>
-			!profileToolNames || profileToolNames.has(tool.name) || dramaTools.some((item) => item.name === tool.name),
+			(!profileToolNames || profileToolNames.has(tool.name) || dramaTools.some((item) => item.name === tool.name)) &&
+			(!roleToolNames || roleToolNames.has(tool.name)),
 	);
 	const memoryToolNames = new Set([
 		"read_project_memory",
@@ -44,6 +48,7 @@ export function createDramaAgent(store: DramaStateStore | undefined, options: Cr
 		? (options.desktopMemoryTools ?? []).filter(
 				(tool) =>
 					memoryToolNames.has(tool.name) &&
+					(!roleToolNames || roleToolNames.has(tool.name)) &&
 					(options.profile !== "audit-readonly" || tool.name === "read_project_memory"),
 			)
 		: [];
@@ -70,7 +75,14 @@ export function createDramaAgent(store: DramaStateStore | undefined, options: Cr
 		toolExecution: "sequential",
 		shouldStopAfterTurn: options.shouldStopAfterTurn,
 		beforeToolCall: async ({ toolCall }) => {
-			if (allowedToolNames.has(toolCall.name)) return undefined;
+			if (allowedToolNames.has(toolCall.name)) {
+				try {
+					await options.authorizeToolCall?.(toolCall.name);
+					return undefined;
+				} catch {
+					return { block: true, reason: "当前角色已不可用或不允许此操作", terminate: true };
+				}
+			}
 			return {
 				block: true,
 				reason: "工具不在短剧 Agent 白名单中",

@@ -62,6 +62,9 @@ export interface AgentRuntimeHooks {
 	/** Desktop host resolves this from its configured official provider registry. Contains no secret. */
 	modelDefinition?: Model<Api>;
 	desktopMode?: boolean;
+	/** Session roles can only narrow the host profile and recheck at invocation. */
+	allowedToolNames?: readonly string[];
+	authorizeToolCall?(toolName: string): Promise<void>;
 	memoryContext?: string;
 	sessionContext?: SessionContext;
 	intentContext?: string;
@@ -77,6 +80,8 @@ export interface AgentSkillContext {
 	skills: readonly LoadedSkillResource[];
 	loadedSkillIds: readonly string[];
 	loadedSkills: readonly LoadedSkillResource[];
+	unavailableSkillIds?: readonly string[];
+	validateSkill?(skill: LoadedSkillResource): Promise<void>;
 	onLoad(skill: LoadedSkillResource): Promise<void>;
 }
 
@@ -291,10 +296,17 @@ export async function runDramaTurn(
 				undefined),
 		extraTools:
 			desktopTurnContext?.extraTools ??
-			createLoadSkillTool(skillContext.skills, skillContext.loadedSkillIds, skillContext.onLoad),
+			createLoadSkillTool(
+				skillContext.skills,
+				skillContext.loadedSkillIds,
+				skillContext.onLoad,
+				skillContext.validateSkill,
+			),
 		runtimeTools: desktopTurnContext?.runtimeTools ?? hooks.runtimeTools,
 		desktopMemoryTools: desktopTurnContext?.desktopMemoryTools ?? hooks.desktopMemoryTools,
 		profile: hooks.profile,
+		allowedToolNames: hooks.allowedToolNames,
+		authorizeToolCall: hooks.authorizeToolCall,
 		desktopMode: hooks.desktopMode,
 		transformContext: hooks.transformContext,
 		shouldStopAfterTurn,
@@ -388,6 +400,18 @@ export async function runDramaTurn(
 	return { events, assistantText, totalTokens };
 }
 
+function withoutUnavailableSkillResult(message: AgentMessage, unavailableIds: readonly string[]): AgentMessage {
+	if (message.role !== "toolResult" || message.toolName !== "load_skill" || unavailableIds.length === 0)
+		return message;
+	const content = message.content
+		.filter((part) => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
+	const id = /skill:\/\/session\/([A-Za-z0-9_/-]+)/.exec(content)?.[1];
+	if (!id || !unavailableIds.includes(id)) return message;
+	return { ...message, content: [{ type: "text", text: "此 Skill 当前已停用，历史加载正文不再用于本轮。" }] };
+}
+
 /**
  * Build the exact desktop prompt footprint before a turn starts. The Worker
  * uses it for budget planning; runDramaTurn consumes the same descriptor so
@@ -402,11 +426,23 @@ export function prepareDesktopAgentTurnContext(
 	hooks: AgentRuntimeHooks,
 ): DesktopAgentTurnContext {
 	const profile = hooks.profile;
-	const extraTools = createLoadSkillTool(skillContext.skills, skillContext.loadedSkillIds, skillContext.onLoad);
+	const safeHistory = history.map((message) => {
+		if (!message.piMessage) return message;
+		const piMessage = withoutUnavailableSkillResult(message.piMessage, skillContext.unavailableSkillIds ?? []);
+		return piMessage === message.piMessage ? message : { ...message, piMessage, content: "此 Skill 当前已停用。" };
+	});
+	const extraTools = createLoadSkillTool(
+		skillContext.skills,
+		skillContext.loadedSkillIds,
+		skillContext.onLoad,
+		skillContext.validateSkill,
+	);
 	const allowedToolNames = profile ? new Set(getToolsForProfile(profile).map((entry) => entry.name)) : undefined;
+	const roleToolNames = hooks.allowedToolNames ? new Set(hooks.allowedToolNames) : undefined;
 	const runtimeTools = hooks.runtimeTools;
 	const profileTools = [...(runtimeTools ?? []), ...extraTools].filter(
-		(tool) => !allowedToolNames || allowedToolNames.has(tool.name),
+		(tool) =>
+			(!allowedToolNames || allowedToolNames.has(tool.name)) && (!roleToolNames || roleToolNames.has(tool.name)),
 	);
 	const memoryToolNames = new Set([
 		"read_project_memory",
@@ -415,9 +451,12 @@ export function prepareDesktopAgentTurnContext(
 		"delete_project_memory",
 	]);
 	const desktopMemoryTools = (hooks.desktopMemoryTools ?? []).filter(
-		(tool) => memoryToolNames.has(tool.name) && (profile !== "audit-readonly" || tool.name === "read_project_memory"),
+		(tool) =>
+			memoryToolNames.has(tool.name) &&
+			(profile !== "audit-readonly" || tool.name === "read_project_memory") &&
+			(!roleToolNames || roleToolNames.has(tool.name)),
 	);
-	const messageFacts = history.map((message) => ({ content: message.content, meta: message.meta }));
+	const messageFacts = safeHistory.map((message) => ({ content: message.content, meta: message.meta }));
 	const protectedFacts = extractProtectedFacts(messageFacts);
 	const orderedInstructions = resolveInstructionPrecedence([
 		{
@@ -454,7 +493,7 @@ export function prepareDesktopAgentTurnContext(
 		parameters: tool.parameters,
 	}));
 	return {
-		initialMessages: history.flatMap((message): AgentMessage[] => {
+		initialMessages: safeHistory.flatMap((message): AgentMessage[] => {
 			if (message.piMessage) return [message.piMessage];
 			if (message.role === "user")
 				return [

@@ -12,7 +12,7 @@ module.exports = {
   electronFuses: { runAsNode: true },
   files: [
     'package.json', 'src/**/*.cjs',
-    'dist/agent-worker.cjs', 'dist/pi-official-media.cjs',
+    'dist/agent-worker.cjs', 'dist/pi-official-media.cjs', 'dist/plugin-template-graph.cjs', 'dist/plugin-preset.cjs',
     'dist/mcp-launcher.cjs', 'dist/mcp-stdio.cjs',
     'renderer/**/*', 'assets/app-icon.*',
   ],

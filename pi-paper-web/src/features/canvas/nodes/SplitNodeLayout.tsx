@@ -11,6 +11,7 @@ import type { GenerationProgressInput } from './generation-progress'
 import { resolveGenerationProgressStatus } from './generation-progress'
 import './generation-progress.css'
 import { SoftCollapse, useAnimatedNodeGeometry, useNodeArrival } from '../canvasMotion'
+import { readNodeDefinition } from '../nodeDefinitionCatalog'
 
 export function SplitNodeLayout({
   node,
@@ -87,7 +88,7 @@ export function SplitNodeLayout({
       <SoftCollapse open={expanded} className="w-full">
         <div className="mb-1.5 flex items-center justify-center gap-1.5 text-[11px] font-semibold text-[#8e8e93]">
           <Icon size={12} />
-          <span>{uiText(label)}</span>
+          <span>{uiText(readNodeDefinition(node.params.nodeDefinition)?.snapshot.name ?? label)}</span>
           <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badge.cls}`}>{uiText(badge.text)}</span>
         </div>
       </SoftCollapse>

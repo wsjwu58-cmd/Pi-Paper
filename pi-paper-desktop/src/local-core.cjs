@@ -178,6 +178,8 @@ async function dispatch(method, payload) {
       return store.getDeletedNodeCommand(payload)
     case 'agent:lookup-operation':
       return store.lookupAgentOperation(payload)
+    case 'canvas:arrange-nodes':
+      return store.arrangeCreativeNodes(payload)
     case 'canvas:save':
       return store.saveCanvas(payload)
     case 'canvas:connect':

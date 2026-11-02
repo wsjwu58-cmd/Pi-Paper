@@ -30,6 +30,10 @@ describe("desktop Agent session management", () => {
 		try {
 			const original = await sessions.createSession("原会话", "canvas-local-1");
 			expect((await sessions.getSession(original.id)).agentModelId).toBe(LEGACY_AGENT_MODEL_BINDING_ID);
+			expect(await sessions.getSession(original.id)).toMatchObject({ mode: "standard", modeVersion: 0 });
+			expect(await sessions.setAgentMode(original.id, "creator")).toMatchObject({ mode: "creator", modeVersion: 1 });
+			expect(await sessions.setAgentMode(original.id, "creator")).toMatchObject({ mode: "creator", modeVersion: 1 });
+			await expect(sessions.setAgentMode(original.id, "invalid" as never)).rejects.toThrow("AGENT_MODE_INVALID");
 			await sessions.setAgentModelBinding(original.id, "target-deepseek-v4-1-flash");
 			await expect(sessions.setAgentModelBinding(original.id, "not a binding")).rejects.toThrow(
 				"AGENT_MODEL_INVALID",
@@ -44,6 +48,8 @@ describe("desktop Agent session management", () => {
 			expect(copied).toMatchObject({
 				title: "原会话 副本",
 				agentModelId: "target-deepseek-v4-1-flash",
+				mode: "standard",
+				modeVersion: 0,
 				status: "active",
 				canvasId: "canvas-local-1",
 				copiedFrom: original.id,
@@ -88,6 +94,7 @@ describe("desktop Agent session management", () => {
 			sessions = new DesktopAgentSessionStore(projectId, projectDirectory, sessionsDirectory, control);
 			expect((await sessions.getSession(original.id)).status).toBe("archived");
 			expect((await sessions.getSession(original.id)).agentModelId).toBe("target-deepseek-v4-1-flash");
+			expect(await sessions.getSession(original.id)).toMatchObject({ mode: "creator", modeVersion: 1 });
 			expect(await sessions.getAgentModelBinding(copied.sessionId)).toBe("target-deepseek-v4-1-flash");
 			expect(await sessions.hasSession(original.id)).toBe(true);
 

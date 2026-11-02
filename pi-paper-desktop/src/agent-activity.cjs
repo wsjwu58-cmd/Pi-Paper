@@ -36,6 +36,20 @@ function summarizeToolOperation(toolName, argsValue, resultValue) {
     case 'update_node_config': return '更新节点配置'
     case 'submit_generation': return '准备生成任务'
     case 'submit_generation_batch': return `准备批量生成${count('generations', 'tasks') === undefined ? '' : `（${count('generations', 'tasks')} 项）`}`
+    case 'marketplace_inspect': return '查询项目插件'
+    case 'marketplace_result': return '核对插件操作结果'
+    case 'marketplace_models': return '查询模型能力'
+    case 'creator_validate': return '检查插件草稿'
+    case 'creator_save': return '保存项目插件'
+    case 'creator_install': return '安装插件组件'
+    case 'creator_enable': return args.enabled === false ? '停用插件组件' : '启用插件组件'
+    case 'marketplace_apply': return `应用插件组件${Number.isSafeInteger(result.nodeCount) ? `（${result.nodeCount} 个节点）` : ''}`
+    case 'marketplace_preview_preset': return '预览预设差异'
+    case 'marketplace_undo_preset': return '撤销预设变更'
+    case 'marketplace_commands': return '查询选区命令'
+    case 'marketplace_preview': return '预览选区命令'
+    case 'marketplace_command_apply': return '应用选区排列'
+    case 'marketplace_command_undo': return '撤销选区排列'
     case 'load_skill': return '加载 Skill'
     default: return '执行本地操作'
   }

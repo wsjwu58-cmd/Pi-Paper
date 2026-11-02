@@ -1,3 +1,4 @@
+const { createHash } = require('node:crypto')
 const { initializeWorkerProxy } = require('./worker-network.cjs')
 initializeWorkerProxy()
 const { openDesktopAgentStores } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/agent-stores.ts')
@@ -38,7 +39,7 @@ const {
   createProjectAgentSkill,
   deleteProjectAgentSkill,
   importProjectAgentSkill,
-  listProjectAgentSkills,
+  listAgentSkillsWithOfficialState,
   updateProjectAgentSkill,
 } = require('./project-agent-skills.cjs')
 const { selectNodeReferences } = require('../../pi-main/packages/vibepaper-agent-service/src/application/node-reference-context.ts')
@@ -52,6 +53,8 @@ const {
 const { extractMemoryCandidates } = require('../../pi-main/packages/vibepaper-agent-service/src/application/memory-candidate-extractor.ts')
 const { extractDailyMemory } = require('../../pi-main/packages/vibepaper-agent-service/src/application/daily-memory-service.ts')
 const { selectProfile } = require('../../pi-main/packages/vibepaper-agent-service/src/application/profile-selector.ts')
+const { desktopRoleToolNames } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/agent-role.ts')
+const { listAgentRoles, resolveAgentRole } = require('./marketplace-agent-roles.cjs')
 const { DesktopLocalToolGateway } = require('../../pi-main/packages/vibepaper-agent-service/src/desktop/local-tool-gateway.ts')
 const {
   confirmExternalMcpGeneration,
@@ -64,6 +67,7 @@ const {
   createRuntimeTools,
   desktopGenerationConfirmationItems,
 } = require('../../pi-main/packages/vibepaper-agent-service/src/tools/runtime-tools.ts')
+const { createMarketplaceTools } = require('../../pi-main/packages/vibepaper-agent-service/src/tools/creator-tools.ts')
 const { AGNES_MODELS } = require('./agnes-model-catalog.cjs')
 const { getAgentCanvasDomain, createAgentLocalToolClient } = require('./agent-local-tools.cjs')
 const { buildAgentCanvasContext } = require('./agent-canvas-context.cjs')
@@ -117,10 +121,95 @@ async function manageSession(method, payload) {
     if (payload.input?.canvasId !== undefined && payload.input.canvasId !== payload.canvasId) throw new Error('AGENT_CANVAS_CHANGED')
     return current.sessions.copySession(sessionId, payload.input)
   }
-  const skills = listDesktopAgentSkills(undefined, await listProjectAgentSkills(current.projectDirectory))
+  const skills = listDesktopAgentSkills(undefined, await listAgentSkillsWithOfficialState(current.projectDirectory))
   return method === 'agent:set-session-skills'
     ? setDesktopSessionSkills(current.sessions, sessionId, payload.input, skills)
     : attachDesktopSessionSkill(current.sessions, sessionId, payload.input, skills)
+}
+
+async function manageSessionMode(payload) {
+  const current = await requireProject(payload?.projectId)
+  const { sessionId, mode } = payload ?? {}
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)
+    || !['standard', 'creator'].includes(mode)) throw new Error('AGENT_MODE_INVALID')
+  await current.sessions.openSession(sessionId)
+  if (mode === 'standard') {
+    for (const run of activeRuns.values()) {
+      if (run.sessionId !== sessionId) continue
+      run.cancelled = true
+      run.controller.abort()
+      run.agent?.abort()
+    }
+  } else if ([...activeRuns.values()].some((run) => run.sessionId === sessionId)) {
+    throw new Error('SESSION_BUSY')
+  }
+  return current.sessions.setAgentMode(sessionId, mode)
+}
+
+async function authorizeMarketplaceRun(payload) {
+  const current = await requireProject(payload?.projectId)
+  const { sessionId, runId, canvasId, modeVersion, action } = payload ?? {}
+  const run = activeRuns.get(runId)
+  if (!run || run.sessionId !== sessionId || run.canvasId !== canvasId || run.cancelled
+    || run.controller.signal.aborted || run.taskContinuation || run.modeVersion !== modeVersion
+    || !['running'].includes(current.control.findById(runId)?.status)) throw new Error('PERMISSION_DENIED')
+  const session = await current.sessions.getSession(sessionId)
+  if (session.status !== 'active' || session.canvasId !== canvasId || session.mode !== run.mode
+    || session.modeVersion !== modeVersion) throw new Error('PERMISSION_DENIED')
+  if (['validate', 'save', 'install', 'enable'].includes(action) && run.mode !== 'creator') throw new Error('PERMISSION_DENIED')
+  if (!['inspect', 'result', 'apply', 'validate', 'save', 'install', 'enable', 'command_inspect', 'command_preview', 'command_apply', 'command_undo', 'preset_preview', 'preset_undo', 'model_inspect'].includes(action)) throw new Error('PERMISSION_DENIED')
+  const tool = { inspect: 'marketplace_inspect', result: 'marketplace_result', apply: 'marketplace_apply', validate: 'creator_validate',
+    save: 'creator_save', install: 'creator_install', enable: 'creator_enable', command_inspect: 'marketplace_commands',
+    command_preview: 'marketplace_preview', command_apply: 'marketplace_command_apply', command_undo: 'marketplace_command_undo',
+    preset_preview: 'marketplace_preview_preset', preset_undo: 'marketplace_undo_preset', model_inspect: 'marketplace_models' }[action]
+  await authorizeRoleTool(current, sessionId, tool, run.profile, run.roleBinding)
+  return { authorized: true }
+}
+
+async function resolveSessionRole(current, sessionId) {
+  if (typeof current.sessions.getAgentRoleBinding !== 'function') return null
+  const binding = await current.sessions.getAgentRoleBinding(sessionId)
+  if (!binding) return null
+  const role = await resolveAgentRole(current.projectDirectory, binding)
+  const skills = listDesktopAgentSkills(undefined, await listAgentSkillsWithOfficialState(current.projectDirectory))
+  if (role.skills.some((id) => !skills.some((skill) => skill.id === id && skill.enabled))) {
+    throw new Error('AGENT_ROLE_SKILL_UNAVAILABLE')
+  }
+  // Validate against the host registry even when the current profile narrows it further.
+  desktopRoleToolNames(role, 'canvas-general')
+  return role
+}
+
+function sameRoleBinding(left, right) {
+  return left === null && right === null || Boolean(left && right && left.packageId === right.packageId
+    && left.componentId === right.componentId && left.digest === right.digest)
+}
+
+async function authorizeRoleTool(current, sessionId, tool, profile, expectedBinding) {
+  const role = await resolveSessionRole(current, sessionId)
+  if (expectedBinding !== undefined && !sameRoleBinding(role?.binding ?? null, expectedBinding)) throw new Error('AGENT_ROLE_CHANGED')
+  if (role && (!desktopRoleToolNames(role, profile).includes(tool)
+    || (expectedBinding === undefined && !desktopRoleToolNames(role, 'canvas-general').includes(tool)))) throw new Error('AGENT_ROLE_TOOL_NOT_ALLOWED')
+}
+
+async function manageSessionRole(method, payload) {
+  const current = await requireProject(payload?.projectId)
+  if (method === 'agent:list-roles') return { items: await listAgentRoles(current.projectDirectory) }
+  const sessionId = payload?.sessionId
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) throw new Error('AGENT_SESSION_INPUT_INVALID')
+  await current.sessions.openSession(sessionId)
+  if (method === 'agent:get-role') return { binding: await current.sessions.getAgentRoleBinding(sessionId) }
+  if (!Object.hasOwn(payload, 'binding')) throw new Error('AGENT_ROLE_BINDING_INVALID')
+  if ([...activeRuns.values()].some((run) => run.sessionId === sessionId)
+    || await new SessionRunService(current.control).findActive(sessionId)) throw new Error('SESSION_BUSY')
+  if (payload.binding !== null) {
+    const role = await resolveAgentRole(current.projectDirectory, payload.binding)
+    desktopRoleToolNames(role, 'canvas-general')
+    const skills = listDesktopAgentSkills(undefined, await listAgentSkillsWithOfficialState(current.projectDirectory))
+    if (role.skills.some((id) => !skills.some((skill) => skill.id === id && skill.enabled))) throw new Error('AGENT_ROLE_SKILL_UNAVAILABLE')
+  }
+  await current.sessions.setAgentRoleBinding(sessionId, payload.binding)
+  return { binding: await current.sessions.getAgentRoleBinding(sessionId) }
 }
 
 async function manageSessionModel(method, payload) {
@@ -176,7 +265,7 @@ async function listAgentSkills(payload) {
   if (keyword !== undefined && (typeof keyword !== 'string' || keyword.length > 160)) {
     throw new Error('SKILL_QUERY_INVALID')
   }
-  const projectSkills = await listProjectAgentSkills(current.projectDirectory)
+  const projectSkills = await listAgentSkillsWithOfficialState(current.projectDirectory)
   const items = listDesktopAgentSkills(keyword, projectSkills)
   if (sessionId) {
     await current.sessions.openSession(sessionId)
@@ -600,13 +689,13 @@ async function recoverInterruptedRun(current, runService, sessionId) {
 
 async function prepareBudgetedDesktopHistory(input) {
   const budgetModel = input.modelDefinition || agnesModel({ llmModel: AGNES_MODELS.text, llmBaseUrl: 'https://apihub.agnes-ai.com/v1' })
-  let context = await input.current.sessions.buildContext(input.sessionId)
+  let context = input.includeHistory === false ? { messages: [] } : await input.current.sessions.buildContext(input.sessionId)
   let history = context.messages.map(storedHistoryMessage).filter(Boolean)
   if (history.some((message) => Array.isArray(message.piMessage?.content)
     && message.piMessage.content.some((block) => block?.type === 'image'))) {
     throw new Error('AGENT_INPUT_MODALITY_UNSUPPORTED')
   }
-  let summary = desktopCompactionSummary(context)
+  let summary = input.includeHistory === false ? undefined : desktopCompactionSummary(context)
   for (let attempt = 0; attempt < 4; attempt += 1) {
     if (input.taskContinuation && !isCurrentContinuationConnection(
       input.sessionId, input.modelId, input.apiKey, input.modelDefinition,
@@ -622,6 +711,7 @@ async function prepareBudgetedDesktopHistory(input) {
       memoryContext: input.memoryContext,
       runtimeTools: input.runtimeTools,
       desktopMemoryTools: input.desktopMemoryTools,
+      allowedToolNames: input.allowedToolNames,
     }
     const turnContext = prepareDesktopAgentTurnContext(
       history,
@@ -868,19 +958,28 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
 
   if (!continuationMode) await recoverInterruptedRun(current, runService, sessionId)
   const selectedNodes = [...new Set(selectedNodeIds ?? [])]
+  const profile = selectProfile({ canvasDomain })
+  const role = await resolveSessionRole(current, sessionId)
+  const allowedToolNames = role ? desktopRoleToolNames(role, profile) : undefined
+  const roleContexts = role ? new Set(role.contexts) : null
+  if (selectedNodes.length && roleContexts && !roleContexts.has('selection')) throw new Error('AGENT_ROLE_CONTEXT_NOT_ALLOWED')
   const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
   const canvasSummary = await gateway.getCanvasSummary(current.projectId, canvasId)
   const canvasState = selectedCanvasState(canvasSummary, canvasId, canvasVersion, canvasNodeCount)
   const nodeReferences = selectedNodes.length
     ? selectNodeReferences(await gateway.getSelectedNodes(current.projectId, canvasId, selectedNodes), selectedNodes)
     : []
-  const sessionContext = await deriveDesktopSessionContext(current, sessionId, canvasId, canvasState)
+  const sessionContext = !roleContexts || (roleContexts.has('history') && roleContexts.has('canvas'))
+    ? await deriveDesktopSessionContext(current, sessionId, canvasId, canvasState) : undefined
+  const sessionMode = !continuationMode && typeof current.sessions.getSession === 'function'
+    ? await current.sessions.getSession(sessionId) : { mode: 'standard', modeVersion: 0, canvasId }
   const run = continuationMode?.run ?? await runService.startRun({ sessionId, idempotencyKey })
   gateway.attachRun({ control: current.control, sessionId, runId: run.runId })
   let resolveCompletion
   const completion = new Promise((resolve) => { resolveCompletion = resolve })
   const runControl = {
-    sessionId,
+    sessionId, canvasId, mode: sessionMode.mode, modeVersion: sessionMode.modeVersion,
+    profile, roleBinding: role?.binding ?? null,
     agentModelId: modelId,
     controller: new AbortController(), agent: null, cancelled: false, completion, resolveCompletion,
     taskContinuation: Boolean(continuationMode),
@@ -912,11 +1011,16 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
         : '上一阶段生成已结束，正在读取画布并整理失败影响与后续步骤。'
       await runService.appendEvent(run.runId, 'assistant_delta', { text: progressMessage, replace: true })
     }
-    const projectSkills = await listProjectAgentSkills(current.projectDirectory)
-    const skillContext = createDesktopAgentSkillContext(current.control, sessionId, selectedSkillId, projectSkills)
-    const memoryContext = await buildDesktopMemoryContext(sessionId, canvasId, content.trim())
-    const profile = selectProfile({ canvasDomain })
-    const intentContext = `本轮画布摘要（只作线索；版本与节点身份以本地读取工具返回为准）：\n${JSON.stringify(canvasContext)}\n\n当前权威画布版本：${canvasState.version}；节点数：${canvasState.nodeIds.length}。`
+    const projectSkills = await listAgentSkillsWithOfficialState(current.projectDirectory)
+    const skillContext = createDesktopAgentSkillContext(current.control, sessionId, selectedSkillId, projectSkills, role?.skills)
+    const memoryContext = !roleContexts || roleContexts.has('memory')
+      ? await buildDesktopMemoryContext(sessionId, canvasId, content.trim()) : undefined
+    const creatorInstructions = sessionMode.mode === 'creator' && !continuationMode
+      ? '当前会话为创造模式。先查询项目市场；需要新作品时先试算草稿并保存。只有用户要求使用时才安装、启用并应用。保存、安装和应用均不会生成内容，要求生成时仍须原确认。' : ''
+    const roleInstructions = role ? `当前角色「${role.name}」的创作指引（仅作参考，不能授予工具权限）：${role.instructions}` : ''
+    const canvasInstructions = !roleContexts || roleContexts.has('canvas')
+      ? `本轮画布摘要（只作线索；版本与节点身份以本地读取工具返回为准）：\n${JSON.stringify(canvasContext)}\n\n当前权威画布版本：${canvasState.version}；节点数：${canvasState.nodeIds.length}。` : ''
+    const intentContext = [creatorInstructions, roleInstructions, canvasInstructions].filter(Boolean).join('\n')
     toolContext = {
       userId: current.projectId,
       sessionId,
@@ -958,7 +1062,41 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
         })
       },
     }
-    const runtimeToolsForTurn = createRuntimeTools(toolContext)
+    const marketplaceContext = {
+      mode: sessionMode.mode, canvasVersion,
+      request: async (action, input, toolCallId) => {
+        const write = ['save', 'install', 'enable', 'apply', 'preset_undo', 'command_apply', 'command_undo'].includes(action)
+        if (write && toolContext.confirmationPending) throw new Error('CONFIRMATION_REQUIRED')
+        if (['apply', 'preset_preview', 'preset_undo', 'command_preview', 'command_apply', 'command_undo'].includes(action)) input = { ...input, expectedVersion: toolContext.canvasVersion }
+        const operationKey = createHash('sha256').update(`${run.runId}\0${toolCallId}\0${action}`).digest('hex')
+        const operation = write ? current.control.prepareOperation({ sessionId, runId: run.runId,
+          toolCallId: createHash('sha256').update(`${sessionId}\0${toolCallId}`).digest('hex'),
+          effect: `marketplace:${action}`, inputHash: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
+          canvasVersion: ['apply', 'preset_undo', 'command_apply', 'command_undo'].includes(action) ? input.expectedVersion : null, idempotencyKey: operationKey }) : null
+        if (operation?.state === 'succeeded' && operation.resultJson) return JSON.parse(operation.resultJson)
+        if (operation && operation.state !== 'prepared') throw new Error('OPERATION_UNCERTAIN')
+        if (operation) current.control.transitionOperation(operation.operationId, 'dispatched')
+        try {
+          const result = await agentLocalCoreClient.request('agent:core:marketplace', {
+            projectId: current.projectId, canvasId, sessionId, runId: run.runId, modeVersion: sessionMode.modeVersion, action, input, operationKey,
+          })
+          if (Number.isSafeInteger(result?.canvasVersion)) toolContext.canvasVersion = result.canvasVersion
+          if (operation) {
+            const safe = action === 'save' ? { packageId: result.packageId, version: result.version, digest: result.digest, parentDigest: result.parentDigest }
+              : ['apply', 'preset_undo', 'command_apply', 'command_undo'].includes(action) ? result : { id: result.id, operationKey, installedVersion: result.installedVersion,
+                components: result.components.map(({ id, installed, enabled }) => ({ id, installed, enabled })) }
+            current.control.transitionOperation(operation.operationId, 'succeeded', { resultJson: JSON.stringify(safe) })
+          }
+          return result
+        } catch (error) {
+          if (operation) current.control.transitionOperation(operation.operationId, 'uncertain')
+          throw error
+        }
+      },
+    }
+    const runtimeToolsForTurn = [ ...createRuntimeTools(toolContext),
+      ...(!continuationMode && sessionMode.canvasId === canvasId ? createMarketplaceTools(marketplaceContext) : []),
+    ]
     const desktopMemoryTools = projectMemory.createTools(content.trim())
     const prepared = await prepareBudgetedDesktopHistory({
       modelDefinition,
@@ -977,6 +1115,8 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
       intentContext,
       memoryContext,
       taskContinuation: Boolean(continuationMode),
+      allowedToolNames,
+      includeHistory: !roleContexts || roleContexts.has('history'),
     })
     if (runControl.controller.signal.aborted) throw new Error('RUN_ABORTED')
 
@@ -997,7 +1137,7 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
       await current.sessions.resolveSessionTitle(sessionId)
     }
 
-    if (!continuationMode) {
+    if (!continuationMode && (!roleContexts || roleContexts.has('memory'))) {
       for (const candidate of extractMemoryCandidates(content.trim())) {
         // Match the original HTTP path: automatic hints must not gate a turn.
         try {
@@ -1033,6 +1173,8 @@ async function sendMessage(payload, onRunCreated, continuationMode) {
       nodeReferences,
       {
         profile,
+        allowedToolNames,
+        authorizeToolCall: (toolName) => authorizeRoleTool(current, sessionId, toolName, profile, role?.binding ?? null),
         desktopMode: true,
         modelDefinition,
         runtimeTools: runtimeToolsForTurn,
@@ -1168,9 +1310,12 @@ async function startMessage(payload, continuationMode) {
 
 async function confirmAgentAction(payload) {
   const current = await requireProject(payload?.projectId)
+  const record = current.control.find(payload?.actionId)
+  if (payload?.accept === true && record?.status === 'pending' && record.action.sessionId === payload?.sessionId) {
+    await authorizeRoleTool(current, payload.sessionId, record.action.toolName, 'canvas-general')
+  }
   if (planExecution?.handlesAction(payload?.actionId)) return planExecution.confirm(payload)
   const gateway = new DesktopLocalToolGateway(agentLocalCoreClient, current.projectId)
-  const record = current.control.find(payload?.actionId)
   const runId = record?.action?.runId
   if (typeof runId === 'string') {
     const run = current.control.findById(runId)
@@ -1723,9 +1868,12 @@ async function dispatch(method, payload) {
           readTask: (taskId) => agentLocalCoreClient.request('agent:core:get-task', {
             projectId: openedStores.projectId, taskId,
           }),
-          skillContextFactory: async (sessionId) => createDesktopAgentSkillContext(
-            openedStores.control, sessionId, undefined, await listProjectAgentSkills(openedStores.projectDirectory),
-          ),
+          skillContextFactory: async (sessionId) => {
+            const role = await resolveSessionRole(openedStores, sessionId)
+            return createDesktopAgentSkillContext(openedStores.control, sessionId, undefined,
+              await listAgentSkillsWithOfficialState(openedStores.projectDirectory), role?.skills)
+          },
+          authorizeTool: ({ sessionId, tool, profile }) => authorizeRoleTool(openedStores, sessionId, tool, profile),
           onAuditRequested: (input, context) => context.gateway.requestRenderAudit(
             openedStores.projectId, context.canvasId, context.canvasVersion, input,
           ),
@@ -1742,6 +1890,10 @@ async function dispatch(method, payload) {
         throw error
       }
     }
+    case 'agent:list-roles':
+    case 'agent:get-role':
+    case 'agent:set-role':
+      return manageSessionRole(method, payload)
     case 'agent:list-sessions':
       return listSessions(payload?.projectId, payload?.filter)
     case 'agent:get-session':
@@ -1751,6 +1903,10 @@ async function dispatch(method, payload) {
     case 'agent:set-session-skills':
     case 'agent:attach-session-skill':
       return manageSession(method, payload)
+    case 'agent:set-session-mode':
+      return manageSessionMode(payload)
+    case 'agent:authorize-marketplace':
+      return authorizeMarketplaceRun(payload)
     case 'agent:get-session-model':
     case 'agent:set-session-model':
       return manageSessionModel(method, payload)
@@ -1871,7 +2027,7 @@ parentPort.on('message', async (event) => {
       })
     }
   }
-  if (request.method === 'agent:cancel-run' || request.method === 'agent:plan:cancel') {
+  if (request.method === 'agent:cancel-run' || request.method === 'agent:plan:cancel' || request.method === 'agent:set-session-mode' || request.method === 'agent:authorize-marketplace') {
     void executeRequest()
     return
   }

@@ -22,6 +22,7 @@ import { useAuthedMediaUrl } from '@/lib/media'
 import { useCanvasStore } from '../canvasStore'
 import { NodeEditorDialog, NodeFloatingToolbar } from './NodeEditorPanel'
 import { SoftCollapse, useAnimatedNodeGeometry, useNodeArrival } from '../canvasMotion'
+import { readNodeDefinition } from '../nodeDefinitionCatalog'
 
 const typeMeta: Record<string, { label: string; icon: LucideIcon; color: string }> = {
   text: { label: '文本', icon: Type, color: '#6366f1' },
@@ -121,7 +122,7 @@ export function NodeShell({
       )}
       <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[11px] font-semibold text-[#8e8e93]">
         <Icon size={12} />
-        <span>{uiText(meta.label)}</span>
+        <span>{uiText(readNodeDefinition(node.params.nodeDefinition)?.snapshot.name ?? meta.label)}</span>
         <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${statusBadge(node.status).cls}`}>
           {statusBadge(node.status).text}
         </span>

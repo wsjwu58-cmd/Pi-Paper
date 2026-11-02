@@ -35,6 +35,8 @@ const AGENT_BACKUP_DIRECTORIES = new Set(['sessions', 'memory', 'skills', 'sessi
 const AGENT_BACKUP_EXTENSIONS = new Set(['.jsonl', '.json', '.md', '.zst'])
 const DIRECTOR_CAPTURE_ASSET_URL = /^vibe:\/\/app\/assets\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/iu
 const { EDGE_COMPATIBLE_TARGET_TYPES } = require('./canvas-edge-types.cjs')
+const { validateNodeInstance, definitionDigest, renderDefinitionPrompt, sameDefinition } = require('./node-definition.cjs')
+const { readState: readMarketplaceState } = require('./marketplace-storage.cjs')
 const ASSET_NODE_MIME_PREFIX = Object.freeze({
   image: 'image/',
   video: 'video/',
@@ -600,6 +602,8 @@ function validateGraph(nodes, edges) {
     if (typeof node.type !== 'string' || !Object.hasOwn(EDGE_COMPATIBLE_TARGET_TYPES, node.type)) {
       throw new Error(`非法节点类型: ${String(node.type)}`)
     }
+    const nodeParams = isRecord(node.data.params) ? node.data.params : isRecord(node.data.node?.params) ? node.data.node.params : {}
+    if (nodeParams.nodeDefinition !== undefined) validateNodeInstance(nodeParams.nodeDefinition, node.type)
     nodeIds.add(node.id)
     nodeTypes.set(node.id, node.type)
   }
@@ -4979,6 +4983,26 @@ function createLocalProjectStore() {
       }
 
       let parametersJson = normalized.parametersJson
+      const taskNode = normalized.nodeId && active.canvas.nodes.find((node) => node.id === normalized.nodeId)
+      const definition = taskNode && nodePayloadFromFlowNode(taskNode).params.nodeDefinition
+      if (definition) {
+        const payload = nodePayloadFromFlowNode(taskNode)
+        const resolved = renderDefinitionPrompt(definition, taskNode.type).trim()
+        const parameters = JSON.parse(parametersJson)
+        const references = payload.params.nodeDefinitionReferenceTexts ?? []
+        const suppliedReferences = parameters.referenceTexts ?? []
+        const suffix = typeof payload.params.prompt === 'string' ? payload.params.prompt
+          .replaceAll('严格参考输入图片的主体、构图与风格，仅按提示词做有限调整，勿整体重绘成另一张图。', '')
+          .replaceAll('严格保持与参考首帧同一主体、构图、服装与色调；只描述运动与镜头变化，勿重新创造形象。', '')
+          .replace(/\n{3,}/gu, '\n\n').trim() : ''
+        if (!resolved || !Array.isArray(references) || references.length > 100
+          || references.some((value) => typeof value !== 'string' || !value.trim() || value.length > 20000)
+          || !Array.isArray(suppliedReferences) || JSON.stringify(references) !== JSON.stringify(suppliedReferences)
+          || normalized.modality !== taskNode.type || typeof parameters.prompt !== 'string'
+          || parameters.prompt !== [...references, resolved, suffix].filter(Boolean).join('\n\n').trim()) {
+          throw new Error('NODE_DEFINITION_PROMPT_MISMATCH: 节点提示词与已保存的预览不一致，请重新检查后提交。')
+        }
+      }
       if (normalized.modality === 'compose') {
         const parameters = JSON.parse(parametersJson)
         const inputTaskIds = await resolveComposeSourceTaskIds(
@@ -7342,6 +7366,25 @@ function createLocalProjectStore() {
           }
         }
 
+        const definition = request.params.nodeDefinition
+        if (definition !== undefined) {
+          validateNodeInstance(definition, request.type)
+          // Duplicating an existing instance remains possible after uninstall;
+          // a new instance must come from an enabled component in this project.
+          const copy = typeof input.copySourceNodeId === 'string'
+            ? active.canvas.nodes.find((node) => node.id === input.copySourceNodeId) : null
+          const sourceDefinition = copy && nodePayloadFromFlowNode(copy).params.nodeDefinition
+          if (!sourceDefinition || !sameDefinition(sourceDefinition, definition)) {
+            const state = await readMarketplaceState(active.directory)
+            const entry = state.packages.find((item) => item.manifest.id === definition.ref.packageId
+              && item.manifest.version === definition.ref.version)
+            const enabled = entry?.components.some((item) => item.id === definition.ref.componentId && item.enabled)
+            const component = entry?.manifest.components.find((item) => item.id === definition.ref.componentId && item.type === 'node_definition')
+            if (!enabled || !component || definitionDigest({ name: component.name, data: component.data }) !== definition.ref.digest) {
+              throw new Error('NODE_DEFINITION_NOT_AVAILABLE')
+            }
+          }
+        }
         if (!command) {
           database.prepare(`
             INSERT INTO canvas_graph_commands (canvas_id, idempotency_key, operation, created_at)
@@ -7483,6 +7526,8 @@ function createLocalProjectStore() {
         if (!storedNode || !currentNode) throw new Error('节点不存在。')
 
         const { node: updatedNode, contentChanged } = applyUpdateNodeRequest(currentNode, request)
+        if (!sameDefinition(nodePayloadFromFlowNode(currentNode).params.nodeDefinition,
+          nodePayloadFromFlowNode(updatedNode).params.nodeDefinition)) throw new Error('NODE_DEFINITION_IMMUTABLE')
         const candidateNodes = active.canvas.nodes.map((node) => node.id === input.nodeId ? updatedNode : node)
         const staleResult = contentChanged
           ? markDownstreamNodesStale(candidateNodes, active.canvas.edges, input.nodeId)
@@ -8247,6 +8292,12 @@ function createLocalProjectStore() {
         const graph = validateGraph(input.nodes, input.edges)
         graph.nodes = preserveNodeGenerationState(graph.nodes, active.canvas.nodes)
         const previousNodesById = new Map(active.canvas.nodes.map((node) => [node.id, node]))
+        for (const node of graph.nodes) {
+          const before = previousNodesById.get(node.id)
+          const oldDefinition = before && nodePayloadFromFlowNode(before).params.nodeDefinition
+          const newDefinition = nodePayloadFromFlowNode(node).params.nodeDefinition
+          if (!sameDefinition(oldDefinition, newDefinition)) throw new Error('NODE_DEFINITION_IMMUTABLE')
+        }
         const contentChangedNodeIds = graph.nodes
           .filter((node) => {
             const previous = previousNodesById.get(node.id)
@@ -8337,6 +8388,73 @@ function createLocalProjectStore() {
     return { ...result, version: command.result_canvas_version }
   }
 
+  /** Apply only a previewed position diff; the receipt is committed with the graph. */
+  function arrangeCreativeNodes(input) {
+    return enqueue(async () => {
+      if (!active || !isRecord(input) || input.projectId !== active.metadata.projectId || input.canvasId !== active.metadata.canvasId) throw new Error('PROJECT_CHANGED')
+      if (Object.keys(input).some((key) => !['projectId', 'canvasId', 'expectedVersion', 'idempotencyKey', 'previewDigest', 'moves', 'undoOf'].includes(key))
+        || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0
+        || typeof input.idempotencyKey !== 'string' || !input.idempotencyKey || input.idempotencyKey.length > 128
+        || !/^[a-f0-9]{64}$/u.test(input.previewDigest ?? '')
+        || (input.undoOf !== undefined && (typeof input.undoOf !== 'string' || !input.undoOf || input.undoOf.length > 128))
+        || !Array.isArray(input.moves) || input.moves.length < 2 || input.moves.length > 500) throw new Error('INVALID_INPUT')
+      const ids = new Set()
+      for (const move of input.moves) {
+        if (!isRecord(move) || Object.keys(move).some((key) => !['id', 'from', 'to'].includes(key))
+          || typeof move.id !== 'string' || !move.id || move.id.length > 256 || ids.has(move.id)) throw new Error('INVALID_INPUT')
+        ids.add(move.id)
+        for (const position of [move.from, move.to]) {
+          if (!isRecord(position) || Object.keys(position).some((key) => !['x', 'y'].includes(key))
+            || !Number.isFinite(position.x) || !Number.isFinite(position.y) || Math.abs(position.x) > 100_000 || Math.abs(position.y) > 100_000) throw new Error('INVALID_INPUT')
+        }
+      }
+      const inputHash = createHash('sha256').update(JSON.stringify(canonicalJson({
+        expectedVersion: input.expectedVersion, previewDigest: input.previewDigest, moves: input.moves, undoOf: input.undoOf ?? null,
+      }))).digest('hex')
+      const database = active.database
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const existing = database.prepare('SELECT operation, result_snapshot FROM canvas_graph_commands WHERE canvas_id = ? AND idempotency_key = ?')
+          .get(input.canvasId, input.idempotencyKey)
+        if (existing) {
+          if (existing.operation !== 'arrange_nodes') throw new Error('IDEMPOTENCY_CONFLICT')
+          const receipt = JSON.parse(existing.result_snapshot)
+          if (!isRecord(receipt) || receipt.inputHash !== inputHash) throw new Error('IDEMPOTENCY_CONFLICT')
+          database.exec('COMMIT')
+          return { ...receipt, replayed: true }
+        }
+        const persisted = database.prepare('SELECT version FROM canvases WHERE id = ?').get(input.canvasId)
+        if (!persisted || persisted.version !== input.expectedVersion || active.canvas.version !== input.expectedVersion) throw new Error('CANVAS_VERSION_CONFLICT')
+        const movesById = new Map(input.moves.map((move) => [move.id, move]))
+        for (const move of input.moves) {
+          const node = active.canvas.nodes.find((item) => item.id === move.id)
+          if (!node || node.position.x !== move.from.x || node.position.y !== move.from.y) throw new Error('SELECTION_CHANGED')
+        }
+        const nodes = active.canvas.nodes.map((node) => {
+          const move = movesById.get(node.id)
+          if (!move) return node
+          const data = { ...node.data }
+          if (isRecord(data.node)) data.node = { ...data.node, x: move.to.x, y: move.to.y }
+          return { ...node, position: { ...move.to }, data }
+        })
+        await invalidateBackupManifest(path.join(active.directory, '.vibepaper'))
+        const updateNode = database.prepare('UPDATE nodes SET position_x = ?, position_y = ?, payload_json = ? WHERE canvas_id = ? AND id = ?')
+        for (const node of nodes) if (movesById.has(node.id)) updateNode.run(node.position.x, node.position.y, JSON.stringify(node), input.canvasId, node.id)
+        const version = input.expectedVersion + 1
+        const changed = database.prepare('UPDATE canvases SET version = ?, updated_at = ? WHERE id = ? AND version = ?')
+          .run(version, new Date().toISOString(), input.canvasId, input.expectedVersion)
+        if (changed.changes !== 1) throw new Error('CANVAS_VERSION_CONFLICT')
+        const receipt = { version, inputHash, capabilityId: 'selection.arrange', previewDigest: input.previewDigest,
+          moves: input.moves, undoOf: input.undoOf ?? null }
+        database.prepare('INSERT INTO canvas_graph_commands (canvas_id, idempotency_key, operation, result_canvas_version, result_snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(input.canvasId, input.idempotencyKey, 'arrange_nodes', version, JSON.stringify(receipt), new Date().toISOString())
+        database.exec('COMMIT')
+        active.canvas = { ...active.canvas, nodes, version }
+        return { ...receipt, replayed: false }
+      } catch (error) { database.exec('ROLLBACK'); throw error }
+    })
+  }
+
   function lookupAgentOperation(input) {
     if (!active || !isRecord(input) || input.projectId !== active.metadata.projectId
       || input.canvasId !== active.metadata.canvasId || typeof input.idempotencyKey !== 'string') throw new Error('当前项目已更改。')
@@ -8346,7 +8464,7 @@ function createLocalProjectStore() {
     }
     const expectedOperation = {
       'agent:core:create-node': 'create_nodes', 'agent:core:update-node': 'update_node_config',
-      'agent:core:connect-edge': 'connect_nodes', 'agent:core:save-canvas': 'save_canvas',
+      'agent:core:connect-edge': 'connect_nodes', 'agent:core:save-canvas': 'save_canvas', 'agent:core:arrange-nodes': 'arrange_nodes',
     }[input.method]
     if (!expectedOperation) throw new Error('INVALID_INPUT')
     const row = active.database.prepare(`SELECT operation, result_snapshot, result_canvas_version
@@ -8362,6 +8480,7 @@ function createLocalProjectStore() {
 
   return {
     getDeletedNodeCommand,
+    arrangeCreativeNodes,
     lookupAgentOperation,
     addGroup,
     addStack,

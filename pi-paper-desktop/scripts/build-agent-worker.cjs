@@ -24,6 +24,19 @@ async function main() {
     sourcemap: false,
   })
   await build({
+    entryPoints: [path.join(desktopRoot, '..', 'pi-paper-web', 'src', 'features', 'canvas', 'pluginTemplateGraph.ts')],
+    outfile: path.join(desktopRoot, 'dist', 'plugin-template-graph.cjs'),
+    bundle: true, platform: 'node', format: 'cjs', target: 'node22.19',
+    external: ['node:*'], legalComments: 'none', sourcemap: false,
+  })
+  await build({
+    entryPoints: [path.join(desktopRoot, '..', 'pi-paper-web', 'src', 'features', 'canvas', 'presetHost.ts')],
+    outfile: path.join(desktopRoot, 'dist', 'plugin-preset.cjs'),
+    alias: { '@': path.join(desktopRoot, '..', 'pi-paper-web', 'src') },
+    bundle: true, platform: 'node', format: 'cjs', target: 'node22.19',
+    external: ['node:*'], legalComments: 'none', sourcemap: false,
+  })
+  await build({
     entryPoints: [path.join(piRoot, 'packages', 'ai', 'src', 'media', 'index.ts')],
     outfile: path.join(desktopRoot, 'dist', 'pi-official-media.cjs'),
     bundle: true, platform: 'node', format: 'cjs', target: 'node22.19',

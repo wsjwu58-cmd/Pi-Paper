@@ -29,6 +29,16 @@
 
 新建和导入文件采用 Pi Skill frontmatter，并在 `metadata.vibepaper` 中记录 `schemaVersion: 1`、稳定项目内 ID、显示名称、分类、启用状态与版本号。内容使用同目录临时文件和原子改名；编辑前将完整旧文件保存到隐藏 `.versions/` 目录并递增版本。删除将文件移入隐藏 `.deleted/` 目录，保留可恢复副本。Pi loader 会跳过这些隐藏目录，项目备份清单会纳入其中的 Markdown 文件。
 
+## 项目插件与会话创造模式
+
+项目插件的权威状态在 `.vibepaper/agent/skills/.marketplace/state.json`。旧项目的 v1 安装快照继续可读。`disabledOfficialSkillIds` 可省略，只记录停用的动态官方 Skill 原 key。两项核心 Skill 由宿主提供，历史会话保留原快照。首次持久化创作版本或新操作记录时升为 v2，并为已有 v1 状态生成 `state.v1.backup.json`。
+
+v2 的 `projectPackages` 存创作包清单、摘要及父版本摘要，`creatorOperations` 存操作键、输入摘要和步骤结果。安装的版本、选择的组件及启用状态仍在 `packages` 中。项目标识不依赖目录位置；导出的包只带可移植清单。本地操作记录与项目一起备份。
+
+画布继续保存基础节点类型，在专用节点的 `params.nodeDefinition` 中保留 `ref`、`snapshot` 和 `values`。其中 `ref` 关联包、组件、版本和摘要，`snapshot` 保存本实例所需字段定义。已有实例的编辑与恢复使用这份快照，安装状态决定新的创建入口。
+
+Pi 会话 JSONL 使用 `vibepaper_agent_mode` 自定义条目保存 `mode` 和递增的 `version`。缺少该条目时为普通模式，版本为 0。角色绑定和会话模型绑定独立于模式，外部 MCP 授权单独存储。业务执行状态使用现有控制库及画布幂等账本。
+
 ## 本地文本模型设置
 
 插件预设的个人默认保存在用户数据目录的 `marketplace-preset-defaults.json`。项目覆盖位于 `.vibepaper/agent/skills/.marketplace/preset-overrides.json`，随现有项目备份恢复。两者均使用 `schemaVersion: 1`，条目以包 ID、版本、组件 ID 标识并仅保存显式覆盖的预设字段。更新包后采用新版本的配置，回到旧版本时可恢复该版本的覆盖值。项目绑定的本地 MCP 工具选择存于用户数据目录 `marketplace-connectors.json`，不进入项目备份或导出的插件包。

@@ -475,6 +475,10 @@ function createProviderSettings({ directory, safeStorage, catalog, legacyCredent
     }) }
   }
   async function snapshot() { return serialize(() => snapshotInternal()) }
+  async function withSnapshot(callback) {
+    if (typeof callback !== 'function') throw failure('PROVIDER_CONFIGURATION_INVALID', '模型配置操作无效。')
+    return serialize(async () => callback(await snapshotInternal()))
+  }
   async function snapshotProvider(providerId) {
     definition(providerId)
     return serialize(() => snapshotInternal(providerId))
@@ -796,7 +800,7 @@ function createProviderSettings({ directory, safeStorage, catalog, legacyCredent
       }
     })
   }
-  return { snapshot, save, clear, resolve, test, testSaved, credentials: getCredentials,
+  return { snapshot, withSnapshot, save, clear, resolve, test, testSaved, credentials: getCredentials,
     hmacProviderOperation, previewPublicConfiguration, prepareCredentialUpdate, snapshotProvider }
 }
 module.exports = { createProviderSettings, atomicWrite }

@@ -4,7 +4,8 @@ const fs = require('node:fs/promises')
 const { loadSkillsFromDir } = require('../../pi-main/packages/coding-agent/src/core/skill-loader.ts')
 const { parseFrontmatter } = require('../../pi-main/packages/coding-agent/src/utils/frontmatter.ts')
 const { stringify } = require('../../pi-main/node_modules/yaml')
-const { listMarketplaceSkills } = require('./marketplace-storage.cjs')
+const { listMarketplaceSkills, readState } = require('./marketplace-storage.cjs')
+const { SYSTEM_SKILLS } = require('../../pi-main/packages/vibepaper-agent-service/src/domain/skill-manifest.ts')
 
 const MAX_SKILL_BYTES = 512 * 1024
 const MAX_TREE_ENTRIES = 10_000
@@ -128,14 +129,19 @@ function toProjectSkill(skill, skillsRoot, rawContent) {
   const appMetadata = skillMetadata(frontmatter)
   const metadataId = asText(appMetadata.id)
   const safeId = metadataId && metadataId === id && SKILL_ID_PATTERN.test(metadataId) ? metadataId : id
+  // Legacy hand-authored files may use an official key as their filename.
+  // Give the file a stable distinct identity without renaming or rewriting it.
+  const legacyId = SYSTEM_SKILLS.some((system) => system.key === safeId) ? safeId : undefined
+  const publicId = legacyId ? `project-legacy-${crypto.createHash('sha256').update(legacyId).digest('hex').slice(0, 24)}` : safeId
   const displayName = normalizeDisplayName(asText(appMetadata.displayName) || skill.name)
   const categoryValue = asText(appMetadata.category) || 'general'
   const category = SKILL_CATEGORIES.has(categoryValue) ? categoryValue : 'general'
   const versionValue = appMetadata.version
   const version = Number.isSafeInteger(versionValue) && versionValue > 0 ? versionValue : 1
   return {
-    id: safeId,
-    key: safeId,
+    id: publicId,
+    key: publicId,
+    ...(legacyId ? { legacyId } : {}),
     name: displayName,
     description: skill.description,
     instructions: body,
@@ -146,7 +152,7 @@ function toProjectSkill(skill, skillsRoot, rawContent) {
   }
 }
 
-async function listProjectAgentSkills(projectDirectory, keyword) {
+async function listProjectFileSkills(projectDirectory) {
   const skillsRoot = await projectSkillRoot(projectDirectory)
   await assertNoSymlinks(skillsRoot)
   const loaded = loadSkillsFromDir({ dir: skillsRoot, source: 'project' })
@@ -164,18 +170,43 @@ async function listProjectAgentSkills(projectDirectory, keyword) {
       throw error
     }
   }
-  skills.push(...await listMarketplaceSkills(projectDirectory))
+  return skills
+}
+
+async function listProjectAgentSkills(projectDirectory, keyword) {
+  const skills = [...await listProjectFileSkills(projectDirectory), ...await listMarketplaceSkills(projectDirectory)]
   const normalizedKeyword = typeof keyword === 'string' ? keyword.trim().toLocaleLowerCase() : ''
   return skills.filter((skill) => !normalizedKeyword || [skill.id, skill.name, skill.description, skill.instructions]
     .some((value) => value.toLocaleLowerCase().includes(normalizedKeyword)))
 }
 
+// The generated manifest remains the source for both the desktop runtime and
+// marketplace; the project only stores exceptions to the compatible default.
+function getOfficialSkillDefinitions() {
+  return SYSTEM_SKILLS.map((skill) => ({ ...skill }))
+}
+
+async function listAgentSkillsWithOfficialState(projectDirectory) {
+  const [skills, state] = await Promise.all([listProjectAgentSkills(projectDirectory), readState(projectDirectory)])
+  const disabled = new Set(state.disabledOfficialSkillIds ?? [])
+  const official = SYSTEM_SKILLS.map((skill) => ({
+    id: skill.key, key: skill.key, name: skill.name, description: skill.description,
+    instructions: skill.instructions, source: skill.kind === 'builtin-core' ? 'builtin' : 'system_dynamic',
+    category: skill.category, version: 1,
+    enabled: skill.kind === 'builtin-core' || !disabled.has(skill.key),
+    isAvailable: async () => skill.kind === 'builtin-core'
+      || !(await readState(projectDirectory)).disabledOfficialSkillIds?.includes(skill.key),
+  }))
+  return [...skills, ...official]
+}
+
 async function ensureUniqueName(projectDirectory, name, reservedNames = [], exceptId) {
   const normalizedName = name.toLocaleLowerCase()
-  if (reservedNames.some((candidate) => typeof candidate === 'string' && candidate.toLocaleLowerCase() === normalizedName)) {
+  const skills = await listProjectAgentSkills(projectDirectory)
+  const retainingExistingName = exceptId && skills.some((skill) => skill.id === exceptId && skill.name.toLocaleLowerCase() === normalizedName)
+  if (!retainingExistingName && reservedNames.some((candidate) => typeof candidate === 'string' && candidate.toLocaleLowerCase() === normalizedName)) {
     throw new Error('SKILL_NAME_COLLISION')
   }
-  const skills = await listProjectAgentSkills(projectDirectory)
   if (skills.some((skill) => skill.id !== exceptId && skill.name.toLocaleLowerCase() === normalizedName)) {
     throw new Error('SKILL_NAME_COLLISION')
   }
@@ -250,14 +281,14 @@ async function createProjectAgentSkill(projectDirectory, draft, reservedNames = 
 async function resolveManagedSkill(projectDirectory, skillId) {
   const skillsRoot = await projectSkillRoot(projectDirectory)
   await assertNoSymlinks(skillsRoot)
-  const targetPath = managedSkillPath(skillsRoot, skillId)
+  const skill = (await listProjectAgentSkills(projectDirectory)).find((entry) => entry.id === skillId)
+  if (!skill || skill.id !== skillId) throw new Error('SKILL_NOT_FOUND')
+  const targetPath = managedSkillPath(skillsRoot, skill.legacyId ?? skillId)
   const info = await fs.lstat(targetPath).catch((error) => {
     if (error && error.code === 'ENOENT') return null
     throw error
   })
   if (!info?.isFile() || info.isSymbolicLink()) throw new Error('SKILL_NOT_FOUND')
-  const skill = (await listProjectAgentSkills(projectDirectory)).find((entry) => entry.id === skillId)
-  if (!skill || skill.id !== skillId) throw new Error('SKILL_NOT_FOUND')
   const rawContent = await fs.readFile(targetPath, 'utf8')
   const { frontmatter, body } = parseFrontmatter(rawContent)
   return { skillsRoot, targetPath, skill, rawContent, frontmatter, body }
@@ -287,7 +318,7 @@ async function updateProjectAgentSkill(projectDirectory, skillId, patch, reserve
   })
   if (!existingHistory) await atomicWriteFile(historyPath, current.rawContent, true)
   const content = buildSkillDocument({
-    id: skillId,
+    id: current.skill.legacyId ?? skillId,
     name,
     description,
     category,
@@ -356,6 +387,9 @@ module.exports = {
   createProjectAgentSkill,
   deleteProjectAgentSkill,
   importProjectAgentSkill,
+  getOfficialSkillDefinitions,
+  listAgentSkillsWithOfficialState,
+  listProjectFileSkills,
   listProjectAgentSkills,
   parseFrontmatter,
   updateProjectAgentSkill,

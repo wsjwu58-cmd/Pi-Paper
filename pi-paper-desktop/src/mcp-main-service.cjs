@@ -1965,7 +1965,49 @@ function createMcpMainService(options) {
     return true
   }
 
+  async function runHostCanvasMutation(input, operation) {
+    const context = await currentContext()
+    if (!context || context.projectId !== input.projectId || context.canvasId !== input.canvasId) throw fixedError('PROJECT_CHANGED', 409)
+    const requestId = randomUUID()
+    let flushedVersion = null
+    try {
+      const flushed = await flushRendererCanvas(context, requestId)
+      flushedVersion = flushed.version
+      if (flushed.version !== input.expectedVersion) throw fixedError('CANVAS_VERSION_CONFLICT', 409)
+      const result = await operation(flushed.version)
+      event({ type: 'canvas.write-settled', requestId, projectId: input.projectId, canvasId: input.canvasId,
+        status: 'committed', version: result.canvasVersion })
+      return result
+    } catch (error) {
+      const latest = flushedVersion === null || !loadCanvas ? null : await loadCanvas(input.projectId, input.canvasId).catch(() => null)
+      if (latest && latest.version > flushedVersion) {
+        event({ type: 'canvas.write-settled', requestId, projectId: input.projectId, canvasId: input.canvasId,
+          status: 'committed', version: latest.version })
+      } else {
+        event({ type: 'canvas.write-settled', requestId, projectId: input.projectId, canvasId: input.canvasId,
+          status: 'aborted', errorCode: safeErrorCode(error) })
+      }
+      throw error
+    }
+  }
+
+  async function runHostCanvasPreview(input, operation) {
+    const context = await currentContext()
+    if (!context || context.projectId !== input.projectId || context.canvasId !== input.canvasId) throw fixedError('PROJECT_CHANGED', 409)
+    const requestId = randomUUID()
+    try {
+      const flushed = await flushRendererCanvas(context, requestId)
+      if (flushed.version !== input.expectedVersion) throw fixedError('CANVAS_VERSION_CONFLICT', 409)
+      return await operation(flushed.version)
+    } finally {
+      // The renderer uses an aborted-without-error settlement to release the
+      // input barrier without claiming that a canvas mutation was committed.
+      event({ type: 'canvas.write-settled', requestId, projectId: input.projectId, canvasId: input.canvasId, status: 'aborted' })
+    }
+  }
+
   return {
+    runHostCanvasMutation, runHostCanvasPreview,
     start, stop, getState, getStore: () => store,
     authorizeAgentCoreRequest, validateCoreMethodForCommand,
     invalidateForProjectTransition, handleWindowClosed,

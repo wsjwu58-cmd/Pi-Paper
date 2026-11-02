@@ -10,15 +10,21 @@ import { OnlineCatalog, catalogText } from './OnlineCatalog'
 
 import { PresetPreferences } from './PresetPreferences'
 import { LocalMcpConnectorPanel } from './LocalMcpConnectorPanel'
+import { NodeDefinitionEditor } from './NodeDefinitionEditor'
+import { ModelCapabilityPreview } from './ModelCapabilityPreview'
+import { basicNodeCatalog } from '@/features/canvas/nodeDefinitionCatalog'
 
 type ComponentType = MarketplacePackage['components'][number]['type']
 type MarketplaceComponent = MarketplacePackage['components'][number]
-type Filter = 'all' | 'installed' | ComponentType
+type Filter = 'all' | 'installed' | 'project' | ComponentType
 
 const componentLabels: Record<ComponentType, string> = {
   director_scene: '导演场景', director_camera: '导演机位', director_motion: '运镜路径',
   poster_layout: '海报版式', selection_command: '选区命令', storyboard: '分镜表',
   media_tool: '媒体工具', connector: '连接器',
+  node_definition: '节点',
+  agent_role: 'Agent 角色',
+  workflow_recipe: '创作流程',
   template: '画布模板',
   asset: '素材',
   preset: '节点预设',
@@ -28,6 +34,7 @@ const componentLabels: Record<ComponentType, string> = {
 const filters: { value: Filter; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'installed', label: '已安装' },
+  { value: 'project', label: '本项目创作' },
   ...Object.entries(componentLabels).map(([value, label]) => ({ value: value as ComponentType, label })),
 ]
 
@@ -48,6 +55,7 @@ const marketplaceErrors: Record<string, string> = {
   MARKETPLACE_STORAGE_TOO_LARGE: '插件数据超过允许大小。',
   MARKETPLACE_CATALOG_FULL: '本地插件目录已满。',
   MARKETPLACE_PROJECT_FULL: '当前项目已安装的插件包达到上限。',
+  MARKETPLACE_SYSTEM_REQUIRED: '此 Skill 是系统必需，不能停用。',
 }
 
 function marketplaceError(error: unknown) {
@@ -64,8 +72,8 @@ function componentLabel(type: ComponentType) {
 export function filterMarketplacePackages(packages: MarketplacePackage[], filter: Filter, keyword: string) {
   const query = keyword.trim().toLocaleLowerCase()
   return packages.filter((item) => {
-    const matchingComponents = item.components.filter((component) => filter === 'all' || (filter === 'installed' ? component.installed : component.type === filter))
-    const matchesFilter = filter === 'all' || matchingComponents.length > 0
+    const matchingComponents = item.components.filter((component) => filter === 'all' || filter === 'project' || (filter === 'installed' ? component.installed : component.type === filter))
+    const matchesFilter = filter === 'all' || (filter === 'project' ? item.source === 'project' : matchingComponents.length > 0)
     const text = [uiText(item.name), uiText(item.description), uiText(item.author), ...matchingComponents.flatMap((component) => [uiText(component.name), uiText(component.description), componentLabel(component.type)])]
       .join(' ').toLocaleLowerCase()
     return matchesFilter && (!query || text.includes(query))
@@ -74,6 +82,18 @@ export function filterMarketplacePackages(packages: MarketplacePackage[], filter
 
 function packageTypes(item: MarketplacePackage) {
   return [...new Set(item.components.map((component) => component.type))]
+}
+
+function skillGroup(component: MarketplaceComponent | undefined) {
+  if (!component || component.type !== 'skill') return ''
+  if (component.systemRequired) return uiText('系统必需')
+  return uiText(({ canvas: '画布', text: '文本', image: '图片', video: '视频', general: '通用' })[component.data.category])
+}
+
+function packageSource(item: MarketplacePackage, language: ReturnType<typeof useUiLanguage>) {
+  return item.officialSkillCatalog ? uiText('官方 Skill') : item.projectSkillCatalog ? uiText('本项目 Skill 文件')
+    : item.source === 'builtin' ? uiText('内置目录') : item.source === 'online' ? catalogText(language, 'source')
+      : item.source === 'project' ? uiText('本项目创作') : uiText('本地导入')
 }
 
 function getMarketplace() {
@@ -101,13 +121,16 @@ export function MarketplacePage() {
   const [keyword, setKeyword] = useState('')
   const [detailId, setDetailId] = useState<string | null>(null)
   const [selected, setSelected] = useState<string[]>([])
+  const [creatingNode, setCreatingNode] = useState(false)
+  const [hiddenBasicNodes, setHiddenBasicNodes] = useState<string[]>([])
   const [removeTarget, setRemoveTarget] = useState<MarketplaceComponent | null>(null)
 
   const refresh = useCallback(async () => {
     const bridge = window.vibepaperDesktop
     if (!bridge?.marketplace) throw new Error(uiText('桌面插件市场接口不可用。'))
     const active = await bridge.getActiveProject()
-    const items = await bridge.marketplace.list(active?.projectId)
+    const [items, visibility] = await Promise.all([bridge.marketplace.list(active?.projectId), active ? bridge.marketplace.getBasicNodeVisibility(active.projectId) : Promise.resolve({ hidden: [] })])
+    setHiddenBasicNodes(visibility.hidden)
     setProject(active)
     setPackages(items)
   }, [])
@@ -159,6 +182,11 @@ export function MarketplacePage() {
     } finally { setBusy(false) }
   }
 
+  const setBasicVisibility = (type: string, visible: boolean) => {
+    if (!project) return
+    void run(async () => { await getMarketplace().setBasicNodeVisibility(project.projectId, type, visible) }, uiText('常用节点菜单已更新。'))
+  }
+
   const openDetail = (item: MarketplacePackage) => {
     setDetailId(item.id)
     setSelected([])
@@ -208,7 +236,7 @@ export function MarketplacePage() {
           <h1 className="text-[28px] font-bold tracking-tight">{detail ? uiText(detail.name) : uiText('插件市场')}</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#69768a]">{detail ? uiText(detail.description) : uiText('发现并安装适合当前项目的创作组件，让常用工作流随手可用。')}</p>
         </div>
-        <Button variant="ghost" className="shrink-0" leftIcon={<FileInput size={16} />} disabled={busy} onClick={importPackage}>{uiText('导入本地包')}</Button>
+        <div className="flex gap-2">{project && !detail && <Button variant="ghost" disabled={busy} onClick={() => setCreatingNode(true)}>{uiText('创建节点')}</Button>}<Button variant="ghost" className="shrink-0" leftIcon={<FileInput size={16} />} disabled={busy} onClick={importPackage}>{uiText('导入本地包')}</Button></div>
       </div>
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#e2e9f3] bg-white px-5 py-4">
@@ -223,6 +251,8 @@ export function MarketplacePage() {
         {project && <button type="button" onClick={() => navigate(`/canvas/${encodeURIComponent(project.canvasId)}`)} className="inline-flex items-center gap-1 text-sm font-semibold text-[#315a96] hover:text-[#173f85]">{uiText('返回画布')}<ArrowRight size={15} /></button>}
       </div>
 
+      {creatingNode && project && !detail && <NodeDefinitionEditor projectId={project.projectId} onClose={() => setCreatingNode(false)} onSaved={async (item) => { await refresh(); setCreatingNode(false); setDetailId(item.id); setSelected([]); setNotice({ tone: 'success', text: uiText('节点定义已保存。选择组件安装并启用后可在画布新建。') }) }} />}
+
       {notice && <div role={notice.tone === 'error' ? 'alert' : 'status'} className={`mb-6 rounded-xl border px-4 py-3 text-sm leading-6 ${notice.tone === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>{notice.text}</div>}
 
       {loading ? <div className="flex justify-center py-20"><Spinner /></div> : loadFailed ? <div className="rounded-2xl border border-[#e2e9f3] bg-white py-16 text-center"><p className="mb-4 text-sm text-[#69768a]">{uiText('暂时无法显示插件目录。')}</p><Button variant="ghost" onClick={() => { void retryLoad() }}>{uiText('重试')}</Button></div> : detail ? (
@@ -231,39 +261,42 @@ export function MarketplacePage() {
             <PackageMark />
             <div className="min-w-0 flex-1">
               <p className="font-semibold text-[#23324a]">{uiText(detail.author)} <span className="font-normal text-[#97a1b1]">·</span> {uiText('目录版本 {0}', { 0: detail.version })}</p>
-              <p className="mt-1">{detail.source === 'builtin' ? uiText('内置目录') : detail.source === 'online' ? catalogText(language, 'source') : uiText('本地导入')}{detail.origin && ` · ${detail.origin.commit.slice(0, 12)}`}</p>
+              <p className="mt-1">{packageSource(detail, language)}{detail.origin && ` · ${detail.origin.commit.slice(0, 12)}`}</p>
               {detail.installedVersion && <p className="mt-1">{uiText('当前项目已安装版本 {0}', { 0: detail.installedVersion })}</p>}
             </div>
             {detail.updateAvailable && <Button disabled={!project || busy || updateBlocked} onClick={updatePackage}>{uiText('更新至 {0}', { 0: detail.version })}</Button>}
-            <Button variant="ghost" disabled={!project || busy} leftIcon={<Download size={15} />} onClick={exportPackage}>{uiText('导出包')}</Button>
+            {!detail.officialSkillCatalog && !detail.projectSkillCatalog && <Button variant="ghost" disabled={!project || busy} leftIcon={<Download size={15} />} onClick={exportPackage}>{uiText('导出包')}</Button>}
             {detail.rollbackVersion && <Button variant="ghost" disabled={!project || busy} onClick={rollback}>{uiText('恢复版本 {0}', { 0: detail.rollbackVersion })}</Button>}
           </div>
           {detail.updateAvailable && <p className="mb-5 rounded-xl border border-[#d8e6f7] bg-[#eff6ff] px-4 py-3 text-sm leading-6 text-[#46658e]">{uiText('已安装组件预览当前版本，未安装组件预览目录新版本。更新保留已安装组件和启停状态；若新版本移除已安装组件或改变其类型，更新会被拒绝。')}</p>}
           <section className="rounded-2xl border border-[#e2e9f3] bg-white p-5 sm:p-6">
             <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-              <div><h2 className="text-lg font-bold">{uiText('选择组件')}</h2><p className="mt-1 text-sm text-[#77849a]">{uiText('按需安装；已安装的组件可单独启用、停用或卸载。')}</p></div>
-              <Button disabled={!project || busy || selected.length === 0 || updateBlocked} leftIcon={<Download size={16} />} onClick={install}>{uiText('安装所选组件（{0}）', { 0: selected.length })}</Button>
+              <div><h2 className="text-lg font-bold">{uiText(detail.officialSkillCatalog || detail.projectSkillCatalog ? 'Skill 目录' : '选择组件')}</h2><p className="mt-1 text-sm text-[#77849a]">{uiText(detail.officialSkillCatalog ? '核心 Skill 始终可用，其他官方 Skill 可按当前项目启停。' : detail.projectSkillCatalog ? '返回画布，在 Skill 面板中编辑或停用项目文件。' : '按需安装；已安装的组件可单独启用、停用或卸载。')}</p></div>
+              {!detail.officialSkillCatalog && !detail.projectSkillCatalog && <Button disabled={!project || busy || selected.length === 0 || updateBlocked} leftIcon={<Download size={16} />} onClick={install}>{uiText('安装所选组件（{0}）', { 0: selected.length })}</Button>}
             </div>
             <div className="divide-y divide-[#edf0f5]">
-              {detail.components.map((component) => (
+              {detail.components.map((component, index) => (
                 <div key={component.id} className="py-4 first:pt-1 last:pb-1">
+                {detail.officialSkillCatalog && (index === 0 || skillGroup(component) !== skillGroup(detail.components[index - 1])) && <h3 className="mb-3 text-xs font-bold text-[#647086]">{skillGroup(component)}</h3>}
                 <div className="flex flex-wrap items-center gap-3 sm:flex-nowrap">
                   {!component.installed && <input type="checkbox" aria-label={uiText('选择组件 {0}', { 0: uiText(component.name) })} checked={selected.includes(component.id)} disabled={!project || busy} onChange={(event) => setSelected((current) => event.target.checked ? [...current, component.id] : current.filter((id) => id !== component.id))} className="h-4 w-4 accent-[#315a96]" />}
                   <PackageMark type={component.type} small />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-[#24334a]">{uiText(component.name)}</span><span className="rounded-md bg-[#f1f4f8] px-2 py-0.5 text-xs text-[#647086]">{componentLabel(component.type)}</span></div>
                     <p className="mt-1 text-sm leading-5 text-[#7b8798]">{uiText(component.description)}</p>
+                    {component.type === 'workflow_recipe' && <p className="mt-1 text-xs text-[#7b8798]">{uiText('需一并安装并启用：{0}', { 0: [...new Set(component.data.steps.map((step) => step.componentId))].map((id) => detail.components.find((item) => item.id === id)?.name ?? id).join('、') })}</p>}
+                    {component.type === 'agent_role' && component.data.skills.some((skill) => skill.startsWith('package:')) && <p className="mt-1 text-xs text-[#7b8798]">{uiText('角色依赖的同包 Skill 须同时启用。')}</p>}
                     <UpdateConflictNotice component={component} />
                   </div>
                   {component.installed ? <div className="ml-auto flex items-center gap-2 text-sm">
                     <span className={component.enabled ? 'text-emerald-700' : 'text-[#8490a3]'}>{component.enabled ? uiText('已启用') : uiText('已停用')}</span>
-                    <button type="button" disabled={busy} onClick={() => setEnabled(component, !component.enabled)} className="rounded-lg px-2.5 py-2 font-semibold text-[#315a96] hover:bg-[#edf2fa] disabled:opacity-50">{component.enabled ? uiText('停用') : uiText('启用')}</button>
-                    <button type="button" disabled={busy} onClick={() => setRemoveTarget(component)} className="rounded-lg px-2.5 py-2 text-[#7a8699] hover:bg-red-50 hover:text-red-700 disabled:opacity-50">{uiText('卸载')}</button>
+                    {component.systemRequired ? <span className="text-xs text-[#647086]">{uiText('系统必需')}</span> : !detail.projectSkillCatalog && <button type="button" disabled={!project || busy} onClick={() => setEnabled(component, !component.enabled)} className="rounded-lg px-2.5 py-2 font-semibold text-[#315a96] hover:bg-[#edf2fa] disabled:opacity-50">{component.enabled ? uiText('停用') : uiText('启用')}</button>}
+                    {!detail.officialSkillCatalog && !detail.projectSkillCatalog && <button type="button" disabled={busy} onClick={() => setRemoveTarget(component)} className="rounded-lg px-2.5 py-2 text-[#7a8699] hover:bg-red-50 hover:text-red-700 disabled:opacity-50">{uiText('卸载')}</button>}
                   </div> : <span className="ml-auto text-xs text-[#9ba5b5]">{uiText('未安装')}</span>}
                 </div>
                 <details className="mt-2 ml-0 rounded-xl bg-[#f8fafc] px-4 py-2 sm:ml-7">
                   <summary className="cursor-pointer py-1 text-sm font-semibold text-[#496990]">{uiText('预览组件内容')}</summary>
-                  <ComponentPreview component={component} />
+                  <ComponentPreview component={component} projectId={project?.projectId} />
                 </details>
                 {component.type === 'preset' && <PresetPreferences component={component} projectId={project?.projectId} packageId={detail.id}
                   version={component.installed ? detail.installedVersion! : detail.version} onSaved={refresh} />}
@@ -287,6 +320,7 @@ export function MarketplacePage() {
             </div>
             <label className="flex h-10 w-full items-center gap-2 rounded-xl border border-[#e2e9f3] bg-white px-3 text-[#95a0b1] sm:w-64"><Search size={16} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={uiText('搜索插件和组件')} aria-label={uiText('搜索插件和组件')} className="min-w-0 flex-1 bg-transparent text-sm text-[#24334a] outline-none placeholder:text-[#a4adbb]" /></label>
           </div>
+          {filter === 'node_definition' && <div className="mb-5 rounded-2xl border border-[#e2e9f3] bg-white p-5 text-sm text-[#69768a]"><strong>{uiText('基础节点')}</strong><p className="mt-1 text-xs">{uiText('选择本项目新建菜单中的基础节点；已有节点仍可编辑。')}</p><div className="mt-3 flex flex-wrap gap-3">{basicNodeCatalog(hiddenBasicNodes).map((node) => <label key={node.type} className="inline-flex items-center gap-1.5"><input type="checkbox" aria-label={uiText('新建菜单显示{0}', { 0: uiText(node.label) })} checked={node.visible} disabled={!project || busy} onChange={(event) => setBasicVisibility(node.type, event.target.checked)} />{uiText(node.label)}</label>)}</div><p className="mt-2 text-xs">{uiText('自定义节点安装启用后出现在本项目菜单。')}</p></div>}
           <div className="mb-4 flex items-center justify-between text-sm text-[#8995a7]"><span>{uiText('共 {0} 个插件包', { 0: visible.length })}</span>{project && <span>{uiText('当前项目已安装 {0} 个组件', { 0: installedCount })}</span>}</div>
           {visible.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{visible.map((item) => <PackageCard key={item.id} item={item} onOpen={() => openDetail(item)} />)}</div> : <div className="rounded-2xl border border-dashed border-[#d8e0eb] bg-white py-16 text-center text-[#8490a3]"><PackageOpen size={30} className="mx-auto mb-3" /><p className="font-semibold text-[#59677c]">{uiText('没有找到匹配的插件包')}</p><p className="mt-1 text-sm">{uiText('试试其他分类或搜索词，也可以导入本地包。')}</p></div>}
           <UsageGuide />
@@ -304,7 +338,7 @@ export function PackageCard({ item, onOpen }: { item: MarketplacePackage; onOpen
     <div className="flex w-full items-start gap-3"><PackageMark /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><h3 className="truncate text-base font-bold text-[#23324a]">{uiText(item.name)}</h3><ChevronRight size={17} className="shrink-0 text-[#a8b4c5] group-hover:text-[#315a96]" /></div><p className="mt-1 text-xs text-[#95a0b1]">{uiText(item.author)} · v{item.version}</p></div></div>
     <p className="mt-4 line-clamp-2 flex-1 text-sm leading-6 text-[#718096]">{uiText(item.description)}</p>
     <div className="mt-4 flex flex-wrap items-center gap-1.5">{packageTypes(item).map((type) => <span key={type} className="rounded-md bg-[#f1f4f8] px-2 py-1 text-xs text-[#647086]">{componentLabel(type)}</span>)}</div>
-    <div className="mt-4 flex w-full items-center justify-between border-t border-[#f0f3f7] pt-3 text-xs text-[#95a0b1]"><span>{item.source === 'builtin' ? uiText('内置目录') : item.source === 'online' ? catalogText(language, 'source') : uiText('本地导入')}</span><span className={installed ? 'inline-flex items-center gap-1 text-emerald-700' : ''}>{installed ? <><Check size={13} />{uiText('已安装 {0}/{1}', { 0: installed, 1: item.components.length })}</> : uiText('查看详情')}</span></div>
+    <div className="mt-4 flex w-full items-center justify-between border-t border-[#f0f3f7] pt-3 text-xs text-[#95a0b1]"><span>{packageSource(item, language)}</span><span className={installed ? 'inline-flex items-center gap-1 text-emerald-700' : ''}>{installed ? <><Check size={13} />{uiText('已安装 {0}/{1}', { 0: installed, 1: item.components.length })}</> : uiText('查看详情')}</span></div>
   </button>
 }
 
@@ -341,9 +375,13 @@ function PreviewParameters({ value }: { value: unknown }) {
 }
 
 /** Treat imported content as text and use image data only for validated, supported image types. */
-export function ComponentPreview({ component }: { component: MarketplaceComponent }) {
+export function ComponentPreview({ component, projectId }: { component: MarketplaceComponent; projectId?: string }) {
   const data = record(component.data)
   const contentClass = 'mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white p-3 text-xs leading-5 text-[#536278]'
+  if (component.type === 'node_definition') {
+    const definition = component.data
+    return <div className="pb-2 text-sm text-[#69768a]"><p className="mt-2">{uiText('基础类型：{0}', { 0: previewNodeType(definition.baseType) })}</p><p className="mt-1">{uiText('输入输出继承基础节点；模型由用户选择。')}</p><div className={contentClass}>{definition.fields.map((field) => <p key={field.id}>{field.label} · {field.kind === 'text' ? uiText('文本') : field.kind === 'number' ? uiText('数字') : uiText('枚举')} · {String(field.default)}</p>)}<p className="mt-2 whitespace-pre-wrap">{definition.promptTemplate}</p></div><ModelCapabilityPreview projectId={projectId} modality={definition.baseType} /></div>
+  }
   if (component.type === 'template') {
     const nodes = Array.isArray(data.nodes) ? data.nodes.map(record) : []
     const edges = Array.isArray(data.edges) ? data.edges.map(record) : []
@@ -361,10 +399,17 @@ export function ComponentPreview({ component }: { component: MarketplaceComponen
     return isImage ? <img src={`data:${mime};base64,${base64}`} alt={uiText(component.name)} className="mt-3 mb-2 max-h-56 max-w-full rounded-lg border border-[#e2e9f3] object-contain" /> : <p className="py-3 text-sm text-[#77849a]">{uiText('此素材暂无可显示的预览。')}</p>
   }
   if (component.type === 'preset') {
-    return <div className="pb-2 text-sm text-[#69768a]"><p className="mt-2">{uiText('适用节点：{0}', { 0: previewNodeType(data.nodeType) })}</p><div className={contentClass}><PreviewParameters value={data.params} /></div></div>
+    return <div className="pb-2 text-sm text-[#69768a]"><p className="mt-2">{uiText('适用节点：{0}', { 0: previewNodeType(data.nodeType) })}</p><div className={contentClass}><PreviewParameters value={data.params} /></div><ModelCapabilityPreview projectId={projectId} modality={component.data.nodeType} initialResolution={typeof component.data.params.resolution === 'string' ? component.data.params.resolution : typeof component.data.params.size === 'string' ? component.data.params.size : undefined} /></div>
   }
   if (component.type === 'skill') {
     return <div className="pb-2 text-sm text-[#69768a]"><p className="mt-2 font-semibold">{uiText('Skill 指令')}</p><p className={contentClass}>{typeof data.instructions === 'string' ? data.instructions : uiText('暂无可预览内容。')}</p></div>
+  }
+  if (component.type === 'agent_role') {
+    return <div className="pb-2 text-sm text-[#69768a]"><p className="mt-2">{uiText('角色只使用宿主允许的工具和上下文；安装后可在 Agent 会话中选择。')}</p><p className={contentClass}>{component.data.instructions}</p></div>
+  }
+  if (component.type === 'workflow_recipe') {
+    const labels = { check_missing_prompt: '检查缺少的提示词', arrange: '预览并排列镜头', storyboard_preview: '预览分镜表' }
+    return <ol className="my-3 list-decimal space-y-1 pl-5 text-sm text-[#69768a]">{component.data.steps.map((step) => <li key={step.kind}>{uiText(labels[step.kind])}</li>)}</ol>
   }
   if (component.type === 'poster_layout') {
     const layout = component.data

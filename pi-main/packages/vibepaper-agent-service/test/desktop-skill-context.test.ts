@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { rehydratedSkillInstructions } from "../src/application/agent-runtime.ts";
+import { prepareDesktopAgentTurnContext, rehydratedSkillInstructions } from "../src/application/agent-runtime.ts";
 import { DesktopAgentControlStore } from "../src/desktop/control-store.ts";
 import {
 	createDesktopAgentSkillContext,
@@ -154,6 +154,44 @@ describe("desktop system Skill context", () => {
 			expect(() => createDesktopAgentSkillContext(store, "session-1", disabledSkill.id, [disabledSkill])).toThrow(
 				"SKILL_NOT_FOUND",
 			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("removes a disabled official Skill's old tool result from the next prompt without changing the transcript", async () => {
+		const { store } = await createStore();
+		const skill = listDesktopAgentSkills().find((item) => item.id === "product-visual")!;
+		try {
+			store.attachSessionSkillSnapshot("session-1", snapshotDesktopAgentSkill(skill));
+			store.markSkillLoaded("session-1", skill.id);
+			const context = createDesktopAgentSkillContext(store, "session-1", undefined, [{ ...skill, enabled: false }]);
+			const original = {
+				role: "toolResult" as const,
+				toolCallId: "old-load",
+				toolName: "load_skill",
+				content: [{ type: "text" as const, text: `skill://session/${skill.id}\nPRIVATE_OLD_SKILL_BODY` }],
+				isError: false,
+				timestamp: 1,
+			};
+			const turn = prepareDesktopAgentTurnContext(
+				[
+					{
+						role: "toolResult",
+						content: original.content[0].text,
+						meta: {},
+						createdAt: new Date(1),
+						piMessage: original,
+					},
+				],
+				"继续",
+				context,
+				[],
+				{},
+			);
+			expect(JSON.stringify(turn.initialMessages)).not.toContain("PRIVATE_OLD_SKILL_BODY");
+			expect(original.content[0].text).toContain("PRIVATE_OLD_SKILL_BODY");
+			expect(context.loadedSkills.map((item) => item.id)).not.toContain(skill.id);
 		} finally {
 			store.close();
 		}

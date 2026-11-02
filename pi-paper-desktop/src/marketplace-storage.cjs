@@ -7,7 +7,10 @@ const ID = /^[a-z0-9][a-z0-9-]{0,79}$/u
 const VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/u
 const { CREATIVE_TYPES, validateCreativeData } = require('./marketplace-creative.cjs')
 const { validateConnectorData } = require('./marketplace-connector-data.cjs')
-const TYPES = new Set(['template', 'asset', 'preset', 'skill', 'connector', ...CREATIVE_TYPES])
+const { validateNodeDefinition } = require('./node-definition.cjs')
+const { validateAgentRole } = require('./marketplace-agent-roles.cjs')
+const { validateWorkflowRecipe } = require('./creator-workflow.cjs')
+const TYPES = new Set(['template', 'asset', 'preset', 'skill', 'connector', 'node_definition', 'agent_role', 'workflow_recipe', ...CREATIVE_TYPES])
 const { EDGE_COMPATIBLE_TARGET_TYPES } = require('./canvas-edge-types.cjs')
 const NODE_TYPES = new Set(Object.keys(EDGE_COMPATIBLE_TARGET_TYPES))
 const CATEGORIES = new Set(['general', 'image', 'video', 'text', 'canvas'])
@@ -101,6 +104,12 @@ function validateComponent(component) {
     portableParams(data.params, data.nodeType)
   } else if (CREATIVE_TYPES.has(component.type)) {
     validateCreativeData(component.type, data)
+  } else if (component.type === 'node_definition') {
+    validateNodeDefinition(data)
+  } else if (component.type === 'agent_role') {
+    validateAgentRole(data)
+  } else if (component.type === 'workflow_recipe') {
+    validateWorkflowRecipe(data)
   } else if (component.type === 'connector') {
     validateConnectorData(data)
   } else {
@@ -121,6 +130,22 @@ function validatePackage(manifest) {
     validateComponent(component)
     if (ids.has(component.id)) invalid()
     ids.add(component.id)
+  }
+  for (const component of manifest.components) {
+    if (component.type === 'workflow_recipe') {
+      for (const step of component.data.steps) {
+        const dependency = manifest.components.find((item) => item.id === step.componentId)
+        const expected = step.kind === 'arrange' ? 'selection_command' : 'storyboard'
+        if (!dependency || dependency.type !== expected) invalid()
+      }
+    }
+    if (component.type === 'agent_role') {
+      for (const reference of component.data.skills) {
+        if (!reference.startsWith('package:')) continue
+        const dependency = manifest.components.find((item) => item.id === reference.slice('package:'.length))
+        if (!dependency || dependency.type !== 'skill') invalid()
+      }
+    }
   }
   if (Buffer.byteLength(JSON.stringify(manifest), 'utf8') > MAX_BYTES / 2) invalid()
   return manifest
@@ -148,7 +173,7 @@ async function readJson(file, fallback) {
   if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_BYTES) throw new Error('MARKETPLACE_STORAGE_INVALID')
   try { return JSON.parse(await fs.readFile(file, 'utf8')) } catch { throw new Error('MARKETPLACE_STORAGE_INVALID') }
 }
-async function writeJson(file, value) {
+async function writeJson(file, value, beforeCommit) {
   const encoded = JSON.stringify(value)
   if (Buffer.byteLength(encoded, 'utf8') > MAX_BYTES) throw new Error('MARKETPLACE_STORAGE_TOO_LARGE')
   const temporary = `${file}.${crypto.randomUUID()}.tmp`
@@ -156,6 +181,10 @@ async function writeJson(file, value) {
   try {
     handle = await fs.open(temporary, 'wx', 0o600)
     await handle.writeFile(encoded, 'utf8'); await handle.sync(); await handle.close(); handle = null
+    if (beforeCommit) {
+      await beforeCommit()
+      beforeCommit.assertSync?.()
+    }
     await fs.rename(temporary, file)
   } finally { await handle?.close().catch(() => {}); await fs.rm(temporary, { force: true }).catch(() => {}) }
 }
@@ -169,7 +198,7 @@ function validateSnapshot(snapshot, allowPrevious = true) {
   keys(snapshot, allowPrevious ? ['manifest', 'source', 'components', 'previous', 'origin'] : ['manifest', 'source', 'components', 'origin'])
   validatePackage(snapshot.manifest)
   if (snapshot.origin !== undefined && (snapshot.source !== 'online' || !isOnlineOrigin(snapshot.origin))) invalid()
-  if (!['builtin', 'local', 'online'].includes(snapshot.source) || !Array.isArray(snapshot.components)) invalid()
+  if (!['builtin', 'local', 'online', 'project'].includes(snapshot.source) || !Array.isArray(snapshot.components)) invalid()
   const seen = new Set()
   for (const item of snapshot.components) {
     keys(item, ['id', 'enabled']); id(item.id)
@@ -185,9 +214,46 @@ function validateSnapshot(snapshot, allowPrevious = true) {
 }
 async function readState(projectDirectory) {
   const state = await readJson(await statePath(projectDirectory), { schemaVersion: 1, packages: [] })
-  if (!record(state) || state.schemaVersion !== 1 || !Array.isArray(state.packages) || state.packages.length > 100) throw new Error('MARKETPLACE_STORAGE_INVALID')
+  if (!record(state) || ![1, 2].includes(state.schemaVersion) || !Array.isArray(state.packages) || state.packages.length > 100) throw new Error('MARKETPLACE_STORAGE_INVALID')
+  if (state.schemaVersion === 2) {
+    if (!Array.isArray(state.projectPackages) || state.projectPackages.length > 1000
+      || !Array.isArray(state.creatorOperations) || state.creatorOperations.length > 5000) throw new Error('MARKETPLACE_STORAGE_INVALID')
+    const versions = new Set()
+    for (const version of state.projectPackages) {
+      keys(version, ['manifest', 'digest', 'parentDigest'])
+      validatePackage(version.manifest)
+      if (!/^project-[a-f0-9-]{36}$/u.test(version.manifest.id) || !/^[a-f0-9]{64}$/u.test(version.digest)
+        || (version.parentDigest !== null && !/^[a-f0-9]{64}$/u.test(version.parentDigest))
+        || version.digest !== digestValue(version.manifest)) throw new Error('MARKETPLACE_STORAGE_INVALID')
+      const key = `${version.manifest.id}\0${version.manifest.version}`
+      if (versions.has(key)) throw new Error('MARKETPLACE_STORAGE_INVALID')
+      versions.add(key)
+    }
+    const operationKeys = new Set()
+    for (const operation of state.creatorOperations) {
+      keys(operation, ['key', 'inputHash', 'result'])
+      if (typeof operation.key !== 'string' || !operation.key || operation.key.length > 128
+        || !/^[a-f0-9]{64}$/u.test(operation.inputHash) || !record(operation.result)
+        || operationKeys.has(operation.key)) throw new Error('MARKETPLACE_STORAGE_INVALID')
+      if (operation.result.kind === 'apply' && (!['prepared', 'completed', 'failed'].includes(operation.result.status)
+        || !Number.isSafeInteger(operation.result.nodeCount) || operation.result.nodeCount < 1 || operation.result.nodeCount > 20
+        || !Number.isSafeInteger(operation.result.edgeCount) || operation.result.edgeCount < 0 || operation.result.edgeCount > 100
+        || (operation.result.method !== undefined && !['agent:core:save-canvas', 'agent:core:create-node'].includes(operation.result.method))
+        || !Number.isSafeInteger(operation.result.expectedVersion) || operation.result.expectedVersion < 0
+        || typeof operation.result.packageId !== 'string' || !ID.test(operation.result.packageId)
+        || typeof operation.result.componentId !== 'string' || !ID.test(operation.result.componentId)
+        || !/^[a-f0-9]{64}$/u.test(operation.result.digest))) throw new Error('MARKETPLACE_STORAGE_INVALID')
+      operationKeys.add(operation.key)
+    }
+  }
+  if (state.hiddenBasicNodeTypes !== undefined && (!Array.isArray(state.hiddenBasicNodeTypes)
+    || new Set(state.hiddenBasicNodeTypes).size !== state.hiddenBasicNodeTypes.length
+    || state.hiddenBasicNodeTypes.some((type) => !NODE_TYPES.has(type)))) throw new Error('MARKETPLACE_STORAGE_INVALID')
   if (state.retiredSkillIds !== undefined && (!Array.isArray(state.retiredSkillIds) || state.retiredSkillIds.length > 2000
     || state.retiredSkillIds.some((value) => typeof value !== 'string' || !/^market-[a-f0-9]{24}$/u.test(value)))) throw new Error('MARKETPLACE_STORAGE_INVALID')
+  if (state.disabledOfficialSkillIds !== undefined && (!Array.isArray(state.disabledOfficialSkillIds)
+    || state.disabledOfficialSkillIds.length > 2000 || new Set(state.disabledOfficialSkillIds).size !== state.disabledOfficialSkillIds.length
+    || state.disabledOfficialSkillIds.some((value) => typeof value !== 'string' || !ID.test(value)))) throw new Error('MARKETPLACE_STORAGE_INVALID')
   const seen = new Set()
   for (const item of state.packages) {
     validateSnapshot(item)
@@ -196,8 +262,21 @@ async function readState(projectDirectory) {
   }
   return state
 }
-async function writeState(projectDirectory, state) {
-  await writeJson(await statePath(projectDirectory, true), state)
+const canonical = (value) => Array.isArray(value) ? value.map(canonical) : record(value)
+  ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value
+const digestValue = (value) => crypto.createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
+async function writeState(projectDirectory, state, beforeCommit) {
+  const file = await statePath(projectDirectory, true)
+  const old = await readJson(file, null)
+  if (old?.schemaVersion === 1 && state.schemaVersion === 2) {
+    const backup = path.join(path.dirname(file), 'state.v1.backup.json')
+    const info = await fs.lstat(backup).catch((error) => { if (error.code === 'ENOENT') return null; throw error })
+    if (info && (!info.isFile() || info.isSymbolicLink())) throw new Error('MARKETPLACE_STORAGE_INVALID')
+    // A prior interrupted upgrade may have left an incomplete backup. Replace
+    // it atomically from the still-authoritative v1 state before upgrading.
+    await writeJson(backup, old, beforeCommit)
+  }
+  await writeJson(file, state, beforeCommit)
 }
 function marketplaceSkillId(packageId, componentId) {
   return `market-${crypto.createHash('sha256').update(`${packageId}\0${componentId}`).digest('hex').slice(0, 24)}`
@@ -223,4 +302,4 @@ async function listMarketplaceSkillIds(projectDirectory) {
   }
   return ids
 }
-module.exports = { isOnlineOrigin, MAX_BYTES, id, validatePackage, validateComponent, validateSnapshot, isSupportedComponentType: (type) => TYPES.has(type), readJson, writeJson, readState, writeState, statePath, portableParams, listMarketplaceSkills, listMarketplaceSkillIds, marketplaceSkillId }
+module.exports = { digestValue, isOnlineOrigin, MAX_BYTES, id, validatePackage, validateComponent, validateSnapshot, isSupportedComponentType: (type) => TYPES.has(type), readJson, writeJson, readState, writeState, statePath, portableParams, listMarketplaceSkills, listMarketplaceSkillIds, marketplaceSkillId }

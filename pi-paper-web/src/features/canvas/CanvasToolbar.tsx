@@ -31,15 +31,10 @@ import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { cn } from '@/lib/cn'
 import { isDesktopRuntime } from './canvasPort'
 import { useSoftPresence } from './canvasMotion'
+import { BASIC_NODES, type ProjectNodeItem } from './nodeDefinitionCatalog'
 
-const NODE_MENU = [
-  { type: 'text', label: '文本', sub: 'Text', icon: Type },
-  { type: 'image', label: '图片', sub: 'Image', icon: Image },
-  { type: 'video', label: '视频', sub: 'Video', icon: Video },
-  { type: 'audio', label: '音频', sub: 'Audio', icon: Mic },
-  { type: 'compose', label: '合成', sub: 'Synthesis', icon: Clapperboard },
-  { type: 'director', label: '导演台', sub: 'Director', icon: Clapperboard },
-]
+const ICONS = { text: Type, image: Image, video: Video, audio: Mic, compose: Clapperboard, director: Clapperboard } as const
+const NODE_MENU = BASIC_NODES.map((node) => ({ ...node, sub: node.type, icon: ICONS[node.type] }))
 
 const GROUP_COLORS = ['#8b5cf6', '#0ea5e9', '#10b981', '#f59e0b', '#f43f5e', '#111111']
 
@@ -49,6 +44,9 @@ export function CanvasToolbar({
   onFitView,
   onAutoLayout,
   onAddNode,
+  projectNodes = [],
+  basicNodes = BASIC_NODES,
+  onAddProjectNode,
   onOpenPlugins,
   desktopMode = false,
   projectId,
@@ -58,6 +56,9 @@ export function CanvasToolbar({
   onFitView: () => void
   onAutoLayout: () => void
   onAddNode: (type: string) => void
+  projectNodes?: ProjectNodeItem[]
+  basicNodes?: ReadonlyArray<{ type: typeof BASIC_NODES[number]['type']; label: string }>
+  onAddProjectNode?: (item: ProjectNodeItem) => void
   onOpenPlugins?: () => void
   desktopMode?: boolean
   projectId?: string
@@ -323,9 +324,9 @@ export function CanvasToolbar({
         </ToolButton>
         {menuPresence.present && (
           <div data-open={menuPresence.visible} aria-hidden={!menuOpen} inert={!menuOpen}
-            className="vp-soft-popover absolute left-[58px] top-0 z-50 w-[220px] rounded-[20px] border border-white/10 bg-[#1a1c24]/98 p-3 shadow-[0_24px_72px_rgba(0,0,0,0.35)] backdrop-blur-md">
+            className="vp-soft-popover absolute left-[58px] top-0 z-50 max-h-[80vh] w-[220px] overflow-y-auto rounded-[20px] border border-white/10 bg-[#1a1c24]/98 p-3 shadow-[0_24px_72px_rgba(0,0,0,0.35)] backdrop-blur-md">
             <p className="mb-2 px-1 text-[11px] font-bold tracking-wide text-[#8e929c]">{uiText("添加节点")}</p>
-            {NODE_MENU.map((t) => {
+            {NODE_MENU.filter((item) => basicNodes.some((node) => node.type === item.type)).map((t) => {
               const Icon = t.icon
               return (
                 <button
@@ -346,6 +347,8 @@ export function CanvasToolbar({
                 </button>
               )
             })}
+            {projectNodes.length > 0 && <p className="mt-2 px-1 text-[11px] font-bold text-[#8e929c]">{uiText('本项目')}</p>}
+            {projectNodes.map((item) => <button key={`${item.packageId}/${item.component.id}`} type="button" onClick={() => { onAddProjectNode?.(item); setMenuOpen(false) }} className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-left text-sm font-semibold text-white hover:bg-white/8"><Puzzle size={17} />{uiText(item.component.name)}</button>)}
             <div className="mx-1 my-2 h-px bg-white/10" />
             <button
               onClick={() => (isDesktop ? void importLocalImage() : fileRef.current?.click())}

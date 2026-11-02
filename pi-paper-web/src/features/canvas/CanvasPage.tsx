@@ -32,11 +32,13 @@ import { pickLatestTask } from './nodes/generation-task-selection'
 import { LocalMcpConnectorPanel } from '@/features/marketplace/LocalMcpConnectorPanel'
 import { CanvasTopBar } from './CanvasTopBar'
 import { CanvasToolbar } from './CanvasToolbar'
+import { basicNodeCatalog, compatibleNodeType, createNodeDefinitionInstance, projectNodeCatalog, type ProjectNodeItem } from './nodeDefinitionCatalog'
 import { CanvasPlugins } from './CanvasPlugins'
+import { describeCreativeCommands, getCreativeCommandDescriptor } from './creativeCommandCatalog'
 import { PosterEditor } from './PosterEditor'
 import { mergePosterResult, withPosterLayout } from './posterGraph'
-import { StoryboardEditor } from './StoryboardEditor'
-import { arrangeCreativeSelection, readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard, resolveUnchangedCreativeSelection } from './creativePluginRuntime'
+import { StoryboardEditor, type StoryboardRow } from './StoryboardEditor'
+import { readMediaTool, readPosterLayout } from './creativePluginRuntime'
 import type { PosterLayout, StoryboardField } from './creativePluginTypes'
 import { buildPluginTemplateGraph, changedPluginPresetPatch, commitPluginTemplateGraph, isPluginModelParameter, overwrittenPluginPresetFields, pluginPresetPatch, readPluginTemplate, templateFromSelection } from './pluginComponents'
 import { CanvasGroupView } from './CanvasGroupView'
@@ -132,12 +134,13 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const [pluginTarget, setPluginTarget] = useState<{ nodeId: string; nodeType: string } | null>(null)
   const [pluginBusy, setPluginBusy] = useState(false)
   const [posterDraft, setPosterDraft] = useState<{ sourceNodeId: string; sourceNodeMediaUrl: string; sourceUrl: string; initial: PosterLayout } | null>(null)
-  const [storyboardDraft, setStoryboardDraft] = useState<{ nodes: FlowNode[]; fields: StoryboardField[] } | null>(null)
+  const [storyboardDraft, setStoryboardDraft] = useState<{ nodes: FlowNode[]; fields: StoryboardField[]; rows: StoryboardRow[] } | null>(null)
+  const [lastArrangement, setLastArrangement] = useState<string | null>(null)
   const [connectorDraft, setConnectorDraft] = useState<{ packageId: string; componentId: string; nodeId: string } | null>(null)
   const generationTasksRef = useRef(generationTasks)
   generationTasksRef.current = generationTasks
   const pluginBusyRef = useRef(false)
-  const [pluginConfirmation, setPluginConfirmation] = useState<{ message: string; resolve: (confirmed: boolean) => void } | null>(null)
+  const [pluginConfirmation, setPluginConfirmation] = useState<{ message: string; confirmLabel: string; resolve: (confirmed: boolean) => void } | null>(null)
   const pluginConfirmationRef = useRef<{ resolve: (confirmed: boolean) => void } | null>(null)
   const [addMenu, setAddMenu] = useState<{
     x: number
@@ -264,6 +267,26 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const canHydrate = canHydrateCanvasPage(desktopMode, { isFetchedAfterMount, isSuccess })
   const detail = canHydrate ? loadedCanvas?.detail : undefined
   const desktopProjectId = canHydrate ? loadedCanvas?.projectId : undefined
+  const { data: marketplacePackages = [] } = useQuery({
+    queryKey: ['desktop-marketplace', desktopProjectId],
+    enabled: Boolean(desktopMode && desktopProjectId && window.vibepaperDesktop?.marketplace),
+    queryFn: () => window.vibepaperDesktop!.marketplace.list(desktopProjectId),
+  })
+  const projectNodes = useMemo(() => projectNodeCatalog(marketplacePackages), [marketplacePackages])
+  useEffect(() => {
+    const subscribe = window.vibepaperDesktop?.marketplace.subscribeMarketplaceChanges
+    if (!desktopProjectId || !subscribe) return
+    return subscribe((event) => { if (event.projectId === desktopProjectId) {
+      void queryClient.invalidateQueries({ queryKey: ['desktop-marketplace', desktopProjectId] })
+      void queryClient.invalidateQueries({ queryKey: ['desktop-basic-node-visibility', desktopProjectId] })
+    } })
+  }, [desktopProjectId, queryClient])
+  const { data: basicVisibility } = useQuery({
+    queryKey: ['desktop-basic-node-visibility', desktopProjectId],
+    enabled: Boolean(desktopMode && desktopProjectId && window.vibepaperDesktop?.marketplace),
+    queryFn: () => window.vibepaperDesktop!.marketplace.getBasicNodeVisibility(desktopProjectId!),
+  })
+  const basicNodes = basicNodeCatalog(basicVisibility?.hidden ?? []).filter((item) => item.visible && (!desktopMode || Boolean(basicVisibility)))
   const desktopCanvasMatches = !desktopMode || Boolean(desktopProjectId && detail && sid(detail.canvas.id) === canvasId)
   const desktopPageHydrated = !desktopMode || Boolean(canHydrate && desktopHydratedCanvasId === canvasId && desktopCanvasMatches)
 
@@ -894,7 +917,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     onCanvasChanged: notifyDesktopAgentCanvasChanged,
   })
 
-  const createNodeInCanvas = useCallback(async (type: string, x: number, y: number, params: Record<string, unknown>) => {
+  const createNodeInCanvas = useCallback(async (type: string, x: number, y: number, params: Record<string, unknown>, copySourceNodeId?: string) => {
     await flushDesktopEdits()
     const current = useCanvasStore.getState().canvas
     const created = await createCanvasNodePort({
@@ -905,6 +928,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       x,
       y,
       params,
+      ...(copySourceNodeId ? { copySourceNodeId } : {}),
     })
     if (window.vibepaperDesktop && sid(useCanvasStore.getState().canvas?.canvas.id) !== canvasId) {
       throw new Error(uiText('当前画布已切换，请在原画布核实节点。'))
@@ -1359,6 +1383,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             (src.x ?? n.position.x) + 40,
             (src.y ?? n.position.y) + 40,
             { ...src.params },
+            sid(src.id),
           )
           const node: FlowNode = {
             id: sid(created.id),
@@ -1408,6 +1433,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           (src.x ?? 120) + 48,
           (src.y ?? 120) + 48,
           { ...src.params },
+          sid(src.id),
         )
         const node: FlowNode = {
           id: sid(created.id),
@@ -1491,23 +1517,26 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       x?: number,
       y?: number,
       connect?: { nodeId: string; direction: 'upstream' | 'downstream' },
+      projectNode?: ProjectNodeItem,
     ) => {
       try {
         const model = models?.find((m) => m.modelType === type)
         const nodeX = x ?? 120
         const nodeY = y ?? 120
-        const n = await createNodeInCanvas(type, nodeX, nodeY, { model: model?.name ?? '' })
+        const definition = projectNode ? await createNodeDefinitionInstance(projectNode) : undefined
+        const params = { model: model?.name ?? '', ...(definition ? { nodeDefinition: definition } : {}) }
+        const n = await createNodeInCanvas(type, nodeX, nodeY, params)
         const node: FlowNode = {
           id: sid(n.id),
           type,
           position: { x: nodeX, y: nodeY },
           data: {
-            node: {
+            node: n.node ?? {
               id: sid(n.id),
               type: n.type,
               x: nodeX,
               y: nodeY,
-              params: { model: model?.name ?? '' },
+              params,
               status: 'idle',
             },
             selected: false,
@@ -1563,7 +1592,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         toastError((e as Error).message)
       }
     },
-    [canvasId, createNodeInCanvas, desktopProjectId, models, setCanvas, setEdges, setDirty, setNodes],
+    [canvasId, createNodeInCanvas, desktopProjectId, models, selectNode, setCanvas, setEdges, setDirty, setNodes],
   )
 
   const addAssetNode = useCallback(
@@ -1590,8 +1619,8 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     [createNodeInCanvas, models, selectNode, setDirty, setNodes],
   )
 
-  const askPluginConfirmation = useCallback((message: string) => new Promise<boolean>((resolve) => {
-    const request = { message, resolve }
+  const askPluginConfirmation = useCallback((message: string, confirmLabel = uiText('应用')) => new Promise<boolean>((resolve) => {
+    const request = { message, confirmLabel, resolve }
     pluginConfirmationRef.current = request
     setPluginConfirmation(request)
   }), [])
@@ -1643,11 +1672,11 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     }
   }, [assertPluginContext, currentPluginSelection, desktopProjectId])
 
-  const usePluginComponent = useCallback(async (packageId: string, componentId: string) => {
+  const applyPluginComponent = useCallback(async (packageId: string, componentId: string, selectionOverride?: string[]) => {
     if (pluginBusyRef.current) return
     pluginBusyRef.current = true
     setPluginBusy(true)
-    const selectedIds = pluginTarget ? [pluginTarget.nodeId] : currentPluginSelection()
+    const selectedIds = selectionOverride ?? (pluginTarget ? [pluginTarget.nodeId] : currentPluginSelection())
     try {
       const component = await enabledPluginComponent(packageId, componentId)
       const bridge = await assertPluginContext()
@@ -1733,11 +1762,70 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         setPosterDraft({ sourceNodeId: sid(source.id), sourceNodeMediaUrl, sourceUrl, initial })
         return
       }
-      if (component.type === 'storyboard') {
-        const data = readStoryboard(component.data)
-        const selected = useCanvasStore.getState().nodes.filter((node) => selectedIds.includes(sid(node.id)))
-        if (!selected.length) throw new Error(uiText('请先选择要导出的节点。'))
-        setStoryboardDraft({ nodes: selected, fields: data.fields })
+      if (component.type === 'workflow_recipe') {
+        await flushDesktopEdits()
+        const current = useCanvasStore.getState()
+        if (!current.canvas || !desktopProjectId) throw new Error(uiText('本地画布尚未就绪。'))
+        const packages = await bridge.marketplace.list(desktopProjectId)
+        const installedDigest = packages.find((item) => item.id === packageId)?.installedDigest
+        if (!installedDigest) throw new Error(uiText('该组件已停用或卸载，请刷新后重试。'))
+        const request = { packageId, componentId, digest: installedDigest, selectionIds: selectedIds, expectedVersion: current.canvas.canvas.version }
+        const preview = await bridge.marketplace.runCommand(desktopProjectId, canvasId, 'workflow_preview', request, crypto.randomUUID())
+        if (!preview.previewDigest || !preview.steps) throw new Error(uiText('创作组件数据无效。'))
+        const checks = preview.steps.filter((step) => step.kind === 'check_missing_prompt')
+        const arrange = preview.steps.find((step) => step.kind === 'arrange')
+        const storyboard = preview.steps.find((step) => step.kind === 'storyboard_preview')
+        const warnings = checks.flatMap((step) => step.kind === 'check_missing_prompt' ? step.result.missing : [])
+        const moves = arrange && arrange.kind === 'arrange' ? arrange.result.moves ?? [] : []
+        if (arrange && !moves.length) throw new Error(uiText('创作组件数据无效。'))
+        const changes = moves.map((move, index) => uiText('节点 {0}：({1}, {2}) → ({3}, {4})', { 0: index + 1,
+          1: Math.round(move.from.x), 2: Math.round(move.from.y), 3: Math.round(move.to.x), 4: Math.round(move.to.y) })).join('\n')
+        const message = [
+          ...(checks.length ? [uiText('已检查 {0} 个选中节点；缺少提示词：{1}。', { 0: selectedIds.length, 1: warnings.length ? warnings.map((item) => item.title).join('、') : uiText('无') })] : []),
+          ...(arrange ? [uiText('将排列 {0} 个节点：\n{1}', { 0: moves.length, 1: changes })] : []),
+          ...(storyboard && storyboard.kind === 'storyboard_preview' ? [uiText('将打开包含 {0} 行的分镜预览。', { 0: storyboard.result.rows?.length ?? 0 })] : []),
+          uiText('此流程不会创建生成任务。'),
+        ].join('\n\n')
+        if (!await askPluginConfirmation(message, arrange ? uiText('应用排列') : uiText('查看结果'))) return
+        if (!selectionOverride && JSON.stringify([...currentPluginSelection()].sort()) !== JSON.stringify([...selectedIds].sort())) throw new Error(uiText('选区已变更，请重新操作。'))
+        if (arrange) {
+          const result = await bridge.marketplace.runCommand(desktopProjectId, canvasId, 'workflow_apply', { ...request, previewDigest: preview.previewDigest }, crypto.randomUUID())
+          if (!result.operationKey) throw new Error(uiText('排列结果未确认，请先检查画布。'))
+          setLastArrangement(result.operationKey)
+          toastSuccess(uiText('流程已完成，镜头排列可撤销。'))
+        }
+        if (storyboard && storyboard.kind === 'storyboard_preview' && storyboard.result.fields && storyboard.result.rows) {
+          const selected = useCanvasStore.getState().nodes.filter((node) => selectedIds.includes(sid(node.id)))
+          setStoryboardDraft({ nodes: selected, fields: storyboard.result.fields, rows: storyboard.result.rows })
+        }
+        return
+      }
+      const commandDescriptor = getCreativeCommandDescriptor(component.type)
+      if (commandDescriptor?.capabilityId === 'storyboard.preview' || commandDescriptor?.capabilityId === 'selection.arrange') {
+        await flushDesktopEdits()
+        const current = useCanvasStore.getState()
+        if (!current.canvas || !desktopProjectId) throw new Error(uiText('本地画布尚未就绪。'))
+        const packages = await bridge.marketplace.list(desktopProjectId)
+        const installedDigest = packages.find((item) => item.id === packageId)?.installedDigest
+        if (!installedDigest) throw new Error(uiText('该组件已停用或卸载，请刷新后重试。'))
+        const request = { packageId, componentId, digest: installedDigest, selectionIds: selectedIds, expectedVersion: current.canvas.canvas.version }
+        const preview = await bridge.marketplace.runCommand(desktopProjectId, canvasId, 'command_preview', request, crypto.randomUUID())
+        if (!preview.previewDigest || preview.capabilityId !== commandDescriptor.capabilityId) throw new Error(uiText('创作组件数据无效。'))
+        if (preview.capabilityId === 'storyboard.preview') {
+          if (!preview.fields || !preview.rows) throw new Error(uiText('创作组件数据无效。'))
+          const selected = useCanvasStore.getState().nodes.filter((node) => selectedIds.includes(sid(node.id)))
+          setStoryboardDraft({ nodes: selected, fields: preview.fields, rows: preview.rows })
+          return
+        }
+        if (!preview.moves || !preview.orientation) throw new Error(uiText('创作组件数据无效。'))
+        const changes = preview.moves.map((move, index) => uiText('节点 {0}：({1}, {2}) → ({3}, {4})', { 0: index + 1,
+          1: Math.round(move.from.x), 2: Math.round(move.from.y), 3: Math.round(move.to.x), 4: Math.round(move.to.y) })).join('\n')
+        if (!await askPluginConfirmation(uiText('将{0}排列所选的 {1} 个节点。\n{2}', { 0: preview.orientation === 'horizontal' ? uiText('横向') : uiText('纵向'), 1: selectedIds.length, 2: changes }))) return
+        if (!selectionOverride && JSON.stringify([...currentPluginSelection()].sort()) !== JSON.stringify([...selectedIds].sort())) throw new Error(uiText('选区已变更，请重新操作。'))
+        const result = await bridge.marketplace.runCommand(desktopProjectId, canvasId, 'command_apply', { ...request, previewDigest: preview.previewDigest }, crypto.randomUUID())
+        if (!result.operationKey) throw new Error(uiText('排列结果未确认，请先检查画布。'))
+        setLastArrangement(result.operationKey)
+        toastSuccess(uiText('已排列所选节点。'))
         return
       }
       if (component.type === 'media_tool') {
@@ -1746,24 +1834,6 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         if (selected.length !== 1) throw new Error(uiText('请先选择一个本地图片节点。'))
         selectNode(sid(selected[0].id))
         window.dispatchEvent(new CustomEvent('vp-plugin-crop', { detail: { nodeId: sid(selected[0].id), mode: data.mode } }))
-        return
-      }
-      if (component.type === 'selection_command') {
-        const command = readSelectionCommand(component.data)
-        const snapshot = useCanvasStore.getState()
-        const selected = snapshot.nodes.filter((node) => selectedIds.includes(sid(node.id)))
-        if (selected.length < 2) throw new Error(uiText('请至少选择两个节点。'))
-        if (!await askPluginConfirmation(uiText('将{0}排列所选的 {1} 个节点。', { 0: command.orientation === 'horizontal' ? uiText('横向') : uiText('纵向'), 1: selected.length }))) return
-        const latestComponent = await enabledPluginComponent(packageId, componentId)
-        await assertPluginContext()
-        if (JSON.stringify(latestComponent.data) !== JSON.stringify(component.data)) throw new Error(uiText('组件内容已变更，请重新应用。'))
-        const latest = useCanvasStore.getState()
-        const latestSelection = resolveUnchangedCreativeSelection(selected, latest.nodes, pluginTarget ? [pluginTarget.nodeId] : currentPluginSelection())
-        if (!latestSelection) throw new Error(uiText('选区已变更，请重新操作。'))
-        setNodes(arrangeCreativeSelection(latest.nodes, latestSelection, command))
-        setDirty(true)
-        await persistDesktopChanges()
-        toastSuccess(uiText('已排列所选节点。'))
         return
       }
       if (component.type === 'preset') {
@@ -1809,12 +1879,32 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       }
       throw new Error(uiText('该组件不能在画布中使用。'))
     } catch (error) {
-      toastError(error instanceof Error ? error.message : uiText('使用插件组件失败。'))
+      const message = error instanceof Error ? error.message : ''
+      toastError(message.includes('WORKFLOW_DEPENDENCY_UNAVAILABLE')
+        ? uiText('请在插件市场安装并启用此流程需要的分镜表和排列组件。')
+        : message.includes('CANVAS_VERSION_CONFLICT') || message.includes('PREVIEW_CHANGED')
+          ? uiText('画布或选区已变更，请重新预览。')
+          : message || uiText('使用插件组件失败。'))
     } finally {
       pluginBusyRef.current = false
       setPluginBusy(false)
     }
   }, [addAssetNode, askPluginConfirmation, assertPluginContext, canvasId, currentPluginSelection, desktopProjectId, enabledPluginComponent, flushDesktopEdits, persistDesktopChanges, pluginTarget, screenToFlowPosition, selectNode, setCanvas, setDirty, setEdges, setNodes])
+
+  const undoLastArrangement = useCallback(async () => {
+    if (!lastArrangement || !desktopProjectId || pluginBusyRef.current) return
+    pluginBusyRef.current = true; setPluginBusy(true)
+    try {
+      const bridge = await assertPluginContext()
+      await flushDesktopEdits()
+      const version = useCanvasStore.getState().canvas?.canvas.version
+      if (version === undefined) throw new Error(uiText('本地画布尚未就绪。'))
+      await bridge.marketplace.runCommand(desktopProjectId, canvasId, 'command_undo', { originalOperationKey: lastArrangement, expectedVersion: version }, crypto.randomUUID())
+      setLastArrangement(null)
+      toastSuccess(uiText('已撤销上次排列。'))
+    } catch (error) { toastError(error instanceof Error ? error.message : uiText('撤销排列失败。')) }
+    finally { pluginBusyRef.current = false; setPluginBusy(false) }
+  }, [assertPluginContext, canvasId, desktopProjectId, flushDesktopEdits, lastArrangement])
 
   const connectorSourceFor = useCallback((nodeId: string) => {
     const node = useCanvasStore.getState().nodes.find((item) => sid(item.id) === nodeId)?.data.node
@@ -2173,7 +2263,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             <p className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-all text-sm leading-6 text-[#555]">{pluginConfirmation.message}</p>
             <div className="mt-5 flex justify-end gap-2">
               <button type="button" className="rounded-lg border border-black/15 px-4 py-2 text-sm" onClick={() => { pluginConfirmation.resolve(false); pluginConfirmationRef.current = null; setPluginConfirmation(null) }}>{uiText('取消')}</button>
-              <button type="button" className="rounded-lg bg-[#222] px-4 py-2 text-sm font-semibold text-white" onClick={() => { pluginConfirmation.resolve(true); pluginConfirmationRef.current = null; setPluginConfirmation(null) }}>{uiText('应用')}</button>
+              <button type="button" className="rounded-lg bg-[#222] px-4 py-2 text-sm font-semibold text-white" onClick={() => { pluginConfirmation.resolve(true); pluginConfirmationRef.current = null; setPluginConfirmation(null) }}>{pluginConfirmation.confirmLabel}</button>
             </div>
           </div>
         </div>
@@ -2212,16 +2302,20 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           onFitView={() => void fitView({ duration: canvasMotionDuration(CANVAS_MOTION.viewport) })}
           onAutoLayout={onAutoLayout}
           onAddNode={(t) => void addNode(t)}
+          projectNodes={projectNodes}
+          basicNodes={basicNodes}
+          onAddProjectNode={(item) => void addNode(item.component.data.baseType, undefined, undefined, undefined, item)}
           onOpenPlugins={() => { setPluginTarget(null); setPluginsOpen(true) }}
           desktopMode={desktopMode}
           projectId={desktopProjectId}
         />
       </div>
-      {desktopMode && <CanvasPlugins projectId={desktopProjectId} open={pluginsOpen} busy={pluginBusy} presetNodeType={pluginTarget?.nodeType}
-        onClose={() => setPluginsOpen(false)} onUse={usePluginComponent} onSaveSelection={savePluginSelection} />}
+      {desktopMode && <CanvasPlugins projectId={desktopProjectId} open={pluginsOpen} busy={pluginBusy} presetNodeType={pluginTarget?.nodeType} nodes={nodes} selectedIds={pluginTarget ? [pluginTarget.nodeId] : currentPluginSelection()}
+        onClose={() => setPluginsOpen(false)} onUse={applyPluginComponent} onSaveSelection={savePluginSelection} />}
       {connectorDraft && desktopProjectId && <div role="dialog" aria-modal="true" aria-label={uiText('本地文本工具')} className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"><div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl bg-white p-4"><div className="flex justify-between font-semibold"><span>{uiText('本地文本工具')}</span><button type="button" onClick={() => setConnectorDraft(null)}>{uiText('关闭')}</button></div><LocalMcpConnectorPanel projectId={desktopProjectId} packageId={connectorDraft.packageId} componentId={connectorDraft.componentId} source={currentPluginSelection().length === 1 && currentPluginSelection()[0] === connectorDraft.nodeId ? connectorSourceFor(connectorDraft.nodeId) ?? undefined : undefined} onApplyText={applyConnectorText} /></div></div>}
       {posterDraft && <PosterEditor initial={posterDraft.initial} sourceUrl={posterDraft.sourceUrl} onClose={() => setPosterDraft(null)} onExport={exportPoster} />}
-      {storyboardDraft && <StoryboardEditor nodes={storyboardDraft.nodes} initialFields={storyboardDraft.fields} onClose={() => setStoryboardDraft(null)} />}
+      {storyboardDraft && <StoryboardEditor nodes={storyboardDraft.nodes} initialFields={storyboardDraft.fields} initialRows={storyboardDraft.rows} onClose={() => setStoryboardDraft(null)} />}
+      {lastArrangement && <button type="button" disabled={pluginBusy} onClick={() => void undoLastArrangement()} className="absolute right-5 top-20 z-30 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-[#315a96] shadow-lg disabled:opacity-50">{uiText('撤销上次排列')}</button>}
       <AssetLibrary desktopMode={desktopMode} projectId={desktopProjectId} />
       {!agentOpen ? <AgentLauncher onOpen={() => setAgentOpen(true)} /> : null}
       {!desktopMode && <SubscriptionMenu />}
@@ -2234,7 +2328,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         data-testid={desktopMode ? 'mcp-canvas-input-surface' : undefined}
         aria-busy={desktopMode && mcpCanvasBarrierPhase === 'active'}
       >
-      {nodes.length === 0 && detail && <CanvasWelcome onCreate={(type) => void addNode(type)} />}
+      {nodes.length === 0 && detail && <CanvasWelcome onCreate={(type) => void addNode(type)} availableTypes={desktopMode ? basicNodes.map((item) => item.type) : undefined} projectNodes={projectNodes} onCreateProjectNode={(item) => void addNode(item.component.data.baseType, undefined, undefined, undefined, item)} />}
       <ReactFlow
         nodes={[...stackBadges, ...layoutMotion.nodes] as FlowNode[]}
         edges={edges.map((e) => ({
@@ -2463,7 +2557,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       {animatedAddMenu && (
         <div
           role="menu" data-open={addMenuPresence.visible} inert={!addMenu} aria-hidden={!addMenu}
-          className="vp-soft-popover fixed z-40 w-40 rounded-xl border border-black/10 bg-white p-1.5 shadow-xl"
+          className="vp-soft-popover fixed z-40 max-h-[70vh] w-40 overflow-y-auto rounded-xl border border-black/10 bg-white p-1.5 shadow-xl"
           style={{
             left: Math.min(animatedAddMenu.x, window.innerWidth - 180),
             top: Math.min(animatedAddMenu.y, window.innerHeight - 320),
@@ -2479,7 +2573,8 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           >
             <Upload size={14} /> {uiText("上传")}</button>
           <div className="my-1 border-t border-black/6" />
-          {['text', 'image', 'video', 'audio', 'compose', 'director'].map((t) => (
+          <p className="px-2.5 py-1 text-[11px] font-bold text-[#999]">{uiText('基础')}</p>
+          {basicNodes.filter((item) => compatibleNodeType(animatedAddMenu.sourceNodeId ? nodes.find((node) => sid(node.id) === animatedAddMenu.sourceNodeId)?.data.node.type : undefined, item.type, animatedAddMenu.direction)).map(({ type: t }) => (
             <button
               key={t}
               type="button"
@@ -2509,6 +2604,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
                         : uiText("导演台")}
             </button>
           ))}
+          {projectNodes.filter((item) => compatibleNodeType(animatedAddMenu.sourceNodeId ? nodes.find((node) => sid(node.id) === animatedAddMenu.sourceNodeId)?.data.node.type : undefined, item.component.data.baseType, animatedAddMenu.direction)).length > 0 && <p className="px-2.5 py-1 text-[11px] font-bold text-[#999]">{uiText('本项目')}</p>}
+          {projectNodes.filter((item) => compatibleNodeType(animatedAddMenu.sourceNodeId ? nodes.find((node) => sid(node.id) === animatedAddMenu.sourceNodeId)?.data.node.type : undefined, item.component.data.baseType, animatedAddMenu.direction)).map((item) => <button key={`${item.packageId}/${item.component.id}`} type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] font-semibold text-[#444] hover:bg-black/[0.04]" onClick={() => {
+            void addNode(item.component.data.baseType, animatedAddMenu.flowX, animatedAddMenu.flowY,
+              animatedAddMenu.sourceNodeId ? { nodeId: animatedAddMenu.sourceNodeId, direction: animatedAddMenu.direction ?? 'downstream' } : undefined, item)
+            setAddMenu(null)
+          }}>{uiText(item.component.name)}</button>)}
         </div>
       )}
 
@@ -2521,6 +2622,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
             top: Math.min(animatedNodeMenu.y, window.innerHeight - 160),
           }}
         >
+          {describeCreativeCommands(marketplacePackages, nodes, animatedNodeMenu.nodeIds).filter((item) => item.installed && item.enabled).map((item) => <button key={`${item.packageId}/${item.componentId}`} type="button" disabled={!item.available || pluginBusy} title={!item.available ? item.reason === 'SELECTION_TOO_SMALL' ? uiText('请至少选择两个节点。') : uiText('请先选择要操作的节点。') : undefined} onClick={() => { setNodeMenu(null); void applyPluginComponent(item.packageId, item.componentId, animatedNodeMenu.nodeIds) }} className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] font-semibold text-[#333] hover:bg-black/[0.05] disabled:opacity-50">{uiText(item.name)}</button>)}
           <button
             type="button"
             onClick={() => copyNodes(animatedNodeMenu.nodeIds)}

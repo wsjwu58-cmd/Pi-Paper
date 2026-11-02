@@ -58,6 +58,11 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
     run: (projectId, packageId, componentId, input) => ipcRenderer.invoke('desktop:marketplace:connector:run', projectId, packageId, componentId, input),
   },
   marketplace: {
+    subscribeMarketplaceChanges: (listener) => {
+      const handleEvent = (_event, payload) => listener(payload)
+      ipcRenderer.on('desktop:marketplace:changed', handleEvent)
+      return () => ipcRenderer.removeListener('desktop:marketplace:changed', handleEvent)
+    },
     savePresetPreferences: (...args) => ipcRenderer.invoke('desktop:marketplace:preset-preferences', ...args),
     list: (projectId) => ipcRenderer.invoke('desktop:marketplace:list', projectId),
     install: (projectId, packageId, componentIds) => ipcRenderer.invoke('desktop:marketplace:install', projectId, packageId, componentIds),
@@ -70,7 +75,12 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
     onlineRefresh: () => ipcRenderer.invoke('desktop:marketplace:online-refresh'),
     onlineDownload: (packageId, commit) => ipcRenderer.invoke('desktop:marketplace:online-download', packageId, commit),
     exportPackage: (projectId, packageId) => ipcRenderer.invoke('desktop:marketplace:export-package', projectId, packageId),
+    discoverModels: (projectId, query) => ipcRenderer.invoke('desktop:marketplace:discover-models', projectId, query),
+    getBasicNodeVisibility: (projectId) => ipcRenderer.invoke('desktop:marketplace:basic-node-visibility:get', projectId),
+    setBasicNodeVisibility: (projectId, type, visible) => ipcRenderer.invoke('desktop:marketplace:basic-node-visibility:set', projectId, type, visible),
     saveTemplate: (projectId, draft) => ipcRenderer.invoke('desktop:marketplace:save-template', projectId, draft),
+    saveNodeDefinition: (projectId, draft) => ipcRenderer.invoke('desktop:marketplace:save-node-definition', projectId, draft),
+    runCommand: (projectId, canvasId, action, input, operationKey) => ipcRenderer.invoke('desktop:marketplace:run-command', projectId, canvasId, action, input, operationKey),
     importAsset: (projectId, packageId, componentId) => ipcRenderer.invoke('desktop:marketplace:import-asset', projectId, packageId, componentId),
   },
   importImage: (projectId) => ipcRenderer.invoke('desktop:asset:import-image', projectId),
@@ -150,6 +160,10 @@ contextBridge.exposeInMainWorld('vibepaperDesktop', {
   getLocalAudioModel: () => ipcRenderer.invoke('desktop:model:get-local-audio'),
   getAgentModelCatalog: () => ipcRenderer.invoke('desktop:agent:get-model-catalog'),
   setAgentSessionModel: (projectId, sessionId, modelId) => ipcRenderer.invoke('desktop:agent:set-session-model', projectId, sessionId, modelId),
+  setAgentSessionMode: (projectId, sessionId, mode) => ipcRenderer.invoke('desktop:agent:set-session-mode', projectId, sessionId, mode),
+  listAgentRoles: (projectId) => ipcRenderer.invoke('desktop:agent:list-roles', projectId),
+  getAgentRole: (projectId, sessionId) => ipcRenderer.invoke('desktop:agent:get-role', projectId, sessionId),
+  setAgentRole: (projectId, sessionId, binding) => ipcRenderer.invoke('desktop:agent:set-role', projectId, sessionId, binding),
   listAgentSessions: (projectId, filter) => ipcRenderer.invoke('desktop:agent:list-sessions', projectId, filter),
   getAgentSession: (projectId, sessionId) => ipcRenderer.invoke('desktop:agent:get-session', projectId, sessionId),
   updateAgentSession: (projectId, sessionId, patch) => ipcRenderer.invoke('desktop:agent:update-session', projectId, sessionId, patch),

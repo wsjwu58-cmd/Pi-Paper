@@ -51,7 +51,7 @@ async function main() {
     legalComments: 'none', sourcemap: false,
   })
   await fs.mkdir(path.join(appRoot, 'dist'), { recursive: true })
-  for (const filename of ['agent-worker.cjs', 'pi-official-media.cjs', 'mcp-launcher.cjs', 'mcp-stdio.cjs']) {
+  for (const filename of ['agent-worker.cjs', 'pi-official-media.cjs', 'plugin-template-graph.cjs', 'plugin-preset.cjs', 'mcp-launcher.cjs', 'mcp-stdio.cjs']) {
     await fs.copyFile(path.join(desktopRoot, 'dist', filename), path.join(appRoot, 'dist', filename))
   }
   await fs.cp(path.join(webRoot, 'dist'), path.join(appRoot, 'renderer'), { recursive: true })

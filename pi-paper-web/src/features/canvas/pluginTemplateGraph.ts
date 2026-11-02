@@ -23,4 +23,5 @@ export function portableTemplateGraph(template: MarketplaceTemplateData, origin:
 }
 
 // The desktop host and original canvas consume the same command definitions.
-export { CREATIVE_COMMAND_DESCRIPTORS, getCreativeCommandDescriptor, describeCreativeCommands, previewCreativeCommand } from './creativeCommandCatalog'
+export { CREATIVE_COMMAND_DESCRIPTORS, getCreativeCommandDescriptor, describeCreativeCommands, previewCreativeCommand } from './creativeCommandCatalog.ts'
+export { BASIC_NODES, basicNodeCatalog } from './nodeDefinitionCatalog.ts'

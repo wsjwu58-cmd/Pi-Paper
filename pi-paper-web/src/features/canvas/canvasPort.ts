@@ -298,6 +298,7 @@ export async function createCanvasNodePort(input: {
   x: number
   y: number
   params: Record<string, unknown>
+  copySourceNodeId?: string
 }): Promise<{ id: string; type: string; version?: number; node?: NodePayload }> {
   const bridge = window.vibepaperDesktop
   if (!isDesktopRuntime()) {
@@ -318,6 +319,7 @@ export async function createCanvasNodePort(input: {
     x: input.x,
     y: input.y,
     params: input.params,
+    ...(input.copySourceNodeId ? { copySourceNodeId: input.copySourceNodeId } : {}),
   })
   return { id: sid(created.node.id), type: String(created.node.type ?? input.type), version: created.version, node: desktopNodePayload(created.node) }
 }

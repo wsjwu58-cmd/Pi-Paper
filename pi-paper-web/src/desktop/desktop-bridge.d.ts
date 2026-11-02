@@ -11,6 +11,22 @@ export interface DesktopProject {
   thumbnailUrl?: string | null
 }
 
+export type MarketplaceNodeField =
+  | { id: string; label: string; kind: 'text'; default: string }
+  | { id: string; label: string; kind: 'number'; default: number; min: number; max: number }
+  | { id: string; label: string; kind: 'enum'; default: string; options: string[] }
+export interface MarketplaceNodeDefinition {
+  schemaVersion: 1
+  baseType: 'text' | 'image' | 'video' | 'audio'
+  promptTemplate: string
+  fields: MarketplaceNodeField[]
+}
+export interface DesktopNodeDefinitionInstance {
+  ref: { packageId: string; componentId: string; version: string; digest: string }
+  snapshot: { name: string; data: MarketplaceNodeDefinition }
+  values: Record<string, string | number>
+}
+
 export interface MarketplaceTemplateData {
   nodes: Array<{ id: string; type: 'text' | 'image' | 'video' | 'audio' | 'compose' | 'director'; x: number; y: number; params: Record<string, unknown> }>
   edges: Array<{ source: string; target: string; sourcePort?: string; targetPort?: string }>
@@ -28,6 +44,7 @@ export type MarketplaceComponent = {
   description: string
   installed: boolean
   enabled: boolean
+  systemRequired?: boolean
   updateConflict: 'removed' | 'type_changed' | null
 } & (
   | { type: 'director_scene'; data: Creative.CreativeScene }
@@ -39,6 +56,9 @@ export type MarketplaceComponent = {
   | { type: 'media_tool'; data: Creative.CreativeMediaTool }
   | { type: 'connector'; data: MarketplaceConnectorData }
   | { type: 'template'; data: MarketplaceTemplateData }
+  | { type: 'node_definition'; data: MarketplaceNodeDefinition }
+  | { type: 'agent_role'; data: { profile: DesktopAgentProfile; tools: string[]; skills: string[]; contexts: Array<'canvas' | 'selection' | 'memory' | 'history'>; instructions: string } }
+  | { type: 'workflow_recipe'; data: { steps: Array<{ kind: 'check_missing_prompt' | 'arrange' | 'storyboard_preview'; componentId: string }> } }
   | { type: 'asset'; data: { kind: 'image'; mime: 'image/png'; base64: string } }
   | { type: 'preset'; data: { nodeType: 'text' | 'image' | 'video' | 'audio'; params: Record<string, unknown> }; preferences?: Record<'original' | 'personal' | 'project', Record<string, unknown>> }
   | { type: 'skill'; data: { category: 'general' | 'image' | 'video' | 'text' | 'canvas'; instructions: string } }
@@ -50,14 +70,58 @@ export interface MarketplacePackage {
   description: string
   version: string
   author: string
-  source: 'builtin' | 'local' | 'online'
+  source: 'builtin' | 'local' | 'online' | 'project'
+  officialSkillCatalog?: boolean
+  projectSkillCatalog?: boolean
   origin?: { source: 'online'; commit: string; sha256: string; path: string } | null
   installed: boolean
   enabled: boolean
   installedVersion: string | null
+  installedDigest?: string | null
+  digest?: string
   updateAvailable: boolean
   rollbackVersion: string | null
   components: MarketplaceComponent[]
+}
+
+export interface DesktopModelCapabilityQuery {
+  modality: 'text' | 'image' | 'video' | 'audio'
+  referenceInputs?: Array<'text' | 'image' | 'video' | 'audio'>
+  resolution?: string
+  aspect?: string
+}
+export interface DesktopModelCapabilityResult {
+  query: DesktopModelCapabilityQuery
+  bindings: Array<{ id: string; displayName: string; providerId: string; providerName: string; providerType: 'local' | 'cloud';
+    modality: DesktopModelCapabilityQuery['modality']; inputModes: string[]; supportedResolutions: string[];
+    available: boolean; reason: string | null; reasonMessage: string | null }>
+}
+
+export interface DesktopCreativeCommandResult {
+  canvasVersion: number
+  capabilityId?: 'storyboard.preview' | 'selection.arrange'
+  previewDigest?: string
+  packageDigest?: string
+  operationKey?: string
+  fields?: Creative.StoryboardField[]
+  rows?: Array<{ id: string; values: Record<Creative.StoryboardField, string> }>
+  missing?: Array<{ id: string; fields: Creative.StoryboardField[] }>
+  orientation?: 'horizontal' | 'vertical'
+  moves?: Array<{ id: string; from: { x: number; y: number }; to: { x: number; y: number } }>
+  commands?: Array<Record<string, unknown>>
+  replayed?: boolean
+}
+
+export type DesktopWorkflowStep =
+  | { kind: 'check_missing_prompt'; componentId: string; result: { missing: Array<{ id: string; title: string }> } }
+  | { kind: 'arrange' | 'storyboard_preview'; componentId: string; result: DesktopCreativeCommandResult }
+export interface DesktopWorkflowResult {
+  status: 'preview' | 'applied' | 'completed'
+  canvasVersion: number
+  previewDigest?: string
+  operationKey?: string
+  replayed?: boolean
+  steps?: DesktopWorkflowStep[]
 }
 
 export interface MarketplaceOnlineCatalog {
@@ -593,6 +657,7 @@ export interface DesktopCreateNodeInput {
   prompt?: string
   modelRef?: string | null
   creativeType?: string | null
+  copySourceNodeId?: string
 }
 
 export interface DesktopCreateNodeResult {
@@ -746,6 +811,8 @@ export interface DesktopAgentSession {
   sessionId: string
   /** Stable session model binding; never contains provider credentials. */
   agentModelId?: string
+  mode: 'standard' | 'creator'
+  modeVersion: number
   title: string
   createdAt: number
   modifiedAt: number
@@ -755,6 +822,8 @@ export interface DesktopAgentSession {
 }
 
 export type DesktopAgentProfile = 'canvas-general' | 'vertical-short-drama' | 'asset-assistant' | 'audit-readonly'
+export type DesktopAgentRoleBinding = { packageId: string; componentId: string; digest: string }
+export type DesktopAgentRoleOption = { binding: DesktopAgentRoleBinding; name: string; description: string; version: string }
 
 export interface DesktopAgentPlanStep {
   id: string
@@ -1138,6 +1207,12 @@ export interface DesktopBridge {
     run(projectId: string, packageId: string, componentId: string, input: string): Promise<string>
   }
   marketplace: {
+    discoverModels(projectId: string, query: DesktopModelCapabilityQuery): Promise<DesktopModelCapabilityResult>
+    subscribeMarketplaceChanges(listener: (event: { projectId: string }) => void): () => void
+    getBasicNodeVisibility(projectId: string): Promise<{ hidden: string[] }>
+    setBasicNodeVisibility(projectId: string, type: string, visible: boolean): Promise<{ hidden: string[] }>
+    runCommand(projectId: string, canvasId: string, action: 'workflow_preview' | 'workflow_apply', input: Record<string, unknown>, operationKey: string): Promise<DesktopWorkflowResult>
+    runCommand(projectId: string, canvasId: string, action: 'command_inspect' | 'command_preview' | 'command_apply' | 'command_undo', input: Record<string, unknown>, operationKey: string): Promise<DesktopCreativeCommandResult>
     savePresetPreferences(projectId: string | undefined, scope: 'personal' | 'project', packageId: string, componentId: string, version: string, params: Record<string, unknown>): Promise<void>
     list(projectId?: string): Promise<MarketplacePackage[]>
     install(projectId: string, packageId: string, componentIds: string[]): Promise<MarketplacePackage>
@@ -1150,6 +1225,7 @@ export interface DesktopBridge {
     onlineRefresh(): Promise<MarketplaceOnlineCatalog>
     onlineDownload(packageId: string, commit: string): Promise<MarketplacePackage>
     exportPackage(projectId: string, packageId: string): Promise<boolean>
+    saveNodeDefinition(projectId: string, draft: { name: string; description?: string; data: MarketplaceNodeDefinition }): Promise<MarketplacePackage>
     saveTemplate(projectId: string, draft: { name: string; description?: string; data: MarketplaceTemplateData }): Promise<MarketplacePackage>
     importAsset(projectId: string, packageId: string, componentId: string): Promise<DesktopAsset>
   }
@@ -1168,6 +1244,10 @@ export interface DesktopBridge {
   subscribeMcpProviderInput(listener: (input: DesktopMcpProviderInputRequest) => void): () => void
   getAgentModelCatalog(): Promise<DesktopAgentModelCatalog>
   setAgentSessionModel(projectId: string, sessionId: string, modelId: string): Promise<{ bindingId: string }>
+  setAgentSessionMode(projectId: string, sessionId: string, mode: 'standard' | 'creator'): Promise<DesktopAgentSession>
+  listAgentRoles(projectId: string): Promise<{ items: DesktopAgentRoleOption[] }>
+  getAgentRole(projectId: string, sessionId: string): Promise<{ binding: DesktopAgentRoleBinding | null }>
+  setAgentRole(projectId: string, sessionId: string, binding: DesktopAgentRoleBinding | null): Promise<{ binding: DesktopAgentRoleBinding | null }>
   getProviderConfiguration(): Promise<DesktopProviderConfiguration>
   saveProviderConfiguration(input: DesktopProviderConfigurationInput): Promise<DesktopProviderConfiguration>
   clearProviderConfiguration(providerId: string, expectedRevision: number): Promise<DesktopProviderConfiguration>

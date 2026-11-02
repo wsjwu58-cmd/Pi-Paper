@@ -37,10 +37,17 @@ export async function submitNodeTask(
   if (isDesktopRuntime()) {
     const bridge = window.vibepaperDesktop
     if (!bridge) throw new Error(uiText("桌面本地服务尚未就绪，无法创建生成任务。"))
-    const canvas = useCanvasStore.getState().canvas
-    if (!canvas) throw new Error(uiText("画布尚未加载，无法创建本地任务。"))
     const activeProject = await bridge.getActiveProject()
     if (!activeProject) throw new Error(uiText("没有打开的本地项目，无法创建生成任务。"))
+    const initialCanvas = useCanvasStore.getState().canvas
+    if (!initialCanvas) throw new Error(uiText("画布尚未加载，无法创建本地任务。"))
+    const initialNode = useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node
+    if (initialNode?.params.nodeDefinition) {
+      const { flushCanvasPersistence } = await import('../canvasPersistence')
+      await flushCanvasPersistence(activeProject.projectId, sid(initialCanvas.canvas.id))
+    }
+    const canvas = useCanvasStore.getState().canvas
+    if (!canvas) throw new Error(uiText("画布尚未加载，无法创建本地任务。"))
     const node = useCanvasStore.getState().nodes.find((item) => sid(item.id) === sid(nodeId))?.data.node
     const modality = node?.type
     if (modality !== 'text' && modality !== 'image' && modality !== 'video' && modality !== 'audio') {

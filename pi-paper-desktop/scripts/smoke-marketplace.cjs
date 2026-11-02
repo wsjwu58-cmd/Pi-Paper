@@ -91,7 +91,9 @@ async function main() {
   await until("document.body.innerText.includes('组件已安装并启用')")
   await clickButton('返回插件市场')
   await clickButton('商品棚拍工作流')
-  await until("document.querySelectorAll('input[type=checkbox]:enabled').length === 4")
+  const studioComponents = require('../src/marketplace-example.cjs').components
+  await until(`document.querySelectorAll('input[type=checkbox]:enabled').length === ${studioComponents.length}
+    && ${JSON.stringify(studioComponents.map(component => component.name))}.every(name => document.body.innerText.includes(name))`)
   await captureIfRequested()
   await evaluate("document.querySelectorAll('input[type=checkbox]').forEach(box => box.click())")
   await clickButton('安装所选组件')
@@ -156,7 +158,7 @@ async function main() {
   await evaluate("Array.from(document.querySelectorAll('button[title=关闭]')).find(el => el.parentElement.innerText.includes('导演台')).click()")
   await until(`${readCanvas}.then(canvas => canvas.nodes.some(node => node.type === 'director' && node.data.node.params.sceneObjects?.length === 2 && node.data.node.params.motion?.duration === 4))`)
   assert.deepEqual(await evaluate(`window.vibepaperDesktop.listTasks(${pid})`), [])
-  console.log('PASS: standalone Skill import, scoped MCP prefill without grants, four-component workflow, local asset and preset, editable poster and PNG on canvas, storyboard CSV and saved director motion; zero generation tasks.')
+  console.log('PASS: standalone Skill import, scoped MCP prefill without grants, product studio components, local asset and preset, editable poster and PNG on canvas, storyboard CSV and saved director motion; zero generation tasks.')
   app.quit()
 }
 main().catch(error => { console.error(error.stack); app.exit(1) })

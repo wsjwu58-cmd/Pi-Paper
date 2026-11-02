@@ -41,6 +41,7 @@ export type DesktopPlanExecutionServiceOptions = {
 	gatewayFactory: (input: { sessionId: string; runId: string }) => RuntimeToolGateway | Promise<RuntimeToolGateway>;
 	readTask: DesktopTaskReader;
 	skillContextFactory?: (sessionId: string) => AgentSkillContext | Promise<AgentSkillContext>;
+	authorizeTool?: (input: { sessionId: string; tool: string; profile: AgentProfile }) => Promise<void>;
 	onAuditRequested?: (
 		input: AuditInput & { targetNodeId: string },
 		context: DesktopPlanGatewayScope,
@@ -87,6 +88,7 @@ export class DesktopPlanExecutionService {
 	private readonly gatewayFactory: DesktopPlanExecutionServiceOptions["gatewayFactory"];
 	private readonly readTask: DesktopTaskReader;
 	private readonly skillContextFactory?: DesktopPlanExecutionServiceOptions["skillContextFactory"];
+	private readonly authorizeTool?: DesktopPlanExecutionServiceOptions["authorizeTool"];
 	private readonly onAuditRequested?: DesktopPlanExecutionServiceOptions["onAuditRequested"];
 	private readonly requestId?: string;
 	private readonly ownerId: string;
@@ -101,6 +103,7 @@ export class DesktopPlanExecutionService {
 		this.gatewayFactory = options.gatewayFactory;
 		this.readTask = options.readTask;
 		this.skillContextFactory = options.skillContextFactory;
+		this.authorizeTool = options.authorizeTool;
 		this.onAuditRequested = options.onAuditRequested;
 		this.requestId = options.requestId;
 		this.ownerId = stores.projectId;
@@ -535,7 +538,13 @@ export class DesktopPlanExecutionService {
 				this.stores.plans.completeStep(complete),
 			failStep: (failure: Parameters<PlanExecutionRepository["failStep"]>[0]) => this.stores.plans.failStep(failure),
 		} satisfies PlanExecutionRepository;
-		const reads = new PlanExecutionService(base, new ToolGatewayReadPlanStepExecutor(new ReadTools(gateway)));
+		const reader = new ToolGatewayReadPlanStepExecutor(new ReadTools(gateway));
+		const reads = new PlanExecutionService(base, {
+			execute: async (input) => {
+				await this.authorizeTool?.({ sessionId, tool: input.step.tool, profile });
+				return reader.execute(input);
+			},
+		});
 		const result = await reads.executeReadyReads({ planId, ownerId: this.ownerId, canvasId, profile });
 		for (const stepId of result.executedStepIds) {
 			const record = (await this.stores.plans.getExecution({ planId, ownerId: this.ownerId })).find(
@@ -650,6 +659,7 @@ export class DesktopPlanExecutionService {
 			},
 		};
 		try {
+			await this.authorizeTool?.({ sessionId: input.plan.sessionId, tool: step.tool, profile: input.profile });
 			if (step.tool === "load_skill") {
 				if (!this.skillContextFactory) throw new Error("SKILL_CONTEXT_UNAVAILABLE");
 				const skillContext = await this.skillContextFactory(input.plan.sessionId);
@@ -657,6 +667,7 @@ export class DesktopPlanExecutionService {
 					skillContext.skills,
 					skillContext.loadedSkillIds,
 					skillContext.onLoad,
+					skillContext.validateSkill,
 				)[0];
 				await executeTool(loadTool, step, idempotencyKey);
 			} else {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentSkillContext } from "../application/agent-runtime.ts";
-import { SYSTEM_SKILLS, type SystemSkillDefinition, skillIndexLine } from "../domain/skill-manifest.ts";
+import { SYSTEM_SKILLS, skillIndexLine } from "../domain/skill-manifest.ts";
 import type { LoadedSkillResource } from "../tools/skill-tools.ts";
 import type { DesktopAgentControlStore } from "./control-store.ts";
 import type { DesktopAgentSessionStore } from "./session-store.ts";
@@ -15,6 +15,10 @@ export type DesktopAgentSkill = {
 	category: string;
 	version: number;
 	enabled: boolean;
+	/** Original filename key when a project file predates the official registry. */
+	legacyId?: string;
+	/** Host-only live check; never serialized to a session snapshot or renderer. */
+	isAvailable?: () => Promise<boolean>;
 };
 
 export type DesktopAgentSkillSnapshot = Omit<DesktopAgentSkill, "source" | "enabled"> & {
@@ -25,8 +29,10 @@ export type DesktopAgentSkillSnapshot = Omit<DesktopAgentSkill, "source" | "enab
 
 export type DesktopAgentSkillSnapshotReference = Pick<DesktopAgentSkillSnapshot, "id" | "version" | "contentHash">;
 
-function asResource(skill: SystemSkillDefinition): LoadedSkillResource {
-	return { id: skill.key, key: skill.key, name: skill.name, instructions: skill.instructions };
+function snapshotIdentity(snapshot: DesktopAgentSkillSnapshot): string {
+	return snapshot.source === "project" && SYSTEM_SKILLS.some((skill) => skill.key === snapshot.id)
+		? `project-legacy-${createHash("sha256").update(snapshot.id).digest("hex").slice(0, 24)}`
+		: snapshot.id;
 }
 
 export function snapshotDesktopAgentSkill(skill: DesktopAgentSkill): DesktopAgentSkillSnapshot {
@@ -68,6 +74,9 @@ export function listDesktopAgentSkills(
 	projectSkills: readonly DesktopAgentSkill[] = [],
 ): DesktopAgentSkill[] {
 	const normalized = typeof keyword === "string" ? keyword.trim().toLocaleLowerCase() : "";
+	const officialState = new Map(
+		projectSkills.filter((skill) => skill.source === "system_dynamic").map((skill) => [skill.id, skill] as const),
+	);
 	const systemSkills: DesktopAgentSkill[] = SYSTEM_SKILLS.filter((skill) => {
 		if (!normalized) return true;
 		return [skill.key, skill.name, skill.description, skill.instructions, skill.category].some((value) =>
@@ -82,9 +91,11 @@ export function listDesktopAgentSkills(
 		source: skill.kind === "builtin-core" ? "builtin" : "system_dynamic",
 		category: skill.category,
 		version: 1,
-		enabled: true,
+		enabled: skill.kind === "builtin-core" || officialState.get(skill.key)?.enabled !== false,
 	}));
+	const officialIds = new Set(SYSTEM_SKILLS.map((skill) => skill.key));
 	const matchingProjectSkills = projectSkills.filter((skill) => {
+		if (skill.source !== "project" || officialIds.has(skill.id)) return false;
 		if (!normalized) return true;
 		return [skill.id, skill.key, skill.name, skill.description, skill.instructions, skill.category].some((value) =>
 			value.toLocaleLowerCase().includes(normalized),
@@ -102,12 +113,14 @@ export function listDesktopAgentSessionSkills(
 	const skillsById = new Map(
 		listDesktopAgentSkills(undefined, projectSkills).map((skill) => [skill.id, skill] as const),
 	);
-	for (const snapshot of control.getSessionSkillSnapshots(sessionId)) {
-		const current = skillsById.get(snapshot.id);
+	const snapshots = control.getSessionSkillSnapshots(sessionId);
+	for (const snapshot of snapshots) {
+		const snapshotId = snapshotIdentity(snapshot);
+		const current = skillsById.get(snapshotId);
 		if (current?.source === "builtin") continue;
-		skillsById.set(snapshot.id, {
-			id: snapshot.id,
-			key: snapshot.key,
+		skillsById.set(snapshotId, {
+			id: snapshotId,
+			key: snapshotId === snapshot.id ? snapshot.key : snapshotId,
 			name: current?.name ?? snapshot.name,
 			description: current?.description ?? snapshot.description,
 			instructions: snapshot.instructions,
@@ -125,7 +138,11 @@ export function listDesktopAgentSessionSkills(
 		);
 	});
 	const availableIds = new Set(skillsById.keys());
-	const loadedSkillIds = control.getLoadedSkillIds(sessionId).filter((skillId) => availableIds.has(skillId));
+	const aliases = new Map(snapshots.map((snapshot) => [snapshot.id, snapshotIdentity(snapshot)] as const));
+	const loadedSkillIds = control
+		.getLoadedSkillIds(sessionId)
+		.map((skillId) => aliases.get(skillId) ?? skillId)
+		.filter((skillId) => availableIds.has(skillId));
 	return { items, loadedSkillIds };
 }
 
@@ -192,23 +209,51 @@ export function createDesktopAgentSkillContext(
 	sessionId: string,
 	selectedSkillId?: string,
 	projectSkills: readonly DesktopAgentSkill[] = [],
+	roleSkillIds?: readonly string[],
 ): AgentSkillContext {
 	const availableById = new Map(
 		listDesktopAgentSkills(undefined, projectSkills).map((skill) => [skill.id, skill] as const),
 	);
 	const resourcesById = new Map<string, LoadedSkillResource>();
-	for (const skill of SYSTEM_SKILLS) resourcesById.set(skill.key, asResource(skill));
+	const roleSkills =
+		roleSkillIds === undefined
+			? undefined
+			: new Set([
+					...roleSkillIds,
+					...SYSTEM_SKILLS.filter((skill) => skill.kind === "builtin-core").map((skill) => skill.key),
+				]);
+	for (const skillId of roleSkillIds ?? []) {
+		if (!availableById.get(skillId)?.enabled) throw new Error("AGENT_ROLE_SKILL_UNAVAILABLE");
+	}
+	if (selectedSkillId && roleSkills && !roleSkills.has(selectedSkillId))
+		throw new Error("AGENT_ROLE_SKILL_NOT_ALLOWED");
+	for (const skill of availableById.values()) {
+		if (!skill.enabled || skill.source === "project" || (roleSkills && !roleSkills.has(skill.id))) continue;
+		resourcesById.set(skill.id, { id: skill.id, key: skill.key, name: skill.name, instructions: skill.instructions });
+	}
 
 	const attachedSnapshots = control.getSessionSkillSnapshots(sessionId);
 	for (const snapshot of attachedSnapshots) {
-		const current = availableById.get(snapshot.id);
-		if (!current?.enabled) continue;
-		resourcesById.set(snapshot.id, {
-			id: snapshot.id,
-			key: snapshot.key,
+		const snapshotId = snapshotIdentity(snapshot);
+		const current = availableById.get(snapshotId);
+		if (!current?.enabled || (roleSkills && !roleSkills.has(snapshotId))) continue;
+		resourcesById.set(snapshotId, {
+			id: snapshotId,
+			key: snapshotId === snapshot.id ? snapshot.key : snapshotId,
 			name: snapshot.name,
 			instructions: snapshot.instructions,
 		});
+	}
+	for (const skillId of roleSkillIds ?? []) {
+		const skill = availableById.get(skillId)!;
+		if (!resourcesById.has(skillId)) {
+			resourcesById.set(skillId, {
+				id: skill.id,
+				key: skill.key,
+				name: skill.name,
+				instructions: skill.instructions,
+			});
+		}
 	}
 
 	if (selectedSkillId !== undefined && !resourcesById.has(selectedSkillId)) {
@@ -224,19 +269,35 @@ export function createDesktopAgentSkillContext(
 
 	const resources = [...resourcesById.values()];
 	const indexLinesByKey = new Map<string, string>();
-	for (const skill of SYSTEM_SKILLS) indexLinesByKey.set(skill.key, skillIndexLine(skill));
+	for (const skill of SYSTEM_SKILLS) {
+		if (resourcesById.has(skill.key)) indexLinesByKey.set(skill.key, skillIndexLine(skill));
+	}
 	for (const snapshot of attachedSnapshots) {
-		if (availableById.get(snapshot.id)?.enabled) {
+		const snapshotId = snapshotIdentity(snapshot);
+		if (resourcesById.has(snapshotId)) {
 			indexLinesByKey.set(
-				snapshot.key,
+				snapshotId === snapshot.id ? snapshot.key : snapshotId,
 				skillIndexLine({
-					key: snapshot.key,
+					key: snapshotId === snapshot.id ? snapshot.key : snapshotId,
 					name: snapshot.name,
 					kind: "dynamic",
 					description: snapshot.description,
 				}),
 			);
 		}
+	}
+	for (const skillId of roleSkillIds ?? []) {
+		const skill = availableById.get(skillId)!;
+		if (!indexLinesByKey.has(skill.key))
+			indexLinesByKey.set(
+				skill.key,
+				skillIndexLine({
+					key: skill.key,
+					name: skill.name,
+					kind: "dynamic",
+					description: skill.description,
+				}),
+			);
 	}
 	if (selectedSkillId) {
 		const selected = availableById.get(selectedSkillId);
@@ -253,8 +314,9 @@ export function createDesktopAgentSkillContext(
 		}
 	}
 
-	const persistedIds = control.getLoadedSkillIds(sessionId);
-	const loadedIds = new Set(persistedIds);
+	const aliases = new Map(attachedSnapshots.map((snapshot) => [snapshot.id, snapshotIdentity(snapshot)] as const));
+	const persistedIds = control.getLoadedSkillIds(sessionId).map((id) => aliases.get(id) ?? id);
+	const loadedIds = new Set(persistedIds.filter((id) => resourcesById.has(id)));
 	if (selectedSkillId && resourcesById.has(selectedSkillId) && !loadedIds.has(selectedSkillId)) {
 		control.markSkillLoaded(sessionId, selectedSkillId);
 		loadedIds.add(selectedSkillId);
@@ -264,6 +326,21 @@ export function createDesktopAgentSkillContext(
 		skills: resources,
 		loadedSkillIds: [...loadedIds],
 		loadedSkills: resources.filter((skill) => loadedIds.has(skill.id)),
+		unavailableSkillIds: [
+			...new Set([
+				...[...availableById.values()].filter((skill) => !skill.enabled).map((skill) => skill.id),
+				...attachedSnapshots
+					.filter((snapshot) => !resourcesById.has(snapshotIdentity(snapshot)))
+					.flatMap((snapshot) => [snapshot.id, snapshotIdentity(snapshot)]),
+				...persistedIds.filter((id) => !resourcesById.has(id)),
+			]),
+		],
+		validateSkill: async (skill) => {
+			const state = projectSkills.find(
+				(candidate) => candidate.id === skill.id && candidate.source === "system_dynamic",
+			);
+			if (state?.isAvailable && !(await state.isAvailable())) throw new Error("SKILL_NOT_FOUND");
+		},
 		onLoad: async (skill) => {
 			const resource = resourcesById.get(skill.id);
 			if (!resource || resource.key !== skill.key) throw new Error("SKILL_NOT_FOUND");

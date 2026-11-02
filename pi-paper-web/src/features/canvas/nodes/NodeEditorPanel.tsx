@@ -33,6 +33,8 @@ import { defaultDesktopModelId, desktopProviderNameMap, toAvailableDesktopModels
 import { ModelPicker } from '@/components/ui/ModelPicker'
 import { useCanvasStore, type FlowNode } from '../canvasStore'
 import { useSoftPresence } from '../canvasMotion'
+import { readNodeDefinition, renderNodeDefinitionPrompt } from '../nodeDefinitionCatalog'
+import { NodeDefinitionFields } from './NodeDefinitionFields'
 import { isDesktopRuntime } from '../canvasPort'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { MediaSpecificationPicker } from './MediaSpecificationPicker'
@@ -1294,6 +1296,13 @@ export function NodeEditorDialog({
     }
   }
 
+  const definition = desktopMode ? readNodeDefinition(node.params.nodeDefinition) : null
+  const definitionFields = definition && <NodeDefinitionFields instance={definition} referenceTexts={refsForUi.map((ref) => ref.text).filter((text): text is string => Boolean(text && text.trim()))} suffix={stripLegacyReferenceFidelity(prompt)} onChange={(values) => {
+    const current = useCanvasStore.getState().nodes.find((item) => sid(item.id) === nodeId)?.data.node
+    const currentDefinition = readNodeDefinition(current?.params.nodeDefinition)
+    if (currentDefinition) persistNodeParams({ nodeDefinition: { ...currentDefinition, values } })
+  }} />
+
   const doSubmit = async () => {
     if (desktopMode && (desktopCatalogError || !selectedModel)) {
       setErr(desktopCatalogError instanceof Error ? desktopCatalogError.message : uiText("所选模型已不可用，请重新选择或配置模型。"))
@@ -1306,10 +1315,9 @@ export function NodeEditorDialog({
       const referenceParameters = buildMediaReferenceParameters(refsForUi, node.type, desktopMode)
       const refTexts = referenceParameters.referenceTexts
       const trimmedPrompt = stripLegacyReferenceFidelity(prompt)
-      const effectivePrompt =
-        trimmedPrompt && refTexts.length
-          ? `${refTexts.join('\n')}\n\n${trimmedPrompt}`
-          : trimmedPrompt || refTexts.join('\n')
+      const definitionPrompt = definition ? renderNodeDefinitionPrompt(definition).trim() : ''
+      const effectivePrompt = [...refTexts, definitionPrompt, trimmedPrompt].filter(Boolean).join('\n\n')
+      if (definition && !definitionPrompt) throw new Error(uiText('请填写节点字段，使生成提示词不为空。'))
       if (!effectivePrompt.trim() && !(desktopMode && selectedDesktopModel?.operation === 'voice-change' && refsForUi.some((ref) => ref.kind === 'audio' && ref.url))) {
         setErr(uiText("请填写提示词或添加参考"))
         setBusy(false)
@@ -1336,6 +1344,7 @@ export function NodeEditorDialog({
             ...(typeof node.params.tone === 'string' && node.params.tone ? { tone: node.params.tone } : {}),
           }
         : {}
+      if (definition) persistNodeParams({ nodeDefinitionReferenceTexts: refTexts })
       await submitNodeTask(
         node.id,
         model || preferred || node.type,
@@ -1366,7 +1375,7 @@ export function NodeEditorDialog({
       useCanvasStore.getState().updateNodePayload(node.id, {
         params: {
           ...(current?.params ?? node.params),
-          prompt: trimmedPrompt || effectivePrompt,
+          prompt: trimmedPrompt || (definition ? '' : effectivePrompt),
           model: model || preferred,
           ...musicParams,
           ...(desktopMode && node.type === 'video' ? { duration, generate_audio: generateAudio } : {}),
@@ -1713,6 +1722,7 @@ export function NodeEditorDialog({
         <div className="nodrag nowheel flex flex-col rounded-[20px]" onMouseDown={(e) => e.stopPropagation()}>
           <div className="flex flex-col gap-3 p-4">
             {audioTabs}
+            {definitionFields}
             {!(desktopMode && node.type === 'audio') && refSection}
             {isMusicModel && <p className="text-[12px] text-[#777]">{uiText("描述曲风")}</p>}
             {promptField}
@@ -1729,6 +1739,7 @@ export function NodeEditorDialog({
     <>
       <div className="nodrag nowheel flex flex-col gap-3" onMouseDown={(e) => e.stopPropagation()}>
         {audioTabs}
+        {definitionFields}
         {/* 参考区：与提示词框分开的独立展示框 */}
         {!(desktopMode && node.type === 'audio') && <div className="rounded-xl border border-black/10 bg-white p-2.5">{refSection}</div>}
 

@@ -559,8 +559,8 @@ async function main() {
     await until(cdp, "location.pathname === '/marketplace'")
     await button(cdp, '商品棚拍工作流')
     await until(cdp, "document.querySelector('h1')?.innerText === '商品棚拍工作流'")
-    await selectOnly(cdp, '商品主图三案', 4, () => capture(cdp, '02-marketplace-template.png'))
-    checkSelection(await marketplaceState(cdp, project.projectId, 'vibepaper-product-studio'), 'product-workflow', ['product-workflow', 'neutral-background', 'studio-prompt', 'product-shooting'])
+    await selectOnly(cdp, '商品主图三案', 5, () => capture(cdp, '02-marketplace-template.png'))
+    checkSelection(await marketplaceState(cdp, project.projectId, 'vibepaper-product-studio'), 'product-workflow', ['product-workflow', 'neutral-background', 'studio-prompt', 'studio-image', 'product-shooting'])
     await checkTasksAndMcp(cdp, project.projectId)
     report.checks.templateOnlyInstalled = true
     stage = 'apply-original-canvas'
@@ -616,7 +616,7 @@ async function main() {
     await until(cdp, "location.pathname.startsWith('/canvas/') && Boolean(document.querySelector('[data-testid=mcp-canvas-page] .react-flow'))")
     await until(cdp, "document.querySelectorAll('.react-flow__node').length === 7 && document.querySelectorAll('.react-flow__edge').length === 6")
     assert.equal(await graph(cdp, project), originalFingerprint)
-    checkSelection(await marketplaceState(cdp, project.projectId, 'vibepaper-product-studio'), 'product-workflow', ['product-workflow', 'neutral-background', 'studio-prompt', 'product-shooting'])
+    checkSelection(await marketplaceState(cdp, project.projectId, 'vibepaper-product-studio'), 'product-workflow', ['product-workflow', 'neutral-background', 'studio-prompt', 'studio-image', 'product-shooting'])
     checkSelection(await marketplaceState(cdp, project.projectId, 'vibepaper-connectors'), 'codex-canvas', ['codex-canvas', 'local-text-tool'])
     await checkTasksAndMcp(cdp, project.projectId)
     await capture(cdp, '06-reopened-canvas.png')
@@ -630,7 +630,7 @@ async function main() {
     await anchor(cdp, '/marketplace')
     await button(cdp, '商品棚拍工作流')
     await until(cdp, "document.querySelector('h1')?.innerText === '商品棚拍工作流'")
-    await selectComponents(cdp, ['中性灰棚拍背景', '商品棚拍策划'], 3)
+    await selectComponents(cdp, ['中性灰棚拍背景', '商品棚拍策划'], 4)
     const studioComponents = await marketplaceState(cdp, project.projectId, 'vibepaper-product-studio')
     for (const id of ['product-workflow', 'neutral-background', 'product-shooting']) {
       requireCheck(studioComponents.some(component => component.id === id && component.installed && component.enabled))

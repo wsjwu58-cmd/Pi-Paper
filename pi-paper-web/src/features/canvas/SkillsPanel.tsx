@@ -437,7 +437,7 @@ export function SkillsPanel({
                 <Trash2 size={16} />
               </button>
             )}
-            {desktopMode && active.source === 'marketplace' ? (
+            {desktopMode && (active.source === 'marketplace' || active.source === 'system_dynamic') ? (
               <Link to="/marketplace" className="rounded-xl px-2 py-2 text-xs font-semibold text-[#315a96]">{uiText('在插件市场管理')}</Link>
             ) : <button
               type="button"

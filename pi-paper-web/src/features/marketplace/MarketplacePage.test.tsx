@@ -62,4 +62,16 @@ describe('marketplace discovery and previews', () => {
     expect(renderToStaticMarkup(<UpdateConflictNotice component={changed} />)).toContain('新版更改了此组件的类型')
     expect(renderToStaticMarkup(<UpdateConflictNotice component={example.components[0]} />)).toBe('')
   })
+
+  it('shows declarative role and workflow steps without executing them', () => {
+    const role: MarketplaceComponent = { id: 'review', type: 'agent_role', name: '审片员', description: '', installed: true, enabled: true, updateConflict: null,
+      data: { profile: 'audit-readonly', tools: [], skills: [], contexts: ['canvas'], instructions: '只读检查' } }
+    const workflow: MarketplaceComponent = { id: 'workflow', type: 'workflow_recipe', name: '镜头准备', description: '', installed: true, enabled: true, updateConflict: null,
+      data: { steps: [{ kind: 'check_missing_prompt', componentId: 'shots' }, { kind: 'arrange', componentId: 'order' }, { kind: 'storyboard_preview', componentId: 'shots' }] } }
+    expect(renderToStaticMarkup(<ComponentPreview component={role} />)).toContain('只读检查')
+    const html = renderToStaticMarkup(<ComponentPreview component={workflow} />)
+    expect(html).toContain('检查缺少的提示词')
+    expect(html).toContain('预览并排列镜头')
+    expect(html).toContain('预览分镜表')
+  })
 })

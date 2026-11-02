@@ -15,7 +15,7 @@ import {
 } from './agentEventEnvelope'
 import { isActionableConfirmation } from './confirmationState'
 import type { AgentChatMsg, AgentConfirmation } from './agentTypes'
-import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentModelCatalog, DesktopAgentSession, DesktopAgentSkill, DesktopProviderModel } from '@/desktop/desktop-bridge'
+import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentModelCatalog, DesktopAgentRoleBinding, DesktopAgentRoleOption, DesktopAgentSession, DesktopAgentSkill, DesktopProviderModel } from '@/desktop/desktop-bridge'
 import type { ModelInfo, SkillView } from '@/lib/types'
 import { useCanvasStore } from './canvasStore'
 import { nodeReferencesForComposer, refFromNode, type ComposerRef } from './agentNodeReferences'
@@ -81,6 +81,10 @@ function normalizeError(cause: unknown): string {
   if (message.includes('AGENT_PROJECT_CHANGED')) return uiText("当前本地项目已切换，请重新打开画布。")
   if (message.includes('AGENT_RUN_ALREADY_PROCESSED')) return uiText("这条消息已处理，请检查会话记录后再继续。")
   if (message.includes('AGENT_MESSAGE_INVALID')) return uiText("消息不能为空，且不能超过 20,000 个字符。")
+  if (message.includes('AGENT_ROLE_SKILL_UNAVAILABLE')) return uiText('当前角色需要的 Skill 已停用或不可用，请在插件市场检查。')
+  if (message.includes('AGENT_ROLE_UNAVAILABLE') || message.includes('AGENT_ROLE_CHANGED')) return uiText('当前角色已停用或版本发生变化，请重新选择角色。')
+  if (message.includes('AGENT_ROLE_SKILL_NOT_ALLOWED')) return uiText('当前角色不能使用所选 Skill，请更换角色或 Skill。')
+  if (message.includes('AGENT_ROLE_CONTEXT_NOT_ALLOWED')) return uiText('当前角色不能读取选中节点，请更换角色。')
   return friendlyAgentErrorMessage(message || uiText("本地 Agent 操作失败。"))
 }
 
@@ -114,6 +118,8 @@ export function useDesktopAgentController({
   const [skills, setSkills] = useState<SkillView[]>([])
   const [loadedSkillIds, setLoadedSkillIds] = useState<string[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
+  const [roleOptions, setRoleOptions] = useState<DesktopAgentRoleOption[]>([])
+  const [roleBinding, setRoleBinding] = useState<DesktopAgentRoleBinding | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const queryClient = useQueryClient()
   const activeSessionRef = useRef<string | null>(null)
@@ -125,6 +131,18 @@ export function useDesktopAgentController({
   const sendingRef = useRef(false)
   const confirmingActionRef = useRef<string | null>(null)
   const skillRequestEpochRef = useRef(0)
+
+  useEffect(() => {
+    let live = true
+    if (!bridge || !projectId || typeof bridge.listAgentRoles !== 'function' || typeof bridge.getAgentRole !== 'function') {
+      setRoleOptions([]); setRoleBinding(null); return
+    }
+    void Promise.all([bridge.listAgentRoles(projectId), activeSessionId
+      ? bridge.getAgentRole(projectId, activeSessionId) : Promise.resolve({ binding: null })])
+      .then(([roles, current]) => { if (live) { setRoleOptions(roles.items); setRoleBinding(current.binding) } })
+      .catch((cause) => { if (live) setError(normalizeError(cause)) })
+    return () => { live = false }
+  }, [projectId, activeSessionId])
 
   const agentModelOptions = (agentModelCatalog?.models ?? []).map(toAgentPickerModel)
   const providerNames = agentModelCatalog?.providerNames ?? {}
@@ -154,6 +172,19 @@ export function useDesktopAgentController({
       if (epoch === skillRequestEpochRef.current) setSkillsLoading(false)
     }
   }, [projectId])
+
+  useEffect(() => {
+    const subscribe = bridge?.marketplace?.subscribeMarketplaceChanges
+    if (!projectId || !subscribe || !bridge?.listAgentRoles) return
+    let live = true
+    const unsubscribe = subscribe((event) => {
+      if (event.projectId !== projectId) return
+      void loadSkills(activeSessionRef.current)
+      void bridge.listAgentRoles(projectId).then((result) => { if (live) setRoleOptions(result.items) })
+        .catch((cause) => { if (live) setError(normalizeError(cause)) })
+    })
+    return () => { live = false; unsubscribe() }
+  }, [loadSkills, projectId])
 
   const loadSession = useCallback(async (sessionId: string, epoch: number) => {
     if (!bridge || !projectId) return
@@ -441,6 +472,51 @@ export function useDesktopAgentController({
     }
   }, [agentModelCatalog, projectId, sessions])
 
+  const onSelectAgentMode = useCallback(async (mode: 'standard' | 'creator') => {
+    if (!bridge || !projectId || creating) return
+    setError('')
+    try {
+      let sessionId = activeSessionRef.current
+      if (!sessionId) {
+        setCreating(true)
+        const created = await bridge.createAgentSession(projectId, uiText("新对话"))
+        sessionId = created.sessionId
+        if (selectedModelId && selectedModelAvailable) {
+          await bridge.setAgentSessionModel(projectId, sessionId, selectedModelId)
+        }
+      }
+      const updated = await bridge.setAgentSessionMode(projectId, sessionId, mode)
+      setSessions((current) => current.some((session) => session.sessionId === updated.sessionId)
+        ? current.map((session) => session.sessionId === updated.sessionId ? updated : session)
+        : [updated, ...current])
+      if (activeSessionRef.current !== sessionId) await refreshSessions(sessionId)
+    } catch (cause) {
+      setError(normalizeError(cause))
+    } finally {
+      setCreating(false)
+    }
+  }, [creating, projectId, refreshSessions, selectedModelAvailable, selectedModelId])
+
+  const onSelectAgentRole = useCallback(async (key: string) => {
+    if (!bridge || !projectId || creating || sendingRef.current) return
+    const role = roleOptions.find((item) => `${item.binding.packageId}/${item.binding.componentId}/${item.binding.digest}` === key)
+    if (key && !role) return
+    setError('')
+    setCreating(true)
+    try {
+      let sessionId = activeSessionRef.current
+      if (!sessionId) {
+        const created = await bridge.createAgentSession(projectId, uiText('新对话'))
+        sessionId = created.sessionId
+        if (selectedModelId && selectedModelAvailable) await bridge.setAgentSessionModel(projectId, sessionId, selectedModelId)
+      }
+      const result = await bridge.setAgentRole(projectId, sessionId, role?.binding ?? null)
+      setRoleBinding(result.binding)
+      if (activeSessionRef.current !== sessionId) await refreshSessions(sessionId)
+    } catch (cause) { setError(normalizeError(cause)) }
+    finally { setCreating(false) }
+  }, [creating, projectId, refreshSessions, roleOptions, selectedModelAvailable, selectedModelId])
+
   const sendWithReferences = useCallback(async (input: { selectedNodeIds: string[]; selectedSkillId?: string }): Promise<boolean> => {
     const content = draft.trim()
     if (!bridge || !projectId || !content || sendingRef.current) return false
@@ -466,7 +542,6 @@ export function useDesktopAgentController({
     let sessionId = activeSessionRef.current
     let eventDrivenRun = false
     try {
-      if (!agnesCatalog?.apiKeyConfigured) throw new Error('CLOUD_CREDENTIAL_MISSING')
       await flushCanvas()
       const snapshot = useCanvasStore.getState()
       const currentCanvas = snapshot.canvas
@@ -482,6 +557,8 @@ export function useDesktopAgentController({
           sessionId: created.sessionId,
           title: content.slice(0, 48) || uiText("新对话"),
           agentModelId: selectedModelId,
+          mode: 'standard',
+          modeVersion: 0,
           createdAt: created.createdAt,
           modifiedAt: created.createdAt,
         }, ...current])
@@ -657,6 +734,10 @@ export function useDesktopAgentController({
     selectedModelId,
     providerNames,
     onSelectModel: onSelectAgentModel,
+    onSelectMode: onSelectAgentMode,
+    roleOptions,
+    selectedRoleKey: roleBinding ? `${roleBinding.packageId}/${roleBinding.componentId}/${roleBinding.digest}` : '',
+    onSelectRole: onSelectAgentRole,
     error,
     skills,
     loadedSkillIds,

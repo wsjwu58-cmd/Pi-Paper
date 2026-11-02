@@ -5,8 +5,8 @@ module.exports = {
   "schemaVersion": 1,
   "id": "vibepaper-product-studio",
   "name": "商品棚拍工作流",
-  "description": "包含可编辑画布模板、中性灰棚拍背景、图片提示词预设与商品拍摄 Skill。",
-  "version": "1.0.0",
+  "description": "可选装商品棚拍图节点、画布模板、中性灰背景、柔光预设和棚拍策划 Skill。",
+  "version": "1.1.0",
   "author": "Pi-Paper",
   "components": [
     {
@@ -129,6 +129,42 @@ module.exports = {
         "params": {
           "prompt": "保留商品外观与品牌标识，使用柔和棚拍布光、浅灰背景，主体清晰，真实材质。"
         }
+      }
+    },
+    {
+      "id": "studio-image",
+      "type": "node_definition",
+      "name": "商品棚拍图",
+      "description": "填写商品卖点、背景与光线，预览提示词并在原图片节点编辑。",
+      "data": {
+        "schemaVersion": 1,
+        "baseType": "image",
+        "fields": [
+          {
+            "id": "feature",
+            "label": "商品卖点",
+            "kind": "text",
+            "default": "保留商品轮廓与真实材质"
+          },
+          {
+            "id": "backdrop",
+            "label": "棚拍背景",
+            "kind": "text",
+            "default": "中性灰背景"
+          },
+          {
+            "id": "lighting",
+            "label": "布光方式",
+            "kind": "enum",
+            "options": [
+              "柔和侧光",
+              "漫射顶光",
+              "轮廓逆光"
+            ],
+            "default": "柔和侧光"
+          }
+        ],
+        "promptTemplate": "{{feature}}。使用{{backdrop}}，采用{{lighting}}。"
       }
     },
     {

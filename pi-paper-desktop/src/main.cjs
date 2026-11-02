@@ -62,13 +62,22 @@ const { registerCanvasMediaIpc } = require('./canvas-media.cjs')
 const { createProviderSettings } = require('./provider-settings.cjs')
 const { createMcpMainService } = require('./mcp-main-service.cjs')
 const { registerMarketplaceIpc } = require('./marketplace-ipc.cjs')
-const { listMarketplaceSkills, listMarketplaceSkillIds, marketplaceSkillId } = require('./marketplace-storage.cjs')
+const { executeCreatorMarketplace } = require('./creator-marketplace.cjs')
+const { executeCreatorCommand } = require('./creator-command.cjs')
+const { executeCreatorPreset } = require('./creator-preset.cjs')
+const { discoverModelBindings } = require('./model-capability-discovery.cjs')
+const { executeCreatorWorkflow } = require('./creator-workflow.cjs')
+const { listMarketplaceSkillIds } = require('./marketplace-storage.cjs')
+const { assertMarketplaceSkillCollisions } = require('./marketplace-skill-collisions.cjs')
 const { isOfficialDocumentationUrl } = require('./official-documentation.cjs')
 const { createUiLanguageSettings } = require('./ui-language.cjs')
 const uiEnglish = require('./ui-english.cjs')
 let uiLanguageSettings = null
 function uiText(source) {
   return uiLanguageSettings?.get().language === 'en' ? uiEnglish[source] || source : source
+}
+function formatUiText(source, values = {}) {
+  return uiText(source).replace(/\{(\d+)\}/gu, (match, key) => Object.hasOwn(values, key) ? String(values[key] ?? '') : match)
 }
 
 // Keep the existing settings, credentials and Chromium profile after rebranding.
@@ -98,6 +107,7 @@ let agnesCredentialFile = null
 let arkCredentialFile = null
 let providerSettings = null
 let mcpMainService = null
+let marketplaceService = null
 
 function notifyProviderConfigurationChanged(snapshot, providerId) {
   const provider = snapshot?.providers?.find((entry) => entry?.id === providerId)
@@ -123,14 +133,21 @@ const rendererRoot = app.isPackaged ? path.join(desktopRoot, 'renderer') : path.
 const rendererIndex = path.join(rendererRoot, 'index.html')
 const developmentUrl = process.env.VITE_DEV_SERVER_URL
 
+async function discoverDesktopModelBindings(query) {
+  const registry = await providerSettings.snapshot()
+  const models = await getUnifiedAgentModelDirectory(registry)
+  return discoverModelBindings({ models, providers: registry.providers }, query)
+}
+
 function getOfficialCatalog() {
   return require(path.join(desktopRoot, 'dist', 'pi-official-media.cjs')).getOfficialProviderCatalog()
 }
 
-async function getUnifiedAgentModelDirectory() {
-  const [agnes, localTextModel, registry] = await Promise.all([
-    getAgnesModelSettings(), getLocalTextModelConfig(), providerSettings.snapshot(),
+async function getUnifiedAgentModelDirectory(registrySnapshot) {
+  const [registry, localTextModel] = await Promise.all([
+    registrySnapshot ?? providerSettings.snapshot(), getLocalTextModelConfig(),
   ])
+  const agnes = getAgnesModelCatalog(registry.providers.find((provider) => provider.id === AGNES_PROVIDER_ID)?.configured === true)
   const old = buildDesktopAgentModelDirectory(agnes, localTextModel, getLocalAudioModel())
   return [...old.filter((model) => model.providerId !== AGNES_PROVIDER_ID || model.modelType === 'text').map((model) => ({
     ...model,
@@ -464,6 +481,63 @@ async function createAgentWorker() {
   let workerReference = null
   const executeAgentCoreRequest = async (method, input) => {
     if (!ALLOWED_AGENT_CORE_METHODS.has(method)) throw new Error('AGENT_LOCAL_CORE_METHOD_UNSUPPORTED')
+    if (method === 'agent:core:marketplace') {
+      if (!input || typeof input !== 'object' || Array.isArray(input)
+        || Object.keys(input).some((key) => !['projectId', 'canvasId', 'sessionId', 'runId', 'modeVersion', 'action', 'input', 'operationKey'].includes(key))
+        || typeof input.projectId !== 'string' || typeof input.canvasId !== 'string'
+        || typeof input.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(input.sessionId)
+        || typeof input.runId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(input.runId)
+        || !Number.isSafeInteger(input.modeVersion) || input.modeVersion < 0
+        || typeof input.operationKey !== 'string' || !/^[a-f0-9]{64}$/u.test(input.operationKey)
+        || !['inspect', 'result', 'validate', 'save', 'install', 'enable', 'apply', 'command_inspect', 'command_preview', 'command_apply', 'command_undo', 'preset_preview', 'preset_undo', 'model_inspect'].includes(input.action)) throw new Error('INVALID_INPUT')
+      const epoch = workerReference.marketplaceEpochs.get(input.sessionId) ?? 0
+      const directory = activeProjectDirectory
+      const authorize = () => {
+        if (stopping || projectTransitionCount > 0 || agentWorker !== workerReference || agentProjectId !== input.projectId
+          || !directory || directory !== activeProjectDirectory || workerReference.cancelledRunIds.has(input.runId)
+          || (workerReference.marketplaceEpochs.get(input.sessionId) ?? 0) !== epoch) throw new Error('RUN_ABORTED')
+      }
+      authorize()
+      const active = await localCore.request('project:get-active')
+      if (!active || active.projectId !== input.projectId || active.canvasId !== input.canvasId) throw new Error('AGENT_PROJECT_CHANGED')
+      const reauthorize = async () => {
+        authorize()
+        await workerReference.request('agent:authorize-marketplace', { projectId: input.projectId, canvasId: input.canvasId,
+          sessionId: input.sessionId, runId: input.runId, modeVersion: input.modeVersion, action: input.action })
+        authorize()
+      }
+      await reauthorize()
+      if (!marketplaceService || !mcpMainService) throw new Error('CANVAS_NOT_READY')
+      const trackApply = (key, count) => {
+        const state = workerReference.marketplaceEffects.get(input.runId) ?? new Map()
+        if (!state.has(key) && [...state.values()].reduce((sum, value) => sum + value, 0) + count > 20) throw new Error('BATCH_LIMIT_EXCEEDED')
+        state.set(key, count); workerReference.marketplaceEffects.set(input.runId, state)
+      }
+      beginTaskCreation()
+      try {
+        const common = { service: marketplaceService, directory, ...input, authorize, reauthorize,
+          core: (command, payload) => localCore.request(command, payload, 30_000),
+          barrier: (request, operation) => mcpMainService.runHostCanvasMutation(request, operation) }
+        const commands = require('../dist/plugin-template-graph.cjs')
+        if (input.action.startsWith('command_')) {
+          return await executeCreatorCommand({ ...common, commands, format: formatUiText,
+            previewBarrier: (request, operation) => mcpMainService.runHostCanvasPreview(request, operation) })
+        }
+        if (input.action === 'preset_preview' || input.action === 'preset_undo'
+          || (input.action === 'apply' && typeof input.input?.targetNodeId === 'string')) {
+          return await executeCreatorPreset({ ...common, action: input.action === 'apply' ? 'preset_apply' : input.action,
+            preset: require('../dist/plugin-preset.cjs'), providerConfiguration: () => providerSettings.snapshot(),
+            withProviderConfiguration: (callback) => providerSettings.withSnapshot(callback),
+            previewBarrier: (request, operation) => mcpMainService.runHostCanvasPreview(request, operation) })
+        }
+        const result = await executeCreatorMarketplace({ ...common, graph: commands.portableTemplateGraph,
+          basicNodeCatalog: commands.basicNodeCatalog, discoverModels: discoverDesktopModelBindings, trackApply })
+        if (['save', 'install', 'enable'].includes(input.action) && mainWindow && !mainWindow.isDestroyed()) {
+          try { mainWindow.webContents.send('desktop:marketplace:changed', { projectId: input.projectId }) } catch { /* mutation is already durable */ }
+        }
+        return result
+      } finally { finishTaskCreation() }
+    }
     if (!input || typeof input !== 'object' || Array.isArray(input)
       || typeof input.projectId !== 'string' || input.projectId.length < 1 || input.projectId.length > 128) {
       throw new Error('AGENT_LOCAL_CORE_INPUT_INVALID')
@@ -637,6 +711,8 @@ async function createAgentWorker() {
   const worker = {
     child,
     cancelledRunIds: new Set(),
+    marketplaceEpochs: new Map(),
+    marketplaceEffects: new Map(),
     async request(method, payload, timeoutMs = 30_000) {
       await started
       if (exitError) throw exitError
@@ -1690,9 +1766,14 @@ function localAssetImportName(sourcePath) {
 }
 
 function registerProjectIpc() {
-  registerMarketplaceIpc(ipcMain, {
+  marketplaceService = registerMarketplaceIpc(ipcMain, {
     assertTrustedSender,
     uiText,
+    notifyChanged: (projectId) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.webContents.send('desktop:marketplace:changed', { projectId }) } catch { /* mutation is already durable */ }
+      }
+    },
     window: () => mainWindow,
     dialog,
     userDataDirectory,
@@ -1710,21 +1791,48 @@ function registerProjectIpc() {
     checkSkills: async (directory, state) => {
       const active = await localCore.request('project:get-active')
       if (!active || directory !== activeProjectDirectory) throw codedError('AGENT_PROJECT_CHANGED')
-      const worker = agentWorker
-      if (!worker || agentProjectId !== active.projectId) throw codedError('AGENT_PROJECT_CHANGED')
-      const existing = (await worker.request('agent:list-skills', { projectId: active.projectId })).items
-      const currentMarketIds = new Set((await listMarketplaceSkills(directory)).map((skill) => skill.id))
-      const names = new Set(existing.filter((skill) => !currentMarketIds.has(skill.id)).map((skill) => skill.name.trim().toLocaleLowerCase()))
-      const existingIds = new Set(existing.filter((skill) => !currentMarketIds.has(skill.id)).map((skill) => skill.id))
-      for (const entry of state.packages) for (const installed of entry.components) {
-        const component = entry.manifest.components.find((item) => item.id === installed.id)
-        if (component?.type !== 'skill') continue
-        const key = component.name.trim().toLocaleLowerCase()
-        if (names.has(key) || existingIds.has(marketplaceSkillId(entry.manifest.id, component.id))) throw codedError('SKILL_NAME_COLLISION')
-        names.add(key)
-      }
+      if (!agentWorker || agentProjectId !== active.projectId) throw codedError('AGENT_PROJECT_CHANGED')
+      await assertMarketplaceSkillCollisions(directory, state)
+      if (directory !== activeProjectDirectory || agentProjectId !== active.projectId) throw codedError('AGENT_PROJECT_CHANGED')
     },
   })
+  ipcMain.handle('desktop:marketplace:discover-models', async (event, projectId, query) => {
+    assertTrustedSender(event)
+    await assertActiveAssetProject(projectId)
+    const result = await discoverDesktopModelBindings(query)
+    await assertActiveAssetProject(projectId)
+    return result
+  })
+
+  ipcMain.handle('desktop:marketplace:run-command', async (event, projectId, canvasId, action, input, operationKey) => {
+    assertTrustedSender(event)
+    if (typeof projectId !== 'string' || typeof canvasId !== 'string'
+      || !['command_inspect', 'command_preview', 'command_apply', 'command_undo', 'workflow_preview', 'workflow_apply'].includes(action)
+      || !input || typeof input !== 'object' || Array.isArray(input)
+      || typeof operationKey !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(operationKey)) throw codedError('INVALID_INPUT')
+    const directory = activeProjectDirectory
+    const authorize = () => {
+      if (stopping || projectTransitionCount > 0 || !directory || directory !== activeProjectDirectory
+        || agentProjectId !== projectId || !marketplaceService || !mcpMainService) throw codedError('AGENT_PROJECT_CHANGED')
+    }
+    const reauthorize = async () => {
+      authorize()
+      const active = await localCore.request('project:get-active')
+      if (!active || active.projectId !== projectId || active.canvasId !== canvasId) throw codedError('AGENT_PROJECT_CHANGED')
+      authorize()
+    }
+    await reauthorize()
+    beginTaskCreation()
+    try {
+      const common = { service: marketplaceService, directory, projectId, canvasId, action, input, operationKey,
+        authorize, reauthorize, core: (method, payload) => localCore.request(method, payload, 30_000),
+        barrier: (request, operation) => mcpMainService.runHostCanvasMutation(request, operation),
+        previewBarrier: (request, operation) => mcpMainService.runHostCanvasPreview(request, operation),
+        commands: require('../dist/plugin-template-graph.cjs'), format: formatUiText }
+      return action.startsWith('workflow_') ? await executeCreatorWorkflow(common) : await executeCreatorCommand(common)
+    } finally { finishTaskCreation() }
+  })
+
   ipcMain.handle('desktop:ui-language:get', (event) => {
     assertTrustedSender(event)
     return uiLanguageSettings.get()
@@ -2880,6 +2988,33 @@ function registerAgentIpc() {
     void notifyAgentTaskState(projectId)
     return result
   })
+
+  ipcMain.handle('desktop:agent:set-session-mode', async (event, projectId, sessionId, mode) => {
+    assertTrustedSender(event)
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)
+      || !['standard', 'creator'].includes(mode)) throw codedError('AGENT_MODE_INVALID')
+    const worker = await getAgentWorker(projectId)
+    worker.marketplaceEpochs.set(sessionId, (worker.marketplaceEpochs.get(sessionId) ?? 0) + 1)
+    const active = await localCore.request('project:get-active')
+    if (active?.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
+    return worker.request('agent:set-session-mode', { projectId, sessionId, mode })
+  })
+
+  ipcMain.handle('desktop:agent:list-roles', async (event, projectId) => {
+    assertTrustedSender(event)
+    const worker = await getAgentWorker(projectId)
+    return worker.request('agent:list-roles', { projectId })
+  })
+  for (const action of ['get-role', 'set-role']) {
+    ipcMain.handle(`desktop:agent:${action}`, async (event, projectId, sessionId, binding) => {
+      assertTrustedSender(event)
+      if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(sessionId)) throw codedError('AGENT_SESSION_INPUT_INVALID')
+      const worker = await getAgentWorker(projectId)
+      const active = await localCore.request('project:get-active')
+      if (active?.projectId !== projectId) throw codedError('AGENT_PROJECT_CHANGED')
+      return worker.request(`agent:${action}`, { projectId, sessionId, ...(action === 'set-role' ? { binding } : {}) })
+    })
+  }
 
   ipcMain.handle('desktop:agent:list-sessions', async (event, projectId, filter) => {
     assertTrustedSender(event)

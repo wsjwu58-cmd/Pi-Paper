@@ -20,12 +20,17 @@ import {
 	type NodeReferenceSnapshot,
 	nodeReferencesFromMeta,
 } from "../application/node-reference-context.ts";
+import { type DesktopAgentRoleBinding, isDesktopAgentRoleBinding } from "./agent-role.ts";
 import type { DesktopAgentControlStore, DesktopAgentSessionState, DesktopAgentSessionStatus } from "./control-store.ts";
 import type { DesktopAgentSkillSnapshot } from "./skill-context.ts";
 
 const RUN_EVENT_ENTRY_TYPE = "vibepaper_run_event";
 const MESSAGE_METADATA_ENTRY_TYPE = "vibepaper_message_metadata";
 const AGENT_MODEL_METADATA_ENTRY_TYPE = "vibepaper_agent_model";
+const AGENT_ROLE_METADATA_ENTRY_TYPE = "vibepaper_agent_role";
+const AGENT_MODE_METADATA_ENTRY_TYPE = "vibepaper_agent_mode";
+export type DesktopAgentMode = "standard" | "creator";
+export type DesktopAgentModeState = { mode: DesktopAgentMode; version: number };
 export const LEGACY_AGENT_MODEL_BINDING_ID = "agnes-2.5-flash";
 const MAX_MESSAGE_REFERENCES = 8;
 const MAX_MESSAGE_ID_LENGTH = 128;
@@ -58,6 +63,8 @@ export type DesktopAgentSessionView = {
 	sessionId: string;
 	/** Stable model binding selected for this session; never contains credentials. */
 	agentModelId: string;
+	mode: DesktopAgentMode;
+	modeVersion: number;
 	title: string;
 	status: Exclude<DesktopAgentSessionStatus, "deleted">;
 	canvasId?: string;
@@ -174,7 +181,7 @@ export class DesktopAgentSessionStore {
 		if (state.status === "deleted") throw new Error("SESSION_NOT_FOUND");
 		const title = await this.resolveSessionTitle(sessionId);
 		const agentModelId = await this.readAgentModelBinding(metadata);
-		return toSessionView(metadata, title, state, agentModelId);
+		return toSessionView(metadata, title, state, agentModelId, await this.readAgentMode(metadata));
 	}
 
 	async getAgentModelBinding(sessionId: string): Promise<string> {
@@ -191,6 +198,19 @@ export class DesktopAgentSessionStore {
 		await this.withSessionMutation(sessionId, async () => {
 			const session = await this.openSession(sessionId);
 			await session.appendCustomEntry(AGENT_MODEL_METADATA_ENTRY_TYPE, { bindingId });
+		});
+		return this.getSession(sessionId);
+	}
+
+	async setAgentMode(sessionId: string, mode: DesktopAgentMode): Promise<DesktopAgentSessionView> {
+		if (mode !== "standard" && mode !== "creator") throw new Error("AGENT_MODE_INVALID");
+		this.assertSessionActive(sessionId);
+		await this.withSessionMutation(sessionId, async () => {
+			const session = await this.openSession(sessionId);
+			const previous = await this.readAgentMode(await session.getMetadata());
+			if (previous.mode !== mode) {
+				await session.appendCustomEntry(AGENT_MODE_METADATA_ENTRY_TYPE, { mode, version: previous.version + 1 });
+			}
 		});
 		return this.getSession(sessionId);
 	}
@@ -223,7 +243,7 @@ export class DesktopAgentSessionStore {
 				const title = await this.resolveSessionTitle(session.id);
 				if (normalizedSearch && !title.toLocaleLowerCase().includes(normalizedSearch)) return undefined;
 				const agentModelId = await this.readAgentModelBinding(session);
-				return toSessionView(session, title, state, agentModelId);
+				return toSessionView(session, title, state, agentModelId, await this.readAgentMode(session));
 			}),
 		);
 		return sessions
@@ -288,6 +308,29 @@ export class DesktopAgentSessionStore {
 		await this.setAgentModelBinding(copy.id, await this.getAgentModelBinding(sessionId));
 		const view = await this.getSession(copy.id);
 		return { ...view, copiedFrom: source.sessionId };
+	}
+
+	async getAgentRoleBinding(sessionId: string): Promise<DesktopAgentRoleBinding | null> {
+		const session = await this.openSession(sessionId);
+		const entries = await session.findEntries({ order: "oldestFirst" });
+		for (let index = entries.length - 1; index >= 0; index--) {
+			const entry = entries[index];
+			if (entry?.type !== "custom" || entry.customType !== AGENT_ROLE_METADATA_ENTRY_TYPE) continue;
+			const binding = objectValue(entry.data).binding;
+			if (binding === null) return null;
+			if (!isDesktopAgentRoleBinding(binding)) throw new Error("AGENT_ROLE_STATE_INVALID");
+			return binding;
+		}
+		return null;
+	}
+
+	async setAgentRoleBinding(sessionId: string, binding: DesktopAgentRoleBinding | null): Promise<void> {
+		if (binding !== null && !isDesktopAgentRoleBinding(binding)) throw new Error("AGENT_ROLE_BINDING_INVALID");
+		this.assertSessionActive(sessionId);
+		await this.withSessionMutation(sessionId, async () => {
+			const session = await this.openSession(sessionId);
+			await session.appendCustomEntry(AGENT_ROLE_METADATA_ENTRY_TYPE, { binding });
+		});
 	}
 
 	async setSessionSkillSnapshots(
@@ -549,6 +592,25 @@ export class DesktopAgentSessionStore {
 	private requireControlStore(): DesktopAgentControlStore {
 		if (!this.controlStore) throw new Error("SESSION_STATE_STORE_REQUIRED");
 		return this.controlStore;
+	}
+
+	private async readAgentMode(metadata: JsonlSessionMetadata): Promise<DesktopAgentModeState> {
+		const session = await this.repo.open(metadata);
+		const entries = await session.findEntries({ order: "oldestFirst" });
+		for (let index = entries.length - 1; index >= 0; index--) {
+			const entry = entries[index];
+			if (entry?.type !== "custom" || entry.customType !== AGENT_MODE_METADATA_ENTRY_TYPE) continue;
+			const data = objectValue(entry.data);
+			if (
+				(data.mode !== "standard" && data.mode !== "creator") ||
+				!Number.isSafeInteger(data.version) ||
+				(data.version as number) < 1
+			) {
+				throw new Error("AGENT_MODE_STATE_INVALID");
+			}
+			return { mode: data.mode, version: data.version as number };
+		}
+		return { mode: "standard", version: 0 };
 	}
 
 	private async readAgentModelBinding(metadata: JsonlSessionMetadata): Promise<string> {
@@ -1182,6 +1244,7 @@ function toSessionView(
 	title: string,
 	state: DesktopAgentSessionState,
 	agentModelId: string,
+	agentMode: DesktopAgentModeState,
 ): DesktopAgentSessionView {
 	if (state.status === "deleted") throw new Error("SESSION_NOT_FOUND");
 	const canvasId = metadata.metadata?.canvasId;
@@ -1189,6 +1252,8 @@ function toSessionView(
 	return {
 		sessionId: metadata.id,
 		agentModelId,
+		mode: agentMode.mode,
+		modeVersion: agentMode.version,
 		title,
 		status: state.status,
 		...(typeof canvasId === "string" && canvasId.length > 0 ? { canvasId } : {}),

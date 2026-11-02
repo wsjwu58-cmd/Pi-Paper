@@ -71,6 +71,13 @@ export function friendlyAgentErrorMessage(value: unknown): string {
     AGENT_SESSION_WRITE_FAILED: uiText("Agent 会话未能保存到本地项目，请检查磁盘空间后重试。"),
     AGENT_RUN_RESULT_MISSING: uiText("Agent 未能恢复本轮回复，请重新发送。"),
     AGENT_RUN_ALREADY_PROCESSED: uiText("这条消息已处理，请检查会话记录后再继续。"),
+    AGENT_ROLE_SKILL_UNAVAILABLE: uiText('当前角色需要的 Skill 已停用或不可用，请在插件市场检查。'),
+    AGENT_ROLE_UNAVAILABLE: uiText('当前角色已停用或版本发生变化，请重新选择角色。'),
+    AGENT_ROLE_CHANGED: uiText('当前角色已停用或版本发生变化，请重新选择角色。'),
+    AGENT_ROLE_SKILL_NOT_ALLOWED: uiText('当前角色不能使用所选 Skill，请更换角色或 Skill。'),
+    AGENT_ROLE_CONTEXT_NOT_ALLOWED: uiText('当前角色不能读取选中节点，请更换角色。'),
+    AGENT_ROLE_TOOL_UNAVAILABLE: uiText('当前角色包含不受支持的工具，请检查角色配置。'),
+    AGENT_ROLE_TOOL_NOT_ALLOWED: uiText('当前角色不能执行此操作。'),
     SESSION_BUSY: uiText("此会话有任务正在运行，请等待当前任务完成。"),
     CONFIRMATION_REQUIRED: uiText("请先处理当前待确认的操作。"),
   }

@@ -416,6 +416,54 @@ describe("Pi runtime event mapping", () => {
 		expect(result.assistantText).toBe("回复开头已完成。");
 	});
 
+	it("prevents a model from invoking a tool excluded by the session role", async () => {
+		const schema = Type.Object({}, { additionalProperties: false });
+		let executions = 0;
+		const tool: AgentTool<typeof schema> = {
+			name: "create_nodes",
+			label: "创建节点",
+			description: "创建节点",
+			parameters: schema,
+			async execute() {
+				executions += 1;
+				return { content: [{ type: "text", text: "written" }], details: {} };
+			},
+		};
+		const faux = createFauxRuntime([
+			assistantResponse([{ type: "toolCall", id: "forbidden", name: "create_nodes", arguments: {} }], "toolUse"),
+			assistantResponse([{ type: "text", text: "无法修改。" }]),
+		]);
+		await runDesktopTurn(faux.streamFn, { runtimeTools: [tool], allowedToolNames: ["get_canvas_summary"] });
+		expect(executions).toBe(0);
+	});
+
+	it("rechecks role availability before an allowed tool executes", async () => {
+		const schema = Type.Object({}, { additionalProperties: false });
+		let executions = 0;
+		const tool: AgentTool<typeof schema> = {
+			name: "create_nodes",
+			label: "创建节点",
+			description: "创建节点",
+			parameters: schema,
+			async execute() {
+				executions += 1;
+				return { content: [{ type: "text", text: "written" }], details: {} };
+			},
+		};
+		const faux = createFauxRuntime([
+			assistantResponse([{ type: "toolCall", id: "revoked", name: "create_nodes", arguments: {} }], "toolUse"),
+			assistantResponse([{ type: "text", text: "已停用。" }]),
+		]);
+		await runDesktopTurn(faux.streamFn, {
+			runtimeTools: [tool],
+			allowedToolNames: ["create_nodes"],
+			authorizeToolCall: async () => {
+				throw new Error("AGENT_ROLE_UNAVAILABLE");
+			},
+		});
+		expect(executions).toBe(0);
+	});
+
 	it("honors the caller stop hook before recovering a truncated response", async () => {
 		const faux = createFauxRuntime([
 			assistantResponse([{ type: "text", text: "等待确认" }], "length"),

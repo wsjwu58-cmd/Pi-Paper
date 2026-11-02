@@ -18,6 +18,7 @@ function createStores(projectId, controlMethods = {}) {
         return runs.get(runId) ?? { runId, sessionId: 'session-1', status: 'queued' }
       },
       findByIdempotency() { return undefined },
+      find() { return undefined },
       markTaskContinuationCompleted() {},
       markTaskContinuationInterrupted() {},
       invalidatePendingForRun() {},
@@ -127,6 +128,8 @@ function createWorkerHarness(options = {}) {
     }
   }
   const stubs = {
+    'node:crypto': require('node:crypto'),
+    'creator-tools.ts': { createMarketplaceTools: () => [] },
     'agent-stores.ts': {
       openDesktopAgentStores: async (projectDirectory) => createStores(projectDirectory, options.controlMethods),
     },
@@ -200,6 +203,8 @@ function createWorkerHarness(options = {}) {
       extractDailyMemory() { runtime.dailyMemoryCalls += 1; return undefined },
     },
     'profile-selector.ts': { selectProfile: () => ({ name: 'test-profile' }) },
+    'agent-role.ts': { desktopRoleToolNames: () => [] },
+    'marketplace-agent-roles.cjs': { listAgentRoles: async () => [], resolveAgentRole: async () => null },
     'local-tool-gateway.ts': options.localToolGateway ?? { DesktopLocalToolGateway: TestDesktopLocalToolGateway },
     'mcp-runtime.ts': options.mcpRuntime ?? {
       listMcpAuxiliaryTools() {
@@ -248,7 +253,7 @@ function createWorkerHarness(options = {}) {
     'agent-canvas-context.cjs': { buildAgentCanvasContext: () => 'canvas context' },
     'agent-usage.cjs': {},
     'agent-activity.cjs': {},
-    'project-agent-skills.cjs': { listProjectAgentSkills: async () => [] },
+    'project-agent-skills.cjs': { listAgentSkillsWithOfficialState: async () => [] },
     // The Worker test harness keeps proxy setup inert. It cannot open sockets.
     'worker-network.cjs': {
       initializeWorkerProxy() { runtime.workerProxyInitializations += 1; return false },

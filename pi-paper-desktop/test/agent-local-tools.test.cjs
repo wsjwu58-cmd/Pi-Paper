@@ -36,6 +36,7 @@ class FakeParentPort extends EventEmitter {
 
 test('Main and Worker share the restricted agent:core method allowlist', () => {
   assert.deepEqual(AGENT_CORE_METHODS, [
+    'agent:core:marketplace',
     'agent:core:load-canvas',
     'agent:core:create-node',
     'agent:core:update-node',

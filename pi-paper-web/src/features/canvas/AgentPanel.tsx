@@ -23,7 +23,7 @@ import { api, ApiError, authedFetch } from '@/lib/api'
 import { parseJsonPreserveIds } from '@/lib/ids'
 import { useAuth } from '@/lib/auth'
 import type { MemoryView, ModelInfo, SkillView } from '@/lib/types'
-import type { DesktopMemoryScope } from '@/desktop/desktop-bridge'
+import type { DesktopAgentRoleOption, DesktopMemoryScope } from '@/desktop/desktop-bridge'
 import { SkillsPanel } from './SkillsPanel'
 import { AgentEmptyState } from './AgentEmptyState'
 import { ModelPicker } from '@/components/ui/ModelPicker'
@@ -100,6 +100,7 @@ export interface AgentPanelDesktopSession {
   sessionId: string
   title: string
   agentModelId?: string
+  mode?: 'standard' | 'creator'
   createdAt: number
   modifiedAt: number
   status?: 'active' | 'archived'
@@ -120,6 +121,10 @@ export interface AgentPanelDesktopAdapter {
   selectedModelId?: string
   providerNames?: Record<string, string>
   onSelectModel?: (modelId: string) => Promise<void> | void
+  onSelectMode?: (mode: 'standard' | 'creator') => Promise<void> | void
+  roleOptions?: DesktopAgentRoleOption[]
+  selectedRoleKey?: string
+  onSelectRole?: (key: string) => Promise<void> | void
   error: string
   skills?: SkillView[]
   loadedSkillIds?: string[]
@@ -1449,6 +1454,28 @@ function WebAgentPanel({
                       </button>
                     </div>
                   </div>
+                  {desktop && desktopAdapter?.onSelectMode && (
+                    <select
+                      aria-label={uiText("会话模式")}
+                      value={desktopSession?.mode ?? 'standard'}
+                      disabled={desktopAdapter.creating || desktopSessionArchived}
+                      onChange={(event) => { void desktopAdapter.onSelectMode?.(event.target.value as 'standard' | 'creator') }}
+                      className="max-w-[76px] rounded-lg bg-transparent px-1 py-1 text-[11px] font-semibold text-[var(--canvas-muted)]"
+                    >
+                      <option value="standard">{uiText("普通")}</option>
+                      <option value="creator">{uiText("创造")}</option>
+                    </select>
+                  )}
+                  {desktop && desktopAdapter?.onSelectRole && (
+                    <select aria-label={uiText('会话角色')} value={desktopAdapter.selectedRoleKey ?? ''}
+                      disabled={desktopAdapter.creating || desktopAdapter.sending || desktopSessionArchived}
+                      onChange={(event) => { void desktopAdapter.onSelectRole?.(event.target.value) }}
+                      className="max-w-[100px] rounded-lg bg-transparent px-1 py-1 text-[11px] font-semibold text-[var(--canvas-muted)]">
+                      <option value="">{uiText('通用角色')}</option>
+                      {desktopAdapter.selectedRoleKey && !desktopAdapter.roleOptions?.some((role) => `${role.binding.packageId}/${role.binding.componentId}/${role.binding.digest}` === desktopAdapter.selectedRoleKey) && <option value={desktopAdapter.selectedRoleKey}>{uiText('已选角色不可用')}</option>}
+                      {desktopAdapter.roleOptions?.map((role) => <option key={`${role.binding.packageId}/${role.binding.componentId}/${role.binding.digest}`} value={`${role.binding.packageId}/${role.binding.componentId}/${role.binding.digest}`}>{uiText(role.name)}</option>)}
+                    </select>
+                  )}
                   <div className="min-w-0 shrink">
                     {desktop ? (
                       desktopAdapter?.modelOptions?.length && desktopAdapter.onSelectModel ? (

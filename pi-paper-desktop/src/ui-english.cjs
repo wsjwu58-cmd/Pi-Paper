@@ -31,5 +31,12 @@ module.exports = {
   "音频": "Audio",
   "视频": "Video",
   "文本": "Text",
-  "所有文件": "All files"
+  "所有文件": "All files",
+  "方向 {0}°，俯仰 {1}°，距离 {2}": "Yaw {0}°, pitch {1}°, distance {2}",
+  "机位：{0}": "Camera: {0}",
+  "{0}；{1}": "{0}; {1}",
+  "机位数据格式无效": "Invalid camera data",
+  "运镜：{0} → {1}，{2} 秒": "Camera motion: {0} → {1}, {2} seconds",
+  "运镜数据格式无效": "Invalid camera motion data",
+  "镜头 {0}": "Shot {0}"
 }

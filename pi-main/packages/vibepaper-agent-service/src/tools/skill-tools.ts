@@ -14,6 +14,7 @@ export function createLoadSkillTool(
 	skills: readonly LoadedSkillResource[],
 	loadedSkillIds: readonly string[],
 	onLoad: (skill: LoadedSkillResource) => Promise<void>,
+	validateSkill?: (skill: LoadedSkillResource) => Promise<void>,
 ): AgentTool[] {
 	const loaded = new Set(loadedSkillIds);
 	const loadSkill: AgentTool<typeof LoadSkillSchema, { uri: string; alreadyLoaded: boolean }> = {
@@ -28,6 +29,7 @@ export function createLoadSkillTool(
 				(candidate) => candidate.key.toLowerCase() === requested || candidate.name.toLowerCase() === requested,
 			);
 			if (!skill) throw new Error("请求的 Skill 不在当前会话可用索引中");
+			await validateSkill?.(skill);
 			const uri = `skill://session/${skill.id}`;
 			if (loaded.has(skill.id)) {
 				return {
@@ -35,8 +37,8 @@ export function createLoadSkillTool(
 					details: { uri, alreadyLoaded: true },
 				};
 			}
-			loaded.add(skill.id);
 			await onLoad(skill);
+			loaded.add(skill.id);
 			return {
 				content: [
 					{

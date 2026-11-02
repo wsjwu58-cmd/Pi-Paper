@@ -2,7 +2,7 @@ import { t as uiText } from '@/lib/i18n'
 import { sid } from '@/lib/ids'
 import type { DirectorCamera, DirectorObject } from './director/types'
 import { CHARACTER_POSES, PROP_KINDS, PRIMITIVE_KINDS } from './director/catalog'
-import { arrangeCanvasGroupNodes } from './canvasGroupUtils'
+import { previewCreativeCommand } from './creativeCommandCatalog'
 import type { FlowNode } from './canvasStore'
 import type { CreativeMediaTool, CreativeMotion, CreativeScene, CreativeSelectionCommand, CreativeStoryboard, PosterLayout, StoryboardField } from './creativePluginTypes'
 
@@ -89,10 +89,10 @@ export function resolveUnchangedCreativeSelection(previous: FlowNode[], current:
 }
 /** Preserve the selected nodes' spatial order on the axis being arranged. */
 export function arrangeCreativeSelection(nodes: FlowNode[], selected: FlowNode[], command: CreativeSelectionCommand): FlowNode[] {
-  const ordered = [...selected].sort((a, b) => command.orientation === 'horizontal'
-    ? a.position.x - b.position.x || a.position.y - b.position.y
-    : a.position.y - b.position.y || a.position.x - b.position.x)
-  return arrangeCanvasGroupNodes(nodes, ordered.map((node) => node.id), command.orientation, command.gap)
+  const preview = previewCreativeCommand({ type: 'selection_command', data: command }, nodes, selected.map((node) => sid(node.id)))
+  if (preview.capabilityId !== 'selection.arrange') return nodes
+  const positions = new Map(preview.moves.map((move) => [move.id, move.to]))
+  return nodes.map((node) => { const position = positions.get(sid(node.id)); return position ? { ...node, position } : node })
 }
 export function readStoryboard(raw: unknown): CreativeStoryboard {
   const v = exact(raw, ['fields'])

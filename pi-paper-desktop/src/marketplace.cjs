@@ -1,9 +1,16 @@
 const path = require('node:path')
 const crypto = require('node:crypto')
+const fs = require('node:fs/promises')
 const { createPresetPreferences } = require('./marketplace-preferences.cjs')
-const bundled = [require('./marketplace-example.cjs'), require('./marketplace-creative-example.cjs'), require('./marketplace-connector-example.cjs')]
+const bundled = [require('./marketplace-example.cjs'), require('./marketplace-creative-example.cjs'), require('./marketplace-connector-example.cjs'), require('./marketplace-drama-roles.cjs')]
 const builtinById = new Map(bundled.map(manifest => [manifest.id, manifest]))
-const { id, isOnlineOrigin, validatePackage, readJson, writeJson, readState, writeState, marketplaceSkillId } = require('./marketplace-storage.cjs')
+const { digestValue, id, isOnlineOrigin, validatePackage, readJson, writeJson, readState, writeState, marketplaceSkillId } = require('./marketplace-storage.cjs')
+// This module is bundled separately for the standalone app and carries the
+// exact same generated registry used by the Agent worker.
+const { getOfficialSkillDefinitions, listProjectFileSkills } = require('./project-agent-skills.cjs')
+// These virtual IDs cannot collide with valid portable manifest IDs.
+const OFFICIAL_SKILL_CATALOG = '@vibepaper/official-skills'
+const PROJECT_SKILL_CATALOG = '@vibepaper/project-skills'
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
@@ -43,7 +50,40 @@ function createMarketplaceService(userDataDirectory, options = {}) {
     const data = await catalog()
     const state = projectDirectory ? await readState(projectDirectory) : { packages: [] }
     const choices = availablePackages(data, state)
-    return choices.map(({ manifest, source, origin }) => {
+    const official = getOfficialSkillDefinitions()
+    const disabled = new Set(state.disabledOfficialSkillIds ?? [])
+    const components = official.map((skill) => ({
+      id: skill.key, type: 'skill', name: skill.name, description: skill.description,
+      data: { category: skill.category, instructions: skill.instructions },
+      installed: true, enabled: skill.kind === 'builtin-core' || !disabled.has(skill.key),
+      systemRequired: skill.kind === 'builtin-core', updateConflict: null,
+    })).sort((a, b) => Number(b.systemRequired) - Number(a.systemRequired)
+      || a.data.category.localeCompare(b.data.category) || a.name.localeCompare(b.name))
+    const virtual = [{
+      id: OFFICIAL_SKILL_CATALOG, name: '官方 Skill', description: '随应用提供的核心与创作 Skill；动态 Skill 可按项目启停。',
+      version: '1.0.0', author: 'Pi-Paper', source: 'builtin', officialSkillCatalog: true,
+      installed: true, enabled: components.some((item) => item.enabled), installedVersion: projectDirectory ? '1.0.0' : null,
+      updateAvailable: false, rollbackVersion: null, origin: null, components,
+    }]
+    // A new project may not have opened the Agent yet. Browsing the market
+    // must not initialize its Skill directory as a side effect.
+    const agentDirectory = projectDirectory && path.join(projectDirectory, '.vibepaper', 'agent')
+    if (agentDirectory && await fs.lstat(agentDirectory).catch((error) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })) {
+      const projectSkills = await listProjectFileSkills(projectDirectory)
+      if (projectSkills.length) virtual.push({
+        id: PROJECT_SKILL_CATALOG, name: '本项目 Skill 文件', description: '在当前项目 Skill 面板创建和编辑的本地文件。',
+        version: '1.0.0', author: '本项目', source: 'local', projectSkillCatalog: true,
+        installed: true, enabled: projectSkills.some((skill) => skill.enabled), installedVersion: '1.0.0',
+        updateAvailable: false, rollbackVersion: null, origin: null,
+        components: projectSkills.map((skill) => ({ id: skill.id, type: 'skill', name: skill.name,
+          description: skill.description, data: { category: skill.category, instructions: skill.instructions },
+          installed: true, enabled: skill.enabled, updateConflict: null })),
+      })
+    }
+    const packages = choices.map(({ manifest, source, origin }) => {
       const entry = state.packages.find((item) => item.manifest.id === manifest.id)
       const components = [...manifest.components]
       for (const old of entry?.manifest.components ?? []) {
@@ -51,7 +91,8 @@ function createMarketplaceService(userDataDirectory, options = {}) {
       }
       return {
         id: manifest.id, name: manifest.name, description: manifest.description, version: manifest.version,
-        author: manifest.author, source, origin: origin ? clone(origin) : null, installed: Boolean(entry?.components.length),
+        author: manifest.author, source, origin: origin ? clone(origin) : null, digest: digestValue(manifest),
+        installedDigest: entry?.components.length ? digestValue(entry.manifest) : null, installed: Boolean(entry?.components.length),
         enabled: Boolean(entry?.components.some((item) => item.enabled)),
         installedVersion: entry?.components.length ? entry.manifest.version : null,
         updateAvailable: Boolean(entry?.components.length && entry.manifest.version !== manifest.version),
@@ -72,6 +113,7 @@ function createMarketplaceService(userDataDirectory, options = {}) {
         }),
       }
     })
+    return [...virtual, ...packages]
   }
   function availablePackages(catalog, state) {
     // Imported IDs may predate a bundled pack with the same ID. Keep imported
@@ -85,6 +127,13 @@ function createMarketplaceService(userDataDirectory, options = {}) {
     for (const manifest of catalog.packages) {
       const origin = catalog.provenance?.[manifest.id]
       choices.set(manifest.id, { manifest, source: origin ? 'online' : 'local', origin })
+    }
+    for (const version of state?.projectPackages ?? []) {
+      const packageId = version.manifest.id
+      // A project owns its authored IDs. Importing an exported copy into the
+      // user catalog must not mask the project or make that project unreadable.
+      if (builtinById.has(packageId)) throw new Error('MARKETPLACE_PACKAGE_COLLISION')
+      choices.set(packageId, { manifest: version.manifest, source: 'project' })
     }
     return [...choices.values()]
   }
@@ -115,11 +164,29 @@ function createMarketplaceService(userDataDirectory, options = {}) {
     if (origin) data.provenance[manifest.id] = clone(origin); else delete data.provenance[manifest.id]
     await writeJson(catalogPath, data)
   }
-  async function installInternal(projectDirectory, packageId, componentIds) {
+  function operationReplay(state, operation) {
+    if (!operation) return null
+    if (state.schemaVersion !== 2) throw new Error('MARKETPLACE_STORAGE_INVALID')
+    const existing = state.creatorOperations.find((item) => item.key === operation.key)
+    if (existing && existing.inputHash !== operation.inputHash) throw new Error('IDEMPOTENCY_CONFLICT')
+    if (!existing && state.creatorOperations.length >= 5000) throw new Error('MARKETPLACE_PROJECT_FULL')
+    return existing
+  }
+  function recordPackageOperation(state, operation, entry) {
+    if (!operation) return
+    const receipt = { id: entry.manifest.id, installedVersion: entry.manifest.version,
+      components: entry.components.map(({ id: componentId, enabled }) => ({ id: componentId, installed: true, enabled })) }
+    state.creatorOperations.push({ key: operation.key, inputHash: operation.inputHash,
+      result: { kind: operation.kind, status: 'completed', receipt } })
+  }
+  async function installInternal(projectDirectory, packageId, componentIds, config = {}) {
     if (!Array.isArray(componentIds) || componentIds.length > 100 || new Set(componentIds).size !== componentIds.length) throw new Error('MARKETPLACE_SELECTION_INVALID')
     componentIds.forEach(id)
     const state = await readState(projectDirectory)
+    const replay = operationReplay(state, config.operation)
+    if (replay) return clone(replay.result.receipt)
     const { manifest, source, origin } = await resolveCatalog(packageId, state)
+    if (config.digest && (source !== 'project' || digestValue(manifest) !== config.digest)) throw new Error('MARKETPLACE_VERSION_CONFLICT')
     if (componentIds.some((componentId) => !manifest.components.some((item) => item.id === componentId))) throw new Error('MARKETPLACE_COMPONENT_NOT_FOUND')
     let entry = state.packages.find((item) => item.manifest.id === packageId)
     if (!entry && !componentIds.length) throw new Error('MARKETPLACE_SELECTION_INVALID')
@@ -137,27 +204,136 @@ function createMarketplaceService(userDataDirectory, options = {}) {
       entry.manifest = clone(manifest); entry.source = source; entry.origin = origin
     }
     for (const componentId of componentIds) {
-      if (!statusFor(entry, componentId)) entry.components.push({ id: componentId, enabled: true })
+      if (!statusFor(entry, componentId)) entry.components.push({ id: componentId, enabled: config.enabledDefault ?? true })
     }
     await options.checkSkills?.(projectDirectory, state)
-    await writeState(projectDirectory, state)
+    recordPackageOperation(state, config.operation, entry)
+    await writeState(projectDirectory, state, config.authorize)
     return result(projectDirectory, packageId)
   }
-  async function editEntry(projectDirectory, packageId, callback) {
+  async function editEntry(projectDirectory, packageId, callback, authorize, operation) {
     id(packageId)
     const before = await result(projectDirectory, packageId)
     const state = await readState(projectDirectory)
+    const replay = operationReplay(state, operation)
+    if (replay) return clone(replay.result.receipt)
     const entry = state.packages.find((item) => item.manifest.id === packageId)
     if (!entry) throw new Error('MARKETPLACE_PACKAGE_NOT_INSTALLED')
     callback(entry, state)
     await options.checkSkills?.(projectDirectory, state)
-    await writeState(projectDirectory, state)
+    recordPackageOperation(state, operation, entry)
+    await writeState(projectDirectory, state, authorize)
     return await result(projectDirectory, packageId) ?? {
       ...before, installed: false, enabled: false, installedVersion: null, updateAvailable: false, rollbackVersion: null,
       components: before.components.map((component) => ({ ...component, installed: false, enabled: false })),
     }
   }
+  function validateCreatorDraft(draft, allowNodeDefinition = false) {
+    if (!draft || typeof draft !== 'object' || Array.isArray(draft)
+      || Object.keys(draft).some((key) => !['name', 'description', 'components'].includes(key))
+      || !Array.isArray(draft.components) || draft.components.length < 1 || draft.components.length > 20
+      || draft.components.some((component) => !['template', 'preset', ...(allowNodeDefinition ? ['node_definition', 'agent_role', 'workflow_recipe', 'selection_command', 'storyboard'] : [])].includes(component?.type))) throw new Error('MARKETPLACE_PACKAGE_INVALID')
+    const manifest = { schemaVersion: 1, id: 'project-00000000-0000-0000-0000-000000000000', name: draft.name, description: draft.description ?? '', version: '1.0.0', author: '本地用户', components: draft.components }
+    validatePackage(manifest)
+    const encoded = JSON.stringify(draft)
+    if (/(?:\bBearer\s+\S+|\bsk-[A-Za-z0-9_-]{16,}|(?:api[_-]?key|access[_-]?token)\s*[:=])/iu.test(encoded)) throw new Error('MARKETPLACE_SECRET_REJECTED')
+    return { draftDigest: digestValue(draft), components: draft.components.map((component) => ({ id: component.id, type: component.type, name: component.name, ...(component.type === 'template' ? { nodeCount: component.data.nodes.length, edgeCount: component.data.edges.length } : {}) })) }
+  }
+  async function saveProjectDraft(projectDirectory, draft, input = {}, allowNodeDefinition = false) {
+    const preview = validateCreatorDraft(draft, allowNodeDefinition)
+    if (input.draftDigest !== preview.draftDigest) throw new Error('MARKETPLACE_DRAFT_CHANGED')
+    if (typeof input.operationKey !== 'string' || !input.operationKey || input.operationKey.length > 128) throw new Error('IDEMPOTENCY_KEY_INVALID')
+    const state = await readState(projectDirectory)
+    if (state.schemaVersion === 1) { state.schemaVersion = 2; state.projectPackages = []; state.creatorOperations = [] }
+    const inputHash = digestValue({ draft, base: input.base ?? null })
+    const previousOperation = state.creatorOperations.find((operation) => operation.key === input.operationKey)
+    if (previousOperation) {
+      if (previousOperation.inputHash !== inputHash) throw new Error('IDEMPOTENCY_CONFLICT')
+      return { ...previousOperation.result, package: await result(projectDirectory, previousOperation.result.packageId), replayed: true }
+    }
+    if (state.projectPackages.length >= 1000 || state.creatorOperations.length >= 5000) throw new Error('MARKETPLACE_PROJECT_FULL')
+    let packageId, version = '1.0.0', parentDigest = null
+    if (input.base !== undefined) {
+      if (!input.base || typeof input.base !== 'object' || Array.isArray(input.base)
+        || Object.keys(input.base).some((key) => !['packageId', 'digest'].includes(key))) throw new Error('MARKETPLACE_VERSION_CONFLICT')
+      packageId = input.base.packageId
+      const latest = [...state.projectPackages].reverse().find((item) => item.manifest.id === packageId)
+      if (!latest || latest.digest !== input.base.digest) throw new Error('MARKETPLACE_VERSION_CONFLICT')
+      const parts = latest.manifest.version.split('.').map(Number)
+      if (parts[2] >= 99999) throw new Error('MARKETPLACE_VERSION_CONFLICT')
+      parts[2] += 1; version = parts.join('.'); parentDigest = latest.digest
+    } else {
+      packageId = `project-${crypto.randomUUID()}`
+      if (availablePackages(await catalog(), state).some((item) => item.manifest.id === packageId)) throw new Error('MARKETPLACE_PACKAGE_COLLISION')
+    }
+    const manifest = { schemaVersion: 1, id: packageId, name: draft.name, description: draft.description ?? '', version, author: '本地用户', components: clone(draft.components) }
+    validatePackage(manifest)
+    const digest = digestValue(manifest)
+    const saved = { kind: 'save', status: 'completed', packageId, version, digest, parentDigest }
+    state.projectPackages.push({ manifest, digest, parentDigest })
+    state.creatorOperations.push({ key: input.operationKey, inputHash, result: saved })
+    await writeState(projectDirectory, state, input.authorize)
+    return { ...saved, package: await result(projectDirectory, packageId), replayed: false }
+  }
   return {
+    validateCreatorDraft,
+    saveProjectDraft: (projectDirectory, draft, input) => serial(() => saveProjectDraft(projectDirectory, draft, input, true)),
+    saveNodeDefinition: (projectDirectory, draft) => serial(async () => {
+      const normalized = { name: draft?.name, description: draft?.description ?? '', components: [{ id: 'node', type: 'node_definition', name: draft?.name, description: draft?.description ?? '', data: draft?.data }] }
+      const { draftDigest } = validateCreatorDraft(normalized, true)
+      return (await saveProjectDraft(projectDirectory, normalized, { draftDigest, operationKey: crypto.randomUUID() }, true)).package
+    }),
+    prepareCreatorOperation: (projectDirectory, key, inputHash, metadata, authorize) => serial(async () => {
+      if (typeof key !== 'string' || !/^[a-f0-9]{64}$/u.test(key) || !/^[a-f0-9]{64}$/u.test(inputHash)) throw new Error('IDEMPOTENCY_KEY_INVALID')
+      const state = await readState(projectDirectory)
+      if (state.schemaVersion === 1) { state.schemaVersion = 2; state.projectPackages = []; state.creatorOperations = [] }
+      const existing = state.creatorOperations.find((item) => item.key === key)
+      if (existing) {
+        if (existing.inputHash !== inputHash) throw new Error('IDEMPOTENCY_CONFLICT')
+        return { created: false, result: clone(existing.result) }
+      }
+      if (state.creatorOperations.length >= 5000) throw new Error('MARKETPLACE_PROJECT_FULL')
+      const result = { kind: 'apply', status: 'prepared', ...clone(metadata) }
+      state.creatorOperations.push({ key, inputHash, result })
+      await writeState(projectDirectory, state, authorize)
+      return { created: true, result: clone(result) }
+    }),
+    completeCreatorOperation: (projectDirectory, key, inputHash, receipt) => serial(async () => {
+      const state = await readState(projectDirectory)
+      const operation = state.creatorOperations?.find((item) => item.key === key)
+      if (!operation || operation.inputHash !== inputHash || !['apply', 'preset_apply', 'preset_undo'].includes(operation.result.kind)) throw new Error('IDEMPOTENCY_CONFLICT')
+      if (operation.result.status === 'completed') return clone(operation.result)
+      if (operation.result.status === 'failed') throw new Error('OPERATION_FAILED')
+      operation.result = { ...operation.result, status: 'completed', receipt: clone(receipt) }
+      await writeState(projectDirectory, state)
+      return clone(operation.result)
+    }),
+    failCreatorOperation: (projectDirectory, key, inputHash, errorCode) => serial(async () => {
+      const state = await readState(projectDirectory)
+      const operation = state.creatorOperations?.find((item) => item.key === key)
+      if (!operation || operation.inputHash !== inputHash || operation.result.status !== 'prepared') throw new Error('IDEMPOTENCY_CONFLICT')
+      operation.result = { ...operation.result, status: 'failed', errorCode: /^[A-Z0-9_]{1,120}$/u.test(errorCode ?? '') ? errorCode : 'OPERATION_REJECTED' }
+      await writeState(projectDirectory, state)
+      return clone(operation.result)
+    }),
+    getCreatorOperations: (projectDirectory, key) => serial(async () => {
+      if (key !== undefined && (typeof key !== 'string' || !key || key.length > 128)) throw new Error('INVALID_INPUT')
+      const state = await readState(projectDirectory)
+      const operations = state.creatorOperations ?? []
+      return clone((key === undefined ? operations.slice(-20) : operations.filter((item) => item.key === key))
+        .map(({ key: operationKey, inputHash, result }) => ({ operationKey, inputHash, ...result })))
+    }),
+    installCreator: (projectDirectory, packageId, digest, componentIds, authorize, operation) => serial(() => installInternal(projectDirectory, packageId, componentIds, { digest, enabledDefault: false, authorize, operation })),
+    getBasicNodeVisibility: (projectDirectory) => serial(async () => ({ hidden: [...((await readState(projectDirectory)).hiddenBasicNodeTypes ?? [])] })),
+    setBasicNodeVisibility: (projectDirectory, type, visible) => serial(async () => {
+      if (!['text', 'image', 'video', 'audio', 'compose', 'director'].includes(type) || typeof visible !== 'boolean') throw new Error('INVALID_INPUT')
+      const state = await readState(projectDirectory)
+      const hidden = new Set(state.hiddenBasicNodeTypes ?? [])
+      if (visible) hidden.delete(type); else hidden.add(type)
+      state.hiddenBasicNodeTypes = [...hidden]
+      await writeState(projectDirectory, state)
+      return { hidden: [...hidden] }
+    }),
     list: (projectDirectory) => serial(() => listInternal(projectDirectory)),
     savePresetPreferences: (directory, scope, packageId, componentId, version, params) => serial(async () => {
       id(packageId); id(componentId)
@@ -176,7 +352,21 @@ function createMarketplaceService(userDataDirectory, options = {}) {
       return clone(installed?.manifest ?? (await resolveCatalog(packageId, state)).manifest)
     }),
     install: (projectDirectory, packageId, componentIds) => serial(() => installInternal(projectDirectory, packageId, componentIds)),
-    setEnabled: (projectDirectory, packageId, componentId, enabled) => serial(() => editEntry(projectDirectory, packageId, (entry) => {
+    setEnabled: (projectDirectory, packageId, componentId, enabled) => serial(async () => {
+      if (packageId === OFFICIAL_SKILL_CATALOG) {
+        const skill = getOfficialSkillDefinitions().find((item) => item.key === componentId)
+        if (!skill) throw new Error('MARKETPLACE_COMPONENT_NOT_FOUND')
+        if (typeof enabled !== 'boolean') throw new Error('MARKETPLACE_SELECTION_INVALID')
+        if (skill.kind === 'builtin-core') throw new Error('MARKETPLACE_SYSTEM_REQUIRED')
+        const state = await readState(projectDirectory)
+        const disabled = new Set(state.disabledOfficialSkillIds ?? [])
+        if (enabled) disabled.delete(componentId); else disabled.add(componentId)
+        state.disabledOfficialSkillIds = [...disabled]
+        await writeState(projectDirectory, state)
+        return result(projectDirectory, packageId)
+      }
+      if (packageId === PROJECT_SKILL_CATALOG) throw new Error('MARKETPLACE_PROJECT_SKILL_MANAGED_IN_PANEL')
+      return editEntry(projectDirectory, packageId, (entry) => {
       id(componentId)
       const installed = statusFor(entry, componentId)
       if (!installed) throw new Error('MARKETPLACE_COMPONENT_NOT_INSTALLED')
@@ -184,7 +374,8 @@ function createMarketplaceService(userDataDirectory, options = {}) {
       installed.enabled = enabled
       const previous = statusFor(entry.previous, componentId)
       if (previous) previous.enabled = enabled
-    })),
+      })
+    }),
     uninstall: (projectDirectory, packageId, componentId) => serial(() => editEntry(projectDirectory, packageId, (entry, state) => {
       id(componentId)
       if (!statusFor(entry, componentId)) throw new Error('MARKETPLACE_COMPONENT_NOT_INSTALLED')
@@ -202,6 +393,32 @@ function createMarketplaceService(userDataDirectory, options = {}) {
       const previous = entry.previous
       entry.manifest = previous.manifest; entry.source = previous.source; entry.origin = previous.origin; entry.components = previous.components; entry.previous = current
     })),
+    setEnabledCreator: (projectDirectory, packageId, digest, componentId, enabled, authorize, operation) => serial(() => editEntry(projectDirectory, packageId, (entry) => {
+      id(componentId)
+      if (entry.source !== 'project' || digestValue(entry.manifest) !== digest) throw new Error('MARKETPLACE_VERSION_CONFLICT')
+      const installed = statusFor(entry, componentId)
+      if (!installed || typeof enabled !== 'boolean') throw new Error('MARKETPLACE_COMPONENT_NOT_INSTALLED')
+      installed.enabled = enabled
+      const previous = statusFor(entry.previous, componentId)
+      if (previous) previous.enabled = enabled
+    }, authorize, operation)),
+    withInstalledSnapshot: (projectDirectory, packageId, componentId, callback) => serial(async () => {
+      id(packageId); id(componentId)
+      if (typeof callback !== 'function') throw new Error('INVALID_INPUT')
+      const entry = (await readState(projectDirectory)).packages.find((item) => item.manifest.id === packageId)
+      const installed = statusFor(entry, componentId)
+      const component = entry?.manifest.components.find((item) => item.id === componentId)
+      if (!installed?.enabled || !component) throw new Error('MARKETPLACE_COMPONENT_NOT_AVAILABLE')
+      return callback({ version: entry.manifest.version, digest: digestValue(entry.manifest), component: clone(component) })
+    }),
+    getInstalledSnapshot: (projectDirectory, packageId, componentId) => serial(async () => {
+      id(packageId); id(componentId)
+      const entry = (await readState(projectDirectory)).packages.find((item) => item.manifest.id === packageId)
+      const installed = statusFor(entry, componentId)
+      const component = entry?.manifest.components.find((item) => item.id === componentId)
+      if (!installed?.enabled || !component) throw new Error('MARKETPLACE_COMPONENT_NOT_AVAILABLE')
+      return { version: entry.manifest.version, digest: digestValue(entry.manifest), component: clone(component) }
+    }),
     getInstalledComponent: (projectDirectory, packageId, componentId, expectedType) => serial(async () => {
       id(packageId); id(componentId)
       const entry = (await readState(projectDirectory)).packages.find((item) => item.manifest.id === packageId)

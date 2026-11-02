@@ -6,7 +6,7 @@ const { registerMarketplaceConnectorIpc } = require('./marketplace-connector.cjs
 const { MAX_BYTES, writeJson } = require('./marketplace-storage.cjs')
 const { createOnlineCatalog, importStandaloneSkill, MAX_SKILL_BYTES } = require('./marketplace-online.cjs')
 
-function registerMarketplaceIpc(ipcMain, { assertTrustedSender, withProject, dialog, window, tempDirectory, userDataDirectory, importImage, checkSkills, uiText = (text) => text }) {
+function registerMarketplaceIpc(ipcMain, { assertTrustedSender, withProject, dialog, window, tempDirectory, userDataDirectory, importImage, checkSkills, notifyChanged = () => {}, uiText = (text) => text }) {
   const service = createMarketplaceService(userDataDirectory, { checkSkills })
   registerMarketplaceConnectorIpc(ipcMain, { assertTrustedSender, withProject, dialog, window, userDataDirectory, service, uiText })
   // Reuse Pi's frontmatter parser, which is bundled with project-agent-skills in packaged builds.
@@ -45,11 +45,19 @@ function registerMarketplaceIpc(ipcMain, { assertTrustedSender, withProject, dia
   handle('preset-preferences', (projectId, ...args) => projectId === undefined
     ? service.savePresetPreferences(undefined, ...args)
     : withProject(projectId, (directory) => service.savePresetPreferences(directory, ...args)))
-  handle('install', (projectId, packageId, componentIds) => withProject(projectId, (directory) => service.install(directory, packageId, componentIds)))
-  handle('enabled', (projectId, packageId, componentId, enabled) => withProject(projectId, (directory) => service.setEnabled(directory, packageId, componentId, enabled)))
-  handle('uninstall', (projectId, packageId, componentId) => withProject(projectId, (directory) => service.uninstall(directory, packageId, componentId)))
-  handle('rollback', (projectId, packageId) => withProject(projectId, (directory) => service.rollback(directory, packageId)))
-  handle('save-template', (projectId, draft) => withProject(projectId, (directory) => service.saveTemplate(directory, draft)))
+  const projectMutation = async (projectId, operation) => {
+    const result = await withProject(projectId, operation)
+    notifyChanged(projectId)
+    return result
+  }
+  handle('install', (projectId, packageId, componentIds) => projectMutation(projectId, (directory) => service.install(directory, packageId, componentIds)))
+  handle('enabled', (projectId, packageId, componentId, enabled) => projectMutation(projectId, (directory) => service.setEnabled(directory, packageId, componentId, enabled)))
+  handle('uninstall', (projectId, packageId, componentId) => projectMutation(projectId, (directory) => service.uninstall(directory, packageId, componentId)))
+  handle('rollback', (projectId, packageId) => projectMutation(projectId, (directory) => service.rollback(directory, packageId)))
+  handle('basic-node-visibility:get', (projectId) => withProject(projectId, (directory) => service.getBasicNodeVisibility(directory)))
+  handle('basic-node-visibility:set', (projectId, type, visible) => projectMutation(projectId, (directory) => service.setBasicNodeVisibility(directory, type, visible)))
+  handle('save-template', (projectId, draft) => projectMutation(projectId, (directory) => service.saveTemplate(directory, draft)))
+  handle('save-node-definition', (projectId, draft) => projectMutation(projectId, (directory) => service.saveNodeDefinition(directory, draft)))
   handle('import-package', async () => {
     const selected = await dialog.showOpenDialog(window(), { title: uiText('导入本地插件包'), properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] })
     if (selected.canceled || !selected.filePaths.length) return null
@@ -78,5 +86,6 @@ function registerMarketplaceIpc(ipcMain, { assertTrustedSender, withProject, dia
       await fs.rm(staging, { recursive: true, force: true }).catch(() => {})
     }
   }))
+  return service
 }
 module.exports = { registerMarketplaceIpc }

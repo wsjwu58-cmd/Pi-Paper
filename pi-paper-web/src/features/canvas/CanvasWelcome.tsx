@@ -2,6 +2,7 @@ import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { Type, Image, Video, Mic, Clapperboard, Sparkles } from 'lucide-react'
 import { OrigamiBird } from '@/components/OrigamiBird'
 import { cn } from '@/lib/cn'
+import type { ProjectNodeItem } from './nodeDefinitionCatalog'
 
 const WELCOME_CARDS = [
   {
@@ -51,7 +52,7 @@ const WELCOME_CARDS = [
   },
 ]
 
-export function CanvasWelcome({ onCreate, availableTypes }: { onCreate: (type: string) => void; availableTypes?: string[] }) {
+export function CanvasWelcome({ onCreate, availableTypes, projectNodes = [], onCreateProjectNode }: { onCreate: (type: string) => void; availableTypes?: string[]; projectNodes?: ProjectNodeItem[]; onCreateProjectNode?: (item: ProjectNodeItem) => void }) {
   useUiLanguage()
   return (
     <div className="vp-canvas-welcome pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center overflow-hidden p-6">
@@ -63,7 +64,7 @@ export function CanvasWelcome({ onCreate, availableTypes }: { onCreate: (type: s
         </div>
 
         <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {WELCOME_CARDS.map((card, idx) => {
+          {WELCOME_CARDS.filter((card) => availableTypes === undefined || availableTypes.includes(card.type)).map((card, idx) => {
             const Icon = card.icon
             const isBottom = idx >= 3
             return (
@@ -93,6 +94,7 @@ export function CanvasWelcome({ onCreate, availableTypes }: { onCreate: (type: s
             )
           })}
         </div>
+        {projectNodes.length > 0 && <div className="mt-5 w-full rounded-2xl bg-white/80 p-4"><p className="mb-2 text-xs font-bold text-[#777]">{uiText('本项目')}</p><div className="flex flex-wrap gap-2">{projectNodes.map((item) => <button key={`${item.packageId}/${item.component.id}`} type="button" onClick={() => onCreateProjectNode?.(item)} className="rounded-xl bg-[#e8e8e8] px-3 py-2 text-sm font-semibold text-[#333] hover:bg-[#ddd]">{uiText(item.component.name)}</button>)}</div></div>}
       </div>
     </div>
   )
