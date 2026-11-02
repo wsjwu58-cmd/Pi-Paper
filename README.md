@@ -16,7 +16,7 @@ Pi-Paper 是一款面向单用户的桌面创作工具。在无限画布上连�
 
 **本地项目 → 节点连接 → 生成 → 编辑 → 合成 → 导出**
 
-[下载安装包](#下载) · [桌面版安装与使用](./pi-paper-desktop/README.md) · [迁移与验收状态](./docs/specs/desktop-agent-functional-spec.md)
+[下载安装包](#下载) · [桌面版安装与使用](./pi-paper-desktop/README.md)
 
 </div>
 
@@ -104,7 +104,7 @@ pi-main/               # Pi 源码，包含桌面 Agent 与官方媒体适配
 docker/                # noVNC 运行环境、密码初始化与部署指南
 Dockerfile             # 完整 Linux 桌面的多阶段构建
 docker-compose.yml     # 带持久卷的单用户桌面
-docs/                  # 桌面契约、对照清单、计划与验收证据
+docs/                  # 桌面契约、功能规格与开发计划
 AGENTS.md              # 当前桌面版工程契约
 ```
 
@@ -119,7 +119,7 @@ docker run --rm -v "${PWD}:/workspace" -w /workspace node:24-bookworm-slim node 
 docker compose up -d --build --wait --wait-timeout 180
 ```
 
-打开 **http://127.0.0.1:8080/vnc.html**，输入生成的 noVNC 密码。在 `/projects` 中创建项目。镜像包含 FFmpeg 与加密系统密钥环；升级时需保留两个 Docker 持久卷和 `docker/secrets/`。详见 [Docker 配置、远程访问、存储与验证](./docker/README.md)。
+打开 **http://127.0.0.1:8080/vnc.html**，输入生成的 noVNC 密码。在 `/projects` 中创建项目。镜像包含 FFmpeg 与加密系统密钥环；升级时需保留两个 Docker 持久卷和 `docker/secrets/`。详见 [Docker 配置、远程访问与存储](./docker/README.md)。
 
 ## 快速开始
 
@@ -177,22 +177,7 @@ npm --prefix pi-paper-desktop start
 
 云端 API Key 由受控进程与系统加密能力处理，不暴露给 Renderer，也不进入项目导出。模型配置会说明提供方、发送数据与可能费用，普通消息无需反复确认 API 发送；Agent 生成和高风险操作仍保留各自的确认流程。
 
-本地文件结构、项目移动、单写者锁、备份、恢复和验证命令见[桌面版 README](./pi-paper-desktop/README.md)。
-
-## 验收状态
-
-- 最近的画布交互修复通过前端构建、20 项专项前端回归及 32 项本地画布核心测试。在隔离的桌面项目中检查了窄窗口菜单、连线删除持久化、生成动画 fixture 与文本阅读。
-- 协议 fixture 和 UI 检查不能替代真实账号生成或长时间 Agent 恢复验收。
-- 待完成验收包括原版 UI 与领域能力完整对照、所有支持的官方模型账号与输入模式、本地 Agent 能力、长上下文压力，以及各目标操作系统中的安装包手工验收。原生安装包构建与打包后重启检查已通过；Docker/noVNC 有独立的构建与浏览器验证流程。
-
-当前契约与证据：
-
-- [桌面版工程契约](./AGENTS.md)
-- [桌面版安装与使用](./pi-paper-desktop/README.md)
-- [UI 对照清单](./docs/specs/desktop-ui-parity.md)与[后端领域对照](./docs/specs/desktop-backend-parity.md)
-- [Agent 功能规格](./docs/specs/desktop-agent-functional-spec.md)
-- [提供方目录](./docs/specs/desktop-provider-registry.md)与[提供方数据契约](./docs/specs/desktop-provider-data-contract.md)
-- [画布交互修复证据](./docs/plans/2026-10-05-canvas-interaction-repairs.md)
+本地文件结构、项目移动、单写者锁、备份与恢复见[桌面版 README](./pi-paper-desktop/README.md)。
 
 ## 项目说明
 

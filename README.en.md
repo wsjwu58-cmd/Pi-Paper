@@ -16,7 +16,7 @@ Pi-Paper is a single-user desktop creative workspace. Connect text, images, vide
 
 **Local project → Connected nodes → Generation → Editing → Composition → Export**
 
-[Download installers](#downloads) · [Desktop setup and usage](./pi-paper-desktop/README.md) · [Migration and validation status](./docs/specs/desktop-agent-functional-spec.md)
+[Download installers](#downloads) · [Desktop setup and usage](./pi-paper-desktop/README.md)
 
 </div>
 
@@ -104,7 +104,7 @@ pi-main/               # Pi source with desktop Agent and official media adaptat
 docker/                # noVNC runtime, password initialization, and deployment guide
 Dockerfile             # Multi-stage build of the full Linux desktop
 docker-compose.yml     # Single-user desktop with persistent volumes
-docs/                  # Desktop contracts, parity checklists, plans, and evidence
+docs/                  # Desktop contracts, functional specifications, and development plans
 AGENTS.md              # Current desktop engineering contract
 
 ```
@@ -120,7 +120,7 @@ docker run --rm -v "${PWD}:/workspace" -w /workspace node:24-bookworm-slim node 
 docker compose up -d --build --wait --wait-timeout 180
 ```
 
-Open **http://127.0.0.1:8080/vnc.html** and enter the generated noVNC password. Create projects in `/projects`. The image includes FFmpeg and an encrypted system keyring; preserve both Docker volumes and `docker/secrets/` across upgrades. See [Docker setup, remote access, storage and verification](./docker/README.md).
+Open **http://127.0.0.1:8080/vnc.html** and enter the generated noVNC password. Create projects in `/projects`. The image includes FFmpeg and an encrypted system keyring; preserve both Docker volumes and `docker/secrets/` across upgrades. See [Docker setup, remote access and storage](./docker/README.md).
 
 ## Getting Started
 
@@ -178,22 +178,7 @@ Only implemented, enabled, capability-matching bindings can be called. A success
 
 Cloud API keys are handled by controlled processes and system encryption, not exposed to the Renderer or included in project exports. Model configuration discloses the provider, sent data, and potential fees; ordinary messages do not require a repeated API confirmation. Agent generation and high-risk actions retain their separate confirmations.
 
-See the [desktop README](./pi-paper-desktop/README.md) for local file layout, project movement, single-writer locks, backups, recovery, and verification commands.
-
-## Validation Status
-
-- The latest canvas interaction repair passed the frontend build, 20 focused frontend regressions, and 32 local canvas-core tests. Narrow-window menus, durable edge deletion, generation animation fixtures, and text reading were checked in an isolated desktop project.
-- Fixture protocols and UI checks do not replace real-account generation or long-running Agent recovery acceptance.
-- Remaining acceptance work includes full original UI/domain parity, all supported official model accounts and input modes, local Agent capabilities, long-context stress, and manual installer acceptance on each target operating system. Native installer builds and packaged restart checks have passed; Docker/noVNC has a dedicated build and browser verification workflow.
-
-Current contracts and evidence:
-
-- [Desktop engineering contract](./AGENTS.md)
-- [Desktop setup and usage](./pi-paper-desktop/README.md)
-- [UI parity checklist](./docs/specs/desktop-ui-parity.md) and [backend domain comparison](./docs/specs/desktop-backend-parity.md)
-- [Agent functional specification](./docs/specs/desktop-agent-functional-spec.md)
-- [Provider registry](./docs/specs/desktop-provider-registry.md) and [provider data contract](./docs/specs/desktop-provider-data-contract.md)
-- [Canvas interaction repair evidence](./docs/plans/2026-10-05-canvas-interaction-repairs.md)
+See the [desktop README](./pi-paper-desktop/README.md) for local file layout, project movement, single-writer locks, backups, and recovery.
 
 ## Project Notes
 
