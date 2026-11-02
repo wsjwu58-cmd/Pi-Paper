@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "purpose": "isolated installed macOS ARM64 marketplace smoke",
+  "result": "passed",
+  "runtime": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "nodeMajor": 24
+  },
+  "artifact": {
+    "appVersion": "0.1.0",
+    "executableSha256": "5beb225a16a83bbc23e3b85512fef0d4ff5d7ccc4aa08d52bc919c79415867c0",
+    "packageJsonSha256": "220afa1eab206d3d9508c9b1b5b0288e68c82087fff110f9eb95700090be4c01",
+    "dmgAssociationVerified": false,
+    "dmgSha256": "da6f63aa1bf8dac99f6ab1ef4b5811b51b3064db4cb6a12a5a1412c033fc934d"
+  },
+  "checks": {
+    "originalWorkspace": true,
+    "templateOnlyInstalled": true,
+    "canvas": {
+      "nodes": 7,
+      "edges": 6,
+      "topologyValidated": true
+    },
+    "mcp": {
+      "prefilledClient": "codex",
+      "prefilledPermissions": [
+        "canvas.read",
+        "canvas.write"
+      ],
+      "enabled": false,
+      "clients": 0,
+      "tasks": 0
+    },
+    "firstExit": "cdp-browser-close",
+    "restart": {
+      "graphUnchanged": true,
+      "nodes": 7,
+      "edges": 6,
+      "installedComponentsPreserved": true,
+      "mcpEnabled": false,
+      "clients": 0,
+      "tasks": 0
+    },
+    "secondExit": "cdp-browser-close"
+  },
+  "screenshots": [
+    "01-workspace.png",
+    "02-marketplace-template.png",
+    "03-canvas-applied.png",
+    "04-mcp-prefill.png",
+    "05-reopened-workspace.png",
+    "06-reopened-canvas.png"
+  ]
+}

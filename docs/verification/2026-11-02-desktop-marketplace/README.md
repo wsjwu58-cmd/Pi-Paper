@@ -43,3 +43,29 @@ node pi-paper-desktop/node_modules/electron/cli.js pi-paper-desktop/scripts/smok
 2026-11-02 在该 worktree 的 Node 24 环境重跑前端完整套件，34 个文件、166 项测试通过。桌面侧覆盖市场、连接器、创作组件、在线目录、项目导航、画布校验、项目 Skill 与 Renderer 来源校验，共 64 项通过。从干净检出构建时，先按桌面打包流程恢复公开模型目录（`node pi-paper-desktop/scripts/restore-model-data.cjs`）。
 
 功能提交 `68cebaf` 的独立打包和 `--staged --online` GUI 验收在此 worktree 通过，导演与海报编辑结果可读回，生成任务为零。原工作区针对更早 ARM64 应用包的自检只覆盖该旧包。前端 lint 发现导演组件按钮的普通回调误用了 Hook 命名，改名后前端 lint 退出码为 0。
+
+### macOS ARM64 安装后启动与市场操作（2026-11-02）
+
+在 macOS 26.4.1（25E253）上从 `d3b8a4e` 重建 Pi-Paper 0.1.0 ARM64 DMG。使用该分支的 `electron-builder.cjs`、Electron 44.4.4 和 Node 24.22.1。本机已有的应用与项目保留，验收使用全新的用户配置及项目。
+
+| 操作 | 实测结果 |
+| --- | --- |
+| 从 DMG 安装 | `hdiutil verify` 通过。只读挂载后用 `ditto` 复制到独立的临时 `Applications/Pi-Paper.app`，弹出映像。复核映像和已安装副本，3,015 个文件及符号链接按相对路径、文件内容或链接目标比较一致。DMG SHA-256 为 `da6f63aa1bf8dac99f6ab1ef4b5811b51b3064db4cb6a12a5a1412c033fc934d`。 |
+| 系统正常启动 | 在映像已弹出时，`/usr/bin/open -n -a` 打开复制出的应用，仅传入隔离的 `--user-data-dir`。Launch Services 中的 bundle 路径匹配，WindowServer 观察到该进程的可见主窗口，通过该实例的 `NSRunningApplication` 正常退出并确认进程结束。 |
+| 市场选装与画布应用 | 再经 Launch Services 启动同一副本，使用仅监听回环地址的 CDP 操作真实窗口。从原工作区进入市场，在四个棚拍组件中只勾选「商品主图三案」，到原画布插入一次。存储与画布 DOM 均有 7 个节点、6 条连线。三个图片目标各收到公共参考图和各自文本的一条连线。[选装截图](macos-arm64/02-marketplace-template.png) · [应用后画布](macos-arm64/03-canvas-applied.png) |
+| MCP 范围预填 | 只安装「Codex 画布连接」，从详情进入原 MCP 设置页。客户端为 Codex，仅勾选读取与编辑画布。读取 Main 状态确认服务关闭、客户端授权为 0，原 TaskStore 中有 0 个任务。[设置截图](macos-arm64/04-mcp-prefill.png) |
+| 退出与重启 | 关闭进程后，经 Launch Services 再次启动，点击原工作区的同一项目。两项组件仍启用，节点身份、类型及六条有向连线与退出前一致，MCP 仍关闭，授权与任务均为 0。[重启后的画布](macos-arm64/06-reopened-canvas.png) · [逐项结果及包摘要](macos-arm64/report.json) |
+| 签名与系统策略 | 已复制应用通过 `codesign --verify --deep --strict`，签名类型为 ad-hoc，无 Team ID；构建跳过公证。`spctl --assess --type execute` 返回 `rejected`（退出码 3）。本地构建副本可运行，Developer ID / Gatekeeper 分发认可未通过。 |
+
+**复现市场操作。** 在 Apple Silicon Mac 上用 Node 24 运行下列命令，传入已经从 DMG 复制出来的应用和一个单独的证据目录。脚本从已安装资源创建空项目夹具，使用原应用 Main、Renderer 和存储，项目与 Chromium 配置位于证据目录之外。成功退出后清理该夹具。报告中的 DMG 哈希用于关联产物，上表的挂载复制和内容比对单独建立两者的对应关系。
+
+```sh
+node pi-paper-desktop/scripts/smoke-installed-marketplace-macos.cjs \
+  --app "/absolute/Applications/Pi-Paper.app" \
+  --dmg "/absolute/Pi-Paper-0.1.0-mac-arm64.dmg" \
+  --output "/absolute/marketplace-evidence"
+```
+
+本轮另跑四个市场测试文件，21/21 通过。此阶段覆盖从本地 DMG 复制后的系统启动和自动化图形操作。Finder 人工拖装、带下载隔离标记的首开、覆盖升级及卸载仍待验收。
+
+**MCP 证据范围。** 历史记录已验证真实 Codex 自动连接与读取画布，真实图片曾经 QA relay 表单批准后生成，另有厂商直调视频与原节点媒体读回的独立证据。Codex 自身的原生生成确认到原节点显示仍待完整验收。此次市场预填全程无外部客户端连接、无付费生成；Claude Code 真实会话沿用用户取消本轮验收的决定。[既有 MCP 验收记录](../2026-10-11-mcp-acceptance/README.md)
