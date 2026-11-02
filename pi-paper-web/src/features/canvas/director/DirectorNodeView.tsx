@@ -12,6 +12,8 @@ import { syncExecFields } from '../nodes/taskActions'
 import { NodeFloatingToolbar } from '../nodes/NodeEditorPanel'
 import { downloadNodeOutput } from '../nodes/nodeDownloads'
 import { DirectorStageEditor } from './DirectorStageEditor'
+import { readCreativeMotion } from '../creativePluginRuntime'
+import { isDesktopRuntime } from '../canvasPort'
 import {
   DEFAULT_CAMERA,
   DEFAULT_SCENE,
@@ -49,8 +51,11 @@ function parseScene(params: Record<string, unknown> | undefined): DirectorSceneS
   const latest =
     (params.lastOutputUrl as string) || (params.url as string) || captures[captures.length - 1]
   if (latest && !captures.includes(latest)) captures.push(latest)
+  let motion: DirectorSceneState['motion']
+  try { if (isDesktopRuntime() && params.motion != null) motion = readCreativeMotion(params.motion) } catch { /* Ignore invalid legacy data. */ }
   return {
     objects,
+    ...(motion ? { motion } : {}),
     camera: {
       yaw: Number(camera.yaw ?? DEFAULT_CAMERA.yaw),
       pitch: Number(camera.pitch ?? DEFAULT_CAMERA.pitch),
@@ -99,6 +104,7 @@ export const DirectorNodeView = memo(function DirectorNodeView(props: NodeProps<
       sceneObjects: state.objects,
       camera: state.camera,
       captures: state.captures,
+      ...(isDesktopRuntime() && state.motion ? { motion: state.motion } : {}),
       ...(assetId ? { assetId } : {}),
       ...(latestUrl
         ? { url: latestUrl, lastOutputUrl: latestUrl, thumbnailUrl: latestUrl }

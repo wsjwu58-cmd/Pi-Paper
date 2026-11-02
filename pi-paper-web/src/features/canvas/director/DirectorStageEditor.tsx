@@ -20,7 +20,10 @@ import {
 } from 'lucide-react'
 import { toastError, toastSuccess } from '@/components/ui/Toast'
 import { useAuthedMediaUrl } from '@/lib/media'
-import { saveDirectorCapturePort } from '../canvasPort'
+import { isDesktopRuntime, saveDirectorCapturePort } from '../canvasPort'
+import { cameraAt, readCreativeCamera, readCreativeMotion, readCreativeScene } from '../creativePluginRuntime'
+import type { CreativeMotion } from '../creativePluginTypes'
+import type { MarketplaceComponent } from '@/desktop/desktop-bridge'
 import {
   CHARACTER_CATALOG,
   CHARACTER_ENTRY,
@@ -157,12 +160,22 @@ export function DirectorStageEditor({
   onSave: (state: DirectorSceneState, latestUrl: string | null) => void
 }) {
   useUiLanguage()
+  const desktopMode = isDesktopRuntime()
   const [objects, setObjects] = useState<DirectorObject[]>(initial.objects)
   const [camera, setCamera] = useState<DirectorCamera>(initial.camera ?? DEFAULT_CAMERA)
   const [captures, setCaptures] = useState<string[]>(initial.captures ?? [])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [posePicker, setPosePicker] = useState(false)
   const [capturing, setCapturing] = useState(false)
+  const [motion, setMotion] = useState<CreativeMotion | undefined>(initial.motion)
+  const [playing, setPlaying] = useState(false)
+  const [creativeItems, setCreativeItems] = useState<Array<{ packageId: string; component: MarketplaceComponent }>>([])
+  const [creativeBusy, setCreativeBusy] = useState(false)
+  const [undoCreative, setUndoCreative] = useState<{ objects: DirectorObject[]; camera: DirectorCamera; motion?: CreativeMotion } | null>(null)
+  const openRef = useRef(open)
+  openRef.current = open
+  const draftRef = useRef({ objects, camera, motion })
+  draftRef.current = { objects, camera, motion }
   const [dirty, setDirty] = useState(false)
   const viewportRef = useRef<DirectorCaptureApi>(null)
 
@@ -171,6 +184,9 @@ export function DirectorStageEditor({
     setObjects(initial.objects)
     setCamera(initial.camera ?? DEFAULT_CAMERA)
     setCaptures(initial.captures ?? [])
+    setMotion(initial.motion)
+    setPlaying(false)
+    setUndoCreative(null)
     setSelectedId(null)
     setPosePicker(false)
     setDirty(false)
@@ -191,9 +207,71 @@ export function DirectorStageEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, selectedId, objects, camera, captures, dirty])
 
+  useEffect(() => {
+    if (!open || !window.vibepaperDesktop?.marketplace) { setCreativeItems([]); return }
+    let cancelled = false
+    const bridge = window.vibepaperDesktop
+    void bridge.getActiveProject().then(async (project) => {
+      if (!project || String(project.canvasId) !== String(canvasId)) return []
+      const packages = await bridge.marketplace.list(project.projectId)
+      return packages.flatMap((pkg) => pkg.components
+        .filter((component) => component.installed && component.enabled && ['director_scene', 'director_camera', 'director_motion'].includes(component.type))
+        .map((component) => ({ packageId: pkg.id, component })))
+    }).then((items) => { if (!cancelled) setCreativeItems(items) }).catch(() => { if (!cancelled) setCreativeItems([]) })
+    return () => { cancelled = true }
+  }, [open, canvasId])
+
+  useEffect(() => {
+    if (!open || !playing || !motion) return
+    let frame = 0
+    let started: number | undefined
+    const tick = (now: number) => {
+      started ??= now
+      const progress = Math.min(1, (now - started) / (motion.duration * 1000))
+      setCamera(cameraAt(motion, progress))
+      if (progress < 1) frame = window.requestAnimationFrame(tick)
+      else setPlaying(false)
+    }
+    frame = window.requestAnimationFrame(tick)
+    return () => window.cancelAnimationFrame(frame)
+  }, [open, playing, motion])
+
   const selected = useMemo(() => objects.find((o) => o.id === selectedId) ?? null, [objects, selectedId])
 
-  const markDirty = () => setDirty(true)
+  const markDirty = () => { setDirty(true); setUndoCreative(null) }
+
+  const useCreativeItem = async (packageId: string, componentId: string) => {
+    if (creativeBusy) return
+    setCreativeBusy(true)
+    try {
+      const bridge = window.vibepaperDesktop
+      const project = await bridge?.getActiveProject()
+      if (!bridge || !project || String(project.canvasId) !== String(canvasId)) throw new Error(uiText('当前项目或画布已更改。'))
+      const packages = await bridge.marketplace.list(project.projectId)
+      const component = packages.find((pkg) => pkg.id === packageId)?.components.find((item) => item.id === componentId)
+      const current = await bridge.getActiveProject()
+      if (!openRef.current || !current || current.projectId !== project.projectId || current.canvasId !== project.canvasId) throw new Error(uiText('当前项目或画布已更改。'))
+      if (!component?.installed || !component.enabled) throw new Error(uiText('组件已停用或卸载。'))
+      const draft = draftRef.current
+      const previous = { objects: draft.objects, camera: draft.camera, motion: draft.motion }
+      if (component.type === 'director_scene') {
+        const scene = readCreativeScene(component.data)
+        if (draft.objects.length + scene.objects.length > 200) throw new Error(uiText('导演场景对象过多。'))
+        setObjects([...draft.objects, ...scene.objects.map((object) => ({ ...object, id: createObjectId() }))])
+        setCamera(scene.camera)
+        setSelectedId(null)
+      } else if (component.type === 'director_camera') {
+        setCamera(readCreativeCamera(component.data))
+      } else if (component.type === 'director_motion') {
+        setMotion(readCreativeMotion(component.data))
+      } else throw new Error(uiText('该组件不能用于导演台。'))
+      setPlaying(false)
+      setDirty(true)
+      setUndoCreative(previous)
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : uiText('应用导演组件失败。'))
+    } finally { setCreativeBusy(false) }
+  }
 
   const addFromCatalog = (item: CatalogItem) => {
     if (item.category === 'character' && item.label === '人物' && !posePicker) {
@@ -264,7 +342,8 @@ export function DirectorStageEditor({
         if (!nextCaptures.includes(captured)) nextCaptures = [...nextCaptures, captured].slice(-12)
       }
     }
-    onSave({ objects, camera, captures: nextCaptures }, url)
+    setPlaying(false)
+    onSave({ objects, camera, captures: nextCaptures, ...(desktopMode && motion ? { motion } : {}) }, url)
     onClose()
   }
 
@@ -295,7 +374,7 @@ export function DirectorStageEditor({
         />
 
         {/* 左侧：添加模型 */}
-        <aside className="absolute left-4 top-4 z-10 w-[200px] rounded-2xl bg-white/95 p-3 shadow-[0_12px_40px_rgba(15,23,42,0.12)] ring-1 ring-black/6 backdrop-blur">
+        <aside className="absolute left-4 top-4 z-10 max-h-[calc(100vh-6rem)] w-[200px] overflow-y-auto rounded-2xl bg-white/95 p-3 shadow-[0_12px_40px_rgba(15,23,42,0.12)] ring-1 ring-black/6 backdrop-blur">
           <p className="mb-2 text-[12px] font-bold text-[#333]">{uiText("点击添加模型")}</p>
 
           <p className="mb-1.5 text-[11px] font-semibold text-[#888]">{uiText("人物模型")}</p>
@@ -331,6 +410,13 @@ export function DirectorStageEditor({
               <CatalogButton key={item.kind} item={item} onAdd={addFromCatalog} />
             ))}
           </div>
+          {creativeItems.length > 0 && <div className="mt-4 border-t border-black/10 pt-3">
+            <p className="mb-1 text-[11px] font-bold text-[#555]">{uiText('已启用导演组件')}</p>
+            <p className="mb-2 text-[10px] leading-4 text-[#888]">{uiText('场景追加对象并设置机位；机位和运镜可继续调整。')}</p>
+            {creativeItems.map(({ packageId, component }) => <button key={packageId + ':' + component.id} type="button" disabled={creativeBusy}
+              onClick={() => void useCreativeItem(packageId, component.id)} className="mb-1 block w-full rounded-lg bg-[#f6f6f8] px-2 py-1.5 text-left text-[11px] font-semibold text-[#444] hover:bg-black/10 disabled:opacity-50">{uiText(component.name)}</button>)}
+            {undoCreative && <button type="button" onClick={() => { setObjects(undoCreative.objects); setCamera(undoCreative.camera); setMotion(undoCreative.motion); setPlaying(false); setUndoCreative(null); setDirty(true) }} className="mt-1 text-[11px] font-semibold text-[#315a96]">{uiText('撤销插件应用')}</button>}
+          </div>}
         </aside>
 
         {/* 右侧：已选中 */}
@@ -495,6 +581,17 @@ export function DirectorStageEditor({
                 />
               </div>
             </div>
+            {desktopMode && <div className="w-[210px] rounded-2xl bg-white/95 p-3 shadow ring-1 ring-black/6">
+              <p className="mb-2 text-[11px] font-bold text-[#555]">{uiText('机位过渡')}</p>
+              <div className="flex gap-1">
+                <button type="button" onClick={() => { setMotion((current) => ({ from: { ...camera }, to: current?.to ?? { ...camera }, duration: current?.duration ?? 4 })); markDirty() }} className="rounded-lg bg-[#f3f3f6] px-2 py-1 text-[10px]">{uiText('起点设为当前')}</button>
+                <button type="button" onClick={() => { setMotion((current) => ({ from: current?.from ?? { ...camera }, to: { ...camera }, duration: current?.duration ?? 4 })); markDirty() }} className="rounded-lg bg-[#f3f3f6] px-2 py-1 text-[10px]">{uiText('终点设为当前')}</button>
+              </div>
+              {motion && <div className="mt-2 flex items-center gap-2 text-[10px] text-[#555]">
+                <label>{uiText('时长（秒）')} <input aria-label={uiText('过渡时长')} type="number" min="0.5" max="30" step="0.5" value={motion.duration} onChange={(e) => { const duration = Number(e.target.value); if (duration >= 0.5 && duration <= 30) { setMotion({ ...motion, duration }); markDirty() } }} className="w-12 rounded border border-black/10 px-1" /></label>
+                <button type="button" onClick={() => { if (playing) setPlaying(false); else { markDirty(); setPlaying(true) } }} className="rounded bg-[#222] px-2 py-1 text-white">{playing ? uiText('停止') : uiText('播放')}</button>
+              </div>}
+            </div>}
             <button
               type="button"
               disabled={capturing}

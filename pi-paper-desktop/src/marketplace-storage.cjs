@@ -5,7 +5,9 @@ const crypto = require('node:crypto')
 const MAX_BYTES = 16 * 1024 * 1024
 const ID = /^[a-z0-9][a-z0-9-]{0,79}$/u
 const VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/u
-const TYPES = new Set(['template', 'asset', 'preset', 'skill'])
+const { CREATIVE_TYPES, validateCreativeData } = require('./marketplace-creative.cjs')
+const { validateConnectorData } = require('./marketplace-connector-data.cjs')
+const TYPES = new Set(['template', 'asset', 'preset', 'skill', 'connector', ...CREATIVE_TYPES])
 const { EDGE_COMPATIBLE_TARGET_TYPES } = require('./canvas-edge-types.cjs')
 const NODE_TYPES = new Set(Object.keys(EDGE_COMPATIBLE_TARGET_TYPES))
 const CATEGORIES = new Set(['general', 'image', 'video', 'text', 'canvas'])
@@ -97,6 +99,10 @@ function validateComponent(component) {
     keys(data, ['nodeType', 'params'])
     if (!['text', 'image', 'video', 'audio'].includes(data.nodeType) || !record(data.params)) invalid()
     portableParams(data.params, data.nodeType)
+  } else if (CREATIVE_TYPES.has(component.type)) {
+    validateCreativeData(component.type, data)
+  } else if (component.type === 'connector') {
+    validateConnectorData(data)
   } else {
     keys(data, ['category', 'instructions'])
     if (!CATEGORIES.has(data.category)) invalid()
@@ -153,10 +159,17 @@ async function writeJson(file, value) {
     await fs.rename(temporary, file)
   } finally { await handle?.close().catch(() => {}); await fs.rm(temporary, { force: true }).catch(() => {}) }
 }
+function isOnlineOrigin(origin) {
+  return record(origin) && Object.keys(origin).every(key => ['source', 'commit', 'sha256', 'path'].includes(key))
+    && origin.source === 'online' && /^[a-f0-9]{40}$/u.test(origin.commit) && /^[a-f0-9]{64}$/u.test(origin.sha256)
+    && typeof origin.path === 'string' && /^marketplace\/(?:packages|skills)\/[A-Za-z0-9_./-]{1,220}$/u.test(origin.path)
+    && origin.path.split('/').every(segment => segment && segment !== '.' && segment !== '..')
+}
 function validateSnapshot(snapshot, allowPrevious = true) {
-  keys(snapshot, allowPrevious ? ['manifest', 'source', 'components', 'previous'] : ['manifest', 'source', 'components'])
+  keys(snapshot, allowPrevious ? ['manifest', 'source', 'components', 'previous', 'origin'] : ['manifest', 'source', 'components', 'origin'])
   validatePackage(snapshot.manifest)
-  if (!['builtin', 'local'].includes(snapshot.source) || !Array.isArray(snapshot.components)) invalid()
+  if (snapshot.origin !== undefined && (snapshot.source !== 'online' || !isOnlineOrigin(snapshot.origin))) invalid()
+  if (!['builtin', 'local', 'online'].includes(snapshot.source) || !Array.isArray(snapshot.components)) invalid()
   const seen = new Set()
   for (const item of snapshot.components) {
     keys(item, ['id', 'enabled']); id(item.id)
@@ -210,4 +223,4 @@ async function listMarketplaceSkillIds(projectDirectory) {
   }
   return ids
 }
-module.exports = { MAX_BYTES, id, validatePackage, validateComponent, validateSnapshot, readJson, writeJson, readState, writeState, listMarketplaceSkills, listMarketplaceSkillIds, marketplaceSkillId }
+module.exports = { isOnlineOrigin, MAX_BYTES, id, validatePackage, validateComponent, validateSnapshot, isSupportedComponentType: (type) => TYPES.has(type), readJson, writeJson, readState, writeState, statePath, portableParams, listMarketplaceSkills, listMarketplaceSkillIds, marketplaceSkillId }

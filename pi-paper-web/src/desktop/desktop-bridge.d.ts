@@ -16,6 +16,12 @@ export interface MarketplaceTemplateData {
   edges: Array<{ source: string; target: string; sourcePort?: string; targetPort?: string }>
 }
 
+import type * as Creative from '@/features/canvas/creativePluginTypes'
+import type { DirectorCamera } from '@/features/canvas/director/types'
+export type MarketplaceConnectorData =
+  | { kind: 'mcp-client'; clientName: string; permissions: DesktopMcpPermission[] }
+  | { kind: 'local-mcp'; capability: 'text-transform' }
+
 export type MarketplaceComponent = {
   id: string
   name: string
@@ -24,9 +30,17 @@ export type MarketplaceComponent = {
   enabled: boolean
   updateConflict: 'removed' | 'type_changed' | null
 } & (
+  | { type: 'director_scene'; data: Creative.CreativeScene }
+  | { type: 'director_camera'; data: DirectorCamera }
+  | { type: 'director_motion'; data: Creative.CreativeMotion }
+  | { type: 'poster_layout'; data: Creative.PosterLayout }
+  | { type: 'selection_command'; data: Creative.CreativeSelectionCommand }
+  | { type: 'storyboard'; data: Creative.CreativeStoryboard }
+  | { type: 'media_tool'; data: Creative.CreativeMediaTool }
+  | { type: 'connector'; data: MarketplaceConnectorData }
   | { type: 'template'; data: MarketplaceTemplateData }
   | { type: 'asset'; data: { kind: 'image'; mime: 'image/png'; base64: string } }
-  | { type: 'preset'; data: { nodeType: 'text' | 'image' | 'video' | 'audio'; params: Record<string, unknown> } }
+  | { type: 'preset'; data: { nodeType: 'text' | 'image' | 'video' | 'audio'; params: Record<string, unknown> }; preferences?: Record<'original' | 'personal' | 'project', Record<string, unknown>> }
   | { type: 'skill'; data: { category: 'general' | 'image' | 'video' | 'text' | 'canvas'; instructions: string } }
 )
 
@@ -36,13 +50,35 @@ export interface MarketplacePackage {
   description: string
   version: string
   author: string
-  source: 'builtin' | 'local'
+  source: 'builtin' | 'local' | 'online'
+  origin?: { source: 'online'; commit: string; sha256: string; path: string } | null
   installed: boolean
   enabled: boolean
   installedVersion: string | null
   updateAvailable: boolean
   rollbackVersion: string | null
   components: MarketplaceComponent[]
+}
+
+export interface MarketplaceOnlineCatalog {
+  repository: string
+  branch: string
+  commit: string
+  entries: Array<{
+    id: string
+    version: string
+    name: string
+    description: string
+    author: string
+    kind: string
+    components: string[]
+    size: number
+    sha256: string
+    target: { product: string; minVersion: string; maxVersion: string }
+    compatible: boolean
+    unsupportedKind: boolean
+    unsupportedComponents: string[]
+  }>
 }
 
 export interface DesktopProviderCredentialField {
@@ -1093,13 +1129,26 @@ export interface DesktopMcpProviderInputRequest {
 }
 
 export interface DesktopBridge {
+  localMcpConnector: {
+    get(projectId: string, packageId: string, componentId: string): Promise<{ executable: string; toolName: string | null } | null>
+    clear(projectId: string, packageId: string, componentId: string): Promise<null>
+    choose(projectId: string, packageId: string, componentId: string): Promise<{ executable: string; toolName: string | null } | null>
+    discover(projectId: string, packageId: string, componentId: string): Promise<{ token: string; tools: Array<{ name: string; description: string }> }>
+    select(projectId: string, packageId: string, componentId: string, token: string, name: string): Promise<{ executable: string; toolName: string | null }>
+    run(projectId: string, packageId: string, componentId: string, input: string): Promise<string>
+  }
   marketplace: {
+    savePresetPreferences(projectId: string | undefined, scope: 'personal' | 'project', packageId: string, componentId: string, version: string, params: Record<string, unknown>): Promise<void>
     list(projectId?: string): Promise<MarketplacePackage[]>
     install(projectId: string, packageId: string, componentIds: string[]): Promise<MarketplacePackage>
     setEnabled(projectId: string, packageId: string, componentId: string, enabled: boolean): Promise<MarketplacePackage>
     uninstall(projectId: string, packageId: string, componentId: string): Promise<MarketplacePackage>
     rollback(projectId: string, packageId: string): Promise<MarketplacePackage>
     importPackage(): Promise<MarketplacePackage | null>
+    importSkill(): Promise<MarketplacePackage | null>
+    onlineCached(): Promise<MarketplaceOnlineCatalog | null>
+    onlineRefresh(): Promise<MarketplaceOnlineCatalog>
+    onlineDownload(packageId: string, commit: string): Promise<MarketplacePackage>
     exportPackage(projectId: string, packageId: string): Promise<boolean>
     saveTemplate(projectId: string, draft: { name: string; description?: string; data: MarketplaceTemplateData }): Promise<MarketplacePackage>
     importAsset(projectId: string, packageId: string, componentId: string): Promise<DesktopAsset>

@@ -1,5 +1,7 @@
 /** 导演台场景对象与机位状态 */
 
+import type { CreativeMotion } from '../creativePluginTypes'
+
 export type DirectorCategory = 'character' | 'prop' | 'primitive'
 
 export type CharacterPose =
@@ -43,6 +45,7 @@ export interface DirectorSceneState {
   objects: DirectorObject[]
   camera: DirectorCamera
   captures: string[]
+  motion?: CreativeMotion
 }
 
 export const DEFAULT_CAMERA: DirectorCamera = {

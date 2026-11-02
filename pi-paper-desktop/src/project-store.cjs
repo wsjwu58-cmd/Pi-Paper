@@ -1941,8 +1941,9 @@ function preserveNodeGenerationState(nodes, previousNodes) {
 
 function canvasNodeContentSignature(node) {
   const payload = nodePayloadFromFlowNode(node)
+  const { posterLayout, ...generationParams } = payload.params
   return JSON.stringify(canonicalJson({
-    params: payload.params,
+    params: generationParams,
     creativeType: payload.creativeType,
     modelRef: payload.modelRef,
     prompt: payload.prompt,
@@ -2135,6 +2136,13 @@ function applyUpdateNodeRequest(flowNode, request) {
   for (const key of ['x', 'y', 'width', 'height', 'params', 'status', 'currentOutputId', 'groupId', 'stackId',
     'creativeType', 'stale', 'modelRef', 'prompt', 'output', 'execStatus']) {
     if (request[key] === undefined) continue
+    if (key === 'params' && (Object.hasOwn(payload.params, 'posterLayout') || Object.hasOwn(request.params, 'posterLayout'))) {
+      const { posterLayout: previousLayout, ...previous } = payload.params
+      const { posterLayout: nextLayout, ...next } = request.params
+      payload.params = request.params
+      contentChanged ||= JSON.stringify(canonicalJson(previous)) !== JSON.stringify(canonicalJson(next))
+      continue
+    }
     payload[key] = request[key]
     if (['params', 'creativeType', 'modelRef', 'prompt', 'output'].includes(key)) contentChanged = true
   }

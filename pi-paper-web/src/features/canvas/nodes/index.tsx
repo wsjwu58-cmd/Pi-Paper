@@ -774,6 +774,19 @@ const ImageNodeView = memo(function ImageNodeView(props: NodeProps<FlowNode>) {
   const remote = typeof outputs[0]?.meta?.remoteUrl === 'string' ? String(outputs[0].meta.remoteUrl) : undefined
   const authedMediaUrl = useAuthedMediaUrl(mediaUrl)
   const [cropRequest, setCropRequest] = useState<{ mode: CropMode; source: CropSourceSnapshot } | null>(null)
+  useEffect(() => {
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent<{ nodeId?: string; mode?: CropMode }>).detail
+      if (!window.vibepaperDesktop || !node || detail?.nodeId !== nodeId || !['single', 'four', 'nine'].includes(String(detail.mode))) return
+      const lockedUrl = authedMediaUrl ?? mediaUrl
+      if (!lockedUrl?.startsWith('vibe://')) { toastError(uiText('桌面本地裁剪需要已保存在当前项目中的图片。')); return }
+      setCropRequest({ mode: detail.mode!, source: { nodeId, mediaUrl: lockedUrl, sourceNodeMediaUrl: nodeMediaUrl(node),
+        outputId: node.currentOutputId, assetId: node.params.assetId as string | number | undefined,
+        sourceName: String(node.params.name ?? node.params.title ?? uiText('图片')) } })
+    }
+    window.addEventListener('vp-plugin-crop', open)
+    return () => window.removeEventListener('vp-plugin-crop', open)
+  }, [nodeId, node, authedMediaUrl, mediaUrl])
   if (!node) return null
   const busy = nodeBusy(node, latest)
   const generationProgress = generationProgressForNode(node, latest, generationReferences)

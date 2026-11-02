@@ -31,6 +31,8 @@
 
 ## 本地文本模型设置
 
+插件预设的个人默认保存在用户数据目录的 `marketplace-preset-defaults.json`。项目覆盖位于 `.vibepaper/agent/skills/.marketplace/preset-overrides.json`，随现有项目备份恢复。两者均使用 `schemaVersion: 1`，条目以包 ID、版本、组件 ID 标识并仅保存显式覆盖的预设字段。更新包后采用新版本的配置，回到旧版本时可恢复该版本的覆盖值。项目绑定的本地 MCP 工具选择存于用户数据目录 `marketplace-connectors.json`，不进入项目备份或导出的插件包。
+
 用户数据目录的 `settings.json` 使用 `schemaVersion: 1`。当前可选 `localTextModel` 字段保存一台用户主动配置的 OpenAI 兼容本地文本服务：
 
 | 字段 | 类型 | 含义 |

@@ -1598,6 +1598,8 @@ async function createGenerationTaskInStore(input, { assertAuthorized } = {}) {
   if (suppliedParameters.aspect !== undefined && suppliedParameters.ratio === undefined) delete modelDefaults.ratio
   if (input.modality === 'video' && suppliedParameters.size !== undefined && suppliedParameters.resolution === undefined) delete modelDefaults.resolution
   const parameters = { ...modelDefaults, ...suppliedParameters }
+  // Poster typography and layout belong to the local editor, not a provider request.
+  delete parameters.posterLayout
   if (input.providerType === 'cloud' && input.modality === 'image') {
     const counts = [parameters.count, parameters.n, parameters.num_images].filter((value) => value !== undefined)
     const count = counts[0] ?? 1
@@ -1690,6 +1692,7 @@ function localAssetImportName(sourcePath) {
 function registerProjectIpc() {
   registerMarketplaceIpc(ipcMain, {
     assertTrustedSender,
+    uiText,
     window: () => mainWindow,
     dialog,
     userDataDirectory,

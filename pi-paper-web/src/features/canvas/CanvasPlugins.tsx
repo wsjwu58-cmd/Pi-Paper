@@ -22,8 +22,8 @@ export function CanvasPlugins({ projectId, open, busy, presetNodeType, onClose, 
   })
   if (!open) return null
   const usable = packages.flatMap((pkg) => pkg.components
-    .filter((component) => component.installed && component.enabled && ['template', 'asset', 'preset'].includes(component.type)
-      && (!presetNodeType || component.type === 'preset' && (component.data as { nodeType?: string })?.nodeType === presetNodeType))
+    .filter((component) => component.installed && component.enabled && (['template', 'asset', 'preset', 'poster_layout', 'selection_command', 'storyboard', 'media_tool'].includes(component.type) || component.type === 'connector' && component.data.kind === 'local-mcp')
+      && (!presetNodeType || component.type === 'preset' && (component.data as { nodeType?: string })?.nodeType === presetNodeType || presetNodeType === 'image' && ['poster_layout', 'media_tool'].includes(component.type) || presetNodeType === 'text' && component.type === 'connector' && component.data.kind === 'local-mcp'))
     .map((component) => ({ pkg, component })))
   return (
     <aside className="absolute left-20 top-20 z-30 flex max-h-[calc(100vh-7rem)] w-[320px] flex-col rounded-2xl border border-black/10 bg-white shadow-xl" aria-label={uiText('插件组件')}>
@@ -41,8 +41,8 @@ export function CanvasPlugins({ projectId, open, busy, presetNodeType, onClose, 
             <p className="text-[13px] font-semibold text-[#222]">{uiText(component.name)}</p>
             <p className="mt-1 text-xs leading-5 text-[#777]">{uiText(component.description)}</p>
             <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-[#888]">{uiText(pkg.name)} · {component.type === 'template' ? uiText('模板') : component.type === 'asset' ? uiText('素材') : uiText('预设')}</span>
-              <button type="button" disabled={busy} onClick={() => void onUse(pkg.id, component.id)} className="rounded-lg bg-[#222] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{component.type === 'template' ? uiText('插入') : component.type === 'asset' ? uiText('导入画布') : uiText('应用到选中节点')}</button>
+              <span className="text-[11px] text-[#888]">{uiText(pkg.name)} · {component.type === 'template' ? uiText('模板') : component.type === 'asset' ? uiText('素材') : component.type === 'poster_layout' ? uiText('海报排版') : component.type === 'selection_command' ? uiText('选区命令') : component.type === 'storyboard' ? uiText('分镜导出') : component.type === 'media_tool' ? uiText('媒体工具') : component.type === 'connector' ? uiText('本地文本工具') : uiText('预设')}</span>
+              <button type="button" disabled={busy} onClick={() => void onUse(pkg.id, component.id)} className="rounded-lg bg-[#222] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{component.type === 'template' ? uiText('插入') : component.type === 'asset' ? uiText('导入画布') : component.type === 'storyboard' ? uiText('导出选区') : component.type === 'poster_layout' ? uiText('编辑海报') : component.type === 'media_tool' || component.type === 'connector' ? uiText('打开工具') : uiText('应用到选中节点')}</button>
             </div>
           </div>
         ))}

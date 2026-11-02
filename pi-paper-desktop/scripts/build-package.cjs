@@ -41,6 +41,15 @@ async function main() {
     external: ['node:*'], nodePaths: [path.join(piRoot, 'node_modules')],
     legalComments: 'none', sourcemap: false,
   })
+  // The standalone app has no node_modules. Bundle the SDK-backed local MCP
+  // client while keeping the connector policy and IPC in their own modules.
+  await build({
+    entryPoints: [path.join(desktopRoot, 'src', 'local-mcp-client.cjs')],
+    outfile: path.join(appRoot, 'src', 'local-mcp-client.cjs'),
+    bundle: true, platform: 'node', format: 'cjs', target: 'node22.19',
+    external: ['node:*'], nodePaths: [path.join(desktopRoot, 'node_modules')],
+    legalComments: 'none', sourcemap: false,
+  })
   await fs.mkdir(path.join(appRoot, 'dist'), { recursive: true })
   for (const filename of ['agent-worker.cjs', 'pi-official-media.cjs', 'mcp-launcher.cjs', 'mcp-stdio.cjs']) {
     await fs.copyFile(path.join(desktopRoot, 'dist', filename), path.join(appRoot, 'dist', filename))

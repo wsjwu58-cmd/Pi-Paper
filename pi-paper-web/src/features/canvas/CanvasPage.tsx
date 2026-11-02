@@ -28,9 +28,16 @@ import { buildFlow, createCanvasGroup, mergeHydrateFlow, nodeMediaUrl, removeCan
 import { nodeTypes, useNodeTasks } from './nodes'
 import { isGenerationInFlight } from './nodes/generation-progress'
 import { textNodeContent } from './nodes/textContent'
+import { pickLatestTask } from './nodes/generation-task-selection'
+import { LocalMcpConnectorPanel } from '@/features/marketplace/LocalMcpConnectorPanel'
 import { CanvasTopBar } from './CanvasTopBar'
 import { CanvasToolbar } from './CanvasToolbar'
 import { CanvasPlugins } from './CanvasPlugins'
+import { PosterEditor } from './PosterEditor'
+import { mergePosterResult } from './posterGraph'
+import { StoryboardEditor } from './StoryboardEditor'
+import { readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard } from './creativePluginRuntime'
+import type { PosterLayout, StoryboardField } from './creativePluginTypes'
 import { buildPluginTemplateGraph, changedPluginPresetPatch, commitPluginTemplateGraph, isPluginModelParameter, overwrittenPluginPresetFields, pluginPresetPatch, readPluginTemplate, templateFromSelection } from './pluginComponents'
 import { CanvasGroupView } from './CanvasGroupView'
 import { arrangeCanvasGroupNodes, canvasGroupMemberIds, getCanvasGroupBounds, getCanvasGroupDownloadCandidates, moveCanvasGroupNodes, detachOutsideGroup, type CanvasGroupBounds } from './canvasGroupUtils'
@@ -123,6 +130,11 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
   const [pluginsOpen, setPluginsOpen] = useState(false)
   const [pluginTarget, setPluginTarget] = useState<{ nodeId: string; nodeType: string } | null>(null)
   const [pluginBusy, setPluginBusy] = useState(false)
+  const [posterDraft, setPosterDraft] = useState<{ sourceNodeId: string; sourceNodeMediaUrl: string; sourceUrl: string; initial: PosterLayout } | null>(null)
+  const [storyboardDraft, setStoryboardDraft] = useState<{ nodes: FlowNode[]; fields: StoryboardField[] } | null>(null)
+  const [connectorDraft, setConnectorDraft] = useState<{ packageId: string; componentId: string; nodeId: string } | null>(null)
+  const generationTasksRef = useRef(generationTasks)
+  generationTasksRef.current = generationTasks
   const pluginBusyRef = useRef(false)
   const [pluginConfirmation, setPluginConfirmation] = useState<{ message: string; resolve: (confirmed: boolean) => void } | null>(null)
   const pluginConfirmationRef = useRef<{ resolve: (confirmed: boolean) => void } | null>(null)
@@ -480,7 +492,6 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       saveTimer.current = null
     }
     await persistDesktopChanges()
-    skipNextSave.current = true
   }, [persistDesktopChanges])
 
   useEffect(
@@ -913,14 +924,16 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     if (!canvas || savedVersion === null || !dirty) return
     if (skipNextSave.current) {
       skipNextSave.current = false
-      return
+      // Desktop hydration is already guarded by the dirty flag. A lingering
+      // view-only skip must never consume the first subsequent real edit.
+      if (!desktopMode) return
     }
     if (saveTimer.current) window.clearTimeout(saveTimer.current)
     saveTimer.current = window.setTimeout(() => {
       saveTimer.current = null
       void saveRef.current()
     }, saveDebounce)
-  }, [nodes, edges, groups, stacks, canvas, savedVersion, dirty])
+  }, [nodes, edges, groups, stacks, canvas, savedVersion, dirty, desktopMode])
 
   // 离开画布 / 关闭页面前冲掉未落盘的防抖保存（含提示词）
   useEffect(() => {
@@ -1701,6 +1714,58 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         toastSuccess(mergedInCurrentCanvas ? uiText('模板已插入画布，可继续编辑。') : uiText('模板已保存，请在原项目中查看。'))
         return
       }
+      if (component.type === 'connector' && component.data.kind === 'local-mcp') {
+        const selected = useCanvasStore.getState().nodes.filter((node) => selectedIds.includes(sid(node.id)) && node.type === 'text')
+        if (selected.length !== 1) throw new Error(uiText('请先选择一个文字节点。'))
+        const latest = pickLatestTask(generationTasksRef.current.filter((task) => sid(task.nodeId) === sid(selected[0].id)))
+        if (latest && isGenerationInFlight(latest.status)) throw new Error(uiText('节点正在生成，请完成后再使用工具。'))
+        setConnectorDraft({ packageId, componentId, nodeId: sid(selected[0].id) })
+        return
+      }
+      if (component.type === 'poster_layout') {
+        const snapshot = useCanvasStore.getState()
+        const targets = snapshot.nodes.filter((node) => selectedIds.includes(sid(node.id)) && node.type === 'image')
+        if (targets.length !== 1) throw new Error(uiText('请先选择一个本地图片节点。'))
+        const source = targets[0].data.node
+        const sourceNodeMediaUrl = nodeMediaUrl(source)
+        const sourceUrl = sourceNodeMediaUrl
+        if (!sourceUrl.startsWith('vibe://')) throw new Error(uiText('海报需要当前项目中的本地图片。'))
+        const initial = readPosterLayout(component.data)
+        setPosterDraft({ sourceNodeId: sid(source.id), sourceNodeMediaUrl, sourceUrl, initial })
+        return
+      }
+      if (component.type === 'storyboard') {
+        const data = readStoryboard(component.data)
+        const selected = useCanvasStore.getState().nodes.filter((node) => selectedIds.includes(sid(node.id)))
+        if (!selected.length) throw new Error(uiText('请先选择要导出的节点。'))
+        setStoryboardDraft({ nodes: selected, fields: data.fields })
+        return
+      }
+      if (component.type === 'media_tool') {
+        const data = readMediaTool(component.data)
+        const selected = useCanvasStore.getState().nodes.filter((node) => selectedIds.includes(sid(node.id)) && node.type === 'image')
+        if (selected.length !== 1) throw new Error(uiText('请先选择一个本地图片节点。'))
+        selectNode(sid(selected[0].id))
+        window.dispatchEvent(new CustomEvent('vp-plugin-crop', { detail: { nodeId: sid(selected[0].id), mode: data.mode } }))
+        return
+      }
+      if (component.type === 'selection_command') {
+        const command = readSelectionCommand(component.data)
+        const snapshot = useCanvasStore.getState()
+        const selected = snapshot.nodes.filter((node) => selectedIds.includes(sid(node.id))).sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
+        if (selected.length < 2) throw new Error(uiText('请至少选择两个节点。'))
+        if (!await askPluginConfirmation(uiText('将{0}排列所选的 {1} 个节点。', { 0: command.orientation === 'horizontal' ? uiText('横向') : uiText('纵向'), 1: selected.length }))) return
+        const latestComponent = await enabledPluginComponent(packageId, componentId)
+        await assertPluginContext()
+        if (JSON.stringify(latestComponent.data) !== JSON.stringify(component.data)) throw new Error(uiText('组件内容已变更，请重新应用。'))
+        const latest = useCanvasStore.getState()
+        if (selected.some((node) => latest.nodes.find((item) => sid(item.id) === sid(node.id)) !== node)) throw new Error(uiText('选区已变更，请重新操作。'))
+        setNodes(arrangeCanvasGroupNodes(latest.nodes, selected.map((node) => node.id), command.orientation, command.gap))
+        setDirty(true)
+        await persistDesktopChanges()
+        toastSuccess(uiText('已排列所选节点。'))
+        return
+      }
       if (component.type === 'preset') {
         const data = component.data as { nodeType?: unknown; params?: unknown }
         const snapshot = useCanvasStore.getState()
@@ -1750,6 +1815,140 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       setPluginBusy(false)
     }
   }, [addAssetNode, askPluginConfirmation, assertPluginContext, canvasId, currentPluginSelection, desktopProjectId, enabledPluginComponent, flushDesktopEdits, persistDesktopChanges, pluginTarget, screenToFlowPosition, selectNode, setCanvas, setDirty, setEdges, setNodes])
+
+  const connectorSourceFor = useCallback((nodeId: string) => {
+    const node = useCanvasStore.getState().nodes.find((item) => sid(item.id) === nodeId)?.data.node
+    if (!node || node.type !== 'text') return null
+    const latest = pickLatestTask(generationTasksRef.current.filter((task) => sid(task.nodeId) === nodeId))
+    if (latest && isGenerationInFlight(latest.status)) return null
+    return { id: nodeId, text: textNodeContent(latest?.outputs?.[0]?.meta?.text, node.params), taskId: String(latest?.taskId ?? '') }
+  }, [])
+  const applyConnectorText = useCallback(async (output: string, source: { id: string; text: string }) => {
+    if (!connectorDraft || source.id !== connectorDraft.nodeId || !desktopProjectId) throw new Error('CONNECTOR_SELECTION_CHANGED')
+    const valid = () => {
+      const ids = currentPluginSelection()
+      const current = connectorSourceFor(source.id)
+      if (ids.length !== 1 || ids[0] !== source.id || !current || current.text !== source.text) throw new Error('CONNECTOR_SELECTION_CHANGED')
+      return current
+    }
+    const before = valid()
+    await flushDesktopEdits()
+    try {
+      await assertPluginContext()
+      const component = await enabledPluginComponent(connectorDraft.packageId, connectorDraft.componentId)
+      if (component.type !== 'connector' || component.data.kind !== 'local-mcp') throw new Error('invalid')
+    } catch { throw new Error('CONNECTOR_CONTEXT_CHANGED') }
+    const current = valid()
+    if (current.taskId !== before.taskId) throw new Error('CONNECTOR_SELECTION_CHANGED')
+    if (mcpCanvasBarrierPhaseRef.current !== 'idle') throw new Error('CONNECTOR_CONTEXT_CHANGED')
+    const snapshot = useCanvasStore.getState()
+    const original = snapshot.nodes.find((node) => sid(node.id) === source.id)
+    if (!snapshot.canvas || sid(snapshot.canvas.canvas.id) !== canvasId || !original) throw new Error('CONNECTOR_CONTEXT_CHANGED')
+    const x = original.position.x + 330, y = original.position.y, id = crypto.randomUUID()
+    const node: FlowNode = { id, type: 'text', position: { x, y }, data: { node: { id, type: 'text', x, y, params: { content: output }, status: 'idle' }, selected: false, onConfig: selectNode, models: original.data.models ?? [] } }
+    const edge: Edge = { id: crypto.randomUUID(), source: source.id, target: id, sourceHandle: 'output', targetHandle: 'input', style: { stroke: '#93c5fd', strokeWidth: 1.5 }, data: { valid: true } }
+    setDirty(true)
+    let merged = false
+    const pending = commitPluginTemplateGraph({ canvasId, snapshot, additions: { nodes: [node], edges: [edge] }, getCurrent: useCanvasStore.getState,
+      save: (nodes, edges) => saveCanvasPort({ projectId: desktopProjectId, canvasId, expectedVersion: snapshot.canvas!.canvas.version,
+        idempotencyKey: crypto.randomUUID(), nodes, edges, groups: snapshot.groups, stacks: snapshot.stacks }),
+      apply: ({ current: latest, nodes, edges, version, staleNodeIds, dirty }) => {
+        if (!latest.canvas) return
+        const latestSource = connectorSourceFor(source.id)
+        const sameSource = Boolean(latestSource && latestSource.text === source.text && latestSource.taskId === before.taskId)
+        setCanvas({ ...latest.canvas, canvas: { ...latest.canvas.canvas, version } })
+        setSavedVersion(version); setNodes(applySavedCanvasStaleNodeIds(nodes, staleNodeIds)); setEdges(sameSource ? edges : edges.filter((item) => item.id !== edge.id)); setDirty(dirty || !sameSource); markNodeArrival(id)
+      },
+    }).then((value) => { merged = value })
+    desktopSaveInFlight.current = pending
+    try {
+      await pending
+      if (merged) toastSuccess(uiText('工具结果已保存为新的文字节点。'))
+      else toastSuccess(uiText('结果已保存，请返回原画布查看。'))
+    } catch {
+      const latest = useCanvasStore.getState()
+      if (latest.canvas && sid(latest.canvas.canvas.id) === canvasId) setDirty(latest.nodes !== snapshot.nodes || latest.edges !== snapshot.edges || latest.groups !== snapshot.groups || latest.stacks !== snapshot.stacks)
+      throw new Error('CONNECTOR_APPLY_SAVE_UNCONFIRMED')
+    } finally { if (desktopSaveInFlight.current === pending) desktopSaveInFlight.current = null }
+  }, [assertPluginContext, canvasId, connectorDraft, connectorSourceFor, currentPluginSelection, desktopProjectId, enabledPluginComponent, flushDesktopEdits, selectNode, setCanvas, setDirty, setEdges, setNodes])
+
+  const editSavedPoster = useCallback((event: Event) => {
+    const nodeId = (event as CustomEvent<{ nodeId?: string }>).detail?.nodeId
+    const node = useCanvasStore.getState().nodes.find((item) => sid(item.id) === nodeId)?.data.node
+    try {
+      if (!node || node.type !== 'image' || !nodeMediaUrl(node).startsWith('vibe://')) throw new Error(uiText('海报源图片不可用。'))
+      setPosterDraft({ sourceNodeId: sid(node.id), sourceNodeMediaUrl: nodeMediaUrl(node), sourceUrl: nodeMediaUrl(node), initial: readPosterLayout(node.params.posterLayout) })
+    } catch (error) { toastError(error instanceof Error ? error.message : uiText('无法编辑海报。')) }
+  }, [])
+  useEffect(() => {
+    window.addEventListener('vp-edit-poster', editSavedPoster)
+    return () => window.removeEventListener('vp-edit-poster', editSavedPoster)
+  }, [editSavedPoster])
+
+  const exportPoster = useCallback(async (layout: PosterLayout, blob: Blob) => {
+    if (!posterDraft || !desktopProjectId) throw new Error(uiText('海报编辑器已关闭。'))
+    const checkSource = async () => {
+      const bridge = await assertPluginContext()
+      const source = useCanvasStore.getState().nodes.find((item) => sid(item.id) === posterDraft.sourceNodeId)
+      if (!source || source.type !== 'image' || nodeMediaUrl(source.data.node) !== posterDraft.sourceNodeMediaUrl) {
+        throw new Error(uiText('源图片已更改，请重新打开海报编辑器。'))
+      }
+      return { bridge, source }
+    }
+    await flushDesktopEdits()
+    const { bridge } = await checkSource()
+    const saved = await bridge.saveCanvasImage({ projectId: desktopProjectId, canvasId, nodeId: posterDraft.sourceNodeId,
+      pngBytes: new Uint8Array(await blob.arrayBuffer()), name: '海报.png' })
+    window.dispatchEvent(new Event('vp-assets-updated'))
+    try {
+      await checkSource()
+      await flushDesktopEdits()
+      await checkSource()
+      if (mcpCanvasBarrierPhaseRef.current !== 'idle') throw new Error(uiText('画布正在同步，请稍后重试。'))
+      const snapshot = useCanvasStore.getState()
+      const source = snapshot.nodes.find((item) => sid(item.id) === posterDraft.sourceNodeId)
+      if (!snapshot.canvas || sid(snapshot.canvas.canvas.id) !== canvasId || !source || nodeMediaUrl(source.data.node) !== posterDraft.sourceNodeMediaUrl) throw new Error(uiText('源图片已更改，请重新打开海报编辑器。'))
+      const x = source.position.x + 330, y = source.position.y, id = crypto.randomUUID()
+      const params = { assetId: saved.assetId, name: '海报.png', url: saved.url, lastOutputUrl: saved.url, thumbnailUrl: saved.url }
+      const output: FlowNode = { id, type: 'image', position: { x, y }, data: {
+        node: { id, type: 'image', x, y, params, status: 'idle' }, selected: false, onConfig: selectNode, models: source.data.models ?? [],
+      } }
+      const updatedSource: FlowNode = { ...source, data: { ...source.data, node: { ...source.data.node, params: { ...source.data.node.params, posterLayout: layout } } } }
+      const edge: Edge = { id: crypto.randomUUID(), source: posterDraft.sourceNodeId, target: id, sourceHandle: 'output', targetHandle: 'input', style: { stroke: '#93c5fd', strokeWidth: 1.5 }, data: { valid: true } }
+      const submittedNodes = [...snapshot.nodes.map((item) => item === source ? updatedSource : item), output]
+      const submittedEdges = canonicalCanvasEdges(submittedNodes, [...snapshot.edges, edge])
+      setDirty(true)
+      let merged = false
+      let sourceRetained = false
+      const pending = saveCanvasPort({ projectId: desktopProjectId, canvasId, expectedVersion: snapshot.canvas.canvas.version,
+        idempotencyKey: crypto.randomUUID(), nodes: submittedNodes, edges: submittedEdges, groups: snapshot.groups, stacks: snapshot.stacks }).then((result) => {
+        const current = useCanvasStore.getState()
+        if (!current.canvas || sid(current.canvas.canvas.id) !== canvasId) return
+        const unchanged = current.nodes === snapshot.nodes && current.edges === snapshot.edges && current.groups === snapshot.groups && current.stacks === snapshot.stacks
+        const mergedGraph = mergePosterResult({ nodes: current.nodes, edges: current.edges, source, sourceUrl: posterDraft.sourceNodeMediaUrl,
+          output, edge, layout, mediaUrl: nodeMediaUrl })
+        const { nodes } = mergedGraph
+        sourceRetained = mergedGraph.sourceRetained
+        setCanvas({ ...current.canvas, canvas: { ...current.canvas.canvas, version: Math.max(current.canvas.canvas.version, result.version) } })
+        setSavedVersion(result.version)
+        setNodes(applySavedCanvasStaleNodeIds(nodes, result.staleNodeIds))
+        setEdges(mergedGraph.edges)
+        setDirty(!unchanged)
+        markNodeArrival(id)
+        merged = true
+      })
+      desktopSaveInFlight.current = pending
+      try { await pending } catch (error) {
+        const latest = useCanvasStore.getState()
+        if (latest.canvas && sid(latest.canvas.canvas.id) === canvasId) setDirty(latest.nodes !== snapshot.nodes || latest.edges !== snapshot.edges || latest.groups !== snapshot.groups || latest.stacks !== snapshot.stacks)
+        throw error
+      } finally { if (desktopSaveInFlight.current === pending) desktopSaveInFlight.current = null }
+      setPosterDraft(null)
+      toastSuccess(!merged ? uiText('海报已保存，请返回原画布查看。') : sourceRetained ? uiText('海报已添加到画布；从源图片的「编辑海报」可继续修改。') : uiText('源图片已变化，海报结果已保存为独立节点。'))
+    } catch (error) {
+      throw new Error(uiText('PNG 已保存到素材库，画布节点结果未确认：{0}', { 0: error instanceof Error ? error.message : String(error) }))
+    }
+  }, [assertPluginContext, canvasId, desktopProjectId, flushDesktopEdits, posterDraft, selectNode, setCanvas, setDirty, setEdges, setNodes])
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -2020,6 +2219,9 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       </div>
       {desktopMode && <CanvasPlugins projectId={desktopProjectId} open={pluginsOpen} busy={pluginBusy} presetNodeType={pluginTarget?.nodeType}
         onClose={() => setPluginsOpen(false)} onUse={usePluginComponent} onSaveSelection={savePluginSelection} />}
+      {connectorDraft && desktopProjectId && <div role="dialog" aria-modal="true" aria-label={uiText('本地文本工具')} className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"><div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl bg-white p-4"><div className="flex justify-between font-semibold"><span>{uiText('本地文本工具')}</span><button type="button" onClick={() => setConnectorDraft(null)}>{uiText('关闭')}</button></div><LocalMcpConnectorPanel projectId={desktopProjectId} packageId={connectorDraft.packageId} componentId={connectorDraft.componentId} source={currentPluginSelection().length === 1 && currentPluginSelection()[0] === connectorDraft.nodeId ? connectorSourceFor(connectorDraft.nodeId) ?? undefined : undefined} onApplyText={applyConnectorText} /></div></div>}
+      {posterDraft && <PosterEditor initial={posterDraft.initial} sourceUrl={posterDraft.sourceUrl} onClose={() => setPosterDraft(null)} onExport={exportPoster} />}
+      {storyboardDraft && <StoryboardEditor nodes={storyboardDraft.nodes} initialFields={storyboardDraft.fields} onClose={() => setStoryboardDraft(null)} />}
       <AssetLibrary desktopMode={desktopMode} projectId={desktopProjectId} />
       {!agentOpen ? <AgentLauncher onOpen={() => setAgentOpen(true)} /> : null}
       {!desktopMode && <SubscriptionMenu />}

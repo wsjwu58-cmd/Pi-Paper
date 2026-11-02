@@ -1464,3 +1464,19 @@ test('project schema v4 migrates through v13 after creating a rollback snapshot'
     backupDatabase.close()
   }
 })
+
+test('editing poster typography preserves freshness of downstream media', async (t) => {
+  const { store, project } = await openTestProject(t)
+  const scope = { projectId: project.projectId, canvasId: project.canvasId }
+  const source = node('poster-source', 'image')
+  const video = node('poster-downstream', 'video')
+  const edges = [{ id: 'image-to-video', source: source.id, target: video.id, dependencyType: 'input' }]
+  await store.saveCanvas({ ...scope, expectedVersion: 0, nodes: [source, video], edges })
+  const nodes = structuredClone(store.loadCanvas(project.projectId, project.canvasId).nodes)
+  nodes[0].data.params = { ...nodes[0].data.params, posterLayout: { title: { text: '标题' } } }
+  const saved = await store.saveCanvas({ ...scope, expectedVersion: 1, nodes, edges })
+  assert.deepEqual(saved.staleNodeIds, [])
+  await store.updateNode({ ...scope, expectedVersion: saved.version, nodeId: source.id,
+    idempotencyKey: 'layout-only', params: { ...nodes[0].data.params, posterLayout: { title: { text: '另一标题' } } } })
+  assert.notEqual(store.loadCanvas(project.projectId, project.canvasId).nodes.find(n => n.id === video.id).data.stale, true)
+})

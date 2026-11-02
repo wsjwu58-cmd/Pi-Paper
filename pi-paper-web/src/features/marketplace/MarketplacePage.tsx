@@ -6,12 +6,19 @@ import { ConfirmDialog } from '@/components/ui/Modal'
 import { Spinner } from '@/components/ui/Spinner'
 import type { DesktopProject, MarketplacePackage } from '@/desktop/desktop-bridge'
 import { t as uiText, useUiLanguage } from '@/lib/i18n'
+import { OnlineCatalog, catalogText } from './OnlineCatalog'
+
+import { PresetPreferences } from './PresetPreferences'
+import { LocalMcpConnectorPanel } from './LocalMcpConnectorPanel'
 
 type ComponentType = MarketplacePackage['components'][number]['type']
 type MarketplaceComponent = MarketplacePackage['components'][number]
 type Filter = 'all' | 'installed' | ComponentType
 
 const componentLabels: Record<ComponentType, string> = {
+  director_scene: '导演场景', director_camera: '导演机位', director_motion: '运镜路径',
+  poster_layout: '海报版式', selection_command: '选区命令', storyboard: '分镜表',
+  media_tool: '媒体工具', connector: '连接器',
   template: '画布模板',
   asset: '素材',
   preset: '节点预设',
@@ -21,10 +28,7 @@ const componentLabels: Record<ComponentType, string> = {
 const filters: { value: Filter; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'installed', label: '已安装' },
-  { value: 'template', label: '画布模板' },
-  { value: 'asset', label: '素材' },
-  { value: 'preset', label: '节点预设' },
-  { value: 'skill', label: 'Skill' },
+  ...Object.entries(componentLabels).map(([value, label]) => ({ value: value as ComponentType, label })),
 ]
 
 const marketplaceErrors: Record<string, string> = {
@@ -227,7 +231,7 @@ export function MarketplacePage() {
             <PackageMark />
             <div className="min-w-0 flex-1">
               <p className="font-semibold text-[#23324a]">{uiText(detail.author)} <span className="font-normal text-[#97a1b1]">·</span> {uiText('目录版本 {0}', { 0: detail.version })}</p>
-              <p className="mt-1">{detail.source === 'builtin' ? uiText('内置目录') : uiText('本地导入')}</p>
+              <p className="mt-1">{detail.source === 'builtin' ? uiText('内置目录') : detail.source === 'online' ? catalogText(language, 'source') : uiText('本地导入')}{detail.origin && ` · ${detail.origin.commit.slice(0, 12)}`}</p>
               {detail.installedVersion && <p className="mt-1">{uiText('当前项目已安装版本 {0}', { 0: detail.installedVersion })}</p>}
             </div>
             {detail.updateAvailable && <Button disabled={!project || busy || updateBlocked} onClick={updatePackage}>{uiText('更新至 {0}', { 0: detail.version })}</Button>}
@@ -261,6 +265,13 @@ export function MarketplacePage() {
                   <summary className="cursor-pointer py-1 text-sm font-semibold text-[#496990]">{uiText('预览组件内容')}</summary>
                   <ComponentPreview component={component} />
                 </details>
+                {component.type === 'preset' && <PresetPreferences component={component} projectId={project?.projectId} packageId={detail.id}
+                  version={component.installed ? detail.installedVersion! : detail.version} onSaved={refresh} />}
+                {component.type === 'connector' && component.installed && component.enabled && project && (
+                  component.data.kind === 'local-mcp'
+                    ? <LocalMcpConnectorPanel projectId={project.projectId} packageId={detail.id} componentId={component.id} />
+                    : <Button variant="ghost" onClick={() => navigate('/settings/mcp', { state: { marketplaceConnector: { projectId: project.projectId, packageId: detail.id, componentId: component.id } } })}>{uiText('检查 MCP 授权范围')}</Button>
+                )}
                 </div>
               ))}
             </div>
@@ -269,6 +280,7 @@ export function MarketplacePage() {
         </>
       ) : (
         <>
+          <OnlineCatalog language={language} disabled={busy} onImported={async (item) => { await refresh(); setDetailId(item.id); setSelected([]); setNotice({ tone: 'success', text: catalogText(language, 'imported') }) }} />
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap gap-1.5" aria-label={uiText('组件分类')}>
               {filters.map((item) => <button key={item.value} type="button" aria-pressed={filter === item.value} onClick={() => setFilter(item.value)} className={`rounded-full px-3.5 py-2 text-sm font-semibold transition ${filter === item.value ? 'bg-[#243e68] text-white' : 'text-[#69768a] hover:bg-[#e9eef7]'}`}>{uiText(item.label)}</button>)}
@@ -286,12 +298,13 @@ export function MarketplacePage() {
 }
 
 export function PackageCard({ item, onOpen }: { item: MarketplacePackage; onOpen: () => void }) {
+  const language = useUiLanguage()
   const installed = item.components.filter((component) => component.installed).length
   return <button type="button" onClick={onOpen} className="group flex min-h-[216px] w-full flex-col rounded-2xl border border-[#e2e9f3] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[#b8c9e2] hover:shadow-[0_10px_28px_rgba(35,65,110,0.08)]">
     <div className="flex w-full items-start gap-3"><PackageMark /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><h3 className="truncate text-base font-bold text-[#23324a]">{uiText(item.name)}</h3><ChevronRight size={17} className="shrink-0 text-[#a8b4c5] group-hover:text-[#315a96]" /></div><p className="mt-1 text-xs text-[#95a0b1]">{uiText(item.author)} · v{item.version}</p></div></div>
     <p className="mt-4 line-clamp-2 flex-1 text-sm leading-6 text-[#718096]">{uiText(item.description)}</p>
     <div className="mt-4 flex flex-wrap items-center gap-1.5">{packageTypes(item).map((type) => <span key={type} className="rounded-md bg-[#f1f4f8] px-2 py-1 text-xs text-[#647086]">{componentLabel(type)}</span>)}</div>
-    <div className="mt-4 flex w-full items-center justify-between border-t border-[#f0f3f7] pt-3 text-xs text-[#95a0b1]"><span>{item.source === 'builtin' ? uiText('内置目录') : uiText('本地导入')}</span><span className={installed ? 'inline-flex items-center gap-1 text-emerald-700' : ''}>{installed ? <><Check size={13} />{uiText('已安装 {0}/{1}', { 0: installed, 1: item.components.length })}</> : uiText('查看详情')}</span></div>
+    <div className="mt-4 flex w-full items-center justify-between border-t border-[#f0f3f7] pt-3 text-xs text-[#95a0b1]"><span>{item.source === 'builtin' ? uiText('内置目录') : item.source === 'online' ? catalogText(language, 'source') : uiText('本地导入')}</span><span className={installed ? 'inline-flex items-center gap-1 text-emerald-700' : ''}>{installed ? <><Check size={13} />{uiText('已安装 {0}/{1}', { 0: installed, 1: item.components.length })}</> : uiText('查看详情')}</span></div>
   </button>
 }
 
@@ -353,5 +366,24 @@ export function ComponentPreview({ component }: { component: MarketplaceComponen
   if (component.type === 'skill') {
     return <div className="pb-2 text-sm text-[#69768a]"><p className="mt-2 font-semibold">{uiText('Skill 指令')}</p><p className={contentClass}>{typeof data.instructions === 'string' ? data.instructions : uiText('暂无可预览内容。')}</p></div>
   }
-  return <p className="py-3 text-sm text-[#77849a]">{uiText('暂无可预览内容。')}</p>
+  if (component.type === 'poster_layout') {
+    const layout = component.data
+    return <svg viewBox={`0 0 ${layout.width} ${layout.height}`} className="my-3 h-48 max-w-full" role="img" aria-label={component.name}>
+      <rect width={layout.width} height={layout.height} fill={layout.background} />
+      <rect x={layout.image.x} y={layout.image.y} width={layout.image.width} height={layout.image.height} fill="#cad5df" />
+      <text x={layout.title.x} y={layout.title.y} fontSize={layout.title.size} fill={layout.title.color}>{layout.title.text}</text>
+    </svg>
+  }
+  if (component.type === 'connector') return <p className={contentClass}>{component.data.kind === 'mcp-client'
+    ? uiText('为 {0} 预填授权范围：{1}。在 MCP 设置中检查并保存。', { 0: component.data.clientName, 1: component.data.permissions.join(', ') })
+    : uiText('在本机选择可信的 MCP 程序和文本工具，发送时可查看输入。')}</p>
+  if (component.type === 'director_scene') return <p className={contentClass}>{component.data.objects.map(o => o.name).join(' · ')}</p>
+  if (component.type === 'director_motion' || component.type === 'director_camera') {
+    const cameras = component.type === 'director_motion' ? [component.data.from, component.data.to] : [component.data]
+    return <p className={contentClass}>{cameras.map(c => uiText('方向 {0}°，俯仰 {1}°，距离 {2}', { 0: c.yaw, 1: c.pitch, 2: c.distance })).join(' → ')}
+      {component.type === 'director_motion' && uiText(' · {0} 秒', { 0: component.data.duration })}</p>
+  }
+  if (component.type === 'storyboard') return <p className={contentClass}>CSV · {component.data.fields.map(f => uiText(previewParameterLabels[f] ?? f)).join(' / ')}</p>
+  if (component.type === 'selection_command') return <p className={contentClass}>{uiText(component.data.orientation === 'horizontal' ? '横向排列' : '纵向排列')} · {component.data.gap} px</p>
+  return <p className={contentClass}>{uiText('图片裁剪')} · {{ single: '1 × 1', four: '2 × 2', nine: '3 × 3' }[component.data.mode]}</p>
 }

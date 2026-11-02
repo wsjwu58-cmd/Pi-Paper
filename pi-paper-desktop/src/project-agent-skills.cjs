@@ -357,5 +357,6 @@ module.exports = {
   deleteProjectAgentSkill,
   importProjectAgentSkill,
   listProjectAgentSkills,
+  parseFrontmatter,
   updateProjectAgentSkill,
 }

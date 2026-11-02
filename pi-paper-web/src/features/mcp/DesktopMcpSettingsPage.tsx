@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Check, Clipboard, PlugZap, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 import { t as uiText, useUiLanguage } from '@/lib/i18n'
 import { desktopProviderLabel } from '@/desktop/providerModels'
 import { canCreateMcpGrant, createMcpClientGrantInput, getMcpClientConfigText, providerGrantForPermissions, setMcpGrantPermission } from './mcpGrantPolicy'
@@ -77,6 +78,7 @@ function providerDraft(provider: DesktopMcpProviderDescriptor): ProviderDraft {
 
 export function DesktopMcpSettingsPage() {
   useUiLanguage()
+  const location = useLocation()
   const [state, setState] = useState<DesktopMcpState | null>(null)
   const [permissions, setPermissions] = useState<DesktopMcpPermission[]>(['canvas.read', 'canvas.write'])
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({})
@@ -86,6 +88,36 @@ export function DesktopMcpSettingsPage() {
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ tone: 'error' | 'success' | 'info'; text: string } | null>(null)
   const [lastCreated, setLastCreated] = useState<{ clientId: string; clientName: DesktopMcpClientName; config: DesktopMcpClientGrantResult['config'] } | null>(null)
+
+  useEffect(() => {
+    const reference = (location.state as { marketplaceConnector?: { projectId?: unknown; packageId?: unknown; componentId?: unknown } } | null)?.marketplaceConnector
+    if (!reference || !bridge || typeof reference.projectId !== 'string'
+      || typeof reference.packageId !== 'string' || typeof reference.componentId !== 'string') return
+    let live = true
+    const prefill = async () => {
+      try {
+        const active = await bridge.getActiveProject()
+        if (!active || active.projectId !== reference.projectId) throw new Error('PROJECT_CHANGED')
+        const packages = await bridge.marketplace.list(active.projectId)
+        const component = packages.find((item) => item.id === reference.packageId)?.components
+          .find((item) => item.id === reference.componentId && item.installed && item.enabled && item.type === 'connector')
+        if (!component || component.type !== 'connector' || component.data.kind !== 'mcp-client') throw new Error('CONNECTOR_UNAVAILABLE')
+        const name = component.data.clientName
+        const allowed = new Set(['canvas.read', 'canvas.write', 'generation.propose', 'task.read'])
+        if (!clientOptions.some((item) => item.id === name) || !component.data.permissions.length
+          || component.data.permissions.some((permission) => !allowed.has(permission))) throw new Error('CONNECTOR_UNAVAILABLE')
+        if (!live) return
+        setClientName(name as DesktopMcpClientName)
+        setPermissions(component.data.permissions as DesktopMcpPermission[])
+        setMediaTypes([])
+        setMessage({ tone: 'info', text: uiText('已从已安装的连接器预填客户端和范围。请检查后在此页创建授权；尚未启用服务或创建连接。') })
+      } catch {
+        if (live) setMessage({ tone: 'error', text: uiText('连接器不可用或项目已切换，请返回插件市场检查安装和启用状态。') })
+      }
+    }
+    void prefill()
+    return () => { live = false }
+  }, [location.key, location.state])
 
   const refresh = useCallback(async () => {
     if (!bridge) throw new Error(uiText('桌面 MCP 接口尚未接入。'))

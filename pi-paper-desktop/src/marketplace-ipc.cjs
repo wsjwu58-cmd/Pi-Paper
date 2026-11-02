@@ -1,10 +1,17 @@
 const fs = require('node:fs/promises')
+const { constants } = require('node:fs')
 const path = require('node:path')
 const { createMarketplaceService } = require('./marketplace.cjs')
+const { registerMarketplaceConnectorIpc } = require('./marketplace-connector.cjs')
 const { MAX_BYTES, writeJson } = require('./marketplace-storage.cjs')
+const { createOnlineCatalog, importStandaloneSkill, MAX_SKILL_BYTES } = require('./marketplace-online.cjs')
 
-function registerMarketplaceIpc(ipcMain, { assertTrustedSender, withProject, dialog, window, tempDirectory, userDataDirectory, importImage, checkSkills }) {
+function registerMarketplaceIpc(ipcMain, { assertTrustedSender, withProject, dialog, window, tempDirectory, userDataDirectory, importImage, checkSkills, uiText = (text) => text }) {
   const service = createMarketplaceService(userDataDirectory, { checkSkills })
+  registerMarketplaceConnectorIpc(ipcMain, { assertTrustedSender, withProject, dialog, window, userDataDirectory, service, uiText })
+  // Reuse Pi's frontmatter parser, which is bundled with project-agent-skills in packaged builds.
+  const parseFrontmatter = (content) => require('./project-agent-skills.cjs').parseFrontmatter(content)
+  const online = createOnlineCatalog(userDataDirectory, { appVersion: require('../package.json').version, importPackage: service.importPackage, parseFrontmatter })
   const handle = (channel, operation) => ipcMain.handle(`desktop:marketplace:${channel}`, async (event, ...args) => {
     assertTrustedSender(event)
     return operation(...args)
@@ -12,13 +19,39 @@ function registerMarketplaceIpc(ipcMain, { assertTrustedSender, withProject, dia
   handle('list', (projectId) => projectId === undefined
     ? service.list()
     : withProject(projectId, (directory) => service.list(directory)))
+  handle('online-cached', () => online.cached())
+  handle('online-refresh', () => online.refresh())
+  handle('online-download', (packageId, commit) => online.download(packageId, commit))
+  handle('import-skill', async () => {
+    const selected = await dialog.showOpenDialog(window(), { title: uiText('导入独立 Pi Skill'), properties: ['openFile'], filters: [{ name: 'Markdown', extensions: ['md'] }] })
+    if (selected.canceled || !selected.filePaths.length) return null
+    const info = await fs.lstat(selected.filePaths[0]).catch(() => null)
+    if (!info?.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > MAX_SKILL_BYTES) throw new Error('MARKETPLACE_SKILL_INVALID')
+    const file = await fs.open(selected.filePaths[0], constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    try {
+      const opened = await file.stat()
+      if (!opened.isFile() || opened.ino !== info.ino || opened.dev !== info.dev || opened.size < 1 || opened.size > MAX_SKILL_BYTES) throw new Error('MARKETPLACE_SKILL_INVALID')
+      const content = Buffer.alloc(MAX_SKILL_BYTES + 1)
+      let length = 0
+      while (length < content.length) {
+        const { bytesRead } = await file.read(content, length, content.length - length, length)
+        if (!bytesRead) break
+        length += bytesRead
+      }
+      if (length > MAX_SKILL_BYTES) throw new Error('MARKETPLACE_SKILL_INVALID')
+      return await service.importPackage(importStandaloneSkill(content.subarray(0, length), parseFrontmatter))
+    } finally { await file.close() }
+  })
+  handle('preset-preferences', (projectId, ...args) => projectId === undefined
+    ? service.savePresetPreferences(undefined, ...args)
+    : withProject(projectId, (directory) => service.savePresetPreferences(directory, ...args)))
   handle('install', (projectId, packageId, componentIds) => withProject(projectId, (directory) => service.install(directory, packageId, componentIds)))
   handle('enabled', (projectId, packageId, componentId, enabled) => withProject(projectId, (directory) => service.setEnabled(directory, packageId, componentId, enabled)))
   handle('uninstall', (projectId, packageId, componentId) => withProject(projectId, (directory) => service.uninstall(directory, packageId, componentId)))
   handle('rollback', (projectId, packageId) => withProject(projectId, (directory) => service.rollback(directory, packageId)))
   handle('save-template', (projectId, draft) => withProject(projectId, (directory) => service.saveTemplate(directory, draft)))
   handle('import-package', async () => {
-    const selected = await dialog.showOpenDialog(window(), { title: '导入本地插件包', properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] })
+    const selected = await dialog.showOpenDialog(window(), { title: uiText('导入本地插件包'), properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] })
     if (selected.canceled || !selected.filePaths.length) return null
     const file = selected.filePaths[0]
     const info = await fs.lstat(file).catch(() => null)
@@ -29,7 +62,7 @@ function registerMarketplaceIpc(ipcMain, { assertTrustedSender, withProject, dia
   })
   handle('export-package', async (projectId, packageId) => {
     const manifest = await withProject(projectId, (directory) => service.exportPackage(directory, packageId))
-    const selected = await dialog.showSaveDialog(window(), { title: '导出本地插件包', defaultPath: `${manifest.id}-${manifest.version}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] })
+    const selected = await dialog.showSaveDialog(window(), { title: uiText('导出本地插件包'), defaultPath: `${manifest.id}-${manifest.version}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] })
     if (selected.canceled || !selected.filePath) return false
     await writeJson(selected.filePath, manifest)
     return true

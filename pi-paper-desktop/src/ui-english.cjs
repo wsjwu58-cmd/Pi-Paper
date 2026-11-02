@@ -1,5 +1,9 @@
 // Native dialog labels only. User filenames, paths and content are preserved.
 module.exports = {
+  "选择信任的本地 MCP 服务程序": "Select a trusted local MCP server",
+  "导入独立 Pi Skill": "Import a standalone Pi Skill",
+  "导入本地插件包": "Import a local plugin package",
+  "导出本地插件包": "Export a local plugin package",
   "本地核心已停止": "Local core stopped",
   "本地项目服务意外退出。请重新启动 Pi-Paper 后继续。": "The local project service exited unexpectedly. Restart Pi-Paper to continue.",
   "选择编组下载位置": "Choose a folder for group downloads",

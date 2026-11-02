@@ -332,6 +332,7 @@ export function NodeFloatingToolbar({
     >
       {node.type === 'image' && (
         <>
+          {desktopMode && node.params.posterLayout && <ToolIcon title={uiText('编辑海报')} onClick={() => window.dispatchEvent(new CustomEvent('vp-edit-poster', { detail: { nodeId: sid(node.id) } }))}><span className="text-[11px] font-bold">T</span></ToolIcon>}
           <ToolIcon title={desktopMode ? uiText("桌面本地裁剪") : '裁剪'} disabled={busy || desktopMode && !mediaUrl} active={menu === 'crop'} onClick={() => setMenu(menu === 'crop' ? null : 'crop')}>
             <Crop size={15} />
           </ToolIcon>
