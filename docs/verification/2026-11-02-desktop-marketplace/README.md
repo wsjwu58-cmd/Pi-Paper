@@ -34,7 +34,7 @@ node pi-paper-desktop/node_modules/electron/cli.js pi-paper-desktop/scripts/smok
 
 **复现。** 依赖就绪后运行 `node pi-paper-desktop/scripts/build-package.cjs`。在线端到端验收运行 `node pi-paper-desktop/node_modules/electron/cli.js pi-paper-desktop/scripts/smoke-marketplace.cjs --staged --online`；省略 `--online` 可检验离线路径。后端使用 Node 24 在真实临时目录运行 `node --test pi-paper-desktop/test/marketplace*.test.cjs`。macOS 下测试若使用符号链接形式的系统临时路径，可设 `TMPDIR=/private/tmp`。前端完整套件在 Node 24 的实验性 Web Storage 和独立临时存储下运行。
 
-**下一步检查。** 在默认分支最终提交的 GitHub Actions 中核对 Windows NSIS、Linux AppImage、macOS ARM64/x64 DMG 的实际运行结果。源码测试、安装载荷 GUI、包内实际 Electron 的 Node 模式操作各有不同覆盖面。观察运行证据后，再更新本页对应平台结论。
+**安装包验证已完成。** 在 `848036c` 上，Windows x64 静默安装 NSIS，Linux x64 解开 AppImage，macOS ARM64 与 x64 分别挂载 DMG。四项均通过包内 Electron 可执行文件的 Node 模式自检，并通过测试用 Electron 加载各自安装资源的工作区、市场和画布 GUI 验收。macOS 初次检查遇到挂载目录别名，规范化真实路径后复跑通过。此次未测试图形安装向导、系统签名认可或升级卸载。[四个平台的安装包验收](https://github.com/wsjwu58-cmd/Pi-Paper/actions/runs/41394745725) · [常规 CI](https://github.com/wsjwu58-cmd/Pi-Paper/actions/runs/41394745549) · [Docker 构建](https://github.com/wsjwu58-cmd/Pi-Paper/actions/runs/41394745735)
 
 ### 在新会话继续
 
