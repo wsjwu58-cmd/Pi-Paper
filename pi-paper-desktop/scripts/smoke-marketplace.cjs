@@ -84,7 +84,8 @@ async function main() {
   assert.equal(mcp.clients.length, 0)
   await window.loadURL('vibe://app/marketplace')
   await clickButton('创作工作室')
-  await until("document.querySelectorAll('input[type=checkbox]:enabled').length === 7")
+  const creativeComponents = require('../src/marketplace-creative-example.cjs').components
+  await until(`document.querySelectorAll('input[type=checkbox]:enabled').length === ${creativeComponents.length} && ${JSON.stringify(creativeComponents.map(component => component.name))}.every(name => document.body.innerText.includes(name))`)
   await evaluate("document.querySelectorAll('input[type=checkbox]').forEach(box => box.click())")
   await clickButton('安装所选组件')
   await until("document.body.innerText.includes('组件已安装并启用')")

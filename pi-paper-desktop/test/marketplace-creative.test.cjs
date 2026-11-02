@@ -6,7 +6,10 @@ const copy = () => structuredClone(builtin)
 const comp = (manifest, type) => manifest.components.find((item) => item.type === type)
 
 test('built-in creative data passes the same package boundary as local imports', () => {
-  assert.equal(validatePackage(copy()).components.length, 7)
+  const ids = validatePackage(copy()).components.map((item) => item.id)
+  for (const id of ['product-stage', 'product-angle', 'push-in', 'product-poster', 'horizontal', 'shots', 'four-crop', 'vertical-storyboard']) {
+    assert.ok(ids.includes(id), `missing bundled component ${id}`)
+  }
   const invalid = [
     (manifest) => { comp(manifest, 'director_scene').data.objects[0].id = '/tmp/secret' },
     (manifest) => { comp(manifest, 'director_scene').data.objects[0].kind = '站立' },
@@ -21,6 +24,41 @@ test('built-in creative data passes the same package boundary as local imports',
     const manifest = copy(); mutate(manifest)
     assert.throws(() => validatePackage(manifest), /MARKETPLACE_PACKAGE_INVALID/)
   }
+})
+
+test('built-in vertical storyboard upgrades a 1.0 project while preserving selection and rollback', async (t) => {
+  const fs = require('node:fs/promises')
+  const os = require('node:os')
+  const path = require('node:path')
+  const { createMarketplaceService } = require('../src/marketplace.cjs')
+  const { writeState } = require('../src/marketplace-storage.cjs')
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-creative-update-')))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const project = path.join(root, 'project'), userData = path.join(root, 'user')
+  await Promise.all([fs.mkdir(project), fs.mkdir(userData)])
+  await fs.mkdir(path.join(project, '.vibepaper'))
+  const old = copy()
+  old.version = '1.0.0'
+  old.components = old.components.filter((item) => item.id !== 'vertical-storyboard')
+  await writeState(project, { schemaVersion: 1, packages: [{ manifest: old, source: 'builtin', previous: null,
+    components: [{ id: 'horizontal', enabled: false }, { id: 'four-crop', enabled: true }] }] })
+  const service = createMarketplaceService(userData)
+  let item = (await service.list(project)).find((entry) => entry.id === builtin.id)
+  assert.equal(item.installedVersion, '1.0.0')
+  assert.equal(item.updateAvailable, true)
+  assert.equal(item.components.find((entry) => entry.id === 'vertical-storyboard').installed, false)
+  item = await service.install(project, builtin.id, ['vertical-storyboard'])
+  assert.equal(item.installedVersion, '1.1.0')
+  assert.equal(item.rollbackVersion, '1.0.0')
+  assert.equal(item.components.find((entry) => entry.id === 'horizontal').enabled, false)
+  assert.equal(item.components.find((entry) => entry.id === 'four-crop').enabled, true)
+  assert.deepEqual((await service.getInstalledComponent(project, builtin.id, 'vertical-storyboard', 'selection_command')).data,
+    { command: 'arrange', orientation: 'vertical', gap: 28 })
+  item = await service.rollback(project, builtin.id)
+  assert.equal(item.installedVersion, '1.0.0')
+  assert.equal(item.components.find((entry) => entry.id === 'vertical-storyboard').installed, false)
+  assert.equal(item.components.find((entry) => entry.id === 'horizontal').enabled, false)
+  assert.equal(item.components.find((entry) => entry.id === 'four-crop').enabled, true)
 })
 
 test('creative node data, local image assets, ordinary text and edges survive a project reopen without tasks', async (t) => {

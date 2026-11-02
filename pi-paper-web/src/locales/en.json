@@ -1725,6 +1725,8 @@
   "商品名称": "Product name",
   "横向排列": "Arrange horizontally",
   "排列当前选中的画布节点": "Arrange the selected canvas nodes",
+  "纵向分镜排列": "Arrange storyboard vertically",
+  "按当前上下顺序排列选中的画布节点": "Arrange selected canvas nodes in their current top-to-bottom order",
   "调整选中节点顺序和字段后导出 CSV": "Reorder selected nodes and fields, then export CSV",
   "打开图片节点的本地裁剪编辑器": "Open the local crop editor for an image node",
   "工具结果已保存为新的文字节点。": "The tool result was saved as a new text node.",

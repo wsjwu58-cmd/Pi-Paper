@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "id": "interview-two-camera",
+  "version": "1.0.0",
+  "name": "访谈双机位",
+  "description": "在导演台搭建可编辑访谈场景，使用左右视角与环绕运镜。",
+  "author": "Pi-Paper",
+  "components": [
+    {
+      "id": "interview-stage",
+      "type": "director_scene",
+      "name": "双人访谈场景",
+      "description": "追加人物、座椅、桌子和背景，可在导演台调整；需要手动保存。",
+      "data": {
+        "objects": [
+          {
+            "category": "character",
+            "kind": "坐",
+            "name": "采访者",
+            "position": [
+              -1.35,
+              0.15,
+              0
+            ],
+            "rotation": 60,
+            "scale": 1,
+            "color": "#4b6a88"
+          },
+          {
+            "category": "prop",
+            "kind": "椅子",
+            "name": "采访者座椅",
+            "position": [
+              -1.35,
+              0,
+              0
+            ],
+            "rotation": 60,
+            "scale": 1,
+            "color": "#665b52"
+          },
+          {
+            "category": "character",
+            "kind": "坐",
+            "name": "受访者",
+            "position": [
+              1.35,
+              0.15,
+              0
+            ],
+            "rotation": -60,
+            "scale": 1,
+            "color": "#bc785e"
+          },
+          {
+            "category": "prop",
+            "kind": "椅子",
+            "name": "受访者座椅",
+            "position": [
+              1.35,
+              0,
+              0
+            ],
+            "rotation": -60,
+            "scale": 1,
+            "color": "#665b52"
+          },
+          {
+            "category": "prop",
+            "kind": "桌子",
+            "name": "访谈桌",
+            "position": [
+              0,
+              0,
+              0
+            ],
+            "rotation": 0,
+            "scale": 0.8,
+            "color": "#a78a70"
+          },
+          {
+            "category": "prop",
+            "kind": "墙板",
+            "name": "背景墙",
+            "position": [
+              0,
+              0,
+              -1.8
+            ],
+            "rotation": 0,
+            "scale": 2.1,
+            "color": "#d8d2c9"
+          }
+        ],
+        "camera": {
+          "yaw": 0,
+          "pitch": 20,
+          "distance": 8.5
+        }
+      }
+    },
+    {
+      "id": "left-view",
+      "type": "director_camera",
+      "name": "左侧访谈视角",
+      "description": "从舞台左前方观察场景中心，可继续调整机位。",
+      "data": {
+        "yaw": -30,
+        "pitch": 20,
+        "distance": 8.5
+      }
+    },
+    {
+      "id": "right-view",
+      "type": "director_camera",
+      "name": "右侧访谈视角",
+      "description": "从舞台右前方观察场景中心，可继续调整机位。",
+      "data": {
+        "yaw": 30,
+        "pitch": 20,
+        "distance": 8.5
+      }
+    },
+    {
+      "id": "orbit-between-views",
+      "type": "director_motion",
+      "name": "左右视角环绕",
+      "description": "6 秒从左侧视角环绕至右侧视角，可编辑并在导演台预览。",
+      "data": {
+        "from": {
+          "yaw": -30,
+          "pitch": 20,
+          "distance": 8.5
+        },
+        "to": {
+          "yaw": 30,
+          "pitch": 20,
+          "distance": 8.5
+        },
+        "duration": 6
+      }
+    }
+  ]
+}

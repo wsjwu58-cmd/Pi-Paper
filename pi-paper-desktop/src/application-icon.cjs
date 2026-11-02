@@ -1,7 +1,8 @@
 const path = require('node:path')
 
-/** Increase the artwork's visible size within the OS icon, retaining the original file. */
 function applicationIcon(nativeImage, directory) {
+  // The macOS artwork already includes its Dock margins and rounded mask.
+  if (process.platform === 'darwin') return path.join(directory, 'app-icon.mac.png')
   // Load the same multi-size ICO as the executable/shortcut. Cropped PNGs can
   // retain a bitmap stride that Windows' native icon conversion misinterprets.
   if (process.platform === 'win32') return path.join(directory, 'app-icon.ico')

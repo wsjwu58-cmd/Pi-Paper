@@ -36,7 +36,7 @@ import { CanvasPlugins } from './CanvasPlugins'
 import { PosterEditor } from './PosterEditor'
 import { mergePosterResult } from './posterGraph'
 import { StoryboardEditor } from './StoryboardEditor'
-import { readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard } from './creativePluginRuntime'
+import { arrangeCreativeSelection, readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard } from './creativePluginRuntime'
 import type { PosterLayout, StoryboardField } from './creativePluginTypes'
 import { buildPluginTemplateGraph, changedPluginPresetPatch, commitPluginTemplateGraph, isPluginModelParameter, overwrittenPluginPresetFields, pluginPresetPatch, readPluginTemplate, templateFromSelection } from './pluginComponents'
 import { CanvasGroupView } from './CanvasGroupView'
@@ -1752,7 +1752,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       if (component.type === 'selection_command') {
         const command = readSelectionCommand(component.data)
         const snapshot = useCanvasStore.getState()
-        const selected = snapshot.nodes.filter((node) => selectedIds.includes(sid(node.id))).sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
+        const selected = snapshot.nodes.filter((node) => selectedIds.includes(sid(node.id)))
         if (selected.length < 2) throw new Error(uiText('请至少选择两个节点。'))
         if (!await askPluginConfirmation(uiText('将{0}排列所选的 {1} 个节点。', { 0: command.orientation === 'horizontal' ? uiText('横向') : uiText('纵向'), 1: selected.length }))) return
         const latestComponent = await enabledPluginComponent(packageId, componentId)
@@ -1760,7 +1760,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
         if (JSON.stringify(latestComponent.data) !== JSON.stringify(component.data)) throw new Error(uiText('组件内容已变更，请重新应用。'))
         const latest = useCanvasStore.getState()
         if (selected.some((node) => latest.nodes.find((item) => sid(item.id) === sid(node.id)) !== node)) throw new Error(uiText('选区已变更，请重新操作。'))
-        setNodes(arrangeCanvasGroupNodes(latest.nodes, selected.map((node) => node.id), command.orientation, command.gap))
+        setNodes(arrangeCreativeSelection(latest.nodes, selected, command))
         setDirty(true)
         await persistDesktopChanges()
         toastSuccess(uiText('已排列所选节点。'))

@@ -191,3 +191,76 @@ test('streaming HTTP rejects redirects, advertised oversize, and bytes beyond th
     await assert.rejects(simulate(200, {}, [Buffer.from('123'), Buffer.from('45')]), /MARKETPLACE_ONLINE_NETWORK_ERROR/)
   } finally { https.get = original }
 })
+
+test('offline release verification checks every listed file and rejects corrupted or invalid content', async (t) => {
+  const crypto = require('node:crypto')
+  const { verifyOfflineCatalog } = require('../scripts/verify-marketplace-catalog-offline.cjs')
+  const result = await verifyOfflineCatalog(ROOT)
+  assert.ok(result.verified.some((entry) => entry.id === 'interview-two-camera'))
+  assert.equal(result.cachedOffline, true)
+  assert.equal(result.importedOffline, true)
+
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'marketplace-offline-negative-')))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  await fs.cp(path.join(ROOT, 'marketplace'), path.join(root, 'marketplace'), { recursive: true })
+  const indexPath = path.join(root, 'marketplace/index.json')
+  const index = JSON.parse(await fs.readFile(indexPath, 'utf8'))
+  index.entries = index.entries.filter((item) => item.id !== 'pi-storyboard-brief')
+  await fs.writeFile(indexPath, JSON.stringify(index))
+  const reduced = await verifyOfflineCatalog(root)
+  assert.deepEqual(reduced.verified.map((item) => item.id), index.entries.map((item) => item.id))
+  const entry = index.entries.find((item) => item.id === 'interview-two-camera')
+  const packagePath = path.join(root, entry.path)
+  const original = await fs.readFile(packagePath)
+  const damaged = Buffer.from(original)
+  damaged[damaged.length - 1] ^= 1
+  await fs.writeFile(packagePath, damaged)
+  await assert.rejects(verifyOfflineCatalog(root), /MARKETPLACE_ONLINE_INTEGRITY/)
+
+  // A matching checksum must not bypass the strict creative data validator.
+  const malformed = JSON.parse(original.toString('utf8'))
+  malformed.components[0].data.objects[0].script = 'run()'
+  const bytes = Buffer.from(JSON.stringify(malformed))
+  entry.size = bytes.length
+  entry.sha256 = crypto.createHash('sha256').update(bytes).digest('hex')
+  await fs.writeFile(packagePath, bytes)
+  await fs.writeFile(indexPath, JSON.stringify(index))
+  await assert.rejects(verifyOfflineCatalog(root), /MARKETPLACE_PACKAGE_INVALID/)
+})
+
+test('online interview components install selectively and remain in a reopened project without a generation task', async (t) => {
+  const { root, catalog, service } = await fixture(t)
+  const { createLocalProjectStore } = require('../src/project-store.cjs')
+  const store = createLocalProjectStore()
+  try {
+    const { project, directory } = await store.createProject(root, 'Interview')
+    const listing = await catalog.refresh()
+    const item = await catalog.download('interview-two-camera', listing.commit)
+    assert.equal(item.installed, false)
+    assert.deepEqual(item.components.map((part) => part.type), ['director_scene', 'director_camera', 'director_camera', 'director_motion'])
+    await service.install(directory, item.id, ['interview-stage', 'left-view'])
+    const partial = (await service.list(directory)).find((entry) => entry.id === item.id)
+    assert.equal(partial.components.find((part) => part.id === 'interview-stage').installed, true)
+    assert.equal(partial.components.find((part) => part.id === 'right-view').installed, false)
+    await service.install(directory, item.id, ['right-view', 'orbit-between-views'])
+    const scene = await service.getInstalledComponent(directory, item.id, 'interview-stage', 'director_scene')
+    const left = await service.getInstalledComponent(directory, item.id, 'left-view', 'director_camera')
+    const right = await service.getInstalledComponent(directory, item.id, 'right-view', 'director_camera')
+    const motion = await service.getInstalledComponent(directory, item.id, 'orbit-between-views', 'director_motion')
+    assert.deepEqual(motion.data.from, left.data)
+    assert.deepEqual(motion.data.to, right.data)
+    assert.notDeepEqual(left.data, right.data)
+    const sceneObjects = scene.data.objects.map((object, index) => ({ ...object, id: `ds-fixture-${index}` }))
+    const nodes = [{ id: 'stage', type: 'director', position: { x: 0, y: 0 }, data: { params: { sceneObjects, camera: left.data, motion: motion.data } } }]
+    await store.saveCanvas({ projectId: project.projectId, canvasId: project.canvasId, expectedVersion: 0, nodes, edges: [], groups: [], stacks: [] })
+    await service.setEnabled(directory, item.id, 'left-view', false)
+    await service.uninstall(directory, item.id, 'interview-stage')
+    await store.close()
+    await store.openProject(directory)
+    const loaded = store.loadCanvas(project.projectId, project.canvasId).nodes.find((node) => node.id === 'stage')
+    assert.deepEqual(loaded.data.params.sceneObjects, sceneObjects)
+    assert.deepEqual(loaded.data.params.camera, left.data)
+    assert.deepEqual(loaded.data.params.motion, motion.data)
+    assert.equal((await store.listTasks(project.projectId)).length, 0)
+  } finally { await store.close() }
+})

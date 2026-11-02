@@ -2,13 +2,14 @@ import { vi } from 'vitest'
 vi.mock('@/lib/media', () => ({ fetchAuthedBlob: vi.fn() }))
 import { describe, expect, it } from 'vitest'
 import { createRequire } from 'node:module'
-import { cameraAt, readCreativeMotion, readCreativeScene, readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard } from './creativePluginRuntime'
+import { arrangeCreativeSelection, cameraAt, readCreativeMotion, readCreativeScene, readMediaTool, readPosterLayout, readSelectionCommand, readStoryboard } from './creativePluginRuntime'
 import { paintPoster } from './PosterEditor'
 import { storyboardCsv, storyboardRows } from './StoryboardEditor'
+import { splitCropIntoPixels } from './nodes/cropGeometry'
 import type { FlowNode } from './canvasStore'
 
 const require = createRequire(import.meta.url)
-const example = require('../../../../pi-paper-desktop/src/marketplace-creative-example.cjs') as { components: Array<{ type: string; data: unknown }> }
+const example = require('../../../../pi-paper-desktop/src/marketplace-creative-example.cjs') as { components: Array<{ id: string; type: string; data: unknown }> }
 const validators: Record<string, (data: unknown) => unknown> = {
   director_scene: readCreativeScene, director_camera: (value) => value, director_motion: readCreativeMotion,
   poster_layout: readPosterLayout, selection_command: readSelectionCommand, storyboard: readStoryboard, media_tool: readMediaTool,
@@ -29,6 +30,33 @@ describe('declarative creative components', () => {
     const motion = readCreativeMotion({ from: { yaw: 170, pitch: 20, distance: 10 }, to: { yaw: -170, pitch: 40, distance: 6 }, duration: 4 })
     expect(cameraAt(motion, 0.5)).toEqual({ yaw: -180, pitch: 30, distance: 8 })
     expect(cameraAt(motion, 1)).toEqual(motion.to)
+  })
+  it('arranges the selection in the requested direction using actual node sizes and the component gap', () => {
+    const make = (id: string, x: number, y: number, width: number, height: number): FlowNode => ({
+      id, type: 'image', position: { x, y }, measured: { width, height }, data: {
+        node: { id, type: 'image', x, y, params: {}, status: 'idle' }, selected: false, onConfig: () => {}, models: [],
+      },
+    })
+    const a = make('a', 10, 20, 100, 40), b = make('b', 400, 5, 150, 70), c = make('c', 200, 10, 120, 60)
+    const outside = make('outside', 900, 900, 100, 100)
+    const nodes = [a, b, c, outside]
+    const horizontal = arrangeCreativeSelection(nodes, [a, b, c], readSelectionCommand({ command: 'arrange', orientation: 'horizontal', gap: 37 }))
+    expect(horizontal.map((node) => node.position)).toEqual([{ x: 10, y: 5 }, { x: 304, y: 5 }, { x: 147, y: 5 }, { x: 900, y: 900 }])
+    expect(horizontal[3]).toBe(outside)
+    const verticalData = example.components.find((item) => item.id === 'vertical-storyboard')!.data
+    const vertical = arrangeCreativeSelection(nodes, [a, b, c], readSelectionCommand(verticalData))
+    expect(vertical.map((node) => node.position)).toEqual([{ x: 10, y: 191 }, { x: 10, y: 5 }, { x: 10, y: 103 }, { x: 900, y: 900 }])
+    expect(vertical[3]).toBe(outside)
+  })
+  it('uses the bundled media tool mode to split the selected crop', () => {
+    const tool = readMediaTool(data('media_tool'))
+    expect(tool.mode).toBe('four')
+    expect(splitCropIntoPixels(100, 80, { x: 0, y: 0, width: 1, height: 1 }, tool.mode)).toEqual([
+      { x: 0, y: 0, width: 50, height: 40, column: 0, row: 0 },
+      { x: 50, y: 0, width: 50, height: 40, column: 1, row: 0 },
+      { x: 0, y: 40, width: 50, height: 40, column: 0, row: 1 },
+      { x: 50, y: 40, width: 50, height: 40, column: 1, row: 1 },
+    ])
   })
   it('paints the local source in the editable frame and clips cover mode before rendering text', () => {
     const layout = readPosterLayout(data('poster_layout'))

@@ -21,6 +21,27 @@
       }
     },
     {
+      "id": "interview-two-camera",
+      "version": "1.0.0",
+      "name": "访谈双机位",
+      "description": "在导演台搭建可编辑访谈场景，使用左右视角与环绕运镜。",
+      "author": "Pi-Paper",
+      "kind": "package",
+      "components": [
+        "director_scene",
+        "director_camera",
+        "director_motion"
+      ],
+      "path": "marketplace/packages/interview-two-camera-1.0.0.json",
+      "size": 3468,
+      "sha256": "9a51b4be0dcbf61b77787ecc657b6773049a21a9f751379f94a1a6f754066530",
+      "target": {
+        "product": "Pi-Paper",
+        "minVersion": "0.1.0",
+        "maxVersion": "0.1.99999"
+      }
+    },
+    {
       "id": "pi-storyboard-brief",
       "version": "1.0.0",
       "name": "storyboard-brief",

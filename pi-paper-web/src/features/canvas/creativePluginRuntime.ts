@@ -1,6 +1,8 @@
 import { t as uiText } from '@/lib/i18n'
 import type { DirectorCamera, DirectorObject } from './director/types'
 import { CHARACTER_POSES, PROP_KINDS, PRIMITIVE_KINDS } from './director/catalog'
+import { arrangeCanvasGroupNodes } from './canvasGroupUtils'
+import type { FlowNode } from './canvasStore'
 import type { CreativeMediaTool, CreativeMotion, CreativeScene, CreativeSelectionCommand, CreativeStoryboard, PosterLayout, StoryboardField } from './creativePluginTypes'
 
 const invalid = (): never => { throw new Error(uiText('创作组件数据无效。')) }
@@ -58,6 +60,13 @@ export function readSelectionCommand(raw: unknown): CreativeSelectionCommand {
   const v = exact(raw, ['command', 'orientation', 'gap'])
   if (v.command !== 'arrange' || (v.orientation !== 'horizontal' && v.orientation !== 'vertical')) return invalid()
   return { command: v.command, orientation: v.orientation, gap: number(v.gap, 0, 500) }
+}
+/** Preserve the selected nodes' spatial order on the axis being arranged. */
+export function arrangeCreativeSelection(nodes: FlowNode[], selected: FlowNode[], command: CreativeSelectionCommand): FlowNode[] {
+  const ordered = [...selected].sort((a, b) => command.orientation === 'horizontal'
+    ? a.position.x - b.position.x || a.position.y - b.position.y
+    : a.position.y - b.position.y || a.position.x - b.position.x)
+  return arrangeCanvasGroupNodes(nodes, ordered.map((node) => node.id), command.orientation, command.gap)
 }
 export function readStoryboard(raw: unknown): CreativeStoryboard {
   const v = exact(raw, ['fields'])
