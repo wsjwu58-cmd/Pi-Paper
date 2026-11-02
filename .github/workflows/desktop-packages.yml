@@ -1,6 +1,7 @@
 name: Desktop installers
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: ['codex/desktop-packages-*']
@@ -78,8 +79,40 @@ jobs:
       - name: Create installers
         working-directory: pi-paper-desktop
         run: npx electron-builder --config electron-builder.cjs --${{ matrix.platform }} --${{ matrix.arch }} --publish never
-      - name: Verify packaged Electron runtime
+      - name: Verify packaged Electron runtime in Node mode
         run: node pi-paper-desktop/scripts/verify-packaged.cjs
+      # The marketplace GUI smoke uses the installed resources with the test
+      # harness Electron. verify-packaged separately runs the shipped binary in Node mode.
+      - name: Exercise marketplace UI with Windows installed resources
+        if: matrix.platform == 'win'
+        shell: pwsh
+        working-directory: pi-paper-desktop
+        run: |
+          $installer = (Get-ChildItem release/*.exe | Select-Object -First 1).FullName
+          $target = Join-Path $env:RUNNER_TEMP 'marketplace-install'
+          $proc = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList '/S', "/D=$target"
+          if ($proc.ExitCode -ne 0) { throw "Installer exited with $($proc.ExitCode)" }
+          node scripts/verify-packaged.cjs "--executable=$target/Pi-Paper.exe" "--app-dir=$target/resources/app"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node node_modules/electron/cli.js scripts/smoke-marketplace.cjs "--resources=$target/resources/app"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise marketplace UI with Linux AppImage resources
+        if: matrix.platform == 'linux'
+        working-directory: pi-paper-desktop
+        run: |
+          release/*.AppImage --appimage-extract >/dev/null
+          LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            node scripts/verify-packaged.cjs --executable=squashfs-root/pi-paper --app-dir=squashfs-root/resources/app
+          xvfb-run -a node node_modules/electron/cli.js scripts/smoke-marketplace.cjs --resources=squashfs-root/resources/app --no-sandbox
+      - name: Exercise marketplace UI with macOS disk image resources
+        if: matrix.platform == 'mac'
+        working-directory: pi-paper-desktop
+        run: |
+          mountpoint=$(mktemp -d)
+          hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" release/*.dmg
+          trap 'hdiutil detach "$mountpoint"' EXIT
+          node scripts/verify-packaged.cjs "--executable=$mountpoint/Pi-Paper.app/Contents/MacOS/Pi-Paper" "--app-dir=$mountpoint/Pi-Paper.app/Contents/Resources/app"
+          node node_modules/electron/cli.js scripts/smoke-marketplace.cjs "--resources=$mountpoint/Pi-Paper.app/Contents/Resources/app"
       - name: Generate checksums
         run: node pi-paper-desktop/scripts/package-checksums.cjs
       - name: Upload installers

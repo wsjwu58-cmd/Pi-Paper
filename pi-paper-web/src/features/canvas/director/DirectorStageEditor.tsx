@@ -240,7 +240,7 @@ export function DirectorStageEditor({
 
   const markDirty = () => { setDirty(true); setUndoCreative(null) }
 
-  const useCreativeItem = async (packageId: string, componentId: string) => {
+  const applyCreativeItem = async (packageId: string, componentId: string) => {
     if (creativeBusy) return
     setCreativeBusy(true)
     try {
@@ -414,7 +414,7 @@ export function DirectorStageEditor({
             <p className="mb-1 text-[11px] font-bold text-[#555]">{uiText('已启用导演组件')}</p>
             <p className="mb-2 text-[10px] leading-4 text-[#888]">{uiText('场景追加对象并设置机位；机位和运镜可继续调整。')}</p>
             {creativeItems.map(({ packageId, component }) => <button key={packageId + ':' + component.id} type="button" disabled={creativeBusy}
-              onClick={() => void useCreativeItem(packageId, component.id)} className="mb-1 block w-full rounded-lg bg-[#f6f6f8] px-2 py-1.5 text-left text-[11px] font-semibold text-[#444] hover:bg-black/10 disabled:opacity-50">{uiText(component.name)}</button>)}
+              onClick={() => void applyCreativeItem(packageId, component.id)} className="mb-1 block w-full rounded-lg bg-[#f6f6f8] px-2 py-1.5 text-left text-[11px] font-semibold text-[#444] hover:bg-black/10 disabled:opacity-50">{uiText(component.name)}</button>)}
             {undoCreative && <button type="button" onClick={() => { setObjects(undoCreative.objects); setCamera(undoCreative.camera); setMotion(undoCreative.motion); setPlaying(false); setUndoCreative(null); setDirty(true) }} className="mt-1 text-[11px] font-semibold text-[#315a96]">{uiText('撤销插件应用')}</button>}
           </div>}
         </aside>

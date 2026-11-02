@@ -41,3 +41,5 @@ node pi-paper-desktop/node_modules/electron/cli.js pi-paper-desktop/scripts/smok
 在 Codex 中把本会话的 `plugin-marketplace-mcp/pi-paper` worktree 选为工作目录，运行 `git status -sb` 确认本地分支为 `codex/plugin-marketplace-mcp`。从同一仓库的其他目录运行 `git worktree list` 可找到这个目录的绝对路径。发布目标是 `origin/feat/desktop-local-migration`。换机器时可在克隆中从该远程分支重建 worktree。
 
 2026-11-02 在该 worktree 的 Node 24 环境重跑前端完整套件，34 个文件、166 项测试通过。桌面侧覆盖市场、连接器、创作组件、在线目录、项目导航、画布校验、项目 Skill 与 Renderer 来源校验，共 64 项通过。从干净检出构建时，先按桌面打包流程恢复公开模型目录（`node pi-paper-desktop/scripts/restore-model-data.cjs`）。
+
+功能提交 `68cebaf` 的独立打包和 `--staged --online` GUI 验收在此 worktree 通过，导演与海报编辑结果可读回，生成任务为零。原工作区针对更早 ARM64 应用包的自检只覆盖该旧包。前端 lint 发现导演组件按钮的普通回调误用了 Hook 命名，改名后前端 lint 退出码为 0。
