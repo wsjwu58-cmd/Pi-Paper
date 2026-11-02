@@ -65,6 +65,7 @@ import {
 import type { DesktopCanvas, DesktopMcpCanvasFlushRequest, DesktopMcpEvent, DesktopMcpPendingAction, DesktopMcpProviderInputRequest, DesktopProviderConfiguration } from '@/desktop/desktop-bridge'
 import { providerConfigurationRefreshQueryKeys } from '@/features/providers/providerConfigurationEvents'
 import { canvasMotionDuration, CANVAS_MOTION, markNodeArrival, useLayoutMotion, useSoftValue } from './canvasMotion'
+import { canvasPageQueryOptions, canHydrateCanvasPage } from './canvasPageQuery'
 
 const saveDebounce = 500
 const edgeTypes = { default: GenerationReferenceEdge }
@@ -247,20 +248,24 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     return () => window.removeEventListener('vp-open-node-plugin-presets', openNodePresets)
   }, [])
 
+  const desktopMode = isDesktopRuntime()
+  const [desktopHydratedCanvasId, setDesktopHydratedCanvasId] = useState<string | null>(null)
   const {
     data: loadedCanvas,
     isLoading,
     isError,
+    isSuccess,
+    isFetchedAfterMount,
     error,
     refetch,
-  } = useQuery({
-    queryKey: ['canvas', canvasId],
-    queryFn: () => loadCanvasPort(canvasId),
-    retry: 1,
-  })
-  const detail = loadedCanvas?.detail
-  const desktopProjectId = loadedCanvas?.projectId
-  const desktopMode = isDesktopRuntime()
+  } = useQuery(canvasPageQueryOptions(canvasId, desktopMode, loadCanvasPort))
+  // Cached snapshots remain useful to Web, but desktop must not display or
+  // register one until this page's local-core read has completed successfully.
+  const canHydrate = canHydrateCanvasPage(desktopMode, { isFetchedAfterMount, isSuccess })
+  const detail = canHydrate ? loadedCanvas?.detail : undefined
+  const desktopProjectId = canHydrate ? loadedCanvas?.projectId : undefined
+  const desktopCanvasMatches = !desktopMode || Boolean(desktopProjectId && detail && sid(detail.canvas.id) === canvasId)
+  const desktopPageHydrated = !desktopMode || Boolean(canHydrate && desktopHydratedCanvasId === canvasId && desktopCanvasMatches)
 
   const changeMcpCanvasBarrierPhase = useCallback((phase: 'idle' | 'pending' | 'active') => {
     mcpCanvasBarrierPhaseRef.current = phase
@@ -336,11 +341,12 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     // any stale dirty flag so a refresh (or an Agent write) cannot trigger a
     // full-save/version bump loop immediately after hydration.
     setDirty(false)
+    if (desktopMode && desktopCanvasMatches) setDesktopHydratedCanvasId(canvasId)
     window.setTimeout(() => {
       hydratingRef.current = false
     }, 0)
     // 仅在画布 detail 变化时整表 hydrate；models 单独注入，避免覆盖已编辑的 prompt
-  }, [canvasId, detail, setCanvas, setNodes, setEdges, setGroups, setStacks, setDirty, selectNode, selectGroup])
+  }, [canvasId, detail, desktopCanvasMatches, desktopMode, setCanvas, setNodes, setEdges, setGroups, setStacks, setDirty, selectNode, selectGroup])
 
   useEffect(() => {
     if (!models) return
@@ -616,7 +622,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
 
   useEffect(() => {
     const bridge = window.vibepaperDesktop
-    if (!desktopMode || !bridge || !desktopProjectId) return
+    if (!desktopMode || !desktopPageHydrated || !bridge || !desktopProjectId) return
     let disposed = false
     const barrierRequests = mcpCanvasBarrierRequestsRef.current
     const scopeKey = `${desktopProjectId}:${canvasId}`
@@ -824,7 +830,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       void bridge.setMcpCanvasReady({ projectId: desktopProjectId, canvasId, ready: false }).catch(() => undefined)
     }
   }, [
-    canvasId, changeMcpCanvasBarrierPhase, desktopMode, desktopProjectId, flushDesktopEdits,
+    canvasId, changeMcpCanvasBarrierPhase, desktopMode, desktopPageHydrated, desktopProjectId, flushDesktopEdits,
     models, queryClient, selectGroup, selectNode, setAgentOpen, setCanvas, setDirty, setEdges, setGroups, setNodes, setSavedVersion, setStacks,
   ])
 
@@ -2106,7 +2112,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     [stacks, nodes],
   )
 
-  if (isLoading) {
+  if (isLoading || (desktopMode && !isError && (!canHydrate || (desktopCanvasMatches && !desktopPageHydrated)))) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3 bg-[#f2f2f2]">
         <Spinner className="h-8 w-8" />
@@ -2115,7 +2121,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
     )
   }
 
-  if (isError || !detail) {
+  if (isError || !detail || !desktopCanvasMatches) {
     const msg = error instanceof Error ? error.message : uiText("画布加载失败")
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-4 bg-[#f2f2f2] px-6 text-center">

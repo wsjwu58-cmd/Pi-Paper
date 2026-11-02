@@ -9,10 +9,10 @@
   },
   "artifact": {
     "appVersion": "0.1.0",
-    "executableSha256": "3372e5d62bac849a884052852d7dda7dd07a73f3c3791794c7d231d6854bc03f",
+    "executableSha256": "c9e4beb31a079dcbb4f46fe6104111dcdd302da90b1808f071fb1df0c332a6ba",
     "packageJsonSha256": "220afa1eab206d3d9508c9b1b5b0288e68c82087fff110f9eb95700090be4c01",
     "dmgAssociationVerified": true,
-    "dmgSha256": "6a765a1064c797c870c096b277fdf8e8a38bf88fd482617e063ac06f677c4f3c"
+    "dmgSha256": "61e9c50a515b169b96aa37068ee513ab95da986ced976e110312e751225e12c5"
   },
   "checks": {
     "originalWorkspace": true,
@@ -61,6 +61,7 @@
       "textRows": 2,
       "selectedOnly": true,
       "rowAndFieldOrder": true,
+      "canvasReadyOnReopen": true,
       "utf8Bom": true,
       "formulaEscaping": true,
       "csvQuoting": true,
@@ -84,6 +85,6 @@
     "secondExit": "cdp-browser-close"
   },
   "bundleEntriesCompared": 3016,
-  "bundleContentAndSymlinkDigest": "3e13d1f4b4e4769092b1e3e88612b253f015f4e229a5de2f5f55480fe681cacf",
+  "bundleContentAndSymlinkDigest": "4da45a2580606dbb87a93b7f0a93dbf59796aabec59efcb901c9a6080a9f24c2",
   "systemInstall": "/Applications/Pi-Paper.app"
 }

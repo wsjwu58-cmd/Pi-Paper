@@ -88,6 +88,9 @@ async function reopenCanvas(ctx) {
   await until(cdp, `location.pathname.startsWith('/canvas/') && Boolean(document.querySelector('[data-testid=mcp-canvas-page] .react-flow'))
     && window.vibepaperDesktop.getActiveProject().then(p => p?.projectId === ${JSON.stringify(project.projectId)} && p?.canvasId === ${JSON.stringify(project.canvasId)})`)
   await until(cdp, "document.querySelectorAll('.react-flow__node.selected').length === 0")
+  await until(cdp, `window.vibepaperDesktop.getMcpState().then(state => state.canvasReady
+    && state.activeCanvas?.projectId === ${JSON.stringify(project.projectId)} && state.activeCanvas?.canvasId === ${JSON.stringify(project.canvasId)})`, 10_000)
+  assert.equal(await cdp.evaluate("document.body.innerText.includes('MCP 画布同步未就绪，请重新打开画布。')"), false)
 }
 async function openPanel(ctx) {
   if (!await ctx.cdp.evaluate("Boolean(document.querySelector('aside[aria-label=插件组件]'))")) await ctx.helpers.button(ctx.cdp, '插件组件')
@@ -216,7 +219,7 @@ async function runStoryboard(ctx, fixture) {
         staticCsv: `storyboard-exports/${FILES.static}`,
         csvSha256: { text: digest(textBytes), director: digest(directorBytes), static: digest(staticBytes) },
         csvBytes: { text: textBytes.length, director: directorBytes.length, static: staticBytes.length },
-        textRows: 2, selectedOnly: true, rowAndFieldOrder: true,
+        textRows: 2, selectedOnly: true, rowAndFieldOrder: true, canvasReadyOnReopen: true,
         utf8Bom: true, formulaEscaping: true, csvQuoting: true, multiline: true, directorCamera: true, directorMotion: true,
         staticCamera: true, taskCount: 0, mcpEnabled: false, clientCount: 0, downloadControl },
       sourceHash: originalSourceHash,

@@ -86,7 +86,7 @@ node pi-paper-desktop/scripts/smoke-installed-marketplace-macos.cjs \
 
 ### Mac 安装版海报 PNG 与分镜 CSV（2026-11-02）
 
-从 `/Applications/Pi-Paper.app` 通过 Launch Services 启动，在隔离项目中通过原图片编辑器、市场组件面板和分镜导出窗口操作。最终 DMG 的 SHA-256 为 `6a765a1064c797c870c096b277fdf8e8a38bf88fd482617e063ac06f677c4f3c`。只读挂载、复制和更新系统应用后，比对了 3,016 个文件及符号链接。两个正常退出之间重开同一项目，生成任务与 MCP 客户端授权均为零。[验收数据](macos-exports/checks.json)
+从 `/Applications/Pi-Paper.app` 通过 Launch Services 启动，在隔离项目中通过原图片编辑器、市场组件面板和分镜导出窗口操作。最终 DMG 的 SHA-256 为 `61e9c50a515b169b96aa37068ee513ab95da986ced976e110312e751225e12c5`。只读挂载、复制和更新系统应用后，比对了 3,016 个文件及符号链接。两个正常退出之间重开同一项目，生成任务与 MCP 客户端授权均为零。[验收数据](macos-exports/checks.json)
 
 | 验收对象 | 实际文件和读回结果 |
 | --- | --- |
@@ -94,6 +94,8 @@ node pi-paper-desktop/scripts/smoke-installed-marketplace-macos.cjs \
 | 文本分镜 | 选中两个文本节点，调整字段和镜头顺序，下载 237 字节 CSV。核对 UTF-8 BOM、行序、字段顺序、中文、逗号、引号、单元格内换行以及公式前缀保护。独立 CSV 解析器读出两行数据，其余节点未混入。[文本 CSV](macos-exports/storyboard-exports/storyboard-text.csv) · [导出选区](macos-exports/storyboard-selection.jpg) |
 | 导演分镜 | 分别选择静态和动态导演节点，单独导出运镜列。静态文件含方向、俯仰与距离；动态文件另含 -30° 到 30° 的起止视角和 6 秒时长。重启后项目的原文本、相机和运镜参数均匹配，三份下载文件的 SHA-256 与首次导出一致。[静态 CSV](macos-exports/storyboard-exports/storyboard-director-static.csv) · [动态 CSV](macos-exports/storyboard-exports/storyboard-director-motion.csv) |
 
-旧包实测曾将有运镜的导演镜头导出为空单元格。现保留普通文本运镜，并按导演节点实际保存的结构输出机位和运动参数。海报在全图保存时也曾覆盖源图的已有提示词字段。修复后，桌面导入素材沿用 Local Core 返回的节点，原图提示词编辑和海报保存同步写入存储所读取的字段。回归覆盖数据镜像不一致及并发编辑，完整前端测试 177 项通过。
+旧包实测曾将有运镜的导演镜头导出为空单元格。现保留普通文本运镜，并按导演节点实际保存的结构输出机位和运动参数。海报在全图保存时也曾覆盖源图的已有提示词字段。修复后，桌面导入素材沿用 Local Core 返回的节点，原图提示词编辑和海报保存同步写入存储所读取的字段。回归覆盖数据镜像不一致及并发编辑，完整前端测试 180 项通过。
+
+复核首次导出截图时还发现，快速重开同一项目会用缓存版本 4 登记 MCP，而海报保存后实际已到版本 7。桌面现在等待本次画布读取成功并载入后再登记，保留 Main 的版本校验。最终安装版在每次重开时均从 Main 读到对应画布已就绪，未显示同步错误；再次导出的 PNG 和三份 CSV 与首次验收逐字节一致。
 
 复验时用 Node 24 ARM64 运行 `pi-paper-desktop/scripts/smoke-installed-marketplace-macos.cjs`，在前述 Mac 验收命令末尾加 `--exports`。脚本将真实 PNG 和三份 CSV 保存到指定证据目录。PNG 来自项目素材，CSV 通过原下载按钮生成，仅将下载目的地定向到隔离目录。
