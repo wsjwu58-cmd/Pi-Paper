@@ -210,15 +210,22 @@ export function DirectorStageEditor({
   useEffect(() => {
     if (!open || !window.vibepaperDesktop?.marketplace) { setCreativeItems([]); return }
     let cancelled = false
+    let request = 0
     const bridge = window.vibepaperDesktop
-    void bridge.getActiveProject().then(async (project) => {
-      if (!project || String(project.canvasId) !== String(canvasId)) return []
-      const packages = await bridge.marketplace.list(project.projectId)
-      return packages.flatMap((pkg) => pkg.components
-        .filter((component) => component.installed && component.enabled && ['director_scene', 'director_camera', 'director_motion'].includes(component.type))
-        .map((component) => ({ packageId: pkg.id, component })))
-    }).then((items) => { if (!cancelled) setCreativeItems(items) }).catch(() => { if (!cancelled) setCreativeItems([]) })
-    return () => { cancelled = true }
+    const refresh = () => {
+      const currentRequest = ++request
+      void bridge.getActiveProject().then(async (project) => {
+        if (!project || String(project.canvasId) !== String(canvasId)) return []
+        const packages = await bridge.marketplace.list(project.projectId)
+        return packages.flatMap((pkg) => pkg.components
+          .filter((component) => component.installed && component.enabled && ['director_scene', 'director_camera', 'director_motion'].includes(component.type))
+          .map((component) => ({ packageId: pkg.id, component })))
+      }).then((items) => { if (!cancelled && request === currentRequest) setCreativeItems(items) })
+        .catch(() => { if (!cancelled && request === currentRequest) setCreativeItems([]) })
+    }
+    const unsubscribe = bridge.marketplace.subscribeMarketplaceChanges?.(() => refresh())
+    refresh()
+    return () => { cancelled = true; unsubscribe?.() }
   }, [open, canvasId])
 
   useEffect(() => {

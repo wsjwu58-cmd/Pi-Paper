@@ -1,0 +1,16 @@
+# Desktop Agent and plugin UI correction — 2026-11-03
+
+The installed `/Applications/Pi-Paper.app` still contained an older renderer, even though the cat welcome asset had been committed and included in a newer DMG. The active project had only the `product-stage` director scene installed and enabled. The canvas plugin panel filtered out director components, so it incorrectly claimed that no components were enabled. The Agent model and preference controls both led to the old Agnes-only configuration dialog; the bottom controls also overlapped at the minimum panel width.
+
+## Changes and local verification
+
+- The original canvas plugin panel now lists enabled director components and custom node definitions. Director components offer an entry to create a director node, then explicitly direct the user to apply the scene in its editor. The original director editor refreshes its enabled component list when market state changes.
+- Agent model selection opens the available-model menu, including an empty state and provider configuration link. Generation preferences show desktop provider defaults in the Agent panel. The old Agnes-only modal is removed. Returning from provider settings restores the in-memory draft, session, model, and unsent references.
+- The desktop Agent header and composer footer use two rows so the settings, close, mode, role, model, preference, Skill, and send controls remain reachable at 300px and 380px. The Web layout retains its original single-row structure.
+- Frontend suite: **188 passed**. Desktop suite: **568 total, 563 passed, 5 skipped, 0 failed**. Packaged runtime smoke, `codesign --verify --deep --strict`, and a read-only DMG mount comparison passed. `scripts/smoke-marketplace.cjs --staged` passed the plugin, poster, storyboard, custom-node, and director flows without generation tasks.
+- The isolated packaged-app UI smoke in `pi-paper-desktop/scripts/smoke-installed-agent-plugin-ui-macos.cjs` passed on the final build. It checked the cat image, six composer controls and the seven navigation controls plus close at 300px and 380px using real pointer hit tests, the distinct model and preference destinations, a director scene installed as the only component, scene application, and persistence after restart. It used a temporary project/profile, created zero generation tasks, and did not enable MCP or provide credentials. Local report: `/private/tmp/pi-paper-ui-smoke-evidence/corrective-ui-JPGQvw/report.json`.
+- The updated bundle was installed at `/Applications/Pi-Paper.app` and restarted. The original project reopened with its saved state. In that installed window, the cat appeared, `商品棚拍场景` was listed in `插件组件`, the model control opened the model menu, and the preference control opened the preference page. The old application was archived under `~/Library/Application Support/Pi-Paper Install Backups/` before replacement.
+
+Final local DMG: `~/Desktop/Pi-Paper-0.1.0-mac-arm64.dmg`, SHA-256 `c688364adfd500f6c031f91c712a8b32aef5a243163141d67f83a8204dee3b94`. The installed renderer index SHA-256 is `0b2d6f2d2031e4007589eef0044af01cf780ed5186b946143ba316d0a04ec7d2`.
+
+This UI correction did not run a paid provider generation, use a real model credential, or change the application's ad-hoc signing/notarization status.

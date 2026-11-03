@@ -67,11 +67,13 @@ import { DramaAssetsTab } from './DramaAssetsTab'
 import { getEventStreamReconnectDelay, scrollChatToBottom, shouldReloadSessionAfterStream } from './agentEventStream'
 import { SkillCommandPicker } from './skillCommandPicker'
 import { filterSkillCommandItems } from './skillCommandPickerUtils'
+import { DesktopGenerationPreferences } from './DesktopGenerationPreferences'
 
 const AGENT_PANEL_DEFAULT_WIDTH = 380
 const AGENT_PANEL_MIN_WIDTH = 300
 const AGENT_PANEL_MAX_WIDTH = 720
 const DEFAULT_TEXT_MODEL = 'agnes-2.5-flash'
+const modelSettingsComposerState = new Map<string, { refs: ComposerRef[]; skill: SkillView | null }>()
 
 function resolvePreferredTextModel(name?: string | null) {
   if (!name || /deepseek|qwen-max|gpt-4o-mini/i.test(name)) return DEFAULT_TEXT_MODEL
@@ -142,7 +144,7 @@ export interface AgentPanelDesktopAdapter {
   onSendWithReferences?: (input: { selectedNodeIds: string[]; selectedSkillId?: string }) => Promise<boolean>
   onStop?: () => Promise<void> | void
   onConfirm?: (confirmation: AgentConfirmation, accept: boolean) => Promise<void>
-  onConfigure: () => void
+  onConfigure: (beforeNavigate?: () => void) => void
   onClose: () => void
 }
 
@@ -176,8 +178,9 @@ function WebAgentPanel({
   externalMcpConfirmations: AgentExternalMcpConfirmation[]
   onResolveMcpConfirmation?: (proposalId: string, decision: 'approve' | 'reject') => Promise<void>
 }) {
-  useUiLanguage()
+  const language = useUiLanguage()
   const desktop = desktopAdapter !== undefined
+  const closeAgentLabel = `${uiText('关闭')}${language === 'en' ? ' ' : ''}${uiText('对话')}`
   const storeOpen = useCanvasStore((s) => s.agentOpen)
   const open = storeOpen
   const presence = useSoftPresence(open)
@@ -202,9 +205,11 @@ function WebAgentPanel({
   const [busy, setBusy] = useState(false)
   const [confirmationClock, setConfirmationClock] = useState(0)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
-  const [tab, setTab] = useState<'chat' | 'pref' | 'skills' | 'usage' | 'history' | 'drama'>('chat')
+  const [tab, setTab] = useState<'chat' | 'pref' | 'memory' | 'skills' | 'usage' | 'history' | 'drama'>('chat')
   useSoftChange(tab, panelContentRef)
   const [composerRefs, setComposerRefs] = useState<ComposerRef[]>([])
+  const composerStateRef = useRef({ refs: composerRefs, skill: selectedSkill })
+  composerStateRef.current = { refs: composerRefs, skill: selectedSkill }
   const previousSelectedNodeIdsRef = useRef<Set<string>>(new Set())
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -225,6 +230,15 @@ function WebAgentPanel({
   const confirmingActionRef = useRef<string | null>(null)
   const busyRef = useRef(false)
   const canvasId = canvas?.canvas.id
+  useEffect(() => {
+    if (!desktop || !desktopAdapter?.projectId || canvasId == null) return
+    const key = JSON.stringify([desktopAdapter.projectId, String(canvasId)])
+    const saved = modelSettingsComposerState.get(key)
+    if (!saved) return
+    setComposerRefs(saved.refs)
+    setSelectedSkill(saved.skill)
+    modelSettingsComposerState.delete(key)
+  }, [desktop, desktopAdapter?.projectId, canvasId])
   const previousCanvasIdRef = useRef<string | number | undefined>(undefined)
   const lastEventSeqRef = useRef(0)
   const queryClient = useQueryClient()
@@ -260,7 +274,12 @@ function WebAgentPanel({
     else setOpen(false)
   }
   const openConfiguration = () => {
-    if (desktop) desktopAdapter?.onConfigure()
+    if (desktop) {
+      desktopAdapter?.onConfigure(() => {
+        if (!desktopAdapter.projectId || canvasId == null) return
+        modelSettingsComposerState.set(JSON.stringify([desktopAdapter.projectId, String(canvasId)]), composerStateRef.current)
+      })
+    }
     else setTab('pref')
   }
 
@@ -1177,20 +1196,35 @@ function WebAgentPanel({
       </div>
       <div ref={panelContentRef} className="flex h-full flex-col" style={{ width }}>
       {tab !== 'skills' && tab !== 'drama' && (
-      <div className="flex items-center justify-between px-4 py-3.5">
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#111] text-white">
+      <div data-testid={desktop ? 'desktop-agent-header' : undefined} className={desktop ? 'flex shrink-0 flex-col px-4 py-3.5' : 'flex items-center justify-between px-4 py-3.5'}>
+        <div className={desktop ? 'flex min-w-0 items-center justify-between' : 'contents'}>
+        <div className={desktop ? 'flex min-w-0 items-center gap-2.5' : 'flex items-center gap-2.5'}>
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#111] text-white">
             <Bot size={16} />
           </span>
-          <div>
+          <div className={desktop ? 'min-w-0' : undefined}>
             <p className="max-w-[140px] truncate text-[14px] font-bold text-[#111]">{panelSessionTitle}</p>
             <p className="text-[11px] text-[#999]">Paper Agent</p>
           </div>
         </div>
-        <div className="flex items-center gap-0.5">
+        {desktop && (
+          <button
+            type="button"
+            data-agent-header-control="close"
+            aria-label={closeAgentLabel}
+            title={closeAgentLabel}
+            onClick={closePanel}
+            className="ml-1 shrink-0 rounded-full p-2 text-[#888] hover:bg-black/[0.04]"
+          >
+            <X size={16} />
+          </button>
+        )}
+        </div>
+        <div data-testid={desktop ? 'desktop-agent-header-navigation' : undefined} className={desktop ? 'mt-1 flex min-w-0 items-center justify-between' : 'flex items-center gap-0.5'}>
           {tab === 'chat' ? (
             <button
               type="button"
+              data-agent-header-control={desktop ? 'new-session' : undefined}
               onClick={() => {
                 if (desktop) {
                   setComposerRefs([])
@@ -1205,6 +1239,7 @@ function WebAgentPanel({
                 }
               }}
               disabled={desktop && desktopAdapter?.creating}
+              aria-label={uiText("新对话")}
               title={uiText("新对话")}
               className="rounded-full p-2 text-[#888] transition hover:bg-black/[0.04] disabled:opacity-50"
             >
@@ -1219,9 +1254,10 @@ function WebAgentPanel({
           <NavIcon tab="usage" current={tab} set={setTab} icon={BarChart3} label={uiText("用量")} />
           {desktop ? (
             <>
-              <NavIcon tab="pref" current={tab} set={setTab} icon={Brain} label={uiText("记忆")} />
+              <NavIcon tab="memory" current={tab} set={setTab} icon={Brain} label={uiText("记忆")} />
               <button
                 type="button"
+                data-agent-header-control="model-settings"
                 onClick={openConfiguration}
                 title={uiText("模型设置")}
                 aria-label={uiText("模型设置")}
@@ -1233,13 +1269,15 @@ function WebAgentPanel({
           ) : (
             <NavIcon tab="pref" current={tab} set={setTab} icon={Settings2} label={uiText("偏好")} />
           )}
-          <button
+          {!desktop && <button
             type="button"
+            aria-label={closeAgentLabel}
+            title={closeAgentLabel}
             onClick={closePanel}
             className="ml-1 rounded-full p-2 text-[#888] hover:bg-black/[0.04]"
           >
             <X size={16} />
-          </button>
+          </button>}
         </div>
       </div>
       )}
@@ -1429,13 +1467,23 @@ function WebAgentPanel({
                       : uiText("描述创意或需求，@ 引用参考，/ 选择 Skill")
                   }
                   disabled={panelBusy || desktopSessionArchived}
-                  className="block min-h-[72px] w-full resize-none bg-transparent px-3 pb-12 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60"
+                  className={cn(
+                    'block min-h-[72px] w-full resize-none bg-transparent px-3 pt-3 text-[13px] leading-relaxed text-[var(--canvas-text)] outline-none placeholder:text-[var(--canvas-muted-soft)] disabled:opacity-60',
+                    desktop ? 'pb-2' : 'pb-12',
+                  )}
                 />
-                <div className="absolute bottom-2 left-2 right-2 z-10 flex min-w-0 items-center gap-1.5">
-                  <div className="min-w-0 flex-1">
+                <div
+                  data-testid={desktop ? 'desktop-agent-composer-footer' : undefined}
+                  className={desktop
+                    ? 'relative z-10 flex min-w-0 flex-col gap-1.5 px-2 pb-2'
+                    : 'absolute bottom-2 left-2 right-2 z-10 flex min-w-0 items-center gap-1.5'}
+                >
+                  <div className={desktop ? 'flex min-w-0 items-center gap-1.5' : 'contents'}>
+                  <div className={desktop ? 'min-w-[66px] flex-1' : 'min-w-0 flex-1'}>
                     <div className="flex min-w-0 items-center gap-0.5">
                       <button
                         type="button"
+                        data-agent-composer-control={desktop ? 'skill' : undefined}
                         aria-label={uiText("添加 Skill")}
                         title={uiText("添加 Skill")}
                         onClick={() => setTab('skills')}
@@ -1445,10 +1493,11 @@ function WebAgentPanel({
                       </button>
                       <button
                         type="button"
+                        data-agent-composer-control={desktop ? 'preferences' : undefined}
                         aria-label={uiText("生成偏好")}
                         title={uiText("生成偏好")}
-                        onClick={openConfiguration}
-                        className="relative flex size-8 items-center justify-center rounded-lg text-[var(--canvas-muted)] transition-colors hover:bg-[var(--canvas-hover)] hover:text-[var(--canvas-text)]"
+                        onClick={() => setTab('pref')}
+                        className={cn('relative flex size-8 items-center justify-center rounded-lg text-[var(--canvas-muted)] transition-colors hover:bg-[var(--canvas-hover)] hover:text-[var(--canvas-text)]', desktop && 'shrink-0')}
                       >
                         <SlidersHorizontal size={16} strokeWidth={2} className="size-4" />
                       </button>
@@ -1456,48 +1505,40 @@ function WebAgentPanel({
                   </div>
                   {desktop && desktopAdapter?.onSelectMode && (
                     <select
+                      data-agent-composer-control="mode"
                       aria-label={uiText("会话模式")}
                       value={desktopSession?.mode ?? 'standard'}
                       disabled={desktopAdapter.creating || desktopSessionArchived}
                       onChange={(event) => { void desktopAdapter.onSelectMode?.(event.target.value as 'standard' | 'creator') }}
-                      className="max-w-[76px] rounded-lg bg-transparent px-1 py-1 text-[11px] font-semibold text-[var(--canvas-muted)]"
+                      className="min-w-0 max-w-[76px] shrink rounded-lg bg-transparent px-1 py-1 text-[11px] font-semibold text-[var(--canvas-muted)]"
                     >
                       <option value="standard">{uiText("普通")}</option>
                       <option value="creator">{uiText("创造")}</option>
                     </select>
                   )}
                   {desktop && desktopAdapter?.onSelectRole && (
-                    <select aria-label={uiText('会话角色')} value={desktopAdapter.selectedRoleKey ?? ''}
+                    <select data-agent-composer-control="role" aria-label={uiText('会话角色')} value={desktopAdapter.selectedRoleKey ?? ''}
                       disabled={desktopAdapter.creating || desktopAdapter.sending || desktopSessionArchived}
                       onChange={(event) => { void desktopAdapter.onSelectRole?.(event.target.value) }}
-                      className="max-w-[100px] rounded-lg bg-transparent px-1 py-1 text-[11px] font-semibold text-[var(--canvas-muted)]">
+                      className="min-w-0 max-w-[100px] shrink rounded-lg bg-transparent px-1 py-1 text-[11px] font-semibold text-[var(--canvas-muted)]">
                       <option value="">{uiText('通用角色')}</option>
                       {desktopAdapter.selectedRoleKey && !desktopAdapter.roleOptions?.some((role) => `${role.binding.packageId}/${role.binding.componentId}/${role.binding.digest}` === desktopAdapter.selectedRoleKey) && <option value={desktopAdapter.selectedRoleKey}>{uiText('已选角色不可用')}</option>}
                       {desktopAdapter.roleOptions?.map((role) => <option key={`${role.binding.packageId}/${role.binding.componentId}/${role.binding.digest}`} value={`${role.binding.packageId}/${role.binding.componentId}/${role.binding.digest}`}>{uiText(role.name)}</option>)}
                     </select>
                   )}
-                  <div className="min-w-0 shrink">
+                  </div>
+                  <div className={desktop ? 'flex min-w-0 items-center gap-1.5' : 'contents'}>
+                  <div data-agent-composer-control={desktop ? 'model' : undefined} className={desktop ? 'min-w-0 flex-1' : 'min-w-0 shrink'}>
                     {desktop ? (
-                      desktopAdapter?.modelOptions?.length && desktopAdapter.onSelectModel ? (
-                        <ModelPicker
-                          composer
-                          models={desktopAdapter.modelOptions}
-                          value={desktopAdapter.configured ? desktopAdapter.selectedModelId ?? '' : ''}
-                          placeholder={desktopAdapter.modelLabel}
-                          onChange={(modelId) => { void desktopAdapter.onSelectModel?.(modelId) }}
-                          desktopProviderNames={desktopAdapter.providerNames}
-                          onConfigureModels={openConfiguration}
-                        />
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={openConfiguration}
-                          className="max-w-[140px] truncate rounded-lg px-2 py-1 text-[11px] font-semibold text-[#555] hover:bg-[var(--canvas-hover)]"
-                          title={desktopAdapter?.modelLabel || uiText("配置模型")}
-                        >
-                          {desktopAdapter?.modelLabel || uiText("配置模型")}
-                        </button>
-                      )
+                      <ModelPicker
+                        composer
+                        models={desktopAdapter?.modelOptions ?? []}
+                        value={desktopAdapter?.configured ? desktopAdapter.selectedModelId ?? '' : ''}
+                        placeholder={desktopAdapter?.modelLabel || uiText("选择 Agent 模型")}
+                        onChange={(modelId) => { void desktopAdapter?.onSelectModel?.(modelId) }}
+                        desktopProviderNames={desktopAdapter?.providerNames}
+                        onConfigureModels={openConfiguration}
+                      />
                     ) : (
                       <ModelPicker
                         composer
@@ -1523,20 +1564,23 @@ function WebAgentPanel({
                   {panelBusy && desktopAdapter?.onStop ? (
                     <button
                       type="button"
+                      data-agent-composer-control={desktop ? 'stop' : undefined}
                       onClick={stop}
                       title={uiText("停止")}
                       aria-label={uiText("停止")}
-                      className="inline-flex size-7 items-center justify-center rounded-lg bg-[var(--canvas-active)] text-[var(--canvas-active-text)] transition-colors"
+                      className={cn('inline-flex size-7 items-center justify-center rounded-lg bg-[var(--canvas-active)] text-[var(--canvas-active-text)] transition-colors', desktop && 'shrink-0')}
                     >
                       <Square size={12} strokeWidth={2.5} />
                     </button>
                   ) : !panelBusy ? (
                     <button
                       type="submit"
+                      data-agent-composer-control={desktop ? 'send' : undefined}
                       disabled={!panelDraft.trim() || hasPendingConfirmation || (desktop && (!desktopAdapter?.configured || desktopAdapter?.creating || desktopSessionArchived))}
                       aria-label={uiText("发送")}
                       className={cn(
                         'inline-flex size-7 items-center justify-center rounded-lg transition-colors',
+                        desktop && 'shrink-0',
                         panelDraft.trim() && !hasPendingConfirmation && (!desktop || desktopAdapter?.configured)
                           ? 'bg-[var(--canvas-active)] text-[var(--canvas-active-text)] hover:opacity-90'
                           : 'cursor-not-allowed bg-[var(--canvas-surface-muted)] text-[var(--canvas-muted-soft)]',
@@ -1545,6 +1589,7 @@ function WebAgentPanel({
                       <Send size={14} strokeWidth={2} className="size-3.5" />
                     </button>
                   ) : null}
+                  </div>
                 </div>
               </div>
             </form>
@@ -1552,7 +1597,10 @@ function WebAgentPanel({
         </div>
       )}
 
-      {tab === 'pref' && <PreferencesTab desktop={desktop} sessionId={panelSessionId} />}
+      {tab === 'pref' && (desktop && desktopAdapter
+        ? <DesktopGenerationPreferences onConfigure={openConfiguration} />
+        : <WebPreferencesTab />)}
+      {tab === 'memory' && desktop && <DesktopMemoryPreferences sessionId={panelSessionId} />}
       {desktop && desktopAdapter?.error && (
         <p role="alert" className="mx-3 mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{desktopAdapter.error}</p>
       )}
@@ -1684,9 +1732,9 @@ function NavIcon({
   icon: Icon,
   label,
 }: {
-  tab: 'chat' | 'pref' | 'skills' | 'usage' | 'history' | 'drama'
+  tab: 'chat' | 'pref' | 'memory' | 'skills' | 'usage' | 'history' | 'drama'
   current: string
-  set: (t: 'chat' | 'pref' | 'skills' | 'usage' | 'history' | 'drama') => void
+  set: (t: 'chat' | 'pref' | 'memory' | 'skills' | 'usage' | 'history' | 'drama') => void
   icon: React.ComponentType<{ size?: number }>
   label: string
 }) {
@@ -1694,7 +1742,9 @@ function NavIcon({
   return (
     <button
       type="button"
+      data-agent-header-control={tab}
       onClick={() => set(tab)}
+      aria-label={uiText(label)}
       title={uiText(label)}
       className={cn(
         'rounded-full p-2 transition',
@@ -1704,12 +1754,6 @@ function NavIcon({
       <Icon size={16} />
     </button>
   )
-}
-
-function PreferencesTab({ desktop = false, sessionId }: { desktop?: boolean; sessionId: string | number | null }) {
-  useUiLanguage()
-  if (desktop) return <DesktopMemoryPreferences sessionId={sessionId} />
-  return <WebPreferencesTab />
 }
 
 function WebPreferencesTab() {

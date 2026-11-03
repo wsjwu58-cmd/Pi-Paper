@@ -1681,6 +1681,25 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       const component = await enabledPluginComponent(packageId, componentId)
       const bridge = await assertPluginContext()
       const position = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
+      if (component.type === 'node_definition') {
+        // Use the same installed-version snapshot and node-creation path as
+        // the normal canvas add menu, after checking the current catalog again.
+        const packages = await bridge.marketplace.list(desktopProjectId!)
+        const item = projectNodeCatalog(packages).find((entry) => entry.packageId === packageId && entry.component.id === componentId)
+        if (!item) throw new Error(uiText('该组件已停用或卸载，请刷新后重试。'))
+        if (item.component.name !== component.name || JSON.stringify(item.component.data) !== JSON.stringify(component.data)) {
+          throw new Error(uiText('组件内容已变更，请重新应用。'))
+        }
+        await assertPluginContext()
+        await addNode(item.component.data.baseType, position.x, position.y, undefined, item)
+        return
+      }
+      if (component.type === 'director_scene' || component.type === 'director_camera' || component.type === 'director_motion') {
+        // The director editor owns application and undo of these components.
+        // Create an ordinary director node; the panel explains the next step.
+        await addNode('director', position.x, position.y)
+        return
+      }
       if (component.type === 'asset') {
         const asset = await bridge.marketplace.importAsset(desktopProjectId!, packageId, componentId)
         window.dispatchEvent(new Event('vp-assets-updated'))
@@ -1889,7 +1908,7 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
       pluginBusyRef.current = false
       setPluginBusy(false)
     }
-  }, [addAssetNode, askPluginConfirmation, assertPluginContext, canvasId, currentPluginSelection, desktopProjectId, enabledPluginComponent, flushDesktopEdits, persistDesktopChanges, pluginTarget, screenToFlowPosition, selectNode, setCanvas, setDirty, setEdges, setNodes])
+  }, [addAssetNode, addNode, askPluginConfirmation, assertPluginContext, canvasId, currentPluginSelection, desktopProjectId, enabledPluginComponent, flushDesktopEdits, persistDesktopChanges, pluginTarget, screenToFlowPosition, selectNode, setCanvas, setDirty, setEdges, setNodes])
 
   const undoLastArrangement = useCallback(async () => {
     if (!lastArrangement || !desktopProjectId || pluginBusyRef.current) return
@@ -2734,7 +2753,6 @@ function CanvasPageInner({ canvasId }: { canvasId: string }) {
           }))}
           onResolveMcpConfirmation={resolveMcpGenerationConfirmation}
         />}
-      {desktopMode && desktopAgent.settingsDialog}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { t as uiText, useUiLanguage } from '@/lib/i18n'
+import { t as uiText } from '@/lib/i18n'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
@@ -15,12 +15,16 @@ import {
 } from './agentEventEnvelope'
 import { isActionableConfirmation } from './confirmationState'
 import type { AgentChatMsg, AgentConfirmation } from './agentTypes'
-import type { DesktopAgnesModelCatalog, DesktopAgentMessage, DesktopAgentModelCatalog, DesktopAgentRoleBinding, DesktopAgentRoleOption, DesktopAgentSession, DesktopAgentSkill, DesktopProviderModel } from '@/desktop/desktop-bridge'
+import type { DesktopAgentMessage, DesktopAgentModelCatalog, DesktopAgentRoleBinding, DesktopAgentRoleOption, DesktopAgentSession, DesktopAgentSkill, DesktopProviderModel } from '@/desktop/desktop-bridge'
 import type { ModelInfo, SkillView } from '@/lib/types'
 import { useCanvasStore } from './canvasStore'
 import { nodeReferencesForComposer, refFromNode, type ComposerRef } from './agentNodeReferences'
 
 const bridge = window.vibepaperDesktop
+
+// Provider settings use a separate route. Keep the unsent composer text and
+// current session in memory while the canvas is unmounted for that route.
+const modelSettingsReturnState = new Map<string, { draft: string; sessionId: string | null; modelId: string }>()
 
 function toChatMessages(messages: DesktopAgentMessage[]): AgentChatMsg[] {
   return messages.map((message, index) => ({
@@ -100,9 +104,6 @@ export function useDesktopAgentController({
   onCanvasChanged: () => void
 }): AgentPanelDesktopAdapter & {
   onSendWithReferences: (input: { selectedNodeIds: string[]; selectedSkillId?: string }) => Promise<boolean>
-  settingsOpen: boolean
-  closeSettings: () => void
-  settingsDialog: React.ReactNode
 } {
   const navigate = useNavigate()
   const [sessions, setSessions] = useState<DesktopAgentSession[]>([])
@@ -112,7 +113,6 @@ export function useDesktopAgentController({
   const [sending, setSending] = useState(false)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
-  const [agnesCatalog, setAgnesCatalog] = useState<DesktopAgnesModelCatalog | null>(null)
   const [agentModelCatalog, setAgentModelCatalog] = useState<DesktopAgentModelCatalog | null>(null)
   const [selectedModelId, setSelectedModelId] = useState('')
   const [skills, setSkills] = useState<SkillView[]>([])
@@ -120,7 +120,6 @@ export function useDesktopAgentController({
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [roleOptions, setRoleOptions] = useState<DesktopAgentRoleOption[]>([])
   const [roleBinding, setRoleBinding] = useState<DesktopAgentRoleBinding | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const queryClient = useQueryClient()
   const activeSessionRef = useRef<string | null>(null)
   const activeRunIdRef = useRef<string | null>(null)
@@ -131,6 +130,11 @@ export function useDesktopAgentController({
   const sendingRef = useRef(false)
   const confirmingActionRef = useRef<string | null>(null)
   const skillRequestEpochRef = useRef(0)
+  const settingsNavigationRef = useRef(false)
+  const draftRef = useRef(draft)
+  const selectedModelIdRef = useRef(selectedModelId)
+  draftRef.current = draft
+  selectedModelIdRef.current = selectedModelId
 
   useEffect(() => {
     let live = true
@@ -263,15 +267,18 @@ export function useDesktopAgentController({
     sendingRef.current = false
     setSending(false)
     if (!bridge || !projectId) return
+    const returnKey = `${projectId}\0${canvasId}`
+    const returnState = modelSettingsReturnState.get(returnKey)
+    if (returnState) {
+      draftRef.current = returnState.draft
+      setDraft(returnState.draft)
+    }
     let current = true
     void Promise.allSettled([
-      bridge.getAgnesModels(),
       bridge.getAgentModelCatalog(),
       bridge.listAgentSessions(projectId),
-    ]).then(async ([agnes, agentCatalog, listed]) => {
+    ]).then(async ([agentCatalog, listed]) => {
       if (!current) return
-      if (agnes.status === 'fulfilled') setAgnesCatalog(agnes.value)
-      else setError(normalizeError(agnes.reason))
       if (agentCatalog.status === 'fulfilled') setAgentModelCatalog(agentCatalog.value)
       else setError(normalizeError(agentCatalog.reason))
       if (listed.status !== 'fulfilled') {
@@ -279,9 +286,16 @@ export function useDesktopAgentController({
         return
       }
       setSessions(listed.value)
-      const initial = listed.value[0]?.sessionId ?? null
-      const initialSession = listed.value[0]
+      const initialSession = returnState
+        ? listed.value.find((session) => session.sessionId === returnState.sessionId)
+        : listed.value[0]
+      const initial = initialSession?.sessionId ?? null
+      if (returnState) {
+        modelSettingsReturnState.delete(returnKey)
+      }
       setSelectedModelId(initialSession?.agentModelId
+        ?? (returnState && agentCatalog.status === 'fulfilled' && agentCatalog.value.models.some((model) => model.id === returnState.modelId)
+          ? returnState.modelId : undefined)
         ?? (agentCatalog.status === 'fulfilled' ? agentCatalog.value.defaultModelId ?? '' : ''))
       activeSessionRef.current = initial
       setActiveSessionId(initial)
@@ -680,11 +694,32 @@ export function useDesktopAgentController({
     }
   }, [loadSession, projectId])
 
-  const closeSettings = useCallback(() => setSettingsOpen(false), [])
-  const openProviderSettings = useCallback(() => {
-    setSettingsOpen(false)
-    navigate('/settings/providers', { state: { returnTo: window.location.pathname } })
-  }, [navigate])
+  const openProviderSettings = useCallback((beforeNavigate?: () => void) => {
+    if (!bridge || !projectId || settingsNavigationRef.current) return
+    settingsNavigationRef.current = true
+    void (async () => {
+      try {
+        await flushCanvas()
+        const activeProject = await bridge.getActiveProject()
+        const canvasState = useCanvasStore.getState()
+        if (activeProject?.projectId !== projectId || activeProject.canvasId !== canvasId
+          || !canvasState.canvas || String(canvasState.canvas.canvas.id) !== canvasId || canvasState.dirty) {
+          throw new Error('AGENT_CANVAS_CHANGED')
+        }
+        modelSettingsReturnState.set(`${projectId}\0${canvasId}`, {
+          draft: draftRef.current,
+          sessionId: activeSessionRef.current,
+          modelId: selectedModelIdRef.current,
+        })
+        beforeNavigate?.()
+        navigate('/settings/providers', { state: { returnTo: window.location.pathname } })
+      } catch (cause) {
+        setError(normalizeError(cause))
+      } finally {
+        settingsNavigationRef.current = false
+      }
+    })()
+  }, [canvasId, flushCanvas, navigate, projectId])
   const refreshAgentModelCatalog = useCallback(async () => {
     if (!bridge) return
     const catalog = await bridge.getAgentModelCatalog()
@@ -699,24 +734,6 @@ export function useDesktopAgentController({
     return () => window.removeEventListener('vp-desktop-model-catalog-changed', refresh)
   }, [refreshAgentModelCatalog])
   const refreshSkills = useCallback(async () => loadSkills(activeSessionId), [activeSessionId, loadSkills])
-  const settingsDialog = settingsOpen && projectId
-    ? <DesktopAgentModelSettings
-        configured={agnesCatalog?.apiKeyConfigured === true}
-        onSaved={(catalog) => {
-          setAgnesCatalog(catalog)
-          setSettingsOpen(false)
-          setError('')
-          void refreshAgentModelCatalog().catch((cause) => setError(normalizeError(cause)))
-        }}
-        onCleared={(catalog) => {
-          setAgnesCatalog(catalog)
-          setError('')
-          void refreshAgentModelCatalog().catch((cause) => setError(normalizeError(cause)))
-        }}
-        onOpenProviderSettings={openProviderSettings}
-        onClose={closeSettings}
-      />
-    : null
 
   return {
     projectId,
@@ -743,7 +760,7 @@ export function useDesktopAgentController({
     loadedSkillIds,
     skillsLoading,
     refreshSkills,
-    onDraftChange: setDraft,
+    onDraftChange: (value) => { draftRef.current = value; setDraft(value) },
     onNewSession,
     onSelectSession,
     onRenameSession: (sessionId: string, title: string) => updateSession(sessionId, { title }),
@@ -755,86 +772,7 @@ export function useDesktopAgentController({
     onSendWithReferences: sendWithReferences,
     onStop,
     onConfirm,
-    onConfigure: () => setSettingsOpen(true),
+    onConfigure: openProviderSettings,
     onClose: () => useCanvasStore.getState().setAgentOpen(false),
-    settingsOpen,
-    closeSettings,
-    settingsDialog,
   }
-}
-
-function DesktopAgentModelSettings({ configured, onSaved, onCleared, onOpenProviderSettings, onClose }: {
-  configured: boolean
-  onSaved: (catalog: DesktopAgnesModelCatalog) => void
-  onCleared: (catalog: DesktopAgnesModelCatalog) => void
-  onOpenProviderSettings: () => void
-  onClose: () => void
-}) {
-  useUiLanguage()
-  const [apiKey, setApiKey] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
-
-  const save = async () => {
-    if (!bridge || busy || !apiKey.trim()) return
-    setBusy(true)
-    setError('')
-    try {
-      onSaved(await bridge.saveAgnesApiKey(apiKey.trim()))
-      setApiKey('')
-      setMessage(uiText("Agnes API Key 已安全保存。"))
-    } catch (cause) {
-      setError(normalizeError(cause))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const clear = async () => {
-    if (!bridge || busy) return
-    setBusy(true)
-    setError('')
-    try {
-      onCleared(await bridge.clearAgnesApiKey())
-      setApiKey('')
-      setMessage(uiText("Agnes API Key 已从此设备移除。"))
-    } catch (cause) {
-      setError(normalizeError(cause))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-5" role="presentation" onMouseDown={(event) => {
-    if (event.target === event.currentTarget) onClose()
-  }}>
-    <section className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="agent-model-settings-title">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 id="agent-model-settings-title" className="text-lg font-bold">{uiText("模型与 API Key")}</h2>
-          <p className="mt-1 text-xs leading-5 text-[#777]">{uiText("Agent 按会话保存文本模型选择；工具调用只会发送给已配置并启用的兼容模型。")}</p>
-        </div>
-        <button onClick={onClose} className="rounded-lg border border-black/12 px-3 py-2 text-xs font-bold">{uiText("关闭")}</button>
-      </div>
-      <section className="mt-5 rounded-xl border border-black/8 bg-[#fbfaff] p-4">
-        <h3 className="text-sm font-bold">{uiText("Agnes 云端模型")}</h3>
-        <p className="mt-1 text-xs leading-5 text-[#666]">{uiText("文本模型：agnes-2.5-flash")}</p>
-        <p className="mt-2 text-xs leading-5 text-amber-800">{uiText("向 Agent 发送消息时，会发送当前消息、会话历史和画布只读摘要，由 Agnes 处理，可能产生供应商费用。不会上传图片、视频、素材字节或项目路径，也不会每次发送都弹确认。")}</p>
-        <label htmlFor="desktop-agent-agnes-api-key" className="mt-4 block text-xs font-semibold">Agnes API Key</label>
-        <input id="desktop-agent-agnes-api-key" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} maxLength={1024} placeholder={configured ? uiText("已配置；输入新 Key 可替换") : uiText("粘贴 API Key")} className="mt-2 h-10 w-full rounded-lg border border-black/12 bg-white px-3 text-sm outline-none focus:border-[#8a72e8]" />
-        <div className="mt-3 flex items-center justify-between gap-3">
-          <span className="text-xs text-[#777]">{configured ? uiText("此设备已配置 Key") : uiText("尚未配置 Key")}</span>
-          <div className="flex gap-2">
-            {configured && <button onClick={() => void clear()} disabled={busy} className="rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">{uiText("移除 Key")}</button>}
-            <button onClick={() => void save()} disabled={busy || !apiKey.trim()} className="rounded-lg bg-[#6d55c9] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{busy ? uiText("请稍候…") : uiText("安全保存 Key")}</button>
-          </div>
-        </div>
-        {(message || error) && <p role={error ? 'alert' : 'status'} className={`mt-3 text-xs ${error ? 'text-red-700' : 'text-[#666]'}`}>{error || message}</p>}
-      </section>
-      <button type="button" onClick={onOpenProviderSettings} className="mt-4 w-full rounded-xl border border-black/10 px-4 py-3 text-left text-xs font-semibold text-[#555] hover:bg-black/[0.03]">
-        {uiText("配置其他官方模型提供方")}<span className="mt-1 block font-normal text-[#888]">{uiText("设置厂商 API 凭据、启用模型并选择画布默认模型。")}</span>
-      </button>
-    </section>
-  </div>
 }

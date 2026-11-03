@@ -42,6 +42,32 @@ async function clickButton(label) {
   await until(lookup + ' !== undefined')
   await evaluate(lookup + '.click()')
 }
+async function selectComponents(components) {
+  const names = components.map(component => component.name)
+  const expected = JSON.stringify(names)
+  const boxes = "Array.from(document.querySelectorAll('input[type=checkbox][aria-label^=\"选择组件 \"]'))"
+  const hasTargets = `${expected}.every(name => ${boxes}.some(box => box.getAttribute('aria-label') === '选择组件 ' + name && !box.disabled))`
+  try {
+    await until(hasTargets)
+  } catch (error) {
+    const diagnostic = await evaluate(`({
+      page: document.querySelector('h1')?.innerText,
+      total: ${boxes}.length,
+      enabled: ${boxes}.filter(box => !box.disabled).length,
+      labels: ${boxes}.map(box => box.getAttribute('aria-label')),
+      cards: Array.from(document.querySelectorAll('span.font-semibold')).map(span => span.innerText.trim()).filter(Boolean),
+    })`).catch(() => null)
+    throw new Error(`Component selection unavailable: ${JSON.stringify({ expected: names, diagnostic })}`, { cause: error })
+  }
+  await evaluate(`(() => {
+    for (const name of ${expected}) {
+      const box = ${boxes}.find(item => item.getAttribute('aria-label') === '选择组件 ' + name)
+      if (!box || box.disabled) throw new Error('COMPONENT_SELECTION_MISSING')
+      if (!box.checked) box.click()
+    }
+  })()`)
+  await until(`${expected}.every(name => ${boxes}.some(box => box.getAttribute('aria-label') === '选择组件 ' + name && box.checked))`)
+}
 async function captureIfRequested(option = '--screenshot=') {
   const output = process.argv.find(arg => arg.startsWith(option))
   if (!output) return
@@ -74,8 +100,7 @@ async function main() {
     await clickButton('返回插件市场')
   }
   await clickButton('MCP 与本地工具连接')
-  await until("document.querySelectorAll('input[type=checkbox]:enabled').length === 2")
-  await evaluate("document.querySelectorAll('input[type=checkbox]').forEach(box => box.click())")
+  await selectComponents(require(path.join(appRoot, 'src/marketplace-connector-example.cjs')).components)
   await clickButton('安装所选组件')
   await clickButton('检查 MCP 授权范围')
   await until("location.pathname === '/settings/mcp' && document.body.innerText.includes('已从已安装的连接器预填')")
@@ -84,18 +109,15 @@ async function main() {
   assert.equal(mcp.clients.length, 0)
   await window.loadURL('vibe://app/marketplace')
   await clickButton('创作工作室')
-  const creativeComponents = require('../src/marketplace-creative-example.cjs').components
-  await until(`document.querySelectorAll('input[type=checkbox]:enabled').length === ${creativeComponents.length} && ${JSON.stringify(creativeComponents.map(component => component.name))}.every(name => document.body.innerText.includes(name))`)
-  await evaluate("document.querySelectorAll('input[type=checkbox]').forEach(box => box.click())")
+  const creativeComponents = require(path.join(appRoot, 'src/marketplace-creative-example.cjs')).components
+  await selectComponents(creativeComponents)
   await clickButton('安装所选组件')
   await until("document.body.innerText.includes('组件已安装并启用')")
   await clickButton('返回插件市场')
   await clickButton('商品棚拍工作流')
-  const studioComponents = require('../src/marketplace-example.cjs').components
-  await until(`document.querySelectorAll('input[type=checkbox]:enabled').length === ${studioComponents.length}
-    && ${JSON.stringify(studioComponents.map(component => component.name))}.every(name => document.body.innerText.includes(name))`)
+  const studioComponents = require(path.join(appRoot, 'src/marketplace-example.cjs')).components
   await captureIfRequested()
-  await evaluate("document.querySelectorAll('input[type=checkbox]').forEach(box => box.click())")
+  await selectComponents(studioComponents)
   await clickButton('安装所选组件')
   await until("document.querySelector('[role=status]')?.innerText.includes('已安装')")
   const pid = JSON.stringify(project.projectId)
@@ -143,12 +165,23 @@ async function main() {
   while (!fs.existsSync(csv) && Date.now() < csvDeadline) await new Promise(resolve => setTimeout(resolve, 50))
   assert.match(fs.readFileSync(csv, 'utf8'), /"序号"/)
   await evaluate("document.querySelector('[aria-label=导出分镜表] button').click()")
-  await clickButton('添加节点')
-  await clickButton('导演台')
-  await until(`${readCanvas}.then(canvas => canvas.nodes.some(node => node.type === 'director'))`)
+  const beforeDirector = await evaluate(readCanvas)
+  const sceneCard = "Array.from(document.querySelectorAll('aside[aria-label=插件组件] p')).find(el => el.innerText.trim() === '商品棚拍场景')?.parentElement"
+  await until(`Boolean(${sceneCard} && ${sceneCard}.innerText.includes('已启用导演组件'))`)
+  await evaluate(`${sceneCard}.querySelector('button').click()`)
+  await until(`${readCanvas}.then(canvas => canvas.nodes.length === ${beforeDirector.nodes.length + 1} && canvas.nodes.some(node => node.type === 'director'))`)
+  const withDirector = await evaluate(readCanvas)
+  assert.deepEqual(withDirector.nodes.filter(node => node.type !== 'director'), beforeDirector.nodes)
+  assert.deepEqual(withDirector.edges, beforeDirector.edges)
+  await until("Boolean(document.querySelector('.react-flow__node-director'))")
   await evaluate("document.querySelector('.react-flow__node-director').click()")
   await until("Array.from(document.querySelectorAll('.react-flow__node-director button')).some(el => el.innerText === '编辑')")
   await evaluate("Array.from(document.querySelectorAll('.react-flow__node-director button')).find(el => el.innerText === '编辑').click()")
+  await until("Array.from(document.querySelectorAll('button')).some(el => el.innerText === '商品棚拍场景')")
+  await evaluate(`window.vibepaperDesktop.marketplace.setEnabled(${pid}, 'creative-studio', 'product-stage', false)`)
+  await until("!Array.from(document.querySelectorAll('button')).some(el => el.innerText === '商品棚拍场景')")
+  await evaluate(`window.vibepaperDesktop.marketplace.setEnabled(${pid}, 'creative-studio', 'product-stage', true)`)
+  await until("Array.from(document.querySelectorAll('button')).some(el => el.innerText === '商品棚拍场景')")
   await clickButton('商品棚拍场景')
   await clickButton('商品三分之四机位')
   await clickButton('缓慢推近')
@@ -157,8 +190,12 @@ async function main() {
   await clickButton('停止')
   await evaluate("Array.from(document.querySelectorAll('button[title=关闭]')).find(el => el.parentElement.innerText.includes('导演台')).click()")
   await until(`${readCanvas}.then(canvas => canvas.nodes.some(node => node.type === 'director' && node.data.node.params.sceneObjects?.length === 2 && node.data.node.params.motion?.duration === 4))`)
+  const nodeCard = "Array.from(document.querySelectorAll('aside[aria-label=插件组件] p')).find(el => el.innerText.trim() === '商品棚拍图')?.parentElement"
+  await until(`Boolean(${nodeCard} && ${nodeCard}.querySelector('button'))`)
+  await evaluate(`${nodeCard}.querySelector('button').click()`)
+  await until(`${readCanvas}.then(canvas => canvas.nodes.some(node => node.data.node.params.nodeDefinition?.ref?.componentId === 'studio-image'))`)
   assert.deepEqual(await evaluate(`window.vibepaperDesktop.listTasks(${pid})`), [])
-  console.log('PASS: standalone Skill import, scoped MCP prefill without grants, product studio components, local asset and preset, editable poster and PNG on canvas, storyboard CSV and saved director motion; zero generation tasks.')
+  console.log('PASS: standalone Skill import, scoped MCP prefill without grants, product studio components, local asset and preset, editable poster and PNG on canvas, storyboard CSV, director and custom node creation from the plugin panel and saved scene and motion; zero generation tasks.')
   app.quit()
 }
 main().catch(error => { console.error(error.stack); app.exit(1) })
