@@ -4453,8 +4453,8 @@ function createLocalProjectStore() {
 
       const timestamp = new Date().toISOString().replace(/[:.]/gu, '-')
       const backupName = `${active.metadata.name} Backup ${timestamp} ${randomUUID().slice(0, 8)}`
-      const destination = path.join(parent, backupName)
-      const staging = path.join(parent, `.vibepaper-backup-${randomUUID()}`)
+      const destination = path.join(realParentDirectory, backupName)
+      const staging = path.join(realParentDirectory, `.vibepaper-backup-${randomUUID()}`)
       const stagingData = path.join(staging, '.vibepaper')
       try {
         await fs.mkdir(staging)
@@ -4496,8 +4496,8 @@ function createLocalProjectStore() {
         }
 
         const name = restoredProjectName(source.metadata.name)
-        const destination = path.join(parent, name)
-        staging = path.join(parent, `.vibepaper-restore-${randomUUID()}`)
+        const destination = path.join(realParentDirectory, name)
+        staging = path.join(realParentDirectory, `.vibepaper-restore-${randomUUID()}`)
         await fs.mkdir(staging)
         const stagingData = path.join(staging, '.vibepaper')
         await fs.mkdir(stagingData)

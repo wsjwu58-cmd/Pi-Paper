@@ -17,6 +17,7 @@ const { spawn, execFileSync } = require('node:child_process')
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const PROJECT_NAME = 'Marketplace macOS Acceptance'
 const REQUIREMENTS = ['--app', '--output']
+const COMPONENT_CHECKBOX_SELECTOR = 'input[type=checkbox][aria-label^="选择组件 "]'
 let arrangeDetail = 'none'
 let arrangeFacts = null
 const labels = ['读取画布', '编辑画布', '准备生成', '读取任务', '读取媒体', '读取模型配置', '配置模型']
@@ -142,6 +143,14 @@ async function button(cdp, label, exact = false) {
   await until(cdp, `Boolean(${lookup})`)
   await cdp.evaluate(`(${lookup}).click(); true`)
 }
+async function openPackage(cdp, name) {
+  // Package cards contain several labels, some of which can also appear in
+  // another card's description. Match the card heading, not its full text.
+  const matches = `Array.from(document.querySelectorAll('button')).filter(el => !el.disabled && el.querySelector('h3')?.innerText.trim() === ${JSON.stringify(name)})`
+  await until(cdp, `${matches}.length === 1`)
+  await cdp.evaluate(`(() => { const cards = ${matches}; if (cards.length !== 1) throw new Error('PACKAGE_CARD_AMBIGUOUS'); cards[0].click(); return true })()`)
+  await until(cdp, `document.querySelector('h1')?.innerText.trim() === ${JSON.stringify(name)}`)
+}
 async function anchor(cdp, href) {
   const selector = JSON.stringify(`a[href="${href}"]`)
   await until(cdp, `Boolean(document.querySelector(${selector}))`)
@@ -198,31 +207,36 @@ function checkSelection(items, selected, all) {
   }
 }
 async function selectOnly(cdp, componentName, total, onSelected) {
-  await until(cdp, `document.querySelectorAll('input[type=checkbox]:enabled').length === ${total}`)
-  const selector = JSON.stringify(`input[aria-label="选择组件 ${componentName}"]`)
+  const selector = JSON.stringify(COMPONENT_CHECKBOX_SELECTOR)
+  const enabled = JSON.stringify(`${COMPONENT_CHECKBOX_SELECTOR}:enabled`)
+  const checked = JSON.stringify(`${COMPONENT_CHECKBOX_SELECTOR}:checked`)
+  await until(cdp, `document.querySelectorAll(${enabled}).length === ${total}`)
   await cdp.evaluate(`(() => {
-    const target = document.querySelector(${selector})
-    if (!target || target.checked || document.querySelectorAll('input[type=checkbox]:checked').length) throw new Error('BAD_SELECTION')
+    const target = Array.from(document.querySelectorAll(${selector})).find(box => box.getAttribute('aria-label') === ${JSON.stringify(`选择组件 ${componentName}`)})
+    if (!target || target.disabled || target.checked || document.querySelectorAll(${checked}).length) throw new Error('BAD_SELECTION')
     target.click()
     return true
   })()`)
-  await until(cdp, "document.querySelectorAll('input[type=checkbox]:checked').length === 1")
+  await until(cdp, `document.querySelectorAll(${checked}).length === 1`)
   if (onSelected) await onSelected()
   await button(cdp, '安装所选组件')
   await until(cdp, "document.querySelector('[role=status]')?.innerText.includes('已安装')")
 }
 async function selectComponents(cdp, names, total) {
-  await until(cdp, `document.querySelectorAll('input[type=checkbox]:enabled').length === ${total}`)
+  const selector = JSON.stringify(COMPONENT_CHECKBOX_SELECTOR)
+  const enabled = JSON.stringify(`${COMPONENT_CHECKBOX_SELECTOR}:enabled`)
+  const checked = JSON.stringify(`${COMPONENT_CHECKBOX_SELECTOR}:checked`)
+  await until(cdp, `document.querySelectorAll(${enabled}).length === ${total}`)
   await cdp.evaluate(`(() => {
-    if (document.querySelectorAll('input[type=checkbox]:checked').length) throw new Error('BAD_SELECTION')
+    if (document.querySelectorAll(${checked}).length) throw new Error('BAD_SELECTION')
     for (const name of ${JSON.stringify(names)}) {
-      const target = Array.from(document.querySelectorAll('input[type=checkbox]')).find(box => box.getAttribute('aria-label') === '选择组件 ' + name)
+      const target = Array.from(document.querySelectorAll(${selector})).find(box => box.getAttribute('aria-label') === '选择组件 ' + name)
       if (!target || target.disabled || target.checked) throw new Error('COMPONENT_MISSING')
       target.click()
     }
     return true
   })()`)
-  await until(cdp, `document.querySelectorAll('input[type=checkbox]:checked').length === ${names.length}`)
+  await until(cdp, `document.querySelectorAll(${checked}).length === ${names.length}`)
   await button(cdp, '安装所选组件')
   await until(cdp, "document.querySelector('[role=status]')?.innerText.includes('已安装')")
 }
@@ -238,7 +252,7 @@ async function clickComponent(cdp, name, action) {
 }
 async function canvasDetails(cdp, project) {
   return cdp.evaluate(`window.vibepaperDesktop.loadCanvas(${JSON.stringify(project.projectId)}, ${JSON.stringify(project.canvasId)}).then(canvas => ({
-    nodes: canvas.nodes.map(n => ({ id: n.id, type: n.type, position: n.position,
+    nodes: canvas.nodes.map(n => ({ id: n.id, type: n.type, position: n.position, width: n.width, height: n.height, measured: n.measured,
       assetId: n.data?.node?.params?.assetId, cropMode: n.data?.node?.params?.cropMode,
       cropIndex: n.data?.node?.params?.cropIndex })),
     edges: canvas.edges.map(e => ({ source: e.source, target: e.target, valid: e.data?.valid })),
@@ -298,23 +312,33 @@ async function selectTwoNodes(cdp, ids) {
 async function arrangeSelected(cdp, project, ids, component, direction, gap, capture, captureAfter) {
   arrangeDetail = 'read-before'
   const before = await canvasDetails(cdp, project)
+  const selected = ids.map(id => before.nodes.find(node => node.id === id))
+  assert.ok(selected.every(Boolean))
+  // The shared host command previews from the persisted canvas, whose dimensions
+  // may differ from the current renderer's measured DOM bounds.
+  const ordered = [...selected].sort((a, b) => direction === '横向'
+    ? a.position.x - b.position.x || a.position.y - b.position.y
+    : a.position.y - b.position.y || a.position.x - b.position.x)
+  const originX = Math.min(...ordered.map(node => node.position.x))
+  const originY = Math.min(...ordered.map(node => node.position.y))
+  const extent = direction === '横向'
+    ? ordered[0].measured?.width ?? ordered[0].width ?? 300
+    : ordered[0].measured?.height ?? ordered[0].height ?? 240
+  assert.ok(Number.isFinite(extent) && extent > 0)
+  const expected = [
+    { x: originX, y: originY },
+    direction === '横向' ? { x: originX + extent + gap, y: originY } : { x: originX, y: originY + extent + gap },
+  ]
   arrangeDetail = 'click-component'
   await clickComponent(cdp, component, '应用到选中节点')
   arrangeDetail = 'wait-confirmation'
   await until(cdp, `document.querySelector('[role=dialog][aria-label="确认应用预设"]')?.innerText.includes(${JSON.stringify(`将${direction}排列所选的 2 个节点`)})`)
+  for (const [index, node] of ordered.entries()) {
+    const point = expected[index]
+    const line = `节点 ${index + 1}：(${Math.round(node.position.x)}, ${Math.round(node.position.y)}) → (${Math.round(point.x)}, ${Math.round(point.y)})`
+    await until(cdp, `document.querySelector('[role=dialog][aria-label="确认应用预设"]')?.innerText.includes(${JSON.stringify(line)})`)
+  }
   if (capture) await capture()
-  arrangeDetail = 'measure-before'
-  const ordered = ids.map(id => before.nodes.find(node => node.id === id)).sort((a, b) => direction === '横向'
-    ? a.position.x - b.position.x || a.position.y - b.position.y
-    : a.position.y - b.position.y || a.position.x - b.position.x)
-  const first = ordered[0]
-  const measured = await cdp.evaluate(`(() => {
-    const element = document.querySelector(${JSON.stringify(`.react-flow__node[data-id="${first.id}"]`)})
-    const transform = getComputedStyle(document.querySelector('.react-flow__viewport')).transform
-    const zoom = transform === 'none' ? 1 : new DOMMatrixReadOnly(transform).a
-    const bounds = element.getBoundingClientRect()
-    return { width: bounds.width / zoom, height: bounds.height / zoom }
-  })()`)
   const dialogButton = "[...document.querySelectorAll('[role=dialog][aria-label=确认应用预设] button')].find(el => el.innerText.trim() === '应用')"
   await until(cdp, `Boolean(${dialogButton})`)
   await cdp.evaluate(`(${dialogButton}).click(); true`)
@@ -341,14 +365,15 @@ async function arrangeSelected(cdp, project, ids, component, direction, gap, cap
   })`, 60_000)
   arrangeDetail = 'check-coordinates'
   const after = await canvasDetails(cdp, project)
-  const firstAfter = after.nodes.find(node => node.id === ordered[0].id)
-  const secondAfter = after.nodes.find(node => node.id === ordered[1].id)
-  if (direction === '横向') {
-    assert.ok(Math.abs(firstAfter.position.y - secondAfter.position.y) < 0.01)
-    assert.ok(Math.abs(secondAfter.position.x - firstAfter.position.x - measured.width - gap) < 3)
-  } else {
-    assert.ok(Math.abs(firstAfter.position.x - secondAfter.position.x) < 0.01)
-    assert.ok(Math.abs(secondAfter.position.y - firstAfter.position.y - measured.height - gap) < 3)
+  assert.equal(after.nodes.length, before.nodes.length)
+  assert.deepEqual(after.edges, before.edges)
+  assert.deepEqual(after.groups, before.groups)
+  for (const node of before.nodes) {
+    const actual = after.nodes.find(item => item.id === node.id)
+    assert.ok(actual)
+    const index = ordered.findIndex(item => item.id === node.id)
+    const position = index < 0 ? node.position : expected[index]
+    assert.ok(Math.abs(actual.position.x - position.x) < 0.001 && Math.abs(actual.position.y - position.y) < 0.001)
   }
   return ids.map(id => ({ id, position: after.nodes.find(node => node.id === id).position }))
 }
@@ -489,10 +514,10 @@ async function main() {
       const context = () => ({ cdp, browser: active.browser, project, directory: created.directory, output: runRoot, helpers })
       stage = 'install-export-components'
       await anchor(cdp, '/marketplace')
-      await button(cdp, '商品棚拍工作流')
-      await selectComponents(cdp, ['中性灰棚拍背景'], 4)
+      await openPackage(cdp, '商品棚拍工作流')
+      await selectComponents(cdp, ['中性灰棚拍背景'], 5)
       await button(cdp, '返回插件市场')
-      await button(cdp, '创作工作室')
+      await openPackage(cdp, '创作工作室')
       await selectComponents(cdp, ['商品标题海报', '分镜表'], 8)
       await button(cdp, '返回画布')
       await until(cdp, "location.pathname.startsWith('/canvas/') && Boolean(document.querySelector('.react-flow'))")
@@ -557,8 +582,9 @@ async function main() {
     stage = 'selective-template-install'
     await anchor(cdp, '/marketplace')
     await until(cdp, "location.pathname === '/marketplace'")
-    await button(cdp, '商品棚拍工作流')
-    await until(cdp, "document.querySelector('h1')?.innerText === '商品棚拍工作流'")
+    stage = 'open-template-package'
+    await openPackage(cdp, '商品棚拍工作流')
+    stage = 'selective-template-install'
     await selectOnly(cdp, '商品主图三案', 5, () => capture(cdp, '02-marketplace-template.png'))
     checkSelection(await marketplaceState(cdp, project.projectId, 'vibepaper-product-studio'), 'product-workflow', ['product-workflow', 'neutral-background', 'studio-prompt', 'studio-image', 'product-shooting'])
     await checkTasksAndMcp(cdp, project.projectId)
@@ -581,8 +607,7 @@ async function main() {
     await button(cdp, '返回画布展示')
     await until(cdp, "location.pathname === '/workspace'")
     await anchor(cdp, '/marketplace')
-    await button(cdp, 'MCP 与本地工具连接')
-    await until(cdp, "document.querySelector('h1')?.innerText === 'MCP 与本地工具连接'")
+    await openPackage(cdp, 'MCP 与本地工具连接')
     await selectOnly(cdp, 'Codex 画布连接', 2)
     checkSelection(await marketplaceState(cdp, project.projectId, 'vibepaper-connectors'), 'codex-canvas', ['codex-canvas', 'local-text-tool'])
     await button(cdp, '检查 MCP 授权范围')
@@ -628,8 +653,7 @@ async function main() {
     await button(cdp, '返回画布展示')
     await until(cdp, "location.pathname === '/workspace'")
     await anchor(cdp, '/marketplace')
-    await button(cdp, '商品棚拍工作流')
-    await until(cdp, "document.querySelector('h1')?.innerText === '商品棚拍工作流'")
+    await openPackage(cdp, '商品棚拍工作流')
     await selectComponents(cdp, ['中性灰棚拍背景', '商品棚拍策划'], 4)
     const studioComponents = await marketplaceState(cdp, project.projectId, 'vibepaper-product-studio')
     for (const id of ['product-workflow', 'neutral-background', 'product-shooting']) {
@@ -637,8 +661,7 @@ async function main() {
     }
     requireCheck(studioComponents.some(component => component.id === 'studio-prompt' && !component.installed))
     await button(cdp, '返回插件市场')
-    await button(cdp, '创作工作室')
-    await until(cdp, "document.querySelector('h1')?.innerText === '创作工作室'")
+    await openPackage(cdp, '创作工作室')
     const creative = await cdp.evaluate(`window.vibepaperDesktop.marketplace.list(${JSON.stringify(project.projectId)}).then(items => {
       const item = items.find(entry => entry.id === 'creative-studio')
       return item && { version: item.version, count: item.components.length }
@@ -740,6 +763,8 @@ async function main() {
     await arrangeSelected(cdp, project, selectedIds, '横向排列', '横向', 28,
       () => capture(cdp, '10-horizontal-confirmation.png'), () => capture(cdp, '10-horizontal-after.png'))
     stage = 'arrange-vertical'
+    // Host-driven canvas refresh clears the selection after the first command.
+    await selectTwoNodes(cdp, selectedIds)
     const arrangedPositions = await arrangeSelected(cdp, project, selectedIds, '纵向分镜排列', '纵向', 28,
       () => capture(cdp, '10-vertical-confirmation.png'))
     await checkTasksAndMcp(cdp, project.projectId)
@@ -783,6 +808,9 @@ async function main() {
     }
   } catch (error) {
     report.failure = { stage, type: error?.code === 'ERR_ASSERTION' ? 'assertion-failed' : 'operation-failed' }
+    if (['WAIT_TIMEOUT', 'RENDERER_EVALUATION_FAILED', 'CDP_COMMAND_FAILED', 'CDP_COMMAND_TIMEOUT', 'CDP_CLOSED'].includes(error?.message)) {
+      report.failure.code = error.message
+    }
     if (args['--exports']) {
       const caller = /smoke-installed-marketplace-(poster|storyboard)\.cjs:(\d+):\d+/.exec(error?.stack ?? '')
       if (caller) report.failure.check = caller[1] + ':' + caller[2]

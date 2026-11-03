@@ -63,8 +63,17 @@ async function main() {
     const media = require(mediaPath)
     require.cache[mediaPath].exports = { ...media, resolveOfficialTextModel: (input, options) => input.providerId === 'fixture'
       ? { model } : media.resolveOfficialTextModel(input, options) }
+    let dockIcon
+    if (process.platform === 'darwin') {
+      const setIcon = app.dock.setIcon.bind(app.dock)
+      app.dock.setIcon = (icon) => {
+        setIcon(icon)
+        dockIcon = icon
+      }
+    }
     require(path.join(staged, 'src/main.cjs'))
     await until('Boolean(document.querySelector(\'a[href="/marketplace"]\'))')
+    if (process.platform === 'darwin') assert.equal(dockIcon, path.join(staged, 'assets/app-icon.mac.png'))
     await evaluate('document.querySelector(\'a[href="/marketplace"]\').click()')
     const back = "Array.from(document.querySelectorAll('button')).find((el) => !el.disabled && el.innerText.includes('返回画布'))"
     await until(back + ' !== undefined')

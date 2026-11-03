@@ -7,6 +7,33 @@ const http = require('node:http')
 const { createMcpMainService, createTraeMcpConfig } = require('../src/mcp-main-service.cjs')
 const { createMcpControlStore } = require('../src/mcp-control-store.cjs')
 
+async function waitFor(predicate, description) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const result = predicate()
+    if (result) return result
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  assert.fail(description)
+}
+
+function observeNextDisconnect(t) {
+  let armed = false
+  let markServerDisconnected
+  const observed = new Promise((resolve) => { markServerDisconnected = resolve })
+  const originalCreateServer = http.createServer
+  const serverFactory = t.mock.method(http, 'createServer', (...args) => {
+    const server = originalCreateServer(...args)
+    server.on('request', (req, res) => {
+      if (armed && req.url === '/rpc') {
+        res.once('close', () => { if (!res.writableFinished) markServerDisconnected() })
+      }
+    })
+    return server
+  })
+  return { observed, arm: () => { armed = true }, restore: () => serverFactory.mock.restore() }
+}
+
 async function fixture(t, overrides = {}, behavior = {}) {
   const directory = await fs.mkdtemp(path.resolve(__dirname, '../../.test-temp/mcp-main-review-'))
   const handlers = new Map()
@@ -25,6 +52,7 @@ async function fixture(t, overrides = {}, behavior = {}) {
     if (method === 'mcp:actions:list') return []
     if (method === 'mcp:operation:get') return completedOperations.get(input.operationId) || null
     if (method === 'mcp:proposal:get') {
+      await behavior.onProposalGet?.(input)
       if (!proposal || proposal.proposalId !== input.proposalId || proposal.clientId !== input.clientId
         || proposal.grantId !== input.grantId) return null
       return { ...proposal }
@@ -216,6 +244,27 @@ test('generation preparation returns a client confirmation challenge without a d
   assert.equal(settled?.payload.requestId, flush.payload.requestId)
 })
 
+test('preparation failure after challenge creation does not strand the proposal', async (t) => {
+  let canvasLoads = 0
+  const f = await fixture(t, { loadCanvas: async () => {
+    canvasLoads += 1
+    if (canvasLoads === 2) throw new Error('fixture canvas read failed')
+    return { projectId: 'review-project', canvasId: 'review-canvas', version: 1 }
+  } }, { prepareProposal: true })
+  const args = { operationId: 'review-generation-response-failed', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] }
+  const failed = await f.call('prepare_generation', args)
+  assert.equal(failed.body.isError, true)
+  assert.equal(f.submissionCount(), 0)
+  const retried = await f.call('prepare_generation', args)
+  assert.equal(retried.body.isError, undefined)
+  assert(retried.body.generationConfirmation, 'a failed response must not keep an undisclosed challenge pending')
+  const confirmed = await f.confirm(retried.body.generationConfirmation.proposalId,
+    retried.body.generationConfirmation.challengeToken)
+  assert.equal(confirmed.body.structuredContent.status, 'submitted')
+  assert.equal(f.submissionCount(), 1)
+})
+
 test('bridge bootstrap rejects a bad secret and connects with the private per-instance credential', async (t) => {
   const f = await fixture(t)
   assert.deepEqual(Object.keys(f.authRecord).sort(), ['instanceId', 'schemaVersion', 'secret'])
@@ -357,10 +406,11 @@ test('renderer action resolution cannot approve an external client proposal', as
 })
 
 test('expired generation confirmation is rejected before task submission', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
   const f = await fixture(t, {}, { prepareProposal: true, proposalTtlMs: 80 })
   const prepared = await f.call('prepare_generation', { operationId: 'review-generation-expired', expectedVersion: 1,
     generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
-  await new Promise((resolve) => setTimeout(resolve, 120))
+  t.mock.timers.tick(81)
   const result = await f.confirm(prepared.body.generationConfirmation.proposalId,
     prepared.body.generationConfirmation.challengeToken, 'approve')
   assert.equal(result.body.isError, true)
@@ -389,7 +439,7 @@ test('canvas version and project changes invalidate the generation confirmation'
   assert.equal(other.submissionCount(), 0)
 })
 
-test('disconnecting while the renderer save barrier is pending cancels generation before Worker submission', async (t) => {
+test('disconnecting while the renderer save barrier is pending cancels generation before Worker submission', { timeout: 20_000 }, async (t) => {
   const f = await fixture(t, {}, { prepareProposal: true })
   const prepared = await f.call('prepare_generation', { operationId: 'review-generation-cancel', expectedVersion: 1,
     generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
@@ -403,15 +453,19 @@ test('disconnecting while the renderer save barrier is pending cancels generatio
     headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), ...f.authorization } })
   const disconnected = new Promise((resolve) => outgoing.once('error', resolve))
   outgoing.end(body)
-  for (let attempt = 0; attempt < 50 && f.events.filter((event) => event.channel === 'desktop:mcp:canvas-flush').length <= priorFlushCount; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-  const flush = f.events.filter((event) => event.channel === 'desktop:mcp:canvas-flush')[priorFlushCount]
-  assert(flush, 'the confirmation must reach the Main save barrier before disconnect')
+  const flush = await waitFor(() => f.events.filter((event) => event.channel === 'desktop:mcp:canvas-flush')[priorFlushCount],
+    'the confirmation must reach the Main save barrier before disconnect')
+  const command = [...f.service.getActiveCommands().values()][0]
+  assert(command, 'the pending confirmation must have an active Main command')
   outgoing.destroy()
   await disconnected
+  // A client-side socket error can precede delivery of the close event to
+  // Main. Hold the save barrier until Main has actually revoked the command.
+  await waitFor(() => command.revoked, 'Main must observe the disconnect before the save completes')
   f.respondFlush(flush.payload)
-  await new Promise((resolve) => setTimeout(resolve, 25))
+  const settlement = await waitFor(() => f.events.find((event) => event.payload.type === 'canvas.write-settled'
+    && event.payload.requestId === flush.payload.requestId), 'the cancelled save barrier must settle')
+  assert.equal(settlement.payload.status, 'aborted')
   assert.equal(f.submissionCount(), 0)
   assert.equal(f.resolutionCount(), 0)
 
@@ -427,6 +481,98 @@ test('disconnecting while the renderer save barrier is pending cancels generatio
     retried.body.generationConfirmation.challengeToken, 'approve', reconnectedAuth)
   assert.equal(freshChallenge.body.structuredContent.status, 'submitted')
   assert.equal(f.submissionCount(), 1)
+})
+
+test('disconnecting during proposal lookup invalidates the unconsumed challenge', { timeout: 20_000 }, async (t) => {
+  const behavior = { prepareProposal: true }
+  const disconnectedAtServer = observeNextDisconnect(t)
+  const f = await fixture(t, {}, behavior)
+  disconnectedAtServer.restore()
+  const args = { operationId: 'review-generation-cancel-lookup', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] }
+  const prepared = await f.call('prepare_generation', args)
+  const confirmation = prepared.body.generationConfirmation
+  let markLookupStarted
+  let releaseLookup
+  const lookupStarted = new Promise((resolve) => { markLookupStarted = resolve })
+  const lookupBlocked = new Promise((resolve) => { releaseLookup = resolve })
+  t.after(() => releaseLookup())
+  behavior.onProposalGet = async () => { markLookupStarted(); await lookupBlocked }
+  const body = JSON.stringify({ method: 'generation/confirm', params: {
+    proposalId: confirmation.proposalId, challengeToken: confirmation.challengeToken, decision: 'approve',
+  } })
+  const outgoing = http.request({ host: '127.0.0.1', port: f.instance.port, path: '/rpc', method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), ...f.authorization } })
+  const disconnected = new Promise((resolve) => outgoing.once('error', resolve))
+  disconnectedAtServer.arm()
+  outgoing.end(body)
+  await lookupStarted
+  outgoing.destroy()
+  await disconnected
+  await disconnectedAtServer.observed
+  behavior.onProposalGet = null
+  releaseLookup()
+
+  // Retrying is an observable synchronization point: Main must process the
+  // disconnected request and remove its challenge before a fresh one exists.
+  let retried
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    retried = await f.call('prepare_generation', args)
+    if (retried.body.generationConfirmation) break
+    assert.equal(retried.body.structuredContent.errorCode, 'GENERATION_CONFIRMATION_PENDING')
+    await new Promise((resolve) => setTimeout(resolve, 40))
+  }
+  assert(retried.body.generationConfirmation, 'the canceled challenge must not block a fresh confirmation')
+  assert.notEqual(retried.body.generationConfirmation.challengeToken, confirmation.challengeToken)
+  const oldChallenge = await f.confirm(confirmation.proposalId, confirmation.challengeToken)
+  assert.equal(oldChallenge.body.structuredContent.errorCode, 'GENERATION_CONFIRMATION_INVALID')
+  assert.equal(f.submissionCount(), 0)
+  assert.equal(f.resolutionCount(), 0)
+  const freshChallenge = await f.confirm(retried.body.generationConfirmation.proposalId,
+    retried.body.generationConfirmation.challengeToken)
+  assert.equal(freshChallenge.body.structuredContent.status, 'submitted')
+  assert.equal(f.submissionCount(), 1)
+})
+
+test('canceling a parallel confirmation cannot invalidate an already submitted result', { timeout: 20_000 }, async (t) => {
+  const behavior = { prepareProposal: true }
+  const disconnectedAtServer = observeNextDisconnect(t)
+  const f = await fixture(t, {}, behavior)
+  disconnectedAtServer.restore()
+  const prepared = await f.call('prepare_generation', { operationId: 'review-generation-cancel-parallel', expectedVersion: 1,
+    generations: [{ nodeId: 'node', modelType: 'fixture-binding', modelParams: {}, overwrite: false }] })
+  const confirmation = prepared.body.generationConfirmation
+  let markLookupStarted
+  let releaseLookup
+  let firstLookup = true
+  const lookupStarted = new Promise((resolve) => { markLookupStarted = resolve })
+  const lookupBlocked = new Promise((resolve) => { releaseLookup = resolve })
+  t.after(() => releaseLookup())
+  behavior.onProposalGet = async () => {
+    if (!firstLookup) return
+    firstLookup = false
+    markLookupStarted()
+    await lookupBlocked
+  }
+  const body = JSON.stringify({ method: 'generation/confirm', params: {
+    proposalId: confirmation.proposalId, challengeToken: confirmation.challengeToken, decision: 'approve',
+  } })
+  const outgoing = http.request({ host: '127.0.0.1', port: f.instance.port, path: '/rpc', method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), ...f.authorization } })
+  const disconnected = new Promise((resolve) => outgoing.once('error', resolve))
+  disconnectedAtServer.arm()
+  outgoing.end(body)
+  await lookupStarted
+  const completed = await f.confirm(confirmation.proposalId, confirmation.challengeToken)
+  assert.equal(completed.body.structuredContent.status, 'submitted')
+  outgoing.destroy()
+  await disconnected
+  await disconnectedAtServer.observed
+  releaseLookup()
+  const replay = await f.confirm(confirmation.proposalId, confirmation.challengeToken)
+  assert.equal(replay.body.structuredContent.status, 'submitted')
+  assert.equal(f.submissionCount(), 1)
+  assert.equal(f.resolutionCount(), 1)
 })
 
 test('generation Core authorization rejects a session revoked during provider revision lookup', async (t) => {

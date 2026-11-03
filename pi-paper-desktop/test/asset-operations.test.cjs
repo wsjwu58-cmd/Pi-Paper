@@ -4,6 +4,7 @@ const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const { DatabaseSync } = require('node:sqlite')
+const { createRequire } = require('node:module')
 const test = require('node:test')
 const vm = require('node:vm')
 const { createLocalProjectStore } = require('../src/project-store.cjs')
@@ -112,7 +113,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
   const registeredSchemes = []
   const headerHandlers = []
   const electron = {
-    app: { setName() {}, setPath() {}, requestSingleInstanceLock: () => false, quit() {}, getPath: (name) => name === 'temp' ? os.tmpdir() : os.tmpdir() },
+    app: { commandLine: { getSwitchValue: () => '' }, setName() {}, setPath() {}, requestSingleInstanceLock: () => false, quit() {}, getPath: (name) => name === 'temp' ? os.tmpdir() : os.tmpdir() },
     BrowserWindow: class {},
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showMessageBox: async () => ({}) },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
@@ -125,15 +126,9 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
     session: { defaultSession: { webRequest: { onHeadersReceived: (handler) => headerHandlers.push(handler) } } },
     utilityProcess: {},
   }
-  const mainRequire = (name) => {
-    if (name === 'electron') return electron
-    if (name === './renderer-trust.cjs') return require('../src/renderer-trust.cjs')
-    if (name === './canvas-media.cjs') return require('../src/canvas-media.cjs')
-    if (name.startsWith('.')) return {}
-    return require(name)
-  }
+  const mainRequire = createRequire(path.join(root, 'pi-paper-desktop/src/main.cjs'))
   const context = vm.createContext({
-    require: mainRequire,
+    require: (name) => name === 'electron' ? electron : mainRequire(name),
     process: { env: devServerUrl ? { VITE_DEV_SERVER_URL: devServerUrl } : {} },
     __dirname: path.join(root, 'pi-paper-desktop', 'src'),
     URL,
@@ -143,13 +138,17 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
     Buffer,
     console,
   })
-  vm.runInContext(source, context, { filename: 'pi-paper-desktop/src/main.cjs' })
-  vm.runInContext('registerProjectIpc(); registerContentSecurityPolicy(); registerRendererProtocol()', context)
+  const marker = 'if (hasSingleInstanceLock) {'
+  assert.ok(source.includes(marker))
+  // The normal desktop entry is scoped inside the non-stdio branch.
+  vm.runInContext(source.replace(marker, 'globalThis.runDesktopFixture = code => eval(code)\n' + marker), context, { filename: 'pi-paper-desktop/src/main.cjs' })
+  const run = context.runDesktopFixture
+  run('registerProjectIpc(); registerContentSecurityPolicy(); registerRendererProtocol()')
 
   const frame = { url: devServerUrl || 'vibe://app/' }
   const sender = { mainFrame: frame }
   context.__testSender = sender
-  vm.runInContext('mainWindow = { webContents: __testSender }', context)
+  run('mainWindow = { webContents: __testSender }')
 
   return {
     handlers,
@@ -160,7 +159,7 @@ async function createMainIpcHarness({ devServerUrl } = {}) {
     event: { sender, senderFrame: frame },
     setLocalCore(localCore) {
       context.__testLocalCore = localCore
-      vm.runInContext('localCore = __testLocalCore', context)
+      run('localCore = __testLocalCore')
     },
   }
 }

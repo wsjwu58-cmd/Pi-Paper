@@ -10,7 +10,7 @@ const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwM
 
 test('catalog video defaults reach actual Pi adapters with persisted submission before GET and local output', async (t) => {
   const api = await import(pathToFileURL(path.join(__dirname, '../../pi-main/packages/ai/src/media/index.ts')).href)
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-canvas-video-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-canvas-video-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const videoBytes = Buffer.from('000000186674797069736f6d0000000069736f6d69736f32', 'hex')
   for (const model of api.getOfficialProviderCatalog().models.filter((m) => m.modelType === 'video' && m.implemented && m.providerId !== 'agnes')) {
@@ -66,7 +66,7 @@ test('catalog video defaults reach actual Pi adapters with persisted submission 
 
 test('Vidu canvas frame aliases deduplicate reference images and preserve image-derived aspect ratio', async (t) => {
   const api = await import(pathToFileURL(path.join(__dirname, '../../pi-main/packages/ai/src/media/index.ts')).href)
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-canvas-vidu-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-canvas-vidu-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const model = api.getOfficialProviderCatalog().models.find((m) => m.name === 'Vidu Q3 Pro')
   const first = `data:image/png;base64,${png}`
@@ -99,7 +99,7 @@ test('Vidu canvas frame aliases deduplicate reference images and preserve image-
 
 test('actual Pi image adapters consume catalog defaults and canvas metadata end to end', async (t) => {
   const api = await import(pathToFileURL(path.join(__dirname, '../../pi-main/packages/ai/src/media/index.ts')).href)
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-canvas-media-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-canvas-media-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const names = api.getOfficialProviderCatalog().models.filter((model) => model.modelType === 'image' && model.implemented && model.name !== 'Agnes Image 2.5 Flash').map((model) => model.name)
   for (const name of names) {
@@ -131,7 +131,7 @@ test('actual Pi image adapters consume catalog defaults and canvas metadata end 
 
 test('configured audio operations reach actual Pi adapters and persist MP3 results', async (t) => {
   const api = await import(pathToFileURL(path.join(__dirname, '../../pi-main/packages/ai/src/media/index.ts')).href)
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-canvas-audio-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-canvas-audio-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const audio = Buffer.from('ID3fixture-audio-bytes')
   for (const model of api.getOfficialProviderCatalog().models.filter((m) => m.modelType === 'audio' && m.implemented)) {

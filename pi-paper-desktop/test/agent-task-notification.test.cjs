@@ -11,7 +11,7 @@ async function createHarness() {
   const mainRequire = createRequire(mainPath)
   const handlers = new Map()
   const electron = {
-    app: { setName() {}, setPath() {}, getPath: () => 'user-data', requestSingleInstanceLock: () => false, quit() {} },
+    app: { commandLine: { getSwitchValue: () => '' }, setName() {}, setPath() {}, getPath: () => 'user-data', requestSingleInstanceLock: () => false, quit() {} },
     protocol: { registerSchemesAsPrivileged() {} },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
   }
@@ -24,11 +24,16 @@ async function createHarness() {
     URL,
     Buffer,
   })
-  vm.runInContext(await fs.readFile(mainPath, 'utf8'), context)
+  const source = await fs.readFile(mainPath, 'utf8')
+  const marker = 'if (hasSingleInstanceLock) {'
+  assert.ok(source.includes(marker))
+  // The normal desktop entry is scoped inside the non-stdio branch.
+  vm.runInContext(source.replace(marker, 'globalThis.runDesktopFixture = code => eval(code)\n' + marker), context)
+  const run = context.runDesktopFixture
   const sender = { mainFrame: { url: 'vibe://app/' } }
   context.testSender = sender
-  vm.runInContext('mainWindow = { webContents: testSender }; providerSettings = { credentials: async () => ({}) }; registerProjectIpc()', context)
-  return { context, handlers, warnings, event: { sender, senderFrame: sender.mainFrame } }
+  run('mainWindow = { webContents: testSender }; providerSettings = { credentials: async () => ({}) }; registerProjectIpc()')
+  return { context, run, handlers, warnings, event: { sender, senderFrame: sender.mainFrame } }
 }
 
 async function drain(harness, { outcome = 'success', wrongProject = false, failNotification = false } = {}) {
@@ -69,10 +74,10 @@ async function drain(harness, { outcome = 'success', wrongProject = false, failN
       return { outputPath: 'generated/task-1/result.mp4' }
     },
   }
-  vm.runInContext(`localCore = testCore; agentWorker = testAgent;
+  harness.run(`localCore = testCore; agentWorker = testAgent;
     agentProjectId = ${wrongProject ? "'another-project'" : "'project-1'"};
-    startGenerationWorker = () => testGenerator`, harness.context)
-  await vm.runInContext("drainTaskQueue('project-1')", harness.context)
+    startGenerationWorker = () => testGenerator`)
+  await harness.run("drainTaskQueue('project-1')")
   await new Promise((resolve) => setImmediate(resolve))
   return calls
 }
@@ -123,9 +128,9 @@ test('automatic continuation resolves the configured binding and key independent
       return { scheduled: 2 }
     },
   }
-  vm.runInContext("providerSettings = testSettings; agentWorker = testAgent; agentProjectId = 'project-1'", harness.context)
+  harness.run("providerSettings = testSettings; agentWorker = testAgent; agentProjectId = 'project-1'")
 
-  await vm.runInContext("notifyAgentTaskState('project-1')", harness.context)
+  await harness.run("notifyAgentTaskState('project-1')")
 
   const reconcile = notifications.find((call) => call.method === 'agent:reconcile-tasks')
   assert.ok(reconcile)
@@ -155,9 +160,9 @@ test('unavailable session binding does not fall back to a configured Agnes key',
       return {}
     },
   }
-  vm.runInContext("providerSettings = testSettings; agentWorker = testAgent; agentProjectId = 'project-1'", harness.context)
+  harness.run("providerSettings = testSettings; agentWorker = testAgent; agentProjectId = 'project-1'")
 
-  await vm.runInContext("notifyAgentTaskState('project-1')", harness.context)
+  await harness.run("notifyAgentTaskState('project-1')")
 
   const reconcile = notifications.find((call) => call.method === 'agent:reconcile-tasks')
   assert.deepEqual(JSON.parse(JSON.stringify(reconcile.payload)), {
@@ -197,13 +202,13 @@ test('project switching during credential lookup cannot pass credentials to the 
     if (method === 'agent:list-continuation-models') return [{ sessionId: 'session-1', bindingId: 'agnes-2.5-flash' }]
     return {}
   } }
-  vm.runInContext("agentWorker = testAgent; agentProjectId = 'project-1'; providerSettings = { credentials: async () => ({ apiKey: await testLookup() }) }", harness.context)
-  const lookup = vm.runInContext("notifyAgentTaskState('project-1')", harness.context)
+  harness.run("agentWorker = testAgent; agentProjectId = 'project-1'; providerSettings = { credentials: async () => ({ apiKey: await testLookup() }) }")
+  const lookup = harness.run("notifyAgentTaskState('project-1')")
   for (let attempt = 0; attempt < 20 && typeof finishLookup !== 'function'; attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve))
   }
   assert.equal(typeof finishLookup, 'function')
-  vm.runInContext("agentProjectId = 'project-2'", harness.context)
+  harness.run("agentProjectId = 'project-2'")
   finishLookup('test-only-credential')
   await lookup
   assert.deepEqual(notifications.map(([method]) => method), ['agent:list-continuation-models'])
@@ -214,7 +219,7 @@ test('cancelling a queued task notifies the Agent without needing a generation w
   const calls = []
   harness.context.testCore = { async request(method) { calls.push(method); return { status: 'cancelled' } } }
   harness.context.testAgent = { async request(method, payload) { calls.push({ method, payload }); return method === 'agent:list-continuation-models' ? [] : {} } }
-  vm.runInContext("localCore = testCore; agentWorker = testAgent; agentProjectId = 'project-1'", harness.context)
+  harness.run("localCore = testCore; agentWorker = testAgent; agentProjectId = 'project-1'")
   const task = await harness.handlers.get('desktop:task:cancel')(harness.event, 'project-1', 'task-1')
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(task.status, 'cancelled')

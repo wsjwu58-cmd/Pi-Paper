@@ -39,3 +39,11 @@
 | 恢复和数量 | 原已接受的确认恢复提交成功，最终任务数为 1 |
 
 字符串草稿回归包含实际 Pi Agent loop 和 Main 保存校验，共 3 项通过。定义节点回归覆盖原确认预览、字段/参考校验、版本冲突、旧确认恢复、普通节点及 Main/TaskStore 调用链。桌面全量测试为 563 项（534 通过、24 失败、5 跳过），与上一轮相比新增 6 项全部通过，失败名称集合不变；`pi-main/npm run check` 通过。真实生成验收结果为通过，跨平台安装验收沿用各自未完成状态。
+
+## 2026-11-03 桌面回归复验
+
+在 macOS ARM64 上使用 Node 24.22.1、Python 3.12 和系统默认临时目录运行 `node --test test/*.test.cjs`，共 568 项，563 通过、0 失败、5 跳过。跳过项为 4 个需要本机 FFmpeg/FFprobe 的媒体用例和 1 个 Windows SAPI 用例。
+
+在原先显示 Electron 默认图标的测试宿主中，运行 `scripts/smoke-creator-agent.cjs --staged`，断言 Dock 已使用随包小猫图。另从只读挂载的 ARM64 DMG 核对应用签名、Info.plist 指定的 ICNS 和 Dock PNG，两个图标文件均与源资源逐字节一致。
+
+从桌面 DMG 启动原应用的离线操作验证通过，覆盖模板选装、画布插入、Skill、素材裁剪、选区排列及两次重启回读。安装包使用本地 ad-hoc 签名，SHA-256 为 `8d301d26222e1ec3bd9261f3ca36ae8f25bad858d8c86b7ad84cc954b0c1a168`。

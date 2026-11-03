@@ -7,12 +7,13 @@ const os = require('node:os')
 function resolveAppDataPath(env = process.env, platform = process.platform, home = os.homedir()) {
   if (platform === 'win32') {
     const candidate = env.APPDATA
-    return typeof candidate === 'string' && path.isAbsolute(candidate)
-      ? candidate : path.join(home, 'AppData', 'Roaming')
+    return typeof candidate === 'string' && path.win32.isAbsolute(candidate)
+      ? candidate : path.win32.join(home, 'AppData', 'Roaming')
   }
-  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support')
+  if (platform === 'darwin') return path.posix.join(home, 'Library', 'Application Support')
   const candidate = env.XDG_CONFIG_HOME
-  return typeof candidate === 'string' && path.isAbsolute(candidate) ? candidate : path.join(home, '.config')
+  return typeof candidate === 'string' && path.posix.isAbsolute(candidate)
+    ? candidate : path.posix.join(home, '.config')
 }
 
 function resolveLauncherPath() {

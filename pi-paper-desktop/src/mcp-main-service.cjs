@@ -1007,12 +1007,14 @@ function createMcpMainService(options) {
     if (prior?.consumed) throw fixedError('GENERATION_CONFIRMATION_ALREADY_USED', 409)
     if (prior && prior.expiresAt > now()) throw fixedError('GENERATION_CONFIRMATION_PENDING', 409)
     const challengeToken = randomBytes(32).toString('base64url')
-    generationChallenges.set(proposalId, {
+    const challenge = {
       tokenHash: sha256(challengeToken), connectionId: session.connectionId,
       clientId: session.clientId, grantId: session.grantId,
       projectId: session.projectId, canvasId: session.canvasId,
       proposalId, canvasVersion: proposal.canvasVersion, expiresAt, consumed: false,
-    })
+    }
+    generationChallenges.set(proposalId, challenge)
+    if (requestControl) requestControl.issuedChallenge = { proposalId, challenge }
     for (const [oldProposalId, challenge] of generationChallenges) {
       if (challenge.expiresAt <= now()) generationChallenges.delete(oldProposalId)
     }
@@ -1304,6 +1306,8 @@ function createMcpMainService(options) {
       if (challenge?.expiresAt <= now()) generationChallenges.delete(params.proposalId)
       throw fixedError(challenge?.expiresAt <= now() ? 'ACTION_EXPIRED' : 'GENERATION_CONFIRMATION_INVALID', 403)
     }
+    const resolutionState = { dispatched: false }
+    if (requestControl) requestControl.confirmation = { proposalId: params.proposalId, challenge, resolutionState }
     await liveClient(session.clientId, session.grantId)
     const context = await currentContext()
     if (!context || context.projectId !== challenge.projectId || context.canvasId !== challenge.canvasId) {
@@ -1331,6 +1335,7 @@ function createMcpMainService(options) {
       throw fixedError('ACTION_EXPIRED', 409)
     }
     if (requestControl?.cancelled) throw fixedError('REQUEST_CANCELLED', 499)
+    if (generationChallenges.get(params.proposalId) !== challenge) throw fixedError('GENERATION_CONFIRMATION_INVALID', 403)
     if (challenge.consumed) {
       if (proposal.status === 'awaiting_confirmation') throw fixedError('GENERATION_CONFIRMATION_ALREADY_USED', 409)
       return generationConfirmationResult({
@@ -1347,7 +1352,7 @@ function createMcpMainService(options) {
         ...(proposal.errorCode ? { errorCode: proposal.errorCode } : {}),
       })
     }
-    const resolutionState = { dispatched: false }
+    challenge.resolutionOwner = requestControl
     try {
       const resolved = await performActionResolution({ proposalId: params.proposalId, decision: params.decision }, {
         session, connectionId: session.connectionId, requestControl,
@@ -1361,6 +1366,8 @@ function createMcpMainService(options) {
         generationChallenges.delete(params.proposalId)
       }
       throw error
+    } finally {
+      if (challenge.resolutionOwner === requestControl) challenge.resolutionOwner = null
     }
   }
 
@@ -1560,6 +1567,19 @@ function createMcpMainService(options) {
     const cancelRequest = () => {
       if (requestControl.cancelled) return
       requestControl.cancelled = true
+      // Discard a challenge that never reached the client, or the challenge
+      // belonging to this canceled confirmation before dispatch. A concurrent
+      // retry must not invalidate a different confirmation already in flight.
+      const issued = requestControl.issuedChallenge
+      if (issued && !issued.challenge.consumed && generationChallenges.get(issued.proposalId) === issued.challenge) {
+        generationChallenges.delete(issued.proposalId)
+      }
+      const confirmation = requestControl.confirmation
+      if (confirmation && !confirmation.resolutionState.dispatched
+        && (!confirmation.challenge.consumed || confirmation.challenge.resolutionOwner === requestControl)
+        && generationChallenges.get(confirmation.proposalId) === confirmation.challenge) {
+        generationChallenges.delete(confirmation.proposalId)
+      }
       if (requestControl.session) {
         clearSession(requestControl.session)
         requestControl.session = null
@@ -1592,6 +1612,10 @@ function createMcpMainService(options) {
         const result = await rpc(session, body, requestControl)
         sendJson(res, 200, result)
       } catch (error) {
+        const issued = requestControl.issuedChallenge
+        if (issued && !issued.challenge.consumed && generationChallenges.get(issued.proposalId) === issued.challenge) {
+          generationChallenges.delete(issued.proposalId)
+        }
         const code = safeErrorCode(error)
         sendJson(res, 200, { content: [{ type: 'text', text: publicErrorMessage(code) }],
           structuredContent: { errorCode: code }, isError: true })

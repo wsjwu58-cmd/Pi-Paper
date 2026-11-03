@@ -825,14 +825,20 @@ async function validateResumeMediaProjectPath(candidate, workspaceRoot = root) {
   const workspace = path.resolve(workspaceRoot)
   const relative = path.relative(workspace, description.projectDirectory)
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) invalidResumeMediaProjectPath()
-  let current = workspace
+  // The workspace itself is trusted, but none of its descendants may be
+  // links. Canonicalize its ancestors first (for example, macOS /var points to
+  // /private/var), while still rejecting a link at the workspace root itself.
+  const workspaceInfo = await fs.lstat(workspace).catch(() => null)
+  if (!workspaceInfo?.isDirectory() || workspaceInfo.isSymbolicLink()) invalidResumeMediaProjectPath()
+  let current = await fs.realpath(workspace).catch(() => null)
+  if (!current) invalidResumeMediaProjectPath()
   await assertRealDirectory(current)
   for (const segment of relative.split(path.sep)) {
     current = path.join(current, segment)
     await assertRealDirectory(current)
   }
 
-  const dataDirectory = path.join(description.projectDirectory, '.vibepaper')
+  const dataDirectory = path.join(current, '.vibepaper')
   await assertRealDirectory(dataDirectory)
   await assertSafeProjectFile(path.join(dataDirectory, 'project.json'), true)
   const hasDatabase = await assertSafeProjectFile(path.join(dataDirectory, 'project.sqlite'), false)

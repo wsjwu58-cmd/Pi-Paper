@@ -240,6 +240,7 @@ test('speaks JSONL to a local fake app-server process and checks runtime scope b
   }
   const host = await startCodexAppServerTurn({
     ...baseOptions,
+    cwd: process.cwd(),
     environment,
     spawnImpl: (executable, args, options) => {
       launched = { executable, args }

@@ -327,7 +327,7 @@ test('Agnes API key is not resent after a redirect returns to the initial host',
 })
 
 test('media download accepts a redirected provider CDN response with a normal image content type', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-agnes-media-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-agnes-media-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const generated = path.join(root, 'generated')
   const outputDirectory = path.join(generated, TASK_ID)
@@ -351,7 +351,7 @@ test('media download accepts a redirected provider CDN response with a normal im
 })
 
 test('media download rejects HTTP 200 HTML error pages before marking the task successful', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-agnes-invalid-media-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-agnes-invalid-media-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const generated = path.join(root, 'generated')
   const outputDirectory = path.join(generated, TASK_ID)

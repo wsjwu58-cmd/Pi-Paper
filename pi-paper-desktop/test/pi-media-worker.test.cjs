@@ -8,11 +8,12 @@ const taskId = '99999999-9999-4999-8999-999999999999'
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9l0AAAAASUVORK5CYII=', 'base64')
 
 async function jobFixture(t, modality) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-pi-output-'))
+  const tempDirectory = await fs.realpath(os.tmpdir())
+  const root = await fs.mkdtemp(path.join(tempDirectory, 'vibepaper-pi-output-'))
   const outputDirectory = path.join(root, 'generated', taskId)
   await fs.mkdir(outputDirectory, { recursive: true })
   t.after(async () => {
-    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()))
+    assert.equal(path.dirname(path.resolve(root)), tempDirectory)
     await fs.rm(root, { recursive: true, force: true })
   })
   return { root, job: { taskId, providerId: 'openai', modality, apiModelId: 'fixture', prompt: 'test',

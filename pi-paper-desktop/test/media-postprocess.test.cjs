@@ -64,7 +64,7 @@ async function createTaskDirectory(root, taskId) {
 }
 
 test('local media references are project scoped and modality checked', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vp-media-source-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vp-media-source-'))
   const projectDirectory = path.join(root, 'project')
   const filePath = path.join(projectDirectory, '.vibepaper', 'assets', 'hash', '00000000-0000-4000-8000-000000000001.png')
   const foreignPath = path.join(root, 'outside.png')

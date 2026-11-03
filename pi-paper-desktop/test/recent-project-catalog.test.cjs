@@ -6,7 +6,7 @@ const test = require('node:test')
 const { createRecentProjectCatalog } = require('../src/recent-project-catalog.cjs')
 
 async function setup(t) {
-  const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-recent-projects-'))
+  const userData = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-recent-projects-'))
   const projectDirectory = path.join(userData, 'project-one')
   const otherDirectory = path.join(userData, 'project-two')
   await fs.mkdir(projectDirectory)

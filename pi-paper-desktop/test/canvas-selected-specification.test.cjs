@@ -13,7 +13,7 @@ const loadApi = () => import(pathToFileURL(path.join(__dirname, '../../pi-main/p
 async function fixture(t, api, name, parameters) {
   const model = api.getOfficialProviderCatalog().models.find((entry) => entry.name === name)
   assert.ok(model?.implemented, name)
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-selected-spec-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'pi-selected-spec-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const taskId = randomUUID()
   const outputDirectory = path.join(root, 'generated', taskId)

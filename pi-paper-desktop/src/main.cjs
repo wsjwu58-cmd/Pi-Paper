@@ -3463,8 +3463,9 @@ if (hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     if (process.platform === 'win32') app.setAppUserModelId('com.vibepaper.desktop')
-    // Installed apps inherit the bundle icon from Launch Services.
-    if (process.platform === 'darwin' && !app.isPackaged) app.dock.setIcon(require('./application-icon.cjs').applicationIcon(require('electron').nativeImage, path.join(__dirname, '..', 'assets')))
+    // Staged tests load the packaged renderer inside the stock Electron host.
+    // Use the product artwork in the Dock regardless of which host launched Main.
+    if (process.platform === 'darwin') app.dock.setIcon(require('./application-icon.cjs').applicationIcon(require('electron').nativeImage, path.join(__dirname, '..', 'assets')))
     if (!developmentUrl) await fs.access(rendererIndex)
     recentProjectFile = path.join(app.getPath('userData'), 'recent-project.json')
     recentProjectsFile = path.join(app.getPath('userData'), 'recent-projects.json')

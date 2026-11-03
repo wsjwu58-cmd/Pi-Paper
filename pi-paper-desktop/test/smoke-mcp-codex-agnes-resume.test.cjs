@@ -75,6 +75,46 @@ test('resume path validation rejects symlinked project storage and accepts regul
     throw error
   }
   await assert.rejects(validateResumeMediaProjectPath(project, temporaryRoot), /TEMP_PATH_OUTSIDE_ACCEPTANCE_ROOT/u)
+
+  await t.test('rejects a linked project file', async (t) => {
+    await fs.rm(data, { force: true })
+    await fs.mkdir(data)
+    await fs.writeFile(path.join(data, 'project.json'), '{}')
+    try {
+      await fs.symlink(path.join(outside, 'project.sqlite'), path.join(data, 'project.sqlite'), 'file')
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error?.code)) return t.skip('File symlink creation is unavailable in this environment')
+      throw error
+    }
+    await assert.rejects(validateResumeMediaProjectPath(project, temporaryRoot), /TEMP_PATH_OUTSIDE_ACCEPTANCE_ROOT/u)
+  })
+})
+
+test('resume accepts an ancestor alias but still rejects a linked workspace root', async (t) => {
+  const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-resume-alias-'))
+  t.after(() => fs.rm(temporaryRoot, { recursive: true, force: true }))
+  const parent = path.join(temporaryRoot, 'real-parent')
+  const workspace = path.join(parent, 'workspace')
+  const alias = path.join(temporaryRoot, 'parent-alias')
+  const rootLink = path.join(temporaryRoot, 'workspace-link')
+  const projectSuffix = path.join('.test-temp', 'mcp-codex-agnes-run-a', 'project', 'source')
+  const data = path.join(workspace, projectSuffix, '.vibepaper')
+  await fs.mkdir(data, { recursive: true })
+  await fs.writeFile(path.join(data, 'project.json'), '{}')
+  await fs.writeFile(path.join(data, 'project.sqlite'), 'fixture')
+  try {
+    await fs.symlink(parent, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    await fs.symlink(workspace, rootLink, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error?.code)) return t.skip('Symlink or junction creation is unavailable in this environment')
+    throw error
+  }
+
+  const aliasedWorkspace = path.join(alias, 'workspace')
+  const aliasedProject = path.join(aliasedWorkspace, projectSuffix)
+  assert.equal((await validateResumeMediaProjectPath(aliasedProject, aliasedWorkspace)).projectDirectory, path.resolve(aliasedProject))
+  await assert.rejects(validateResumeMediaProjectPath(path.join(rootLink, projectSuffix), rootLink),
+    /TEMP_PATH_OUTSIDE_ACCEPTANCE_ROOT/u)
 })
 
 test('resume classifier accepts the exact existing image and optional single reusable video task', () => {

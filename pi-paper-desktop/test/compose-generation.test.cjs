@@ -16,7 +16,7 @@ function node(id, type, data = {}) {
 }
 
 async function openProject(t) {
-  const parentDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-compose-'))
+  const parentDirectory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-compose-'))
   const store = createLocalProjectStore()
   t.after(async () => {
     await store.close()
@@ -286,7 +286,7 @@ test('project database v6 migrates tasks without losing task events and admits c
 test('compose worker uses FFmpeg to transcode and concatenate real local MP4 inputs', { timeout: 120_000 }, async (t) => {
   const ffmpeg = resolveFfmpegPath()
   if (!ffmpeg) return t.skip('FFmpeg is not installed in this environment.')
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-compose-worker-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-compose-worker-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const generated = path.join(root, 'generated')
   const outputId = '99999999-9999-4999-8999-999999999999'
@@ -319,7 +319,7 @@ test('compose worker uses FFmpeg to transcode and concatenate real local MP4 inp
 })
 
 test('compose maps missing FFmpeg and process failures to visible model-unavailable errors', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-compose-failure-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-compose-failure-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const generated = path.join(root, 'generated')
   const taskId = '99999999-9999-4999-8999-999999999999'
@@ -352,7 +352,7 @@ test('compose maps missing FFmpeg and process failures to visible model-unavaila
 })
 
 test('FFmpeg resolution honors the original settings environment field before FFMPEG_PATH', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-ffmpeg-config-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-ffmpeg-config-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const configuredPath = path.join(root, process.platform === 'win32' ? 'configured.exe' : 'configured')
   const fallbackPath = path.join(root, process.platform === 'win32' ? 'fallback.exe' : 'fallback')
@@ -372,7 +372,7 @@ test('FFmpeg resolution honors the original settings environment field before FF
 })
 
 test('compose retries concat with re-encoding when stream-copy concatenation fails', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vibepaper-compose-fallback-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'vibepaper-compose-fallback-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const generated = path.join(root, 'generated')
   const taskId = '99999999-9999-4999-8999-999999999999'
