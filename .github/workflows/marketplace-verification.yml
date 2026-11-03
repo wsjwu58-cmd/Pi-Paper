@@ -1,33 +1,11 @@
 name: Marketplace installer verification
+# Compatibility entry point for manual verification. Pushes are owned by CI.
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/desktop-local-migration]
-    paths:
-      - 'marketplace/**'
-      - 'pi-paper-desktop/src/*marketplace*'
-      - 'pi-paper-desktop/src/local-mcp-client.cjs'
-      - 'pi-paper-desktop/src/main.cjs'
-      - 'pi-paper-desktop/src/preload.cjs'
-      - 'pi-paper-desktop/src/project-agent-skills.cjs'
-      - 'pi-paper-desktop/src/project-store.cjs'
-      - 'pi-paper-desktop/scripts/build-package.cjs'
-      - 'pi-paper-desktop/scripts/smoke-marketplace.cjs'
-      - 'pi-paper-desktop/scripts/smoke-package.cjs'
-      - 'pi-paper-desktop/scripts/verify-packaged.cjs'
-      - 'pi-paper-desktop/electron-builder.cjs'
-      - 'pi-paper-web/src/desktop/**'
-      - 'pi-paper-web/src/features/canvas/**'
-      - 'pi-paper-web/src/features/marketplace/**'
-      - 'pi-paper-web/src/features/mcp/**'
-      - 'pi-paper-web/src/locales/**'
-      - '.github/workflows/desktop-packages.yml'
-      - '.github/workflows/marketplace-verification.yml'
 permissions:
   contents: read
-concurrency:
-  group: marketplace-installers-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
-  installers:
-    uses: ./.github/workflows/desktop-packages.yml
+  verify:
+    uses: ./.github/workflows/ci.yml
+    with:
+      full: true

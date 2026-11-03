@@ -1,10 +1,7 @@
 name: Docker desktop
 on:
+  workflow_call:
   workflow_dispatch:
-  push:
-    branches: [feat/desktop-local-migration, 'codex/pi-paper-docker-*']
-  pull_request:
-    branches: [feat/desktop-local-migration]
 permissions:
   contents: read
 jobs:
@@ -34,12 +31,18 @@ jobs:
         run: node docker/smoke-desktop.cjs
       - name: Container logs
         if: always()
-        run: docker compose logs --no-color
+        run: |
+          mkdir -p .test-temp/ci
+          docker compose logs --no-color > .test-temp/ci/docker.log
+          cat .test-temp/ci/docker.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: docker-desktop-screenshot
-          path: .test-temp/docker-desktop.png
+          name: docker-reports-${{ github.sha }}
+          path: |
+            .test-temp/docker-desktop.png
+            .test-temp/ci/docker.log
+          retention-days: 14
           if-no-files-found: ignore
       - name: Stop desktop
         if: always()

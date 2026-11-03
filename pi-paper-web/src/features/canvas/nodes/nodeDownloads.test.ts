@@ -4,6 +4,10 @@ import type { NodePayload } from '@/lib/types'
 import { useCanvasStore } from '../canvasStore'
 import { registerCanvasPersistence } from '../canvasPersistence'
 
+vi.hoisted(() => {
+  vi.stubGlobal('localStorage', { getItem: () => null })
+})
+
 vi.mock('@/components/ui/Toast', () => ({
   toastError: vi.fn(),
   toastSuccess: vi.fn(),

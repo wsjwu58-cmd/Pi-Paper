@@ -1,3 +1,6 @@
+const { execFileSync } = require('node:child_process')
+const path = require('node:path')
+
 const nsisUninstallDiagnostics = process.env.VIBEPAPER_NSIS_UNINSTALL_DIAGNOSTICS_TEST_ONLY === '1'
 const nsisUninstallInclude = nsisUninstallDiagnostics ? 'uninstall-diagnostics.nsh' : 'uninstall-cleanup.nsh'
 
@@ -37,7 +40,17 @@ module.exports = {
     icon: 'assets/app-icon.icns',
     category: 'public.app-category.productivity',
     target: ['dmg', 'zip'],
-    identity: '-',
+    forceCodeSigning: true,
+    hardenedRuntime: true,
+    notarize: true,
+  },
+  dmg: { sign: true },
+  afterSign({ electronPlatformName, appOutDir, packager }) {
+    if (electronPlatformName === 'darwin') {
+      // Missing notarization credentials must never produce a public release.
+      const app = path.join(appOutDir, packager.appInfo.productFilename + '.app')
+      execFileSync('xcrun', ['stapler', 'validate', app], { stdio: 'inherit' })
+    }
   },
   linux: {
     icon: 'assets/app-icon.png',

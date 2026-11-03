@@ -1,0 +1,96 @@
+name: Desktop release
+on:
+  push:
+    tags: ['desktop-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing desktop-vMAJOR.MINOR.PATCH prerelease to promote
+        required: true
+        type: string
+      acceptance_url:
+        description: HTTPS record of installed-app, upgrade and recovery acceptance
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - env:
+          RELEASE_BRANCH: ${{ vars.DESKTOP_RELEASE_BRANCH || 'feat/desktop-local-migration' }}
+        run: node .github/scripts/release.cjs preflight
+  verify:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+    with:
+      full: true
+      release: true
+    secrets: inherit
+  preview:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    environment: desktop-preview
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-package-*-${{ github.sha }}
+          path: artifacts
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/release.cjs stage
+  approval:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: node .github/scripts/release.cjs approval
+  production:
+    needs: approval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: desktop-production
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          ACCEPTANCE_URL: ${{ inputs.acceptance_url }}
+        run: node .github/scripts/release.cjs promote

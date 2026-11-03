@@ -2,19 +2,46 @@ name: Desktop installers
 
 on:
   workflow_call:
-  workflow_dispatch:
-  push:
-    branches: ['codex/desktop-packages-*']
-    tags: ['desktop-v*']
+    inputs:
+      release:
+        type: boolean
+        default: false
+    secrets:
+      MAC_CSC_LINK:
+        required: false
+      MAC_CSC_KEY_PASSWORD:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_APP_SPECIFIC_PASSWORD:
+        required: false
+      APPLE_TEAM_ID:
+        required: false
 
 permissions:
   contents: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check release signing prerequisites before building
+        if: inputs.release
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          : "${CSC_LINK:?Missing MAC_CSC_LINK}" "${CSC_KEY_PASSWORD:?Missing MAC_CSC_KEY_PASSWORD}"
+          : "${APPLE_ID:?Missing APPLE_ID}" "${APPLE_APP_SPECIFIC_PASSWORD:?Missing APPLE_APP_SPECIFIC_PASSWORD}" "${APPLE_TEAM_ID:?Missing APPLE_TEAM_ID}"
   package:
     name: Package ${{ matrix.platform }} ${{ matrix.arch }}
+    needs: preflight
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.platform == 'mac' && 90 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -31,34 +58,9 @@ jobs:
           - os: ubuntu-24.04
             platform: linux
             arch: x64
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: |
-            pi-paper-desktop/package-lock.json
-            pi-main/package-lock.json
-      - uses: pnpm/action-setup@v4
-        with:
-          version: '9.15.9'
-      - name: Install Pi dependencies
-        run: npm ci --prefix pi-main --ignore-scripts
-      - name: Build Pi dependencies offline
-        working-directory: pi-main
-        run: |
-          npm run build --workspace=@earendil-works/pi-telemetry
-          node ../pi-paper-desktop/scripts/restore-model-data.cjs
-          npm run build:offline --workspace=@earendil-works/pi-ai
-          npm run build --workspace=@earendil-works/pi-agent-core
-      - name: Install renderer dependencies
-        working-directory: pi-paper-web
-        run: pnpm install --frozen-lockfile
-      - name: Install desktop dependencies
-        run: npm ci --prefix pi-paper-desktop
+      - uses: ./.github/actions/setup-desktop
       - name: Build standalone desktop application
         run: npm run build:package --prefix pi-paper-desktop
       - name: Verify language defaults and persistence
@@ -73,17 +75,48 @@ jobs:
         if: always() && matrix.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: Pi-Paper-linux-language-evidence
+          name: language-evidence-${{ github.sha }}
           if-no-files-found: warn
           path: docs/verification/2026-10-08-ui-language/
       - name: Create installers
+        if: matrix.platform != 'mac' || !inputs.release
         working-directory: pi-paper-desktop
-        run: npx electron-builder --config electron-builder.cjs --${{ matrix.platform }} --${{ matrix.arch }} --publish never
-      - name: Verify packaged Electron runtime in Node mode
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --config electron-builder.ci.cjs --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+      - name: Sign and notarize macOS installers
+        if: matrix.platform == 'mac' && inputs.release
+        working-directory: pi-paper-desktop
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          : "${CSC_LINK:?Missing MAC_CSC_LINK}" "${CSC_KEY_PASSWORD:?Missing MAC_CSC_KEY_PASSWORD}"
+          : "${APPLE_ID:?}" "${APPLE_APP_SPECIFIC_PASSWORD:?}" "${APPLE_TEAM_ID:?}"
+          npx electron-builder --config electron-builder.cjs --mac --${{ matrix.arch }} --publish never
+          dmg=(release/*.dmg)
+          xcrun notarytool submit "${dmg[0]}" --wait --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID"
+          xcrun stapler staple "${dmg[0]}"
+      - name: Verify Gatekeeper accepts the final macOS disk image and app
+        if: matrix.platform == 'mac' && inputs.release
+        working-directory: pi-paper-desktop
+        run: |
+          dmg=(release/*.dmg)
+          xcrun stapler validate "${dmg[0]}"
+          spctl --assess --type open --context context:primary-signature --verbose "${dmg[0]}"
+          mountpoint=$(mktemp -d)
+          hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "${dmg[0]}"
+          trap 'hdiutil detach "$mountpoint"' EXIT
+          app="$mountpoint/Pi-Paper.app"
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose "$app"
+      - name: Verify packaged Electron runtime
         run: node pi-paper-desktop/scripts/verify-packaged.cjs
-      # The marketplace GUI smoke uses the installed resources with the test
-      # harness Electron. verify-packaged separately runs the shipped binary in Node mode.
-      - name: Exercise marketplace UI with Windows installed resources
+      - name: Exercise installed marketplace on Windows
         if: matrix.platform == 'win'
         shell: pwsh
         working-directory: pi-paper-desktop
@@ -94,17 +127,17 @@ jobs:
           if ($proc.ExitCode -ne 0) { throw "Installer exited with $($proc.ExitCode)" }
           node scripts/verify-packaged.cjs "--executable=$target/Pi-Paper.exe" "--app-dir=$target/resources/app"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node node_modules/electron/cli.js scripts/smoke-marketplace.cjs "--resources=$target/resources/app"
+          node node_modules/electron/cli.js scripts/smoke-marketplace.cjs "--resources=$target/resources/app" --screenshot=../.test-temp/ci/marketplace.png --failure-screenshot=../.test-temp/ci/marketplace-failure.png
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise marketplace UI with Linux AppImage resources
+      - name: Exercise marketplace in the Linux AppImage
         if: matrix.platform == 'linux'
         working-directory: pi-paper-desktop
         run: |
           release/*.AppImage --appimage-extract >/dev/null
           LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             node scripts/verify-packaged.cjs --executable=squashfs-root/pi-paper --app-dir=squashfs-root/resources/app
-          xvfb-run -a node node_modules/electron/cli.js scripts/smoke-marketplace.cjs --resources=squashfs-root/resources/app --no-sandbox
-      - name: Exercise marketplace UI with macOS disk image resources
+          xvfb-run -a node node_modules/electron/cli.js scripts/smoke-marketplace.cjs --resources=squashfs-root/resources/app --no-sandbox --screenshot=../.test-temp/ci/marketplace.png --failure-screenshot=../.test-temp/ci/marketplace-failure.png
+      - name: Exercise marketplace from the macOS disk image
         if: matrix.platform == 'mac'
         working-directory: pi-paper-desktop
         run: |
@@ -112,14 +145,21 @@ jobs:
           hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" release/*.dmg
           trap 'hdiutil detach "$mountpoint"' EXIT
           node scripts/verify-packaged.cjs "--executable=$mountpoint/Pi-Paper.app/Contents/MacOS/Pi-Paper" "--app-dir=$mountpoint/Pi-Paper.app/Contents/Resources/app"
-          node node_modules/electron/cli.js scripts/smoke-marketplace.cjs "--resources=$mountpoint/Pi-Paper.app/Contents/Resources/app"
+          node node_modules/electron/cli.js scripts/smoke-marketplace.cjs "--resources=$mountpoint/Pi-Paper.app/Contents/Resources/app" --screenshot=../.test-temp/ci/marketplace.png --failure-screenshot=../.test-temp/ci/marketplace-failure.png
       - name: Generate checksums
         run: node pi-paper-desktop/scripts/package-checksums.cjs
-      - name: Upload installers
-        if: matrix.platform != 'mac'
+      - name: Record package provenance
+        env:
+          PACKAGE_PLATFORM: ${{ matrix.platform }}
+          PACKAGE_ARCH: ${{ matrix.arch }}
+          RELEASE_BUILD: ${{ inputs.release }}
+        run: node .github/scripts/package-manifest.cjs
+      - name: Upload verified packages
         uses: actions/upload-artifact@v4
         with:
-          name: Pi-Paper-${{ matrix.platform }}-${{ matrix.arch }}
+          name: desktop-package-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          compression-level: 0
+          retention-days: 14
           if-no-files-found: error
           path: |
             pi-paper-desktop/release/*.exe
@@ -128,23 +168,14 @@ jobs:
             pi-paper-desktop/release/*.AppImage
             pi-paper-desktop/release/*.deb
             pi-paper-desktop/release/SHA256SUMS.txt
-      - name: Upload macOS disk image
-        if: matrix.platform == 'mac'
+            pi-paper-desktop/release/manifest-*.json
+      - name: Upload package verification evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Pi-Paper-mac-${{ matrix.arch }}-dmg
-          compression-level: 0
-          if-no-files-found: error
+          name: package-evidence-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: warn
           path: |
-            pi-paper-desktop/release/*.dmg
-            pi-paper-desktop/release/SHA256SUMS.txt
-      - name: Upload macOS application archive
-        if: matrix.platform == 'mac'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Pi-Paper-mac-${{ matrix.arch }}-zip
-          compression-level: 0
-          if-no-files-found: error
-          path: |
-            pi-paper-desktop/release/*.zip
-            pi-paper-desktop/release/SHA256SUMS.txt
+            .test-temp/ci/
+            pi-paper-desktop/release/builder-debug.yml

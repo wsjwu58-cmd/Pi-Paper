@@ -73,7 +73,9 @@ async function captureIfRequested(option = '--screenshot=') {
   if (!output) return
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
   const image = await window.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })
-  fs.writeFileSync(path.resolve(output.slice(option.length)), image.toPNG())
+  const destination = path.resolve(output.slice(option.length))
+  fs.mkdirSync(path.dirname(destination), { recursive: true })
+  fs.writeFileSync(destination, image.toPNG())
 }
 async function main() {
   const store = createLocalProjectStore()
@@ -198,4 +200,8 @@ async function main() {
   console.log('PASS: standalone Skill import, scoped MCP prefill without grants, product studio components, local asset and preset, editable poster and PNG on canvas, storyboard CSV, director and custom node creation from the plugin panel and saved scene and motion; zero generation tasks.')
   app.quit()
 }
-main().catch(error => { console.error(error.stack); app.exit(1) })
+main().catch(async error => {
+  console.error(error.stack)
+  await captureIfRequested('--failure-screenshot=').catch(() => {})
+  app.exit(1)
+})

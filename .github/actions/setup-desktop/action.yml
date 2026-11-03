@@ -1,0 +1,28 @@
+name: Setup desktop build
+description: Install all dependencies used by the desktop and shared renderer modules
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+      with:
+        version: '9.15.9'
+    - uses: actions/setup-node@v5
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: |
+          pi-main/package-lock.json
+          pi-paper-desktop/package-lock.json
+    - shell: bash
+      run: npm ci --prefix pi-main --ignore-scripts
+    - shell: bash
+      run: pnpm --dir pi-paper-web install --frozen-lockfile
+    - shell: bash
+      run: npm ci --prefix pi-paper-desktop
+    - shell: bash
+      working-directory: pi-main
+      run: |
+        node ../pi-paper-desktop/scripts/restore-model-data.cjs
+        npm run build --workspace=@earendil-works/pi-telemetry
+        npm run build:offline --workspace=@earendil-works/pi-ai
+        npm run build --workspace=@earendil-works/pi-agent-core
