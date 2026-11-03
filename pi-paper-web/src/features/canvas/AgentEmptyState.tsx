@@ -11,7 +11,7 @@ export function AgentEmptyState({ onSuggestion, description = uiText("让 Paper 
   const language = useUiLanguage()
   return <div className="flex h-full min-h-[220px] items-center justify-center px-4 py-8 text-center">
     <div className="w-full max-w-[560px]">
-      <img alt="" className="mx-auto mb-9 h-32 w-auto object-contain" src="/paper-agent.svg" />
+      <img alt="" className="mx-auto mb-9 h-32 w-auto object-contain" src="/paper-agent-cat.svg" />
       <p className="text-sm font-medium text-[var(--canvas-text-strong)]">Paper Agent</p>
       <p className="mt-1.5 text-xs leading-relaxed text-[var(--canvas-muted)]">{description}</p>
       <div className="-mx-2 mt-4 grid grid-cols-[repeat(auto-fit,minmax(92px,1fr))] gap-2">

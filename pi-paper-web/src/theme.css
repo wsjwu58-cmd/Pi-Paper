@@ -134,7 +134,7 @@ html[data-theme='dark'] .vp-media-duration-slider::-webkit-slider-thumb { backgr
 html[data-theme='dark'] .vp-media-duration-slider::-moz-range-thumb { background: #dce7f9; }
 html[data-theme='dark'] .react-flow__handle { border-color: #22262f; }
 html[data-theme='dark'] .react-flow__controls-button svg { fill: currentColor; }
-html[data-theme='dark'] .vp-agent-motion img[src$='paper-agent.svg'] { filter: invert(1); }
+html[data-theme='dark'] .vp-agent-motion img[src$='paper-agent-cat.svg'] { filter: invert(1); }
 html[data-theme='dark'] .vp-brand-mark { background-color: #fff; }
 html[data-theme='dark'] .vp-canvas-welcome :is([class*='text-black/'], [class*='bg-black/']) {
   color: var(--canvas-text);
