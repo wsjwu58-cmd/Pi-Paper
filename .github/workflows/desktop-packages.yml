@@ -133,7 +133,8 @@ jobs:
         if: matrix.platform == 'linux'
         working-directory: pi-paper-desktop
         run: |
-          release/*.AppImage --appimage-extract >/dev/null
+          appimages=(release/*.AppImage)
+          "${appimages[0]}" --appimage-extract >/dev/null
           LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             node scripts/verify-packaged.cjs --executable=squashfs-root/pi-paper --app-dir=squashfs-root/resources/app
           xvfb-run -a node node_modules/electron/cli.js scripts/smoke-marketplace.cjs --resources=squashfs-root/resources/app --no-sandbox --screenshot=../.test-temp/ci/marketplace.png --failure-screenshot=../.test-temp/ci/marketplace-failure.png
